@@ -7,11 +7,14 @@ It lints the committed config.env (FILL_ME_IN may be left; a wrong shape fails),
 template with fake values of the right shape and fake digests (scripts/cloudrun_render.py, the
 renderer deploy.yml uses), parses the result with yq (mikefarah v4) and asserts, per file:
   - design §3's limits: request timeout, concurrency, memory, max instances, 1 vCPU, min instances 0,
-    request-based billing (cpu-throttling true) and startup CPU boost; the migrate job's 600 s, 512 MiB
-    and one task;
+    request-based billing (cpu-throttling true) and startup CPU boost; the migrate job's 600 s, 512 MiB,
+    one task and no retry (maxRetries 0: a retry is a second failed owner login, and failed logins
+    feed Supavisor's circuit breaker);
   - ingress all on api and ingest, internal on scoring and notify; the service account
-    ryft-<svc>@ryftlab-prod.iam.gserviceaccount.com; one port, h2c 8080; the startup probe on
-    /health/ready and the liveness probe on /health/live; all traffic to the latest revision;
+    ryft-<svc>@ryftlab-prod.iam.gserviceaccount.com; one port, h2c 8080; the startup and the liveness
+    probe both on /health/live, the startup probe within 30 s (an instance must start while the
+    database is down, so its tick reports ryft_db_up 0; /health/ready is the synthetics' target);
+    all traffic to the latest revision;
   - the env exactly as ticket-b.md's tables (names and the values the renderer builds), every secret
     pinned by a version number (never latest), each secret only in the services of the accessor table,
     and migrate's DB_PASSWORD_<SVC> pin equal to PGPASSWORD's in <svc>.yaml (design §4);
@@ -79,6 +82,9 @@ VERSION = re.compile(r"[1-9][0-9]*")
 SVC_ANN = {"autoscaling.knative.dev/minScale", "autoscaling.knative.dev/maxScale",
            "run.googleapis.com/cpu-throttling", "run.googleapis.com/startup-cpu-boost"}
 PROBE_KEYS = {"httpGet", "initialDelaySeconds", "periodSeconds", "timeoutSeconds", "failureThreshold"}
+# The startup probe reads /health/live and gives up after this many seconds: a process that does not
+# listen by then will not, and every failed start is billed (min instances 0 starts one per request).
+STARTUP_BUDGET = 30
 
 errs = []
 
@@ -234,9 +240,10 @@ def check_probe(where, probe, path, startup):
         fail(where, "the timings must be whole seconds")
     elif nums["timeoutSeconds"] < 1 or nums["timeoutSeconds"] > nums["periodSeconds"] or nums["failureThreshold"] < 1:
         fail(where, "1 <= timeoutSeconds <= periodSeconds, failureThreshold >= 1")
-    elif startup and nums["initialDelaySeconds"] + nums["periodSeconds"] * nums["failureThreshold"] > 240:
-        # Cloud Run refuses a startup probe that may run past 240 s.
-        fail(where, "initialDelaySeconds + periodSeconds * failureThreshold must stay <= 240 (Cloud Run's limit)")
+    elif startup and nums["initialDelaySeconds"] + nums["periodSeconds"] * nums["failureThreshold"] > STARTUP_BUDGET:
+        # Cloud Run's own limit is 240 s; ours is the short budget of a probe that waits only for the port.
+        fail(where, f"initialDelaySeconds + periodSeconds * failureThreshold must stay <= {STARTUP_BUDGET} "
+                    "(the startup probe waits for /health/live only; each failed start is billed)")
 
 
 def check_service(name, doc, cfg, digest):
@@ -293,7 +300,7 @@ def check_service(name, doc, cfg, digest):
         fail(w, f"ports must be exactly [{{name: h2c, containerPort: 8080}}], are {c['ports']!r}")
     if c["resources"] != {"limits": {"cpu": "1", "memory": e["memory"]}}:
         fail(w, f"resources {c['resources']!r}, want limits cpu \"1\", memory {e['memory']} (design §3)")
-    check_probe(f"{w} startupProbe", c["startupProbe"], "/health/ready", True)
+    check_probe(f"{w} startupProbe", c["startupProbe"], "/health/live", True)
     check_probe(f"{w} livenessProbe", c["livenessProbe"], "/health/live", False)
     return check_env(name, c["env"], PLAIN[name], cfg)
 
@@ -324,8 +331,9 @@ def check_migrate(doc, cfg, digest):
         fail(w, f"runs as {task['serviceAccountName']!r}, want ryft-migrate@{PROJECT}.iam.gserviceaccount.com")
     if task["timeoutSeconds"] != MIGRATE["timeout"]:
         fail(w, f"task timeout {task['timeoutSeconds']!r}, want {MIGRATE['timeout']} (design §3)")
-    if not isinstance(task["maxRetries"], int) or not 0 <= task["maxRetries"] <= 3:
-        fail(w, "maxRetries 0 to 3")
+    if type(task["maxRetries"]) is not int or task["maxRetries"] != 0:
+        fail(w, f"maxRetries {task['maxRetries']!r}, want 0: a retry is a second failed owner login, and failed logins "
+                "trip Supavisor's circuit breaker for the role")
     cs = task["containers"]
     if not isinstance(cs, list) or len(cs) != 1:
         fail(w, "exactly one container")

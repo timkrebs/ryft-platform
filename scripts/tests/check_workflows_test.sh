@@ -2,8 +2,9 @@
 # shellcheck disable=SC2154,SC1091,SC2015,SC2016
 # scripts/check_workflows.sh on throwaway workflow directories: the bypasses of a grep (flow style,
 # quoted or spaced keys, escaped names, anchors, external reusable workflows, secrets: inherit,
-# dynamic secrets, test hooks), deploy.yml's gate, triggers, token and concurrency, and a second
-# ci-ok all fail; the repository's own workflows pass.
+# dynamic secrets, test hooks), deploy.yml's gate, status functions and continue-on-error, triggers,
+# tokens, concurrency, its superseded and tip gates, its scan-before-sign-in order, a third-party
+# action or docker.sock in it, and a second ci-ok all fail; the repository's own workflows pass.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 fail() { echo "✗ check_workflows_test: $*" >&2; exit 1; }
@@ -171,9 +172,46 @@ deploy_swap() {
   [ "$rc" = 1 ] || fail "$1 must fail (rc=$rc)"
   grep -q "$2" "$tmp/err" || fail "$1: message lacks '$2': $(cat "$tmp/err")"
 }
+DEPLOY_IF="    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES == '' && needs.ci.outputs.current == 'true'"
+TIP_IF="        if: steps.tip.outputs.current == 'true'"
+SMOKE_IF="        if: steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.smoke)"
 deploy_swap "a deploy.yml job without the gate" "must start with vars.GCP_DEPLOY" "    if: vars.GCP_DEPLOY == 'on'" "    if: always()"
 deploy_swap "the gate behind an ||" "must start with vars.GCP_DEPLOY" \
-  "    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES == ''" "    if: vars.GCP_DEPLOY == 'on' || vars.DEPLOY_HOLD_SERVICES == ''"
+  "$DEPLOY_IF" "    if: vars.GCP_DEPLOY == 'on' || vars.DEPLOY_HOLD_SERVICES == '' && needs.ci.outputs.current == 'true'"
+# No status function in any if (job or step): each one lets a job or step run past a failure or the gate.
+deploy_swap "always() behind the gate (the wait)" "status function always()" \
+  "    if: vars.GCP_DEPLOY == 'on'" "    if: vars.GCP_DEPLOY == 'on' && always()"
+deploy_swap "!cancelled() behind the gate (the hold)" "status function cancelled()" \
+  "    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES != ''" "    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES != '' && !cancelled()"
+deploy_swap "Always() in another case (the deploy)" "status function Always()" "$DEPLOY_IF" "$DEPLOY_IF && (Always())"
+deploy_swap "always() on a step" "status function always()" "      - name: Sign out" "      - name: Sign out\n        if: always()"
+deploy_swap "success() || true on a step" "status function success()" \
+  "      - name: Render deploy/run with the digests" "      - name: Render deploy/run with the digests\n        if: success() || true"
+deploy_swap "failure() in braces on a step" "status function failure()" "$TIP_IF" "        if: \${{ steps.tip.outputs.current == 'true' || failure() }}"
+deploy_swap "continue-on-error on migrate" "continue-on-error" \
+  "      - name: migrate (replace the job, execute it, wait)" "      - name: migrate (replace the job, execute it, wait)\n        continue-on-error: true"
+# The tokens: the wait reads the Actions API only, the hold has none.
+deploy_swap "the wait with a write token" "exactly actions: read" "      actions: read" "      actions: read\n      checks: write"
+deploy_swap "the wait back on check runs" "exactly actions: read" "      actions: read" "      checks: read"
+deploy_swap "the hold with a token" "has no token" "    permissions: {}" "    permissions:\n      contents: write"
+# Only main's tip deploys: the job, and every step that changes Cloud Run or smokes.
+deploy_swap "a deploy that ignores the superseded wait" "needs.ci.outputs.current" "$DEPLOY_IF" "    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES == ''"
+deploy_swap "migrate and the services without the tip gate" "steps.tip.outputs.current == 'true'" "$TIP_IF" "        if: github.sha != ''"
+deploy_swap "the smoke's tip gate undone by a top-level ||" "no || outside parentheses" \
+  "$SMOKE_IF" "        if: steps.tip.outputs.current == 'true' && github.event_name != 'workflow_dispatch' || inputs.smoke"
+deploy_swap "no tip step" 'no step with id' "        id: tip" "        id: tip2"
+# Build and scan before any sign-in or push, with no third-party action and no docker.sock.
+deploy_swap "setup-buildx-action back" "its only action" \
+  "      - name: Build the five images (linux/amd64) and scan each saved image (Trivy, fail on critical)" \
+  "      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069\n      - name: Build the five images (linux/amd64) and scan each saved image (Trivy, fail on critical)"
+deploy_swap "docker.sock in the job" "docker.sock" '          mkdir -p "$RUNNER_TEMP/images"' '          mkdir -p "$RUNNER_TEMP/images"\n          test -S /var/run/docker.sock'
+deploy_swap "the OIDC request token before the scan" "before the scan" \
+  '          rm -rf "$RUNNER_TEMP/dry-run"' '          rm -rf "$RUNNER_TEMP/dry-run"\n          echo "${#ACTIONS_ID_TOKEN_REQUEST_TOKEN}"'
+deploy_swap "gcloud before the scan" "before the scan" '          rm -rf "$RUNNER_TEMP/dry-run"' '          rm -rf "$RUNNER_TEMP/dry-run"\n          gcloud auth list'
+deploy_swap "a push in the scan step" "before the scan" '          rm -rf "$RUNNER_TEMP/images"' '          docker push "ryft-api:$GITHUB_SHA"\n          rm -rf "$RUNNER_TEMP/images"'
+deploy_swap "Trivy on the daemon instead of the saved image" "no scan step" \
+  '            docker run --rm -v "$RUNNER_TEMP/images:/in:ro" -v ryft-trivy-cache:/cache "$TRIVY" image --cache-dir /cache --input "/in/$s.tar" --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress' \
+  '            docker run --rm "$TRIVY" image --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress "ryft-$s:$GITHUB_SHA"'
 deploy_swap "the gate after another term" "must start with vars.GCP_DEPLOY" \
   "    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES != ''" "    if: vars.DEPLOY_HOLD_SERVICES != '' && vars.GCP_DEPLOY == 'on'"
 deploy_swap "a deploy that can be cancelled" "cancel-in-progress: false" "      cancel-in-progress: false" "      cancel-in-progress: true"
@@ -430,4 +468,4 @@ fresh; sed 's/version: v2\.15\.0/version: v9.9.9/' "$d/ci.yml" > "$d/ci.new" && 
 [ "$rc" = 1 ] || fail "a golangci-lint version that differs from the Makefile's must fail (rc=$rc): $(cat "$tmp/err")"
 grep -q 'GOLANGCI_LINT_VERSION' "$tmp/err" || fail "the message does not name the Makefile variable: $(cat "$tmp/err")"
 
-echo "✓ check_workflows_test: parsed, not grepped: triggers, the environment only in promote and deploy.yml's deploy, the App key only in promote, deploy.yml's gate, triggers, token and concurrency, ci-ok only in ci.yml, no external reusable workflows, no secrets: inherit or dynamic secrets, no test hooks"
+echo "✓ check_workflows_test: parsed, not grepped: triggers, the environment only in promote and deploy.yml's deploy, the App key only in promote, deploy.yml's gate, status functions, continue-on-error, triggers, tokens, concurrency, the superseded and tip gates, scan before sign-in, no third-party action or docker.sock, ci-ok only in ci.yml, no external reusable workflows, no secrets: inherit or dynamic secrets, no test hooks"

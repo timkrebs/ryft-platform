@@ -50,6 +50,18 @@ add() {
   awk -v id="$2" -v add="$3" '{ print } index($0, id) { ind = $0; sub(/[^ ].*$/, "", ind); print ind add }' "$d/$1" > "$d/$1.new"
   mv "$d/$1.new" "$d/$1"
 }
+# edit_next <file> <marker> <from> <to>: like edit, on the line right after the one with <marker> (both
+# probes read /health/live, so the probe's own key is the marker).
+edit_next() {
+  one_line "$1" "$2"
+  awk -v id="$2" -v from="$3" -v to="$4" '
+    after && (i = index($0, from)) { $0 = substr($0, 1, i - 1) to substr($0, i + length(from)); n++ }
+    { was = after; after = 0 }
+    !was && index($0, id) { after = 1 }
+    { print }
+    END { exit n == 1 ? 0 : 3 }' "$d/$1" > "$d/$1.new" || fail "fixture: '$3' is not on the line after '$2' in deploy/run/$1"
+  mv "$d/$1.new" "$d/$1"
+}
 # drop <file> <marker>: the one line with <marker> removed.
 drop() { one_line "$1" "$2"; grep -vF -- "$2" "$d/$1" > "$d/$1.new"; mv "$d/$1.new" "$d/$1"; }
 # pinkey <file> <secret> <text>: that secret's `key: "<n>"` becomes <text>.
@@ -125,12 +137,20 @@ edit notify.yaml 'containerPort' 'name: h2c' 'name: http1'
 bad "notify on HTTP/1" "ports must be exactly"
 add ingest.yaml 'containerPort' '- { name: metrics, containerPort: 9090 }'
 bad "ingest with two ports" "ports must be exactly"
-edit api.yaml '/health/ready' '/health/ready' '/health/live'
-bad "api's startup probe on /health/live" "api.yaml startupProbe: httpGet must be"
-edit notify.yaml '/health/live' '/health/live' '/health/ready'
+# The startup probe waits for the port (/health/live), not the database: an instance starts during a
+# database outage and its tick reports ryft_db_up 0. /health/ready is the synthetics' target.
+edit_next api.yaml 'startupProbe:' '/health/live' '/health/ready'
+bad "api's startup probe on /health/ready" "api.yaml startupProbe: httpGet must be {path: /health/live, port: 8080}"
+edit_next ingest.yaml 'startupProbe:' '/health/live' '/health/ready'
+bad "ingest's startup probe on /health/ready" "ingest.yaml startupProbe: httpGet must be {path: /health/live, port: 8080}"
+edit_next notify.yaml 'livenessProbe:' '/health/live' '/health/ready'
 bad "notify's liveness probe on /health/ready" "notify.yaml livenessProbe: httpGet must be"
-edit scoring.yaml 'failureThreshold: 120' '120' '241'
-bad "a startup probe past 240 s" "must stay <= 240"
+edit scoring.yaml 'failureThreshold: 20' '20' '120'
+bad "a startup budget of 120 s (each failed start billed that long)" "must stay <= 30"
+edit api.yaml 'failureThreshold: 20' '20' '241'
+bad "a startup probe past Cloud Run's 240 s" "must stay <= 30"
+edit notify.yaml 'failureThreshold: 20' '20' '30'
+ok "a startup budget of exactly 30 s"
 edit ingest.yaml 'timeoutSeconds: 2' '2' '60'
 bad "a liveness timeout over its period" "1 <= timeoutSeconds <= periodSeconds"
 edit api.yaml 'latestRevision' 'true' 'false'
@@ -194,6 +214,11 @@ edit migrate.yaml 'timeoutSeconds' '600' '3600'
 bad "migrate for an hour" "task timeout 3600, want 600"
 edit migrate.yaml 'limits: {' 'memory: 512Mi' 'memory: 2Gi'
 bad "migrate with 2 GiB" "migrate.yaml: resources"
+# design §4: no retry, a second failed owner login feeds the pooler's circuit breaker.
+edit migrate.yaml 'maxRetries:' '0' '1'
+bad "migrate retried once" "maxRetries 1, want 0"
+edit migrate.yaml 'maxRetries:' '0' 'false'
+bad "maxRetries as a boolean" "maxRetries False, want 0"
 
 # The files and the YAML itself.
 printf 'apiVersion: v1\n' > "$d/web.yaml"
@@ -219,4 +244,4 @@ bad "a placeholder outside the list" "placeholder(s) outside the fixed list: HOM
 add migrate.yaml 'name: LOG_LEVEL,' '- { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }'
 bad "migrate with an audience" "migrate is no push target"
 
-echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes, traffic, image, env, P5, secret pins and accessors, migrate's pins, files and YAML shape each fail"
+echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env, P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape each fail"

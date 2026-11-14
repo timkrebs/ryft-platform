@@ -220,6 +220,10 @@ KUBECONFORM_CRDS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main
 PROMTOOL_IMAGE := docker.io/prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
 MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool@sha256:f172fbe57ff63694a9b284f745e271deeb8eb782b97a3e3de9abaf07d45d276c
 ALERT_FILES := ryft eks-admission admission-intended
+# The groups alerts-apply loaded on EKS and no longer loads, as namespace/group: ryft-admission and
+# ryft-vault were in ryft.yaml (namespace ryft) and are not any more; ryft-admission-intended is
+# admission-intended.yaml's (namespace ryft-admission), which alerts-apply loaded next to ryft.yaml.
+# scripts/tests/alerts_retire_test.sh holds this list to the files.
 EKS_RULE_GROUPS := ryft/ryft-admission ryft/ryft-vault ryft-admission/ryft-admission-intended
 alerts-check:
 	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; chmod 755 "$$d"; \
@@ -289,18 +293,21 @@ alerts-apply: alerts-check
 	  -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY \
 	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml
 
-# Once EKS is gone (runbook step 14, or D3): delete the live rule groups no file loads any more,
-# the admission groups and the old Vault group. A load never deletes a group it does not name.
+# Once nothing serves from EKS (runbook step 11, after step 10; at the latest with D3): delete the
+# EKS_RULE_GROUPS above, which are live as last loaded and which no load replaces (a load never
+# deletes a group it does not name). Each group is tried: one that is already gone is reported and
+# the others are still deleted; the exit is 1 then, so look at Alerting → Alert rules.
 alerts-retire-eks:
 	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-<NN>-<region>.grafana.net}" \
 	   "$${GRAFANA_PROM_USER:?the Prometheus instance id of the Grafana stack, a number}" \
 	   "$${GRAFANA_RULES_TOKEN:?an access policy token with rules:read and rules:write}"
-	@set -e; for g in $(EKS_RULE_GROUPS); do \
+	@rc=0; for g in $(EKS_RULE_GROUPS); do \
 	  echo "deleting rule group $${g#*/} in namespace $${g%%/*}"; \
 	  MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" $(CONTAINER) run --rm \
 	    -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY \
-	    $(MIMIRTOOL_IMAGE) rules delete "$${g%%/*}" "$${g#*/}"; \
-	done
+	    $(MIMIRTOOL_IMAGE) rules delete "$${g%%/*}" "$${g#*/}" \
+	    || { echo "  $$g was not deleted (already gone, or the token): see Alerting → Alert rules" >&2; rc=1; }; \
+	done; exit $$rc
 
 # External checks of ryftlab.de in Grafana Cloud Synthetic Monitoring (deploy/grafana/synthetics).
 # synthetics-check validates the definitions offline; synthetics-apply upserts them by job name

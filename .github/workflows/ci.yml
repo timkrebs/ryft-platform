@@ -384,8 +384,10 @@ jobs:
       # What actionlint cannot know, read from the parsed YAML (the pinned yq is first on PATH; the
       # script fails without it): no pull_request_target/workflow_run, only `promote` and deploy.yml's
       # `deploy` name the environment `deploy`, only promote reads the deploy App's key, deploy.yml is
-      # gated by GCP_DEPLOY and never cancelled, only this file defines ci-ok, no external reusable
-      # workflow, no `secrets: inherit`, no test hooks of the scripts.
+      # gated by GCP_DEPLOY, never cancelled, has no status function or continue-on-error, scans before
+      # it signs in and changes Cloud Run only from main's tip, only this file defines ci-ok (deploy.yml
+      # reads that job of this workflow's own run), no external reusable workflow, no
+      # `secrets: inherit`, no test hooks of the scripts.
       - run: ./scripts/check_workflows.sh
       # deploy/run (Cloud Run, what deploy.yml applies): config.env lints, every template renders with
       # fake values, and the rendered YAML has design §3's limits, the ingress, account, h2c port and

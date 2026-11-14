@@ -54,11 +54,12 @@ validate_structure() {
           | . as $k | $c | err("unknown http setting " + $k) ),
         ( if ((.job // "") | test("^ryft-site-[a-z0-9-]+$|^ryft-(api|ingest)-ready$") | not)
             then err("job must match ^ryft-site-[a-z0-9-]+$ (the site; the Site* rules select job=~\"ryft-site-.*\") or ^ryft-(api|ingest)-ready$ (a service; ApiDown)") else empty end ),
-        # A service check reads the startup probe of that service on its own host and wants exactly 200
-        # (a 503 is: not ready); a site check stays on the apex or www.
+        # A service check reads the readiness endpoint of that service on its own host (/health/ready,
+        # the database included; the startup probe is /health/live) and wants exactly 200 (a 503 is:
+        # not ready); a site check stays on the apex or www.
         ( if ((.job // "") | test("^ryft-(api|ingest)-ready$")) then
             ( (.job | ltrimstr("ryft-") | rtrimstr("-ready")) as $svc
-              | ( if .target != ("https://" + $svc + ".ryftlab.de/health/ready") then err("target must be https://" + $svc + ".ryftlab.de/health/ready (the startup probe of the service)") else empty end ),
+              | ( if .target != ("https://" + $svc + ".ryftlab.de/health/ready") then err("target must be https://" + $svc + ".ryftlab.de/health/ready (the readiness endpoint of the service)") else empty end ),
                 ( if (http.validStatusCodes // []) != [200] then err("validStatusCodes must be [200] for a service check (503 is not ready)") else empty end ) )
           elif ((.target // "") | test("^https://(www\\.)?ryftlab\\.de/[A-Za-z0-9._~/-]*$") | not) then err("target must be https://ryftlab.de/... or https://www.ryftlab.de/...")
           else empty end ),

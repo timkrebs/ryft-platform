@@ -16,11 +16,21 @@
 #      environment variable and no assignment in a script: a workflow must not switch a check off;
 #   6. the golangci-lint version of ci.yml's lint job equals GOLANGCI_LINT_VERSION in the Makefile;
 #   7. deploy.yml (Cloud Run, ticket B2) runs only on a push to main or by hand; every job's `if`
-#      requires vars.GCP_DEPLOY == 'on' (off, it does nothing); its deploy job needs the ci-ok wait,
-#      has exactly contents: read and id-token: write, and runs in concurrency group `deploy` with
-#      cancel-in-progress false (a migrate or a rollout is never cut off);
-#   8. only ci.yml defines a job with the id or name `ci-ok`: deploy.yml waits for the check run
-#      of that name, and another job of that name could stand in for it.
+#      requires vars.GCP_DEPLOY == 'on' (off, it does nothing) and uses no ||; no `if` (job or step)
+#      calls a status function (always(), cancelled(), failure(), success(): without one GitHub
+#      wraps the condition in success(), so a failed job or step stops everything after it) and
+#      nothing sets continue-on-error; the tokens are exactly: ci (the ci-ok wait) actions: read,
+#      deploy contents: read and id-token: write, every other job none. The deploy job needs `ci`
+#      and runs only when it found main still at this commit (needs.ci.outputs.current), in
+#      concurrency group `deploy` with cancel-in-progress false (a migrate or a rollout is never cut
+#      off); its only action is actions/checkout by SHA, nothing in the file mounts docker.sock,
+#      it has a scan step (the pinned Trivy, `"$TRIVY" image ... --input`), and no step up to and
+#      including it names gcloud, the OIDC request variables, docker login or docker push (sign-in
+#      and push come after the scan); every step that runs `gcloud run` or the smoke comes after the
+#      step `tip` and its `if` starts with steps.tip.outputs.current == 'true' (no || outside
+#      parentheses: && binds tighter and would undo the gate);
+#   8. only ci.yml defines a job with the id or name `ci-ok`: deploy.yml reads the ci-ok job of
+#      ci.yml's own run, and another job of that name would read as that check.
 # Comments are gone after parsing. Without yq it fails (exit 2): a check that cannot read the
 # files must not pass them. Usage: scripts/check_workflows.sh [workflow-dir]  (default .github/workflows)
 set -euo pipefail
@@ -149,9 +159,9 @@ for jid, job in jobs.items():
             fail(f"job '{jid}' names an environment ({name!r}): only ci.yml's promote and deploy.yml's deploy may (the deploy App's key and the smoke user are scoped to it)")
         elif name != "deploy":
             fail(f"{jid} must run in the environment 'deploy', not {name!r}")
-    # 8. the check run deploy.yml waits for
+    # 8. the job deploy.yml waits for
     if (jid == "ci-ok" or job.get("name") == "ci-ok") and not (is_ci and jid == "ci-ok"):
-        fail(f"job '{jid}' is (or is named) ci-ok: only ci.yml's required check may be, deploy.yml waits for that check run")
+        fail(f"job '{jid}' is (or is named) ci-ok: only ci.yml's required check may be, deploy.yml waits for that job of ci.yml's run")
 
 def env_name(job):
     e = job.get("environment") if isinstance(job, dict) else None
@@ -163,6 +173,41 @@ for b, jid in sorted(ENV_JOBS):
 
 # 7. deploy.yml
 GATE = re.compile(r"(?<![A-Za-z0-9_.])vars\.GCP_DEPLOY\s*==\s*'on'")
+# Function names in expressions are case-insensitive.
+STATUS_FN = re.compile(r"(?<![A-Za-z0-9_.\-])(always|cancelled|failure|success)\s*\(", re.I)
+CURRENT = re.compile(r"(?<![!A-Za-z0-9_.])needs\.ci\.outputs\.current\s*==\s*'true'")
+TIP_GATE = re.compile(r"steps\.tip\.outputs\.current\s*==\s*'true'")
+SCAN = re.compile(r"\$\{?TRIVY\}?\"?\s+image\b[^\n]*\s--input\b")
+SIGNS_IN = re.compile(r"ACTIONS_ID_TOKEN_REQUEST|(?<![A-Za-z0-9_\-])gcloud(?![A-Za-z0-9_\-])|(?<![A-Za-z0-9_\-])docker\b[^\n;&|]*?\b(?:login|push)\b")
+CHANGES_RUN = re.compile(r"(?<![A-Za-z0-9_\-])gcloud\s+run\s|(?<![A-Za-z0-9_\-])make\s+smoke-prod\b")
+CHECKOUT = re.compile(r"actions/checkout@[0-9a-f]{40}")
+DEPLOY_PERMS = {"ci": {"actions": "read"}, "deploy": {"contents": "read", "id-token": "write"}}
+
+def top_level_or(expr):
+    """A || outside parentheses and quoted strings ('' is a quote inside one)."""
+    depth, i, quoted = 0, 0, False
+    while i < len(expr):
+        c = expr[i]
+        if quoted:
+            if c == "'":
+                if expr[i + 1:i + 2] == "'":
+                    i += 1
+                else:
+                    quoted = False
+        elif c == "'":
+            quoted = True
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif depth <= 0 and expr.startswith("||", i):
+            return True
+        i += 1
+    return False
+
+def step_label(n, s):
+    return f"step {n}" + (f" ({s['name']})" if isinstance(s, dict) and isinstance(s.get("name"), str) else "")
+
 if is_deploy:
     on = wf.get("on")
     if not isinstance(on, dict) or set(on) != {"push", "workflow_dispatch"} or on.get("push") != {"branches": ["main"]}:
@@ -172,6 +217,29 @@ if is_deploy:
         # The gate is a top-level conjunct: `vars.GCP_DEPLOY == 'on'` first, then only `&&` terms.
         if not (isinstance(cond, str) and GATE.match(cond.strip()) and "||" not in cond):
             fail(f"deploy.yml job '{jid}': its `if` must start with vars.GCP_DEPLOY == 'on' (and use no ||), is {cond!r}")
+        if not isinstance(job, dict):
+            continue
+        # Every `if` and continue-on-error GitHub reads: the job's and its steps'.
+        steps = job.get("steps") if isinstance(job.get("steps"), list) else []
+        places = [(f"job '{jid}'", job)] + [(f"job '{jid}' {step_label(n, s)}", s) for n, s in enumerate(steps) if isinstance(s, dict)]
+        for where, node in places:
+            m = STATUS_FN.search(str(node.get("if", "")))
+            if m:
+                fail(f"deploy.yml {where}: its `if` calls the status function {m.group(1)}(): it would run after a failure or past "
+                     f"the gate (without one GitHub adds success()); deploy.yml has none")
+            if "continue-on-error" in node:
+                fail(f"deploy.yml {where}: continue-on-error lets what comes after a failure run; deploy.yml has none")
+        want = DEPLOY_PERMS.get(jid, {})
+        have = job.get("permissions", None if jid in DEPLOY_PERMS else {})
+        if have != want:
+            if jid == "deploy":
+                fail(f"deploy.yml's deploy job has exactly contents: read and id-token: write, has {have!r}")
+            elif jid == "ci":
+                fail(f"deploy.yml's ci job (the ci-ok wait) has exactly actions: read (ci.yml's run and its jobs), has {have!r}")
+            else:
+                fail(f"deploy.yml's job '{jid}' has no token (permissions: {{}} or none), has {have!r}")
+    if "docker.sock" in json.dumps(wf):
+        fail("deploy.yml names docker.sock: nothing in it talks to the Docker daemon from a container (Trivy reads saved images)")
     d = jobs.get("deploy")
     if not isinstance(d, dict):
         fail("deploy.yml has no job `deploy`")
@@ -180,11 +248,43 @@ if is_deploy:
         needs = [needs] if isinstance(needs, str) else needs
         if not isinstance(needs, list) or "ci" not in needs:
             fail("deploy.yml's deploy job must need `ci` (the wait for ci-ok)")
-        if d.get("permissions") != {"contents": "read", "id-token": "write"}:
-            fail(f"deploy.yml's deploy job has exactly contents: read and id-token: write, has {d.get('permissions')!r}")
+        if not (isinstance(d.get("if"), str) and CURRENT.search(d["if"])):
+            fail(f"deploy.yml's deploy job: its `if` must have the conjunct needs.ci.outputs.current == 'true' (a superseded run deploys nothing), is {d.get('if')!r}")
+        ci_job = jobs.get("ci")
+        if not (isinstance(ci_job, dict) and isinstance(ci_job.get("outputs"), dict) and "current" in ci_job["outputs"]):
+            fail("deploy.yml's ci job must set outputs.current (main is still at this commit)")
         c = d.get("concurrency")
         if not (isinstance(c, dict) and c.get("group") == "deploy" and c.get("cancel-in-progress") is False):
             fail(f"deploy.yml's deploy job runs in concurrency group `deploy` with cancel-in-progress: false, has {c!r}")
+        steps = d.get("steps")
+        if not isinstance(steps, list):
+            fail("deploy.yml's deploy job has no list of steps")
+            steps = []
+        steps = [s if isinstance(s, dict) else {} for s in steps]
+        runs = [s["run"] if isinstance(s.get("run"), str) else "" for s in steps]
+        for n, s in enumerate(steps):
+            if "uses" in s and not (isinstance(s["uses"], str) and CHECKOUT.fullmatch(s["uses"])):
+                fail(f"deploy.yml's deploy job, {step_label(n, s)}: `uses: {s['uses']}`: actions/checkout by SHA is its only action "
+                     "(no third-party code, or container, in the job that can mint a token)")
+        scan = next((n for n, r in enumerate(runs) if SCAN.search(r)), None)
+        if scan is None:
+            fail("deploy.yml's deploy job has no scan step (the pinned Trivy reading the saved images: \"$TRIVY\" image ... --input)")
+        else:
+            for n in range(scan + 1):
+                rest = json.dumps({k: v for k, v in steps[n].items() if k != "run"})
+                m = SIGNS_IN.search(runs[n]) or SIGNS_IN.search(rest)
+                if m:
+                    fail(f"deploy.yml's deploy job, {step_label(n, steps[n])}: `{m.group(0)[:60]}` at or before the scan step: "
+                         "nothing signs in, mints a token or pushes before all five images passed")
+        tip = next((n for n, s in enumerate(steps) if s.get("id") == "tip"), None)
+        if tip is None:
+            fail("deploy.yml's deploy job has no step with id `tip` (main is still at this commit, right before migrate)")
+        for n, r in enumerate(runs):
+            if CHANGES_RUN.search(r):
+                cond = steps[n].get("if")
+                if not (tip is not None and n > tip and isinstance(cond, str) and TIP_GATE.match(cond.strip()) and not top_level_or(cond)):
+                    fail(f"deploy.yml's deploy job, {step_label(n, steps[n])}: it changes Cloud Run or smokes, so it comes after the "
+                         f"step `tip` and its `if` starts with steps.tip.outputs.current == 'true' (no || outside parentheses), is {cond!r}")
     if wf.get("permissions") != {}:
         fail("deploy.yml sets `permissions: {}` at the top; each job asks for its own")
 
@@ -224,5 +324,5 @@ if [ -f "$dir/ci.yml" ] && [ -f Makefile ]; then
     fail "the golangci-lint version of ci.yml's lint job (${ci_v:-not found}) must equal GOLANGCI_LINT_VERSION in the Makefile (${mk_v:-not found})"
   fi
 fi
-[ "$rc" = 0 ] && echo "workflows: no pull_request_target/workflow_run, no external reusable workflow, no secrets: inherit or dynamic secrets, no test hooks; only promote and deploy.yml's deploy name the environment deploy, only promote reads the App key; deploy.yml is gated by GCP_DEPLOY, serialized, and waits for ci.yml's ci-ok"
+[ "$rc" = 0 ] && echo "workflows: no pull_request_target/workflow_run, no external reusable workflow, no secrets: inherit or dynamic secrets, no test hooks; only promote and deploy.yml's deploy name the environment deploy, only promote reads the App key; deploy.yml is gated by GCP_DEPLOY, serialized, waits for ci.yml's ci-ok, has no status function or continue-on-error, scans before it signs in, and changes Cloud Run only from main's tip"
 exit "$rc"

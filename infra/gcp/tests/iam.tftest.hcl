@@ -119,31 +119,88 @@ run "secret_accessors_exactly" {
   }
 
   assert {
-    condition = alltrue([
-      google_project_iam_member.deployer_run_developer.role != "roles/secretmanager.secretAccessor",
-      google_project_iam_member.grafana_reader.role != "roles/secretmanager.secretAccessor",
-    ])
+    condition = alltrue(concat(
+      [for b in google_project_iam_member.deployer_run_developer : b.role != "roles/secretmanager.secretAccessor"],
+      [google_project_iam_member.grafana_reader.role != "roles/secretmanager.secretAccessor"],
+    ))
     error_message = "no project-level secretAccessor"
-  }
-
-  assert {
-    condition = (
-      google_project_iam_audit_config.secretmanager.service == "secretmanager.googleapis.com" &&
-      [for c in google_project_iam_audit_config.secretmanager.audit_log_config : c.log_type] == ["DATA_READ"]
-    )
-    error_message = "Data Access audit logs (DATA_READ) for Secret Manager"
   }
 }
 
-run "deployer_holds_no_iam_admin_role" {
+# Every secret read and every token mint is logged: Secret Manager, the token exchange (STS) and the
+# IAM credentials API (the deployer's access token after the exchange).
+run "data_access_audit_logs" {
   command = plan
 
   assert {
     condition = (
-      google_project_iam_member.deployer_run_developer.role == "roles/run.developer" &&
-      google_project_iam_member.deployer_run_developer.member == "serviceAccount:ryft-deployer@ryftlab-prod.iam.gserviceaccount.com"
+      toset(keys(google_project_iam_audit_config.data_read)) == toset([
+        "secretmanager.googleapis.com", "sts.googleapis.com", "iamcredentials.googleapis.com",
+      ]) &&
+      alltrue([
+        for k, a in google_project_iam_audit_config.data_read :
+        a.project == "ryftlab-prod" && a.service == k && [for c in a.audit_log_config : c.log_type] == ["DATA_READ"]
+      ])
     )
-    error_message = "the deployer's one project role is run.developer"
+    error_message = "Data Access audit logs (DATA_READ) for Secret Manager, STS and IAM credentials, nothing else"
+  }
+
+  assert {
+    condition     = length(regexall("resource \"google_project_iam_audit_config\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
+    error_message = "one audit config resource (data_read)"
+  }
+}
+
+# The deployer before apply 2: run.developer project-wide, because CI creates the services at step 8.
+run "deployer_before_apply_2" {
+  command = plan
+
+  variables {
+    serve = false
+  }
+
+  assert {
+    condition = (
+      length(google_project_iam_member.deployer_run_developer) == 1 &&
+      google_project_iam_member.deployer_run_developer[0].role == "roles/run.developer" &&
+      google_project_iam_member.deployer_run_developer[0].member == "serviceAccount:ryft-deployer@ryftlab-prod.iam.gserviceaccount.com" &&
+      length(google_cloud_run_v2_service_iam_member.deployer_run_developer) == 0 &&
+      length(google_cloud_run_v2_job_iam_member.deployer_run_developer) == 0
+    )
+    error_message = "before apply 2 the deployer's one project role is run.developer"
+  }
+
+  assert {
+    condition = toset(concat(
+      [for b in google_project_iam_member.deployer_run_developer : b.role],
+      [for b in google_cloud_run_v2_service_iam_member.deployer_run_developer : b.role],
+      [for b in google_cloud_run_v2_job_iam_member.deployer_run_developer : b.role],
+      [for b in google_service_account_iam_member.deployer_act_as : b.role],
+      [google_artifact_registry_repository_iam_member.deployer_writer.role],
+    )) == toset(["roles/run.developer", "roles/iam.serviceAccountUser", "roles/artifactregistry.writer"])
+    error_message = "the deployer holds exactly run.developer, serviceAccountUser (runtime accounts) and artifactregistry.writer"
+  }
+}
+
+# From apply 2 on, run.developer only on the four services and the job (tests/gates.tftest.hcl pins
+# the project-wide binding gone). The roles below hold either way, the fallback PR included.
+run "deployer_holds_no_iam_admin_role" {
+  command = plan
+
+  variables {
+    serve = true
+  }
+
+  assert {
+    condition = (
+      length(google_cloud_run_v2_service_iam_member.deployer_run_developer) == 4 &&
+      length(google_cloud_run_v2_job_iam_member.deployer_run_developer) == 1 &&
+      alltrue(concat(
+        [for b in google_cloud_run_v2_service_iam_member.deployer_run_developer : b.role == "roles/run.developer"],
+        [for b in google_cloud_run_v2_job_iam_member.deployer_run_developer : b.role == "roles/run.developer"],
+      ))
+    )
+    error_message = "after apply 2 the deployer's run.developer is on the four services and the job"
   }
 
   assert {
@@ -171,28 +228,32 @@ run "deployer_holds_no_iam_admin_role" {
   # Every role the deployer holds, collected from every binding that names it.
   assert {
     condition = toset(concat(
-      [google_project_iam_member.deployer_run_developer.role],
+      [for b in google_project_iam_member.deployer_run_developer : b.role],
+      [for b in google_cloud_run_v2_service_iam_member.deployer_run_developer : b.role],
+      [for b in google_cloud_run_v2_job_iam_member.deployer_run_developer : b.role],
       [for b in google_service_account_iam_member.deployer_act_as : b.role],
       [google_artifact_registry_repository_iam_member.deployer_writer.role],
     )) == toset(["roles/run.developer", "roles/iam.serviceAccountUser", "roles/artifactregistry.writer"])
     error_message = "the deployer holds exactly run.developer, serviceAccountUser (runtime accounts) and artifactregistry.writer"
   }
 
-  # No binding elsewhere names the deployer: exactly the three above reference its member.
+  # No binding elsewhere names the deployer: exactly the five above reference its member.
   assert {
-    condition     = length(regexall("member\\[\"ryft-deployer\"\\]", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 3
-    error_message = "the deployer's member appears in exactly three bindings (run.developer, actAs, the repository)"
+    condition     = length(regexall("member\\[\"ryft-deployer\"\\]", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 5
+    error_message = "the deployer's member appears in exactly five bindings (run.developer project-wide, on the services, on the job; actAs; the repository)"
   }
 
   assert {
     condition = !anytrue([
       for r in concat(
-        [google_project_iam_member.deployer_run_developer.role],
+        [for b in google_project_iam_member.deployer_run_developer : b.role],
+        [for b in google_cloud_run_v2_service_iam_member.deployer_run_developer : b.role],
+        [for b in google_cloud_run_v2_job_iam_member.deployer_run_developer : b.role],
         [for b in google_service_account_iam_member.deployer_act_as : b.role],
         [google_artifact_registry_repository_iam_member.deployer_writer.role],
       ) : can(regex("(?i)admin|owner|editor|iam\\.securityReviewer|tokenCreator|workloadIdentityUser|run\\.invoker", r))
     ])
-    error_message = "no admin, owner, editor or token role for the deployer"
+    error_message = "no admin, owner, editor, token or invoker role for the deployer"
   }
 
   assert {
@@ -216,8 +277,9 @@ run "wif_condition_by_ids" {
       "assertion.event_name in ['push', 'workflow_dispatch']",
       "assertion.environment == 'deploy'",
       "assertion.job_workflow_ref == 'timkrebs/ryft-platform/.github/workflows/deploy.yml@refs/heads/main'",
+      "assertion.runner_environment == 'github-hosted'",
     ])
-    error_message = "the condition names repository_id, repository_owner_id, ref, event_name, environment and job_workflow_ref, by ID"
+    error_message = "the condition names repository_id, repository_owner_id, ref, event_name, environment, job_workflow_ref (by ID) and a GitHub-hosted runner"
   }
 
   assert {

@@ -30,6 +30,10 @@ resource "google_pubsub_topic" "this" {
   project = var.project_id
   name    = each.key
 
+  # Messages are stored in the region only. enforce_in_transit stays off (ticket B): it refuses any
+  # publish or pull the global endpoint routes to another region, which would also catch the Scheduler's
+  # publish and an operator's `gcloud pubsub` from a laptop, and the storage policy already keeps the
+  # messages in europe-west1 at rest. The services publish to the regional endpoint (PUBSUB_ENDPOINT).
   message_storage_policy {
     allowed_persistence_regions = [var.region]
   }

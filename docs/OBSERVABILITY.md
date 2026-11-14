@@ -173,8 +173,8 @@ before going on.
 
 Nothing inside the cluster sees what a visitor, the App Review team or Apple's AASA
 fetch sees, so Grafana Cloud's Synthetic Monitoring (free tier) checks `ryftlab.de` from
-two public EU probes every 5 minutes, and the startup probe of the two public services on Cloud
-Run (`api.ryftlab.de`, `ingest.ryftlab.de`) every 10 minutes. The definitions are code,
+two public EU probes every 5 minutes, and the readiness endpoint (`/health/ready`) of the two
+public services on Cloud Run (`api.ryftlab.de`, `ingest.ryftlab.de`) every 10 minutes. The definitions are code,
 `deploy/grafana/synthetics/ryftlab.json`; `make synthetics-check` validates them
 offline, `make synthetics-apply` upserts them by `job` through the SM API
 (`SM_API_URL`, `SM_ACCESS_TOKEN`; OPERATIONS → Monitoring). The results are ordinary
@@ -194,13 +194,16 @@ Every check also fails when TLS fails. Metrics (labels `job`, `instance`, `probe
 served certificate, so `www` is covered as well), `probe_duration_seconds`,
 `probe_http_status_code`. The alerts are `SiteDown`, `SiteProbeFlapping`,
 `SiteWwwRedirectBroken`, `SiteCertificateExpiring`, `ApiDown` (the two service checks) and
-`SyntheticsMissing` (Alerts below). A service check is the same `/health/ready` the startup
-probe of `deploy/run/<svc>.yaml` uses, so it fails when the service cannot start, its domain
-mapping or certificate is wrong, or the database behind the readiness check is gone. ApiDown
-has SiteDown's shape (every result of 10 minutes from every probe failed), and with checks every
-10 minutes that window holds about one run: one run that fails from both probes pages, a cold
-start slower than the 10-second timeout (min instances 0) included. If that turns out noisy, a
-`for: 10m` makes it two runs. `scripts/synthetics.sh` pins those two targets and their status code.
+`SyntheticsMissing` (Alerts below). A service check reads `/health/ready`, the readiness
+endpoint with the database behind it, so it fails when the service cannot start or answer, its
+domain mapping or certificate is wrong, or the database is gone. It is not the startup probe:
+`deploy/run/<svc>.yaml` starts an instance on `/health/live` (20 s at most), so an instance
+starts during a database outage and its tick reports `ryft_db_up` 0 (`DatabaseDown`) instead of
+no instance and no signal. ApiDown has SiteDown's shape, every result of two runs from every
+probe failed: SiteDown's 10 minutes are two of its 5-minute runs, and with checks every 10
+minutes ApiDown's window is 20 minutes, so one failed run (a cold start slower than the
+10-second timeout, min instances 0) does not page. `scripts/synthetics.sh` pins those two
+targets and their status code.
 The SM agent republishes a run's last result about every 2 minutes, so a 5-minute check
 yields roughly three samples per run and a 10-minute check five; the windows (10 minutes for
 "every probe", 30 minutes and 0.8 for "flapping") count whole runs either way.
@@ -471,19 +474,28 @@ pushes once (when it stops), and every instance is a new series. The rules are w
   caught by the **new-series term**, `last_over_time(x[30m]) unless last_over_time(x[1h] offset
   30m)`: a series with a sample in the last 30 minutes and none in the hour before. Most counter
   alerts are `increase(...) > 0 or <new series> > 0`; `RateLimited` and `AdminUnauthorized`
-  add the two before the threshold.
+  add the two before the threshold. The rules that compare counts over a window `w`
+  (`SyncToScoreSlow` per `le`, `APNsFailing`, `InviteEmailPurgeFailing`) take, per series, the
+  new-series term over that window, `last_over_time(x[w]) unless last_over_time(x[1h] offset w)`
+  (an instance first seen inside the window counts with all it counted), or else
+  `increase(x[w])`, and sum those: with min instances 0 most instances live minutes, push once or
+  twice and never show an increase of their own.
 - **Absence is a signal.** Without ticks there is no outbox relay, no rescoring pass, no push and
   no `ryft_db_up`, and the other rules go quiet. `TickMissing` starts from one series per service
   (`label_replace(vector(1), "job", "ryft/<svc>", "", "")`) and drops a service only while its
-  tick counter rose, so a service that pushes nothing at all fires too. `NoSync` reads the newest
+  tick counter rose, so a service that pushes nothing at all fires too: no tick arrives
+  (Scheduler, the `tick-<svc>` subscription), no instance starts (the revision, or a process that
+  does not listen while the database refuses it), or the ticks run and the OTLP push fails (all
+  four at once, and `ryft_db_up` gone with them). `NoSync` reads the newest
   `ryft_last_sync_timestamp_seconds` any ingest instance pushed in six hours, and
   `absent_over_time` covers six hours without one. Per-tester staleness is a dashboard panel,
   not a page: one tester on holiday is no incident.
 - **Known holes.** A goroutine panic ends the process (exit 2) before any push, so `Panics` sees
   handler and event-handler panics but not that one: Cloud Logging's `msg="panic"` line and the
-  instance's exit show it. `SyncToScoreSlow` takes a histogram's `rate()` over an hour, so an
-  instance that pushed once is not in it. Two properties of the metrics the rules rely on (the
-  services', ticket A): an instance that never ran a tick does not push `ryft_db_up` 0
+  instance's exit show it. Three properties of the services the rules rely on (ticket A): the
+  process listens (`/health/live`, the startup probe) before it reaches the database, so an
+  instance starts during an outage and its tick pushes `ryft_db_up` 0; an instance that never ran
+  a tick does not push `ryft_db_up` 0
   (`DatabaseDown` takes the `max` per service, so one such instance does not page), and
   `ryft_outbox_oldest_seconds` counts due rows only (a deferred notification is no backlog).
 - **The tests** (`ryft.test.yaml`) feed one sample every 15 minutes, for long-lived,
@@ -497,23 +509,23 @@ pushes once (when it stops), and every instance is a new series. The rules are w
 | RateLimited | warning | more than 1,800 requests (one a second) refused by the app's limits in 30 min, held 15 min | which class (`ryft_rate_limited_total{class}`), the logs; a 429 of Cloud Run itself is `Saturated` |
 | AuthUnavailable | critical | `jwks_unavailable` (no signing keys, or an unknown key id while the last fetch failed: no answer, another status than 200, a body that is not a key set, or no key set within the fetch's time; a client that hangs up mid-fetch does not count, D184) or `internal` (the user lookup, or the admin allow-list check, failed) in 30 min, held 15 min. `jwks_refresh_limited` is left out: a token with an unknown key id inside the refresh limit, which anyone can send | Supabase status, `ryft_db_up` |
 | DatabaseDown | critical | the last `ryft_db_up` of every instance of a service that pushed in 30 min is 0 (its ticks cannot ping Supabase), held 20 min | Supabase status and pooler, `ECIRCUITBREAKER` after failed logins, a password pin that differs from the role's (`scripts/rotate_db_password.sh`; OPERATIONS → GCP) |
-| TickMissing | critical | a service counted no tick (`ryft_ticks_total`) for 45 min, three runs of `ryft-tick`; a service with no series at all included | Cloud Scheduler → `ryft-tick` (its last runs), the subscription `tick-<svc>`, the service's request log for `/internal/tick` (OPERATIONS → GCP) |
+| TickMissing | critical | a service counted no tick (`ryft_ticks_total`) for 45 min, three runs of `ryft-tick`; a service with no series at all included | Three causes (OPERATIONS → GCP). The ticks: Cloud Scheduler → `ryft-tick` (its last runs), the subscription `tick-<svc>`, the service's request log for `/internal/tick`. No instance starts: the latest revision's conditions and startup log (a process that does not listen while the database refuses it, `DatabaseDown`'s causes; a bad revision). The OTLP push: the ticks are in the request log but nothing arrives (all four fire, `count by (job) (ryft_db_up)` is empty in Explore): `OTLP_ENDPOINT` and `OTLP_USER` in `deploy/run/config.env`, the `otlp-token` pin, the services' logs around the push, Grafana Cloud's ingestion |
 | DeadLetterPublishFailing | critical | not even the dead-letter publish worked (an hour, or a new series) | Cloud Logging has the event; the DLQ topic's publisher binding |
 | OutboxBacklog | warning | a due outbox event has waited over 30 min for Pub/Sub (`ryft_outbox_oldest_seconds`, per `publisher`), held 15 min: the publish after the request and two tick passes failed (D101); nothing is lost, scores wait | the publisher's `outbox relay` log lines, Pub/Sub's status, `TickMissing` (the relay runs on the tick) |
 | OutboxStuck | warning | an outbox row failed 50 sends and was set aside | its `last_error` (OPERATIONS → The outbox) |
 | PublishFailing | warning | sends to Pub/Sub failed in 30 min, held 15 min | the topic and the publisher's role; the outbox keeps the events (OutboxBacklog follows) |
-| SyncToScoreSlow | warning | p95 from sync to score over 2 min, over an hour, held 30 min | scoring's latency and instance count, `PushBacklog`, a large backfill |
+| SyncToScoreSlow | warning | p95 from sync to score over 2 min, over an hour (per `le`: a scoring instance first seen in the hour with all it counted, any other with its increase), held 30 min | scoring's latency and instance count, `PushBacklog`, a large backfill |
 | ScoringErrors | warning | days failed to score in 30 min, held 15 min | scoring's logs |
 | NoSync | warning | no sync from anyone for 6 h (the newest any ingest instance pushed), or no push of it at all in 6 h, held 15 min | the app's background refresh, ingest; per tester: the panel below |
-| APNsFailing | warning | > 10 % of APNs requests fail over an hour (≥ 5; 410 does not count) | `status`: 400 = a token sent to the wrong environment, 403 = the key |
+| APNsFailing | warning | > 10 % of APNs requests fail over an hour (≥ 5; 410 does not count; a notify instance first seen in the hour with all it counted) | `status`: 400 = a token sent to the wrong environment, 403 = the key |
 | PushFailing | warning | a notification reached no device (an hour, or a new series) | the same |
 | APNsRejectsOurKey | critical | APNs answered 403 | `APNS_KEY_ID` (`deploy/run/config.env`), `APNS_TEAM_ID`, the `apns-key-p8` pin in `deploy/run/notify.yaml` |
 | AccountDeletionIncomplete | warning | a deleted account kept its Supabase sign-in or Apple grant | the reconciler's log, the keys |
 | NewFeedback | info | a tester sent feedback | `scripts/beta_report.sh feedback` |
 | AdminUnauthorized | warning | more than 20 `/v1/admin` requests with a bad bearer (`result="unauthorized"`) in 30 min. The api never sees a guessed password (that is Supabase Auth: Supabase → Logs → Auth). `mfa_required` is deliberately in neither admin alert | the api's `admin auth rejected` lines (`reason`: `missing`, `not_a_token`, `expired`, `signature`, `not_admin`, `not_allowed`, …) and the access lines' `code`; `ryft_rate_limited_total{class="admin_ip"}`; OPERATIONS → Beta → Admin sign-in |
 | AdminWebUsed | info | an operator's token (the admin page) passed the bearer check in the last hour (`ryft_admin_authorized_total{actor="user"}`) | `GET /v1/admin/audit` (`actor.kind` `user`) shows who and what; not you: delete the `admin_accounts` row at once (OPERATIONS → Beta → Admin sign-in → Lost phone) |
-| InviteEmailPurgeFailing | warning | the job that clears bound invite emails failed 3 times in 3 hours (`ryft_invite_email_purge_total{result="error"}`) | the api's `invite email purge failed` line (the cause); the database; until it runs, addresses of people who only asked for an invite stay longer than the privacy text says |
-| ApiDown | critical | `https://api.ryftlab.de/health/ready` or `https://ingest.ryftlab.de/health/ready` fails (not exactly 200, or TLS) from every probe for 10 min (Synthetic Monitoring above) | OPERATIONS → GCP: the service's latest revision and its logs, the domain mapping and its certificate, `DatabaseDown` |
+| InviteEmailPurgeFailing | warning | the job that clears bound invite emails failed 3 times in 3 hours (`ryft_invite_email_purge_total{result="error"}`; an api instance first seen in the 3 hours with all it counted, since each pass may run on a fresh one) | the api's `invite email purge failed` line (the cause); the database; until it runs, addresses of people who only asked for an invite stay longer than the privacy text says |
+| ApiDown | critical | `https://api.ryftlab.de/health/ready` or `https://ingest.ryftlab.de/health/ready` fails (not exactly 200, or TLS) from every probe for 20 min, two runs in a row (SiteDown's shape; one failed run does not page; Synthetic Monitoring above) | OPERATIONS → GCP: the service's latest revision and its logs, the domain mapping and its certificate, `DatabaseDown` |
 | SiteDown | critical | the home page, `/privacy` or the AASA fails from every probe for 10 min (status, content type or body marker, not only "down") | OPERATIONS → Apex site → When a synthetic alert fires |
 | SiteProbeFlapping | warning | one probe fails twice or more in 30 min while another gets through (left out for 30 min after SiteDown's condition held; failures that only overlap between probes do not suppress it) | the same: which probe, which URL, the edge's rate limit |
 | SiteWwwRedirectBroken | warning | `www.ryftlab.de` does not answer a redirect to the apex from any probe, 10 min | the `www-to-apex` Middleware, the Ingress hosts |
@@ -554,15 +566,21 @@ The move to Cloud Run (ticket B2) took every rule that reads the cluster out of 
   RabbitMQNodeDown, AMQPDisconnected, EventsUnroutable and the four `Argo*` alerts (no pods,
   broker or Argo CD on Cloud Run), and the app-metric HTTP5xxRatio, SyncSlow and DeadLetters
   (Cloud Monitoring's, above). Their expressions are in git before B2.
-- **Live copies.** A load never deletes a group, so after `make alerts-apply` of this file the
-  ruler still holds `ryft/ryft-admission`, `ryft/ryft-vault` and
-  `ryft-admission/ryft-admission-intended` as last loaded from EKS days, firing on the cluster as
-  long as it runs. Once nothing serves from EKS (after runbook step 10, at the latest with D3),
-  `make alerts-retire-eks` deletes those three groups (`mimirtool rules delete`, with the
-  variables of `alerts-apply`). It stops at a group that is already gone, so a second run fails:
-  check Alerting → Alert rules then. Loading `ryft.yaml` itself replaces `ryft`, `ryft-pipeline`
-  and `ryft-ops` at once, so the EKS rules that were in them (PodRestarting, RabbitMQ\*, Argo\*)
-  end with that load; runbook step 11 comes after the site has moved (step 10).
+- **Live copies.** On EKS, `make alerts-apply` loaded two files: `ryft.yaml` (namespace `ryft`,
+  groups `ryft`, `ryft-pipeline`, `ryft-ops`, `ryft-admission` and `ryft-vault`; `git show
+  origin/main:deploy/grafana/alerts/ryft.yaml` before B2) and `admission-intended.yaml`
+  (namespace `ryft-admission`, group `ryft-admission-intended`). Now it loads `ryft.yaml` only, with
+  `ryft`, `ryft-pipeline` and `ryft-ops`; that load replaces those three whole, so the EKS rules
+  that were in them (PodRestarting, RabbitMQ\*, Argo\*) end with it. A load never deletes a group
+  it does not name, so exactly three groups stay live as last loaded, firing on the cluster as
+  long as it runs: `ryft/ryft-admission` and `ryft/ryft-vault` (in `ryft.yaml` then, not now) and
+  `ryft-admission/ryft-admission-intended` (the file `alerts-apply` no longer loads). Once nothing
+  serves from EKS (runbook step 11, after the site moved at step 10; at the latest with D3),
+  `make alerts-retire-eks` deletes exactly those three (`EKS_RULE_GROUPS` in the Makefile,
+  `mimirtool rules delete` with the variables of `alerts-apply`;
+  `scripts/tests/alerts_retire_test.sh` holds the list to the files). It tries every group: one
+  that is already gone is reported, the others are still deleted, and the exit is 1, so check
+  Alerting → Alert rules then.
 
 ### Admission
 

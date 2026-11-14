@@ -14,7 +14,11 @@
 #   - a counter only one push ever saw (a short-lived instance, its count since start) is caught by
 #     the "new series" term: last_over_time(x[30m]) unless last_over_time(x[1h] offset 30m), a series
 #     with a sample in the last 30 minutes and none in the hour before. Its value is what the instance
-#     counted since it started; a sum of such values > 0 means events nobody saw as an increase.
+#     counted since it started; a sum of such values > 0 means events nobody saw as an increase;
+#   - a rule that compares counts over a window w (SyncToScoreSlow, APNsFailing,
+#     InviteEmailPurgeFailing) takes per series the new-series term over that window,
+#     last_over_time(x[w]) unless last_over_time(x[1h] offset w) (an instance first seen inside the
+#     window counts with all it counted), or else increase(x[w]); per `le` for a histogram.
 # Cloud Run's own signals (5xx ratio, latency, 429s, Pub/Sub backlog and dead letters) are
 # Grafana-managed rules in infra/gcp, read from Cloud Monitoring: HTTP5xxRatio, SyncSlow,
 # DeadLetters, PushBacklog, Saturated. The EKS-coupled groups moved to eks-admission.yaml (checked,
@@ -95,10 +99,13 @@ groups:
         annotations: { summary: "{{ $labels.job }} cannot reach the database (its ticks set ryft_db_up to 0)" }
       - alert: TickMissing
         # A service has handled no /internal/tick for 45 minutes, three ticks of the Scheduler job
-        # ryft-tick (*/15). Without ticks there is no outbox relay, no rescoring pass, no metrics
-        # push and no ryft_db_up, so the rules above go blind. One series per service from the start
-        # (absence included): a service is quiet only when its tick counter rose in an instance that
-        # pushed twice, or a new instance pushed it (the per-tick instance of a service at zero).
+        # ryft-tick (*/15), or its counts do not arrive. Without ticks there is no outbox relay, no
+        # rescoring pass, no metrics push and no ryft_db_up, so the rules above go blind. One series
+        # per service from the start (absence included): a service is quiet only when its tick counter
+        # rose in an instance that pushed twice, or a new instance pushed it (the per-tick instance of
+        # a service at zero). Three causes: Scheduler or the tick subscription; no instance starts (a
+        # process that does not listen while the database refuses it, a bad revision); or the ticks
+        # run but the OTLP push fails (then every service fires at once, and ryft_db_up is gone too).
         expr: |
           (
             label_replace(vector(1), "job", "ryft/api", "", "")
@@ -111,7 +118,7 @@ groups:
               unless last_over_time(ryft_ticks_total[1h] offset 45m)) > 0)
         labels: { severity: critical }
         annotations:
-          summary: "{{ $labels.job }} has handled no tick for 45 minutes (Scheduler job ryft-tick, subscription tick-<svc>)"
+          summary: "{{ $labels.job }} has counted no tick for 45 minutes: Scheduler job ryft-tick and subscription tick-<svc>, an instance that cannot start (the database, the revision), or the OTLP push"
           runbook: "docs/OPERATIONS.md → GCP"
 
   - name: ryft-pipeline
@@ -149,9 +156,15 @@ groups:
         labels: { severity: warning }
         annotations: { summary: "Publishing to Pub/Sub fails (the outbox keeps the events and retries)" }
       - alert: SyncToScoreSlow
-        # Testers wait over two minutes for their scores after a sync (p95 of the days scored over
-        # an hour: a histogram needs two pushes of one instance, so a short-lived one is not seen).
-        expr: histogram_quantile(0.95, sum by (le) (rate(ryft_sync_to_score_seconds_bucket[1h]))) > 120
+        # Testers wait over two minutes for their scores after a sync: p95 of the days scored in the
+        # last hour. Per bucket series, a scoring instance first seen inside the hour counts with all
+        # it counted (most live minutes: min instances 0), any other with its increase.
+        expr: |
+          histogram_quantile(0.95, sum by (le) (
+            (last_over_time(ryft_sync_to_score_seconds_bucket[1h])
+              unless last_over_time(ryft_sync_to_score_seconds_bucket[1h] offset 1h))
+            or increase(ryft_sync_to_score_seconds_bucket[1h])
+          )) > 120
         for: 30m
         labels: { severity: warning }
         annotations: { summary: "Scores take over 2 minutes after a sync (p95 over an hour)" }
@@ -180,10 +193,25 @@ groups:
       - alert: APNsFailing
         # More than 10 % of APNs requests failed over an hour (at least 5 requests).
         # 410 Unregistered is not a failure: the app was deleted, the token is dropped.
+        # Per series, a notify instance first seen inside the hour counts with all it counted.
         expr: |
-          (sum(increase(ryft_apns_responses_total{status!~"200|410"}[1h]))
-            / sum(increase(ryft_apns_responses_total[1h])) > 0.1)
-          and sum(increase(ryft_apns_responses_total[1h])) >= 5
+          (
+            sum(
+              (last_over_time(ryft_apns_responses_total{status!~"200|410"}[1h])
+                unless last_over_time(ryft_apns_responses_total{status!~"200|410"}[1h] offset 1h))
+              or increase(ryft_apns_responses_total{status!~"200|410"}[1h])
+            )
+            / sum(
+              (last_over_time(ryft_apns_responses_total[1h]) unless last_over_time(ryft_apns_responses_total[1h] offset 1h))
+              or increase(ryft_apns_responses_total[1h])
+            )
+            > 0.1
+          )
+          and
+          sum(
+            (last_over_time(ryft_apns_responses_total[1h]) unless last_over_time(ryft_apns_responses_total[1h] offset 1h))
+            or increase(ryft_apns_responses_total[1h])
+          ) >= 5
         labels: { severity: warning }
         annotations: { summary: "Over 10 % of APNs requests fail (status label: 400 = wrong environment, 403 = the key)" }
       - alert: PushFailing
@@ -254,8 +282,15 @@ groups:
         # The job that clears the email (and note) of an invite code 30 days after it stopped being
         # redeemable (D161) keeps failing: three failed passes in three hours. The address of someone who
         # only asked for an invite then stays longer than the privacy text says. Nothing user-visible
-        # breaks, so a warning. The api logs "invite email purge failed" with the cause.
-        expr: sum(increase(ryft_invite_email_purge_total{result="error"}[3h])) >= 3
+        # breaks, so a warning. The api logs "invite email purge failed" with the cause. Per series,
+        # an api instance first seen inside the three hours counts with all it counted (each pass may
+        # run on a fresh instance: min instances 0), any other with its increase.
+        expr: |
+          sum(
+            (last_over_time(ryft_invite_email_purge_total{result="error"}[3h])
+              unless last_over_time(ryft_invite_email_purge_total{result="error"}[1h] offset 3h))
+            or increase(ryft_invite_email_purge_total{result="error"}[3h])
+          ) >= 3
         labels: { severity: warning }
         annotations:
           summary: "The job that clears bound invite emails keeps failing (OPERATIONS.md → Beta → A code for one person)"
@@ -265,10 +300,12 @@ groups:
       # probe_success per probe (labels job, instance, probe): the site's checks every 5 minutes, the
       # services' every 10. The agent republishes a run's last result about every 2 minutes.
       - alert: ApiDown
-        # api.ryftlab.de or ingest.ryftlab.de fails its startup probe (/health/ready, exactly 200) from
-        # every probe for 10 minutes: the service, its domain mapping, its certificate, or the database
-        # behind /health/ready. SiteDown's shape.
-        expr: max by (job, instance) (max_over_time(probe_success{job=~"ryft-(api|ingest)-ready"}[10m])) == 0
+        # api.ryftlab.de or ingest.ryftlab.de fails its readiness check (/health/ready, exactly 200)
+        # from every probe in two runs in a row: the service, its domain mapping, its certificate, or
+        # the database behind /health/ready. SiteDown's shape: SiteDown's 10 minutes are two of its
+        # 5-minute runs, and these checks run every 10 minutes, so 20 minutes; one failed run (a cold
+        # start over the timeout) does not page.
+        expr: max by (job, instance) (max_over_time(probe_success{job=~"ryft-(api|ingest)-ready"}[20m])) == 0
         labels: { severity: critical }
         annotations:
           summary: "{{ $labels.instance }} fails from every probe (job {{ $labels.job }})"

@@ -1,6 +1,7 @@
 # What must never change silently: no key, no secret value in state, prevent_destroy where data
-# lives, the API keep list, the registry's cleanup, the log bucket. Plan-only, mocked; the file checks
-# read the root's *.tf as dns.tftest.hcl in infra/aws/dns does.
+# lives, the API keep list, the registry's cleanup (the 5 newest kept, everything else gone after 30
+# days), the log bucket. Plan-only, mocked; the file checks read the root's *.tf as dns.tftest.hcl in
+# infra/aws/dns does.
 mock_provider "google" {
   mock_data "google_logging_sink" {
     defaults = {
@@ -102,7 +103,7 @@ run "registry" {
 
   assert {
     condition = (
-      length(google_artifact_registry_repository.ryft.cleanup_policies) == 2 &&
+      length(google_artifact_registry_repository.ryft.cleanup_policies) == 3 &&
       anytrue([
         for p in google_artifact_registry_repository.ryft.cleanup_policies :
         p.action == "KEEP" && [for m in p.most_recent_versions : m.keep_count] == [5]
@@ -110,9 +111,26 @@ run "registry" {
       anytrue([
         for p in google_artifact_registry_repository.ryft.cleanup_policies :
         p.action == "DELETE" && [for c in p.condition : [c.tag_state, c.older_than]] == [["UNTAGGED", "2592000s"]]
+      ]) &&
+      anytrue([
+        for p in google_artifact_registry_repository.ryft.cleanup_policies :
+        p.action == "DELETE" && [for c in p.condition : [c.tag_state, c.older_than]] == [["ANY", "2592000s"]]
       ])
     )
-    error_message = "keep the 5 newest versions of each image; delete untagged ones older than 30 days"
+    error_message = "keep the 5 newest versions of each image; delete every other version older than 30 days, tagged or not"
+  }
+
+  # The 5 newest are the only exception to the age rule: one KEEP rule (no tag-prefix KEEP that would
+  # pin every short-SHA tag again), and no DELETE rule acts before 30 days.
+  assert {
+    condition = (
+      length([for p in google_artifact_registry_repository.ryft.cleanup_policies : p if p.action == "KEEP"]) == 1 &&
+      alltrue(flatten([
+        for p in google_artifact_registry_repository.ryft.cleanup_policies :
+        [for c in p.condition : c.older_than == "2592000s"] if p.action == "DELETE"
+      ]))
+    )
+    error_message = "one KEEP rule (the 5 newest); every DELETE rule waits 30 days"
   }
 
   assert {

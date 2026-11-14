@@ -10,8 +10,11 @@ locals {
   project_number = data.google_project.this.number
 
   # The four Cloud Run services and the job (ticket B's interfaces). CI creates them (deploy.yml);
-  # this root names them, it never defines them.
+  # this root names them, it never defines them. services and jobs carry bindings on the resource
+  # (run.tf, iam.tf), so a name joins them only after its first deploy; runtime (one account each)
+  # comes before it (README -> The deployer).
   services        = toset(["api", "ingest", "scoring", "notify"])
+  jobs            = toset(["migrate"])
   public_services = toset(["api", "ingest"])
   runtime         = toset(["api", "ingest", "scoring", "notify", "migrate"])
 
@@ -44,6 +47,15 @@ locals {
   # Both need the stop line open, so the stop line's gcloud commands and public_invokers = false agree.
   public = var.serve && var.public_invokers
   tick   = var.serve && var.public_invokers
+
+  # Service => every invoker it has (run.tf, authoritative): ryft-push on all four, and allUsers on api
+  # and ingest unless the stop line is in force.
+  invokers = {
+    for s in local.services : s => sort(concat(
+      [local.member["ryft-push"]],
+      local.public && contains(local.public_services, s) ? ["allUsers"] : [],
+    ))
+  }
 
   # The Grafana-managed rules exist once the data source does (runbook step 11).
   alerts = var.grafana_datasource_uid != ""

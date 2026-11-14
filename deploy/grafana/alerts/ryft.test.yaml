@@ -112,18 +112,43 @@ tests:
         exp_alerts:
           - exp_labels: { severity: critical, job: ryft/scoring }
             exp_annotations:
-              summary: "ryft/scoring has handled no tick for 45 minutes (Scheduler job ryft-tick, subscription tick-<svc>)"
+              summary: "ryft/scoring has counted no tick for 45 minutes: Scheduler job ryft-tick and subscription tick-<svc>, an instance that cannot start (the database, the revision), or the OTLP push"
               runbook: "docs/OPERATIONS.md → GCP"
       - eval_time: 110m
         alertname: TickMissing
         exp_alerts:
           - exp_labels: { severity: critical, job: ryft/ingest }
             exp_annotations:
-              summary: "ryft/ingest has handled no tick for 45 minutes (Scheduler job ryft-tick, subscription tick-<svc>)"
+              summary: "ryft/ingest has counted no tick for 45 minutes: Scheduler job ryft-tick and subscription tick-<svc>, an instance that cannot start (the database, the revision), or the OTLP push"
               runbook: "docs/OPERATIONS.md → GCP"
           - exp_labels: { severity: critical, job: ryft/scoring }
             exp_annotations:
-              summary: "ryft/scoring has handled no tick for 45 minutes (Scheduler job ryft-tick, subscription tick-<svc>)"
+              summary: "ryft/scoring has counted no tick for 45 minutes: Scheduler job ryft-tick and subscription tick-<svc>, an instance that cannot start (the database, the revision), or the OTLP push"
+              runbook: "docs/OPERATIONS.md → GCP"
+  - name: TickMissing for every service at once when nothing arrives (the OTLP push, or no instance starts)
+    interval: 15m
+    input_series:
+      # ryft_db_up came once, an hour before; after it no ryft_* series of any service arrives
+      - { series: 'ryft_db_up{job="ryft/api",instance="api-1"}', values: '1' }
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: TickMissing
+        exp_alerts:
+          - exp_labels: { severity: critical, job: ryft/api }
+            exp_annotations:
+              summary: "ryft/api has counted no tick for 45 minutes: Scheduler job ryft-tick and subscription tick-<svc>, an instance that cannot start (the database, the revision), or the OTLP push"
+              runbook: "docs/OPERATIONS.md → GCP"
+          - exp_labels: { severity: critical, job: ryft/ingest }
+            exp_annotations:
+              summary: "ryft/ingest has counted no tick for 45 minutes: Scheduler job ryft-tick and subscription tick-<svc>, an instance that cannot start (the database, the revision), or the OTLP push"
+              runbook: "docs/OPERATIONS.md → GCP"
+          - exp_labels: { severity: critical, job: ryft/notify }
+            exp_annotations:
+              summary: "ryft/notify has counted no tick for 45 minutes: Scheduler job ryft-tick and subscription tick-<svc>, an instance that cannot start (the database, the revision), or the OTLP push"
+              runbook: "docs/OPERATIONS.md → GCP"
+          - exp_labels: { severity: critical, job: ryft/scoring }
+            exp_annotations:
+              summary: "ryft/scoring has counted no tick for 45 minutes: Scheduler job ryft-tick and subscription tick-<svc>, an instance that cannot start (the database, the revision), or the OTLP push"
               runbook: "docs/OPERATIONS.md → GCP"
 
   # ---- group ryft-pipeline --------------------------------------------------------------
@@ -199,6 +224,43 @@ tests:
       - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-1",le="+Inf"}', values: '0+10x12' }
     alert_rule_test:
       - { eval_time: 60m, alertname: SyncToScoreSlow, exp_alerts: [] }
+  - name: SyncToScoreSlow from instances that live minutes (min instances 0), seen only by the new-series term
+    interval: 15m
+    input_series:
+      # scoring-1 pushes at minutes 0 and 15 (its tick, then SIGTERM), scoring-2 at 60 and 75: each scored
+      # 10 days between 2 and 5 minutes after the sync, and neither shows an increase of its own
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-1",le="60"}', values: '0 0' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-1",le="120"}', values: '0 0' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-1",le="300"}', values: '10 10' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-1",le="+Inf"}', values: '10 10' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-2",le="60"}', values: '_ _ _ _ 0 0' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-2",le="120"}', values: '_ _ _ _ 0 0' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-2",le="300"}', values: '_ _ _ _ 10 10' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-2",le="+Inf"}', values: '_ _ _ _ 10 10' }
+    alert_rule_test:
+      # pending from minute 0, firing after 30; each instance counts for the hour after its first push
+      - { eval_time: 25m, alertname: SyncToScoreSlow, exp_alerts: [] }
+      - eval_time: 35m
+        alertname: SyncToScoreSlow
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "Scores take over 2 minutes after a sync (p95 over an hour)" }
+      - eval_time: 110m
+        alertname: SyncToScoreSlow
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "Scores take over 2 minutes after a sync (p95 over an hour)" }
+      - { eval_time: 125m, alertname: SyncToScoreSlow, exp_alerts: [] }
+  - name: SyncToScoreSlow stays quiet for a short-lived instance that scored fast
+    interval: 15m
+    input_series:
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-9",le="60"}', values: '_ _ _ 10 10' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-9",le="120"}', values: '_ _ _ 10 10' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-9",le="300"}', values: '_ _ _ 10 10' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-9",le="+Inf"}', values: '_ _ _ 10 10' }
+    alert_rule_test:
+      - { eval_time: 80m, alertname: SyncToScoreSlow, exp_alerts: [] }
+      - { eval_time: 100m, alertname: SyncToScoreSlow, exp_alerts: [] }
   - name: ScoringErrors, a short-lived instance; scored days do not count
     interval: 15m
     input_series:
@@ -250,6 +312,32 @@ tests:
       - { series: 'ryft_apns_responses_total{job="ryft/notify",instance="notify-1",push_type="alert",status="410"}', values: '0+5x8' }
     alert_rule_test:
       - { eval_time: 60m, alertname: APNsFailing, exp_alerts: [] }
+  - name: APNsFailing, a short-lived notify instance seen by its one push
+    interval: 15m
+    input_series:
+      # one push at minute 45: 8 answered 200, 2 answered 500 (20 % of 10)
+      - { series: 'ryft_apns_responses_total{job="ryft/notify",instance="notify-6",push_type="alert",status="200"}', values: '_ _ _ 8' }
+      - { series: 'ryft_apns_responses_total{job="ryft/notify",instance="notify-6",push_type="alert",status="500"}', values: '_ _ _ 2' }
+    alert_rule_test:
+      - { eval_time: 40m, alertname: APNsFailing, exp_alerts: [] }
+      - eval_time: 50m
+        alertname: APNsFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "Over 10 % of APNs requests fail (status label: 400 = wrong environment, 403 = the key)" }
+      - eval_time: 100m
+        alertname: APNsFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "Over 10 % of APNs requests fail (status label: 400 = wrong environment, 403 = the key)" }
+      - { eval_time: 110m, alertname: APNsFailing, exp_alerts: [] }
+  - name: APNsFailing stays quiet under 5 requests, a short-lived instance too
+    interval: 15m
+    input_series:
+      - { series: 'ryft_apns_responses_total{job="ryft/notify",instance="notify-7",push_type="alert",status="200"}', values: '_ _ _ 2' }
+      - { series: 'ryft_apns_responses_total{job="ryft/notify",instance="notify-7",push_type="alert",status="500"}', values: '_ _ _ 2' }
+    alert_rule_test:
+      - { eval_time: 50m, alertname: APNsFailing, exp_alerts: [] }
   - name: PushFailing, a short-lived instance; unconfigured does not count
     interval: 15m
     input_series:
@@ -352,27 +440,59 @@ tests:
             exp_annotations:
               summary: "The job that clears bound invite emails keeps failing (OPERATIONS.md → Beta → A code for one person)"
               runbook: "docs/OPERATIONS.md → Beta → A code for one person"
+  - name: InviteEmailPurgeFailing, each failed pass on its own short-lived instance
+    interval: 15m
+    input_series:
+      # one failed pass an hour, each on a fresh api instance that pushes after the tick and at SIGTERM
+      - { series: 'ryft_invite_email_purge_total{job="ryft/api",instance="api-2",result="error"}', values: '_ 1 1' }
+      - { series: 'ryft_invite_email_purge_total{job="ryft/api",instance="api-3",result="error"}', values: '_ _ _ _ _ 1 1' }
+      - { series: 'ryft_invite_email_purge_total{job="ryft/api",instance="api-4",result="error"}', values: '_ _ _ _ _ _ _ _ _ 1 1' }
+    alert_rule_test:
+      - { eval_time: 130m, alertname: InviteEmailPurgeFailing, exp_alerts: [] }
+      - eval_time: 140m
+        alertname: InviteEmailPurgeFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "The job that clears bound invite emails keeps failing (OPERATIONS.md → Beta → A code for one person)"
+              runbook: "docs/OPERATIONS.md → Beta → A code for one person"
+      # three hours after the first failure it leaves the window
+      - { eval_time: 200m, alertname: InviteEmailPurgeFailing, exp_alerts: [] }
 
   # ---- the services from outside: one sample per probe about every 2 minutes ----------------
-  - name: ApiDown needs every probe; SiteDown leaves the services alone
+  # The service checks run every 10 minutes, so ApiDown's 20 minutes are two runs (SiteDown's 10 are two
+  # of its 5-minute runs).
+  - name: ApiDown needs every probe and two runs; SiteDown leaves the services alone
     interval: 2m
     input_series:
       # api: both probes fail from minute 20; ingest: only Frankfurt does
-      - { series: 'probe_success{job="ryft-api-ready",instance="https://api.ryftlab.de/health/ready",probe="Frankfurt"}', values: '1x9 0x20' }
-      - { series: 'probe_success{job="ryft-api-ready",instance="https://api.ryftlab.de/health/ready",probe="Amsterdam"}', values: '1x9 0x20' }
-      - { series: 'probe_success{job="ryft-ingest-ready",instance="https://ingest.ryftlab.de/health/ready",probe="Frankfurt"}', values: '1x9 0x20' }
-      - { series: 'probe_success{job="ryft-ingest-ready",instance="https://ingest.ryftlab.de/health/ready",probe="Amsterdam"}', values: '1x29' }
+      - { series: 'probe_success{job="ryft-api-ready",instance="https://api.ryftlab.de/health/ready",probe="Frankfurt"}', values: '1x9 0x30' }
+      - { series: 'probe_success{job="ryft-api-ready",instance="https://api.ryftlab.de/health/ready",probe="Amsterdam"}', values: '1x9 0x30' }
+      - { series: 'probe_success{job="ryft-ingest-ready",instance="https://ingest.ryftlab.de/health/ready",probe="Frankfurt"}', values: '1x9 0x30' }
+      - { series: 'probe_success{job="ryft-ingest-ready",instance="https://ingest.ryftlab.de/health/ready",probe="Amsterdam"}', values: '1x39' }
     alert_rule_test:
-      - { eval_time: 26m, alertname: ApiDown, exp_alerts: [] }
-      - eval_time: 30m
+      # minute 30: one failed run (20) and its republished results; minute 36: the window still holds a pass at 18
+      - { eval_time: 30m, alertname: ApiDown, exp_alerts: [] }
+      - { eval_time: 36m, alertname: ApiDown, exp_alerts: [] }
+      - eval_time: 40m
         alertname: ApiDown
         exp_alerts:
           - exp_labels: { severity: critical, job: ryft-api-ready, instance: "https://api.ryftlab.de/health/ready" }
             exp_annotations:
               summary: "https://api.ryftlab.de/health/ready fails from every probe (job ryft-api-ready)"
               runbook: "docs/OPERATIONS.md → GCP"
-      - { eval_time: 30m, alertname: SiteDown, exp_alerts: [] }
-      - { eval_time: 30m, alertname: SiteProbeFlapping, exp_alerts: [] }
+      - { eval_time: 40m, alertname: SiteDown, exp_alerts: [] }
+      - { eval_time: 40m, alertname: SiteProbeFlapping, exp_alerts: [] }
+  - name: ApiDown stays quiet for one failed run from both probes (a cold start over the timeout)
+    interval: 2m
+    input_series:
+      # the run at minute 20 fails from both probes (republished until the next run at 30), the rest pass
+      - { series: 'probe_success{job="ryft-api-ready",instance="https://api.ryftlab.de/health/ready",probe="Frankfurt"}', values: '1x9 0x4 1x15' }
+      - { series: 'probe_success{job="ryft-api-ready",instance="https://api.ryftlab.de/health/ready",probe="Amsterdam"}', values: '1x9 0x4 1x15' }
+    alert_rule_test:
+      - { eval_time: 28m, alertname: ApiDown, exp_alerts: [] }
+      - { eval_time: 34m, alertname: ApiDown, exp_alerts: [] }
+      - { eval_time: 44m, alertname: ApiDown, exp_alerts: [] }
 
   # ---- the site from outside: Synthetic Monitoring, one sample per probe every 5 minutes ----
   - name: site down needs every probe

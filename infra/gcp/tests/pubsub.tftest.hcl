@@ -93,9 +93,10 @@ run "publisher_matrix_per_topic" {
 
   assert {
     condition = alltrue([
-      for t in google_pubsub_topic.this : toset(t.message_storage_policy[0].allowed_persistence_regions) == toset(["europe-west1"])
+      for t in google_pubsub_topic.this :
+      toset(t.message_storage_policy[0].allowed_persistence_regions) == toset(["europe-west1"])
     ])
-    error_message = "every topic stores messages in europe-west1 only"
+    error_message = "every topic stores its messages in europe-west1 only"
   }
 
   # Only authoritative bindings on topics and subscriptions: a *_iam_member next to them would fight them.

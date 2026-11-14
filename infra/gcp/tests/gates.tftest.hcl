@@ -1,8 +1,12 @@
 # The gates' states (gates.auto.tfvars), each set explicitly here so a flip of the committed file never
 # changes what these runs pin. Plan-only, mocked.
-#   serve = false                          apply 1: nothing invokes, nothing is mapped, the tick is paused
-#   serve = true,  public_invokers = true  apply 2: ryft-push on all four, allUsers on api and ingest, mapped, ticking
-#   serve = true,  public_invokers = false the 20 EUR stop line: no allUsers, the tick paused, the rest stays
+#   serve = false                          apply 1: no invoker binding, nothing mapped, the tick paused,
+#                                          the deployer's run.developer project-wide
+#   serve = true,  public_invokers = true  apply 2: one invoker binding per service (ryft-push on all
+#                                          four, allUsers on api and ingest), mapped, ticking; the
+#                                          deployer's run.developer on the four services and the job only
+#   serve = true,  public_invokers = false the 20 EUR stop line: ryft-push alone on every service, the
+#                                          tick paused, the rest stays
 mock_provider "google" {
   mock_data "google_logging_sink" {
     defaults = {
@@ -49,12 +53,23 @@ run "apply_1_serve_false" {
 
   assert {
     condition = (
-      length(google_cloud_run_v2_service_iam_member.push_invoker) == 0 &&
-      length(google_cloud_run_v2_service_iam_member.public_invoker) == 0 &&
+      length(google_cloud_run_v2_service_iam_binding.invoker) == 0 &&
       length(google_cloud_run_domain_mapping.host) == 0 &&
       length(google_dns_record_set.mapping) == 0
     )
-    error_message = "apply 1: no invoker, no mapping, no mapping record"
+    error_message = "apply 1: no invoker binding (the services do not exist yet), no mapping, no mapping record"
+  }
+
+  # CI creates the services and the job at step 8, so the deployer needs run.developer project-wide.
+  assert {
+    condition = (
+      length(google_project_iam_member.deployer_run_developer) == 1 &&
+      google_project_iam_member.deployer_run_developer[0].role == "roles/run.developer" &&
+      google_project_iam_member.deployer_run_developer[0].member == "serviceAccount:ryft-deployer@ryftlab-prod.iam.gserviceaccount.com" &&
+      length(google_cloud_run_v2_service_iam_member.deployer_run_developer) == 0 &&
+      length(google_cloud_run_v2_job_iam_member.deployer_run_developer) == 0
+    )
+    error_message = "apply 1: the deployer's run.developer is project-wide, and on no service or job"
   }
 
   assert {
@@ -78,22 +93,59 @@ run "apply_2_serve_true_public_true" {
 
   assert {
     condition = (
-      toset(keys(google_cloud_run_v2_service_iam_member.push_invoker)) == toset(["api", "ingest", "scoring", "notify"]) &&
+      toset(keys(google_cloud_run_v2_service_iam_binding.invoker)) == toset(["api", "ingest", "scoring", "notify"]) &&
       alltrue([
-        for k, b in google_cloud_run_v2_service_iam_member.push_invoker :
-        b.name == k && b.location == "europe-west1" && b.role == "roles/run.invoker" &&
-        b.member == "serviceAccount:ryft-push@ryftlab-prod.iam.gserviceaccount.com"
+        for k, b in google_cloud_run_v2_service_iam_binding.invoker :
+        b.name == k && b.location == "europe-west1" && b.project == "ryftlab-prod" && b.role == "roles/run.invoker"
       ])
     )
-    error_message = "apply 2: ryft-push invokes all four services, named by name"
+    error_message = "apply 2: one run.invoker binding on each of the four services, named by name"
+  }
+
+  # Authoritative: these members and nobody else, so a hand-added allUsers on scoring goes at the next apply.
+  assert {
+    condition = alltrue([
+      for s in ["api", "ingest"] :
+      google_cloud_run_v2_service_iam_binding.invoker[s].members == toset([
+        "serviceAccount:ryft-push@ryftlab-prod.iam.gserviceaccount.com",
+        "allUsers",
+      ])
+    ])
+    error_message = "apply 2: api and ingest are invoked by ryft-push and allUsers, nobody else"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in ["scoring", "notify"] :
+      google_cloud_run_v2_service_iam_binding.invoker[s].members == toset(["serviceAccount:ryft-push@ryftlab-prod.iam.gserviceaccount.com"])
+    ])
+    error_message = "apply 2: scoring and notify are invoked by ryft-push alone, never by allUsers"
+  }
+
+  # The deployer narrowed: run.developer on what exists, nothing project-wide. The fallback PR of runbook
+  # step 9 (and a new service's first deploy) sets the project-wide binding's count to 1, and this
+  # assertion with it.
+  assert {
+    condition     = length(google_project_iam_member.deployer_run_developer) == 0
+    error_message = "apply 2: the deployer's project-wide run.developer is gone"
   }
 
   assert {
     condition = (
-      toset(keys(google_cloud_run_v2_service_iam_member.public_invoker)) == toset(["api", "ingest"]) &&
-      alltrue([for k, b in google_cloud_run_v2_service_iam_member.public_invoker : b.name == k && b.member == "allUsers" && b.role == "roles/run.invoker"])
+      toset(keys(google_cloud_run_v2_service_iam_member.deployer_run_developer)) == toset(["api", "ingest", "scoring", "notify"]) &&
+      toset(keys(google_cloud_run_v2_job_iam_member.deployer_run_developer)) == toset(["migrate"]) &&
+      alltrue([
+        for k, b in google_cloud_run_v2_service_iam_member.deployer_run_developer :
+        b.name == k && b.location == "europe-west1" && b.project == "ryftlab-prod" && b.role == "roles/run.developer" &&
+        b.member == "serviceAccount:ryft-deployer@ryftlab-prod.iam.gserviceaccount.com"
+      ]) &&
+      alltrue([
+        for k, b in google_cloud_run_v2_job_iam_member.deployer_run_developer :
+        b.name == k && b.location == "europe-west1" && b.project == "ryftlab-prod" && b.role == "roles/run.developer" &&
+        b.member == "serviceAccount:ryft-deployer@ryftlab-prod.iam.gserviceaccount.com"
+      ])
     )
-    error_message = "apply 2: allUsers on api and ingest, never on scoring or notify"
+    error_message = "apply 2: the deployer's run.developer is on the four services and the job migrate, each by name"
   }
 
   assert {
@@ -136,9 +188,17 @@ run "stop_line_serve_true_public_false" {
     public_invokers = false
   }
 
+  # The bindings stay (no destroy): api and ingest keep ryft-push alone, which is what the stop line's
+  # gcloud commands leave, so the next apply neither undoes them nor adds allUsers back.
   assert {
-    condition     = length(google_cloud_run_v2_service_iam_member.public_invoker) == 0
-    error_message = "the stop line: no allUsers on any service (the next apply does not undo the gcloud command)"
+    condition = (
+      toset(keys(google_cloud_run_v2_service_iam_binding.invoker)) == toset(["api", "ingest", "scoring", "notify"]) &&
+      alltrue([
+        for b in google_cloud_run_v2_service_iam_binding.invoker :
+        b.members == toset(["serviceAccount:ryft-push@ryftlab-prod.iam.gserviceaccount.com"])
+      ])
+    )
+    error_message = "the stop line: every service keeps its binding with ryft-push alone; no allUsers anywhere"
   }
 
   assert {
@@ -148,11 +208,12 @@ run "stop_line_serve_true_public_false" {
 
   assert {
     condition = (
-      length(google_cloud_run_v2_service_iam_member.push_invoker) == 4 &&
       length(google_cloud_run_domain_mapping.host) == 2 &&
-      length(google_dns_record_set.mapping) == 2
+      length(google_dns_record_set.mapping) == 2 &&
+      length(google_cloud_run_v2_service_iam_member.deployer_run_developer) == 4 &&
+      length(google_cloud_run_v2_job_iam_member.deployer_run_developer) == 1
     )
-    error_message = "the stop line leaves ryft-push, the mappings and their records alone (no destroy beyond the two allUsers)"
+    error_message = "the stop line leaves the mappings, their records and the deployer's bindings alone (no destroy at all)"
   }
 }
 
@@ -166,12 +227,29 @@ run "serve_false_public_false" {
 
   assert {
     condition = (
-      length(google_cloud_run_v2_service_iam_member.push_invoker) == 0 &&
-      length(google_cloud_run_v2_service_iam_member.public_invoker) == 0 &&
+      length(google_cloud_run_v2_service_iam_binding.invoker) == 0 &&
       length(google_cloud_run_domain_mapping.host) == 0 &&
+      length(google_project_iam_member.deployer_run_developer) == 1 &&
+      length(google_cloud_run_v2_service_iam_member.deployer_run_developer) == 0 &&
+      length(google_cloud_run_v2_job_iam_member.deployer_run_developer) == 0 &&
       google_cloud_scheduler_job.tick.paused
     )
-    error_message = "serve = false wins: nothing invokes, nothing is mapped, the tick is paused"
+    error_message = "serve = false wins: nothing invokes, nothing is mapped, the tick is paused, the deployer is project-wide"
+  }
+}
+
+# run.invoker is granted in one place only, the authoritative binding: a member resource for the same
+# role next to it would fight it on every apply, and a policy resource would also wipe the deployer's.
+run "invokers_only_through_the_binding" {
+  command = plan
+
+  assert {
+    condition = (
+      length(regexall("\"roles/run\\.invoker\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      length(regexall("resource \"google_cloud_run_v2_service_iam_binding\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      length(regexall("google_cloud_run_(v2_)?(service|job)_iam_policy|google_cloud_run_service_iam_", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
+    )
+    error_message = "run.invoker only in google_cloud_run_v2_service_iam_binding.invoker; no Cloud Run IAM policy resource, no v1 Cloud Run IAM resource"
   }
 }
 

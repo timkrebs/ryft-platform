@@ -30,8 +30,10 @@ Order: B1 ∥ B2 → B3 → B4 → fixes → PR → CI green.
 **HTTP, on all four services.**
 - One port, `$PORT` (Cloud Run sets it; `PORT` is reserved there and is never set in `deploy/run`). It serves h2c with prior
   knowledge and HTTP/1.1 on the same port. The container port is named `h2c`.
-- `GET /health/live` is the liveness probe. `GET /health/ready` is the startup probe and the synthetics' target: a generic 503
-  with the cause only in the log, cached 5 s.
+- `GET /health/live` is the **startup and liveness probe** (startup: 1 s × 20, so the service must listen before it connects
+  to the database). `GET /health/ready` is the synthetics' target and the smoke's: a generic 503 with the cause only in the
+  log, cached 5 s. (The review moved the startup probe off `/health/ready`. During a Supabase outage, no cold instance would
+  otherwise start, so no tick would ever report `ryft_db_up 0`.)
 - `POST /internal/tick` runs the service's ticks. The Scheduler job `ryft-tick` runs `*/15 * * * *` (Etc/UTC) and publishes
   `data = {}` with the attribute `ryft-key=tick` to the topic `ryft-tick`. Its subscriptions `tick-<svc>` push it with an OIDC
   token of `ryft-push`.
@@ -104,6 +106,22 @@ byte for byte, and A adds the drift check.
 - **Ticks have no DLQ and keep messages 10 min.** A failed tick is dropped, and the next one comes 15 min later.
 - **Every subscription has `expiration_policy` with an empty TTL.** The default deletes a subscription after 31 idle days.
 - **Artifact Registry has vulnerability scanning off.** Scanning is billed per image and isn't on the keep list.
+- **After apply 2 the deployer holds `run.developer` only on the four services and `migrate`** (security review). The
+  project-level binding exists only while `serve = false`, for the first deploy. A new service or job needs it back for its
+  first deploy.
+- **Invokers are one authoritative binding per service**, so a hand-added `allUsers` on scoring is removed at the next apply.
+- **The WIF condition also requires `runner_environment == 'github-hosted'`.** DATA_READ audit logs cover
+  `iamcredentials` and `sts` as well, so the deployer's token mints are logged.
+- **deploy.yml:**
+  - it reads `ci.yml`'s own run on main (a check run named `ci-ok` can be forged from a branch);
+  - it deploys only while its commit is main's head, and is otherwise green as "superseded";
+  - it builds and scans before it signs in, with no buildx container and no `docker.sock` in Trivy;
+  - it pushes the scanned image as one amd64 manifest, with no provenance or SBOM.
+- **`migrate` has `maxRetries: 0`.** A retry is a second failed owner login, which feeds Supavisor's circuit breaker.
+- **Artifact Registry deletes any version older than 30 days**, while the 5 newest per image are always kept.
+- **`enforce_in_transit` is off on the topics**, which was considered and refused. It would reject publishes and pulls that
+  the global endpoint routes outside europe-west1: the Scheduler's, and an operator's `gcloud pubsub`. The storage policy
+  keeps the messages in europe-west1 at rest.
 - **Config known only after the bootstrap goes into git** (`deploy/run/config.env`): the project number, `PUSH_SA_ID`, the
   Supabase ref and pooler host, and the Apple/APNs key IDs. The user merges a config PR before step 8, and `deploy.yml`
   refuses to run while a placeholder is left.

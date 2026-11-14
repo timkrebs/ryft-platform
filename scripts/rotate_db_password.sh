@@ -9,7 +9,7 @@
 # files are rewritten or neither: each pin must be exactly one line of the committed shape
 #   - { name: <ENV>, valueFrom: { secretKeyRef: { name: db-password-<svc>, key: "<n>" } } }
 # Local files only: no gcloud, no git. It prints the steps around it (add the version first, commit,
-# merge; the deploy runs migrate before the service rolls; then disable the old version).
+# merge; the deploy runs migrate before the service rolls; after a day, disable the old version).
 # Exit 0 done (or nothing to do), 1 a file is not in the expected shape, 2 usage.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -79,7 +79,9 @@ Next:
   2. The merge's deploy (deploy.yml) runs migrate first, which sets the role ryft_$svc to version $ver,
      then rolls $svc onto it. Until $svc's new revision is ready its old one logs in with the old password;
      merge outside the testers' hours.
-  3. Once the deploy is green, disable the old version:
+  3. After a day (design §4), not when the deploy turns green: until then the old version undoes the
+     rotation (the rollback below). With all of $svc's traffic on the latest revision, disable it:
+     gcloud run services describe $svc --region=europe-west1 --project=ryftlab-prod --format='yaml(status.traffic)'   # latestRevision: true, percent: 100
      gcloud secrets versions disable $was_svc --secret=$sec --project=ryftlab-prod
   Rollback: run this script with $was_svc again (re-enable that version first), commit, merge.
 EOF

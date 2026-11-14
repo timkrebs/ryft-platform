@@ -47,7 +47,7 @@ reject '.checks |= map(.enabled = false)' 'disabled'
 reject '.checks[1].enabled = false' 'SyntheticsMissing'
 reject 'del(.checks[3])' 'SyntheticsMissing'
 reject '.checks += [(.checks[0] | .job = "ryft-site-extra")]' 'SyntheticsMissing'
-# the service checks (checks 4 and 5): their own host, the startup probe, exactly 200
+# the service checks (checks 4 and 5): their own host, the readiness endpoint, exactly 200
 reject '.checks[4].target = "https://ingest.ryftlab.de/health/ready"' 'target must be https://api.ryftlab.de/health/ready'
 reject '.checks[5].target = "https://ingest.ryftlab.de/v1/sync"' 'target must be https://ingest.ryftlab.de/health/ready'
 reject '.checks[4].target = "https://ryftlab.de/health/ready"' 'target must be https://api'

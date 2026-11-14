@@ -58,6 +58,9 @@ for f in api.yaml migrate.yaml; do
 done
 case $o in *"pinned at $new"*"(PGPASSWORD, was $a)"*"(DB_PASSWORD_API, was $a)"*) ;; *) fail "the report does not say what moved: $o" ;; esac
 case $o in *"gcloud secrets versions disable $a --secret=db-password-api --project=ryftlab-prod"*) ;; *) fail "the next steps do not name the old version: $o" ;; esac
+# design §4: the old version is disabled after a day, not as soon as the deploy is green.
+case $o in *"After a day (design §4)"*"disable it:"*"versions disable $a"*) ;; *) fail "the next steps do not wait a day before the old version is disabled: $o" ;; esac
+case $o in *"Once the deploy is green"*) fail "the next steps still disable the old version once the deploy is green: $o" ;; esac
 case $o in *"gcloud secrets versions describe $new --secret=db-password-api"*) ;; *) fail "the next steps do not check the new version: $o" ;; esac
 leftovers "a rotation"
 checked "a rotation"

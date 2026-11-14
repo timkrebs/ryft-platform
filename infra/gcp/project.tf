@@ -26,6 +26,13 @@ locals {
   # Service agents that a new project may not have until something asks for them, and that this root
   # binds (pubsub.tf, iam.tf).
   agents = toset(["pubsub.googleapis.com", "cloudscheduler.googleapis.com"])
+
+  # Data Access audit logs (DATA_READ), below.
+  #   secretmanager:  every secret read (who, which version; D222);
+  #   sts:            every token exchange through a pool (GitHub -> ryft-deployer, HCP Terraform);
+  #   iamcredentials: every token minted for an account through the IAM credentials API (the
+  #                   deployer's access token after the exchange, anyone impersonating an account).
+  data_read_audit = toset(["secretmanager.googleapis.com", "sts.googleapis.com", "iamcredentials.googleapis.com"])
 }
 
 resource "google_project_service" "keep" {
@@ -38,11 +45,15 @@ resource "google_project_service" "keep" {
   disable_on_destroy = false
 }
 
-# Cloud Audit Logs: Admin Activity is always on; Data Access is on for Secret Manager only (D222), so
-# every secret read is logged (who, which version). The volume is tiny.
-resource "google_project_iam_audit_config" "secretmanager" {
+# Cloud Audit Logs: Admin Activity is always on; Data Access is on for the three services above only,
+# so every secret read and every token mint is logged. The volume is small (secret reads at each
+# instance start, token mints at each deploy and apply). Data Access entries are not _Required's: the
+# sink takes them into ryft-logs (logging.tf), 14 days.
+resource "google_project_iam_audit_config" "data_read" {
+  for_each = local.data_read_audit
+
   project = var.project_id
-  service = "secretmanager.googleapis.com"
+  service = each.key
 
   audit_log_config {
     log_type = "DATA_READ"
