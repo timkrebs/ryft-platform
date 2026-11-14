@@ -1,5 +1,5 @@
 # RYFT on the EKS cluster from infra/aws (ryft-prod-euc1), served at
-# https://api.ryftapp.de and https://ryftapp.de. One namespace per workload:
+# https://api.ryftlab.de and https://ryftlab.de. One namespace per workload:
 # ryft-ingest, ryft-scoring, ryft-api, ryft-notify, ryft-rabbitmq, ryft-migrate and
 # ryft-smoke come with their service accounts and Pod Security "restricted" from
 # infra/vault, so this overlay

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 // The site's access log identifies no visitor (docs/LEGAL_CHECKLIST.md → S6): what the
-// privacy policy says about ryftapp.de depends on it.
+// privacy policy says about ryftlab.de depends on it.
 const conf = readFileSync('nginx/default.conf', 'utf8');
 const format = conf.match(/^log_format site '([^']*)';$/m)?.[1];
 

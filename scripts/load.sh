@@ -19,7 +19,7 @@
 #   LOAD_DRAIN_TIMEOUT=180 (s to wait for scoring) LOAD_ALLOW_REMOTE=1 (see below)
 # In local mode k6 talks to the compose services over the compose network; INGEST_URL and API_URL are only the
 # readiness probes from the host. Targets must be localhost; anything else is refused unless LOAD_ALLOW_REMOTE=1
-# (both URLs then non-local, never *.ryftapp.de or *.supabase.co, the key from LOAD_REMOTE_API_KEY only: the
+# (both URLs then non-local, never *.ryftlab.de or *.supabase.co, the key from LOAD_REMOTE_API_KEY only: the
 # ambient API_KEY is never sent to a remote host). Remote runs skip the metrics scrape. Never point this at production.
 set -euo pipefail
 
@@ -61,7 +61,7 @@ is_local_host() {
 # is_forbidden_host <host>: the production and Supabase hosts, even with LOAD_ALLOW_REMOTE=1.
 is_forbidden_host() {
   case $1 in
-    ryftapp.de|*.ryftapp.de|supabase.co|*.supabase.co|supabase.com|*.supabase.com) return 0 ;;
+    ryftlab.de|*.ryftlab.de|supabase.co|*.supabase.co|supabase.com|*.supabase.com) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -139,8 +139,8 @@ main() {
   K6_IMAGE=${LOAD_K6_IMAGE:-$K6_IMAGE_DEFAULT}
   local out=${LOAD_OUT:-$LOADDIR/out}
 
-  guard_target "$INGEST_URL" || die "refusing INGEST_URL=$INGEST_URL: not a plain localhost URL (LOAD_ALLOW_REMOTE=1 allows other plain hosts, never ryftapp.de or supabase; never production)"
-  guard_target "$API_URL" || die "refusing API_URL=$API_URL: not a plain localhost URL (LOAD_ALLOW_REMOTE=1 allows other plain hosts, never ryftapp.de or supabase; never production)"
+  guard_target "$INGEST_URL" || die "refusing INGEST_URL=$INGEST_URL: not a plain localhost URL (LOAD_ALLOW_REMOTE=1 allows other plain hosts, never ryftlab.de or supabase; never production)"
+  guard_target "$API_URL" || die "refusing API_URL=$API_URL: not a plain localhost URL (LOAD_ALLOW_REMOTE=1 allows other plain hosts, never ryftlab.de or supabase; never production)"
   local li=0 la=0
   is_local_host "$(url_host "$INGEST_URL")" && li=1
   is_local_host "$(url_host "$API_URL")" && la=1

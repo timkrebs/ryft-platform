@@ -353,10 +353,10 @@ func TestAdminPerAddressLimit(t *testing.T) {
 	cv := &countingVerifier{next: jwks.verifier(t)}
 	lim := ratelimit.New(0.001, 3) // a burst of 3 and no refill within the test
 	srv := adminRoutes(quietHandler(), adminOptions{Key: testAdminKey, Verifier: cv, Accounts: newFakeAccounts(), Limiter: lim,
-		Origins: []string{"https://ryftapp.de"}, Timeout: time.Second})
+		Origins: []string{"https://ryftlab.de"}, Timeout: time.Second})
 	tok := jwks.sign(t, appClaims(uuid.New()))
 	hit := func(xff string) answer {
-		return do(srv, "GET", "/v1/admin/flags", tok, "", "X-Forwarded-For", xff, "Origin", "https://ryftapp.de")
+		return do(srv, "GET", "/v1/admin/flags", tok, "", "X-Forwarded-For", xff, "Origin", "https://ryftlab.de")
 	}
 	limited, unauth := count(rateLimited("admin_ip")), adminReq("unauthorized")
 	for i := 0; i < 3; i++ {
@@ -367,7 +367,7 @@ func TestAdminPerAddressLimit(t *testing.T) {
 	}
 	a := hit("198.51.100.99, 203.0.113.7")
 	if a.status != 429 || a.header.Get("Retry-After") == "" || a.header.Get("Retry-After") == "0" ||
-		a.header.Get("Access-Control-Allow-Origin") != "https://ryftapp.de" || !strings.Contains(a.body, "too many requests") {
+		a.header.Get("Access-Control-Allow-Origin") != "https://ryftlab.de" || !strings.Contains(a.body, "too many requests") {
 		t.Fatalf("the 4th request: %d %v %s", a.status, a.header, a.body)
 	}
 	if cv.calls != 3 {
@@ -381,9 +381,9 @@ func TestAdminPerAddressLimit(t *testing.T) {
 		t.Errorf("another client address: %d", a.status)
 	}
 	// A preflight is neither counted nor limited, even from the exhausted address.
-	pre := do(srv, "OPTIONS", "/v1/admin/flags", "", "", "X-Forwarded-For", "203.0.113.7", "Origin", "https://ryftapp.de",
+	pre := do(srv, "OPTIONS", "/v1/admin/flags", "", "", "X-Forwarded-For", "203.0.113.7", "Origin", "https://ryftlab.de",
 		"Access-Control-Request-Method", "GET", "Access-Control-Request-Headers", "authorization")
-	if pre.status != 204 || pre.header.Get("Access-Control-Allow-Origin") != "https://ryftapp.de" {
+	if pre.status != 204 || pre.header.Get("Access-Control-Allow-Origin") != "https://ryftlab.de" {
 		t.Errorf("preflight: %d %v", pre.status, pre.header)
 	}
 	// The default limiter: 10 a second, bursts of 20.
@@ -411,7 +411,7 @@ func TestAdminCORSThroughTheChain(t *testing.T) {
 		return adminRoutes(quietHandler(), adminOptions{Key: testAdminKey, Verifier: jwks.verifier(t), Accounts: newFakeAccounts(op),
 			Origins: origins, Limiter: wide(), Timeout: time.Second})
 	}
-	page := "https://ryftapp.de"
+	page := "https://ryftlab.de"
 	srv := build(page)
 	pre := func(h http.Handler, origin, method, headers string) answer {
 		return do(h, "OPTIONS", "/v1/admin/invites", "", "", "Origin", origin, "Access-Control-Request-Method", method,
@@ -480,9 +480,9 @@ func TestUserRoutesNeverSendCORS(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/config", func(w http.ResponseWriter, _ *http.Request) { httpx.WriteJSON(w, 200, map[string]string{}) })
 	mux.Handle("/v1/admin/", adminRoutes(quietHandler(), adminOptions{Key: testAdminKey, Accounts: newFakeAccounts(),
-		Origins: []string{"https://ryftapp.de"}, Limiter: wide(), Timeout: time.Second}))
+		Origins: []string{"https://ryftlab.de"}, Limiter: wide(), Timeout: time.Second}))
 	for _, m := range []string{"GET", "OPTIONS"} {
-		a := do(mux, m, "/v1/config", "", "", "Origin", "https://ryftapp.de", "Access-Control-Request-Method", "GET")
+		a := do(mux, m, "/v1/config", "", "", "Origin", "https://ryftlab.de", "Access-Control-Request-Method", "GET")
 		for k := range a.header {
 			if strings.HasPrefix(strings.ToLower(k), "access-control-") {
 				t.Errorf("%s /v1/config sends %s", m, k)
@@ -492,7 +492,7 @@ func TestUserRoutesNeverSendCORS(t *testing.T) {
 			t.Errorf("%s /v1/config: Vary %q", m, a.header.Get("Vary"))
 		}
 	}
-	if a := do(mux, "GET", "/v1/admin/flags", "x", "", "Origin", "https://ryftapp.de"); a.header.Get("Access-Control-Allow-Origin") == "" {
+	if a := do(mux, "GET", "/v1/admin/flags", "x", "", "Origin", "https://ryftlab.de"); a.header.Get("Access-Control-Allow-Origin") == "" {
 		t.Error("the admin routes do send it")
 	}
 }

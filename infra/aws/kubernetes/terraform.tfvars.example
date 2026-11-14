@@ -4,7 +4,7 @@
 acme_email = "you@example.com"
 
 # cluster_name = "ryft-prod-euc1"
-# domain       = "ryftapp.de"
+# domain       = "ryftlab.de"
 # region       = "eu-central-1"
 
 # Admission policies (D120). The switch and the per-binding actions are the committed

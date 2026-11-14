@@ -1,4 +1,4 @@
-# ryftapp.de
+# ryftlab.de
 
 The RYFT website: landing page, science, beta, legal pages, licences, the app's
 universal-link fallback and `/.well-known/apple-app-site-association`. Next.js (App Router)

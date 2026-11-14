@@ -5,7 +5,7 @@
 # with the current model. Changes nothing but that user's step count for today.
 #
 #   SUPABASE_URL=https://<ref>.supabase.co SUPABASE_ANON_KEY=... \
-#   SMOKE_EMAIL=smoke@ryftapp.de SMOKE_PASSWORD=... make smoke-prod
+#   SMOKE_EMAIL=smoke@ryftlab.de SMOKE_PASSWORD=... make smoke-prod
 # With ADMIN_API_KEY, a smoke user without beta access gets a one-use invite code
 # (once; it keeps the access), so the smoke also passes with BETA_GATE on. Against
 # production the key is found like the other operator scripts do (scripts/lib/admin.sh).
@@ -15,7 +15,7 @@
 # restores both. SMOKE_EXPECT_GATES=on fails unless both are on (before the first
 # external invite: docs/OPERATIONS.md → Beta).
 set -euo pipefail
-API=${API_URL:-https://api.ryftapp.de}
+API=${API_URL:-https://api.ryftlab.de}
 INGEST=${INGEST_URL:-$API}
 if [ -z "${SMOKE_TOKEN:-}" ]; then   # SMOKE_TOKEN: a bearer instead of the sign-in (the local stack's API key)
   : "${SUPABASE_URL:?set SUPABASE_URL}" "${SUPABASE_ANON_KEY:?set SUPABASE_ANON_KEY}"
@@ -23,7 +23,7 @@ if [ -z "${SMOKE_TOKEN:-}" ]; then   # SMOKE_TOKEN: a bearer instead of the sign
 fi
 fail() { echo "✗ smoke-prod: $*" >&2; exit 1; }
 # Only for production: infra/vault's key is never sent to another URL.
-if [ -z "${ADMIN_API_KEY:-}" ] && [ "$API" = https://api.ryftapp.de ]; then
+if [ -z "${ADMIN_API_KEY:-}" ] && [ "$API" = https://api.ryftlab.de ]; then
   . "$(dirname "$0")/lib/admin.sh"
   if ryft_admin_key 2>/dev/null; then echo "admin key: found by scripts/lib/admin.sh"
   else echo "! no admin key found (scripts/lib/admin.sh): the beta gate is not probed"; fi

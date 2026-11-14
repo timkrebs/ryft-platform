@@ -282,7 +282,7 @@ describe('the admin api client', () => {
     const { api } = setup([new TypeError('Failed to fetch')]);
     const err = await api.get('/v1/admin/invites').catch((e) => e);
     expect(err).toMatchObject({ network: true, status: 0, requestId: null });
-    expect(describeError(err)).toBe('No answer from api.ryftapp.de (network or edge limit). Try again.');
+    expect(describeError(err)).toBe('No answer from api.ryftlab.de (network or edge limit). Try again.');
   });
 
   it('writes nothing to the console (tokens are never logged)', async () => {

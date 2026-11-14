@@ -190,7 +190,7 @@ type Beta struct {
 // call RequirePolicy.
 func LoadBeta() (Beta, error) {
 	b := Beta{PrivacyPolicyVersion: strings.TrimSpace(os.Getenv("PRIVACY_POLICY_VERSION")),
-		PrivacyPolicyURL: getenv("PRIVACY_POLICY_URL", "https://ryftapp.de/privacy")}
+		PrivacyPolicyURL: getenv("PRIVACY_POLICY_URL", "https://ryftlab.de/privacy")}
 	var err error
 	if b.Gate, err = parseMode("BETA_GATE", string(ModeOff)); err != nil {
 		return b, err
@@ -227,7 +227,7 @@ type Admin struct {
 }
 
 // DefaultPublicWebURL is the site that serves the invite link and the operator's page.
-const DefaultPublicWebURL = "https://ryftapp.de"
+const DefaultPublicWebURL = "https://ryftlab.de"
 
 // maxWebOrigins bounds ADMIN_WEB_ORIGINS: the page and a development origin or two.
 const maxWebOrigins = 5

@@ -510,7 +510,7 @@ jobs:
       - run: make argocd-luatest
 
   # Alert rules as code (promtool check and unit tests, mimirtool check) and the synthetic
-  # checks of ryftapp.de (offline validation, RE2, markers against the site's sources).
+  # checks of ryftlab.de (offline validation, RE2, markers against the site's sources).
   monitoring:
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_monitoring == 'true'
@@ -603,7 +603,7 @@ jobs:
       - name: kind cluster, CRDs, chart in Audit and Deny, dry-runs, fixtures, claims
         run: ./scripts/admission_e2e.sh --mode ci --summary "$RUNNER_TEMP/admission-summary.md"
 
-  # ryftapp.de (web/): every check of the site. The platform is this checkout; the app
+  # ryftlab.de (web/): every check of the site. The platform is this checkout; the app
   # repository is checked out next to it (it is public) for the drift checks (tokens, Swift
   # licences, routes, legal drafts, model version).
   web-checks:

@@ -1,11 +1,11 @@
 # RYFT on AWS (EKS)
 
 Terraform for running the RYFT platform (`deploy/k8s`) on EKS behind
-`https://api.ryftapp.de`. Three root modules with separate state, applied in order:
+`https://api.ryftlab.de`. Three root modules with separate state, applied in order:
 
 | Root | What | Lifetime |
 | --- | --- | --- |
-| `infra/aws/dns` | Route 53 zone `ryftapp.de`, CAA (Let's Encrypt only), the mail records (no mail by default, D212) | long-lived; survives cluster rebuilds |
+| `infra/aws/dns` | Route 53 zone `ryftlab.de` (D213), CAA (Let's Encrypt only), the Microsoft 365 mail records (D214) | long-lived; survives cluster rebuilds |
 | `infra/aws` | VPC + EKS cluster `ryft-prod-euc1`, node group, core add-ons; Vault's KMS keys and snapshot bucket | the cluster; the Vault keys and bucket outlive it (`prevent_destroy`) |
 | `infra/aws/kubernetes` | in-cluster edge: AWS Load Balancer Controller, Traefik (NLB, HTTPS only), cert-manager + Let's Encrypt issuers, ExternalDNS, encrypted default StorageClass | the cluster's add-ons |
 
@@ -36,19 +36,19 @@ infra/aws/
 
 | Resource | Name / value |
 | --- | --- |
-| Hosted zone | `ryftapp.de`, `prevent_destroy`; CAA `issue`/`issuewild` `letsencrypt.org`; mail (D212): by default null MX `0 .`, SPF `v=spf1 -all`, DMARC `p=reject` with strict alignment, no DKIM. A provider's values go in `dns/terraform.tfvars` (Google Workspace is the example in `dns/terraform.tfvars.example`) |
+| Hosted zone | `ryftlab.de` (D213), `prevent_destroy`; CAA `issue`/`issuewild` `letsencrypt.org`; mail (D214): Microsoft 365 through GoDaddy as code in `dns/mail.tf` (MX, the apex TXT set with the tenant verification and SPF, DMARC `p=quarantine`, the DKIM `selector2` CNAME, autodiscover, the Skype/Teams CNAMEs and SRVs), no tfvars |
 | VPC | `ryft-prod-euc1`, `10.0.0.0/16`, 3 AZs: private `/20` subnets for nodes and pods, public `/24` subnets for load balancers, one NAT gateway, flow logs (30 days) |
 | EKS cluster | `ryft-prod-euc1`, Kubernetes 1.36, public API endpoint restricted to `endpoint_public_access_cidrs`, secrets encrypted with KMS, audit/api/authenticator logs |
 | Node group | `ryft-prod-euc1-default-…`: 3 × t3.large (AL2023), one per zone |
 | EKS add-ons | `vpc-cni` (NetworkPolicy enforcement on), `kube-proxy`, `coredns`, `eks-pod-identity-agent`, `aws-ebs-csi-driver`, `metrics-server` |
-| Edge (Helm) | `aws-load-balancer-controller` 3.6.0, `traefik` 42.0.0 in `kube-system` behind an internet-facing NLB, port 443 only; `cert-manager` v1.21.2 with ClusterIssuers `letsencrypt-staging`/`-prod` (DNS-01 in Route 53); `external-dns` 1.23.0 (zone `ryftapp.de` only, TXT ownership) |
+| Edge (Helm) | `aws-load-balancer-controller` 3.6.0, `traefik` 42.0.0 in `kube-system` behind an internet-facing NLB, port 443 only; `cert-manager` v1.21.2 with ClusterIssuers `letsencrypt-staging`/`-prod` (DNS-01 in Route 53); `external-dns` 1.23.0 (zone `ryftlab.de` only, TXT ownership) |
 | Argo CD (Helm) | `argo-cd` 10.10.5 in `argocd`, non-HA, no SSO. Its ClusterRoles are **narrowed** (T12-f, D120): the controller has only the kinds that `deploy/argocd/apps` renders, no `secrets`, no `pods/exec`, no `pods/ephemeralcontainers`, nothing on `ValidatingAdmissionPolicy`/`-Binding`, no `escalate` on a ClusterRole and `bind` on one only (`messaging-topology-metrics-auth-role`; `escalate`/`bind` on the four operator Roles by name), `get`/`list`/`watch` on Applications cluster-wide (strict mode drops a kind it cannot list, silently); the server is read-only cluster-wide. This narrows what Argo CD can grant itself; it does not stop a stolen controller token from writing ConfigMaps and workloads in other namespaces (`aws-auth` included), nor from writing a ClusterRole and binding it to `system:serviceaccounts` (the controller's RBAC-kind rules have no `resourceNames`): the workload and RBAC writes close only with the admission policies P6 and P12 both in Deny and this change applied (what stays open even then: OPERATIONS, "What stays open"); `resource.respectRBAC: strict`; the ApplicationSet controller is at 0 replicas. The rules and their reasons are in `docs/OPERATIONS.md` (Deploy and roll back). A new kind in a synced path needs its rule in `kubernetes/argocd.tf` first |
 | StorageClass | `gp3-encrypted` (default): gp3, encrypted, `WaitForFirstConsumer`, `Retain` |
 | IAM | cluster/node roles; Pod Identity roles for EBS CSI, the LB controller, ExternalDNS and cert-manager (the last two scoped to the zone) |
 | Vault keys (`vault.tf`) | KMS `alias/ryft-prod-euc1-vault-unseal` (Vault CE's auto-unseal, used only with `vault_seal = "awskms"` in `kubernetes/`; under the default Shamir seal it is kept unused, D208, about $1 a month) and `alias/ryft-prod-euc1-vault-snapshots` (the bucket): yearly rotation, 30-day deletion window, `prevent_destroy`. The key policy lets the account administer them and names no role, so IAM policies decide who uses them (the Pod Identity roles are in `kubernetes/`). It denies `ScheduleKeyDeletion` and `DisableKey` to everyone (`NoDeletionOrDisable`; see Destroying). The unseal key can additionally be limited to listed principals (below) |
 | Vault snapshots (`vault.tf`) | S3 `ryft-prod-euc1-vault-snapshots-<account id>`, `prevent_destroy`: versioned, SSE-KMS with the snapshot key and the S3 bucket key, all four public access blocks, `BucketOwnerEnforced`; under `snapshots/` objects expire after 30 days, old versions 7 days later, incomplete uploads after 1; the policy denies requests without TLS, any `PutObject` that does not name the snapshot key's ARN (very likely also multipart part uploads, which send no key header: the job uploads with one `put-object`), and any `PutObject` without `If-None-Match` (`DenyPutWithoutIfNoneMatch`: create-only, no identity can overwrite a snapshot; CopyObject and part uploads are refused too) |
 
-Request path: app → `api.ryftapp.de` (Route 53 alias, written by ExternalDNS) → NLB →
+Request path: app → `api.ryftlab.de` (Route 53 alias, written by ExternalDNS) → NLB →
 Traefik (Let's Encrypt certificate, TLS) → `/v1/sync` ingest pods, `/v1` api pods.
 
 ### Unseal key allowlist (optional, off by default)
@@ -109,13 +109,15 @@ terraform init && terraform plan -out=tfplan && terraform apply tfplan
 terraform output godaddy_instructions
 ```
 
-At GoDaddy: My Products → ryftapp.de → DNS → Nameservers → **Change** → *I'll use my own
+At GoDaddy: My Products → ryftlab.de → DNS → Nameservers → **Change** → *I'll use my own
 nameservers* → enter the four `ns-….awsdns-…` servers. DENIC usually publishes the
 change within minutes; resolvers may cache the old ones for up to a day. Check:
 
 ```bash
-dig NS ryftapp.de @a.nic.de +short      # → the four awsdns servers
+dig +norecurse NS ryftlab.de @a.nic.de      # → the four awsdns servers
 ```
+For the rebuild of 2026-11 the order is `docs/REBUILD.md` step 1 (every record dug against the new
+nameservers before the delegation).
 
 **2. Cluster**:
 
@@ -149,7 +151,7 @@ $(terraform output -raw load_balancer_hostname_command)       # the NLB hostname
 
 **4. RYFT** — `deploy/k8s/overlays/eks` (see `docs/OPERATIONS.md`, section EKS). It needs
 images on GHCR (the first CI run) and, for the app's Release build, Supabase auth (M1).
-Once applied, cert-manager issues the `api.ryftapp.de` certificate and ExternalDNS points
+Once applied, cert-manager issues the `api.ryftlab.de` certificate and ExternalDNS points
 the name at the NLB within a minute or two.
 
 ## Admission policies (D120)
@@ -375,7 +377,7 @@ Then:
 ```bash
 # 1. Workloads, then the add-ons; && stops at the first failure
 kubectl --context ryft-prod-euc1 delete -k deploy/k8s/overlays/eks && \
-  terraform -chdir=infra/aws/kubernetes destroy   # Ingress gone → ExternalDNS deletes api.ryftapp.de; Traefik gone → the LB controller deletes the NLB
+  terraform -chdir=infra/aws/kubernetes destroy   # Ingress gone → ExternalDNS deletes api.ryftlab.de; Traefik gone → the LB controller deletes the NLB
 # check the NLB is gone before going on (empty output):
 aws elbv2 describe-load-balancers --query "LoadBalancers[?contains(LoadBalancerName, 'traefik')].LoadBalancerArn" --output text
 

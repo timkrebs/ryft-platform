@@ -57,7 +57,7 @@ func TestBetaGate(t *testing.T) {
 
 func TestConsentAndInviteAPI(t *testing.T) {
 	h, u, st := journalHandler(t)
-	h.beta = config.Beta{PrivacyPolicyVersion: "2026-10-20", PrivacyPolicyURL: "https://ryftapp.de/privacy"}
+	h.beta = config.Beta{PrivacyPolicyVersion: "2026-10-20", PrivacyPolicyURL: "https://ryftlab.de/privacy"}
 	ctx := context.Background()
 	if rec := call(t, h.postConsent, u, "POST", "/v1/me/consent", `{"policy_version": "2025-01-01"}`); rec.Code != 422 {
 		t.Fatalf("an outdated version: %d", rec.Code)
@@ -74,7 +74,7 @@ func TestConsentAndInviteAPI(t *testing.T) {
 	rec := call(t, h.remoteConfig, u, "GET", "/v1/config", "")
 	var cfg model.RemoteConfig
 	_ = json.Unmarshal(rec.Body.Bytes(), &cfg)
-	if cfg.PrivacyPolicyVersion != "2026-10-20" || cfg.PrivacyPolicyURL != "https://ryftapp.de/privacy" {
+	if cfg.PrivacyPolicyVersion != "2026-10-20" || cfg.PrivacyPolicyURL != "https://ryftlab.de/privacy" {
 		t.Fatalf("config: %+v", cfg)
 	}
 

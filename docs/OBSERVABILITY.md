@@ -170,19 +170,19 @@ before going on.
 ### Synthetic Monitoring: the site from outside
 
 Nothing inside the cluster sees what a visitor, the App Review team or Apple's AASA
-fetch sees, so Grafana Cloud's Synthetic Monitoring (free tier) checks `ryftapp.de` from
+fetch sees, so Grafana Cloud's Synthetic Monitoring (free tier) checks `ryftlab.de` from
 two public EU probes every 5 minutes. The definitions are code,
-`deploy/grafana/synthetics/ryftapp.json`; `make synthetics-check` validates them
+`deploy/grafana/synthetics/ryftlab.json`; `make synthetics-check` validates them
 offline, `make synthetics-apply` upserts them by `job` through the SM API
 (`SM_API_URL`, `SM_ACCESS_TOKEN`; OPERATIONS → Monitoring). The results are ordinary
 metrics in the stack's Prometheus, so the same ruler evaluates the alerts.
 
 | `job` | `instance` (the URL) | Passes when |
 | --- | --- | --- |
-| `ryft-site-home` | `https://ryftapp.de/` | 200, `text/html` |
-| `ryft-site-privacy` | `https://ryftapp.de/privacy` | 200, `text/html`, the body holds `Art. 9(2)(a) GDPR` (only the real policy has it) |
-| `ryft-site-aasa` | `https://ryftapp.de/.well-known/apple-app-site-association` | 200 with no redirect, `application/json`, the body holds `M77SKHKG63.dev.timkrebs.ryft` |
-| `ryft-site-www-redirect` | `https://www.ryftapp.de/` | 301 (or 308) whose `Location` is `https://ryftapp.de/`, not followed |
+| `ryft-site-home` | `https://ryftlab.de/` | 200, `text/html` |
+| `ryft-site-privacy` | `https://ryftlab.de/privacy` | 200, `text/html`, the body holds `Art. 9(2)(a) GDPR` (only the real policy has it) |
+| `ryft-site-aasa` | `https://ryftlab.de/.well-known/apple-app-site-association` | 200 with no redirect, `application/json`, the body holds `M77SKHKG63.dev.timkrebs.ryft` |
+| `ryft-site-www-redirect` | `https://www.ryftlab.de/` | 301 (or 308) whose `Location` is `https://ryftlab.de/`, not followed |
 
 Every check also fails when TLS fails. Metrics (labels `job`, `instance`, `probe`):
 `probe_success` (1 or 0 per run), `probe_ssl_earliest_cert_expiry` (Unix seconds; the
@@ -476,8 +476,8 @@ notification policy for `severity` `critical`, `warning` and `info` (feedback).
 | ArgoMetricsMissing | warning | no `argocd_app_info` for 15 min | `kubectl -n argocd get pods`, the metrics policy |
 | SiteDown | critical | the home page, `/privacy` or the AASA fails from every probe for 10 min (status, content type or body marker, not only "down") | OPERATIONS → Apex site → When a synthetic alert fires |
 | SiteProbeFlapping | warning | one probe fails twice or more in 30 min while another gets through (left out for 30 min after SiteDown's condition held; failures that only overlap between probes do not suppress it) | the same: which probe, which URL, the edge's rate limit |
-| SiteWwwRedirectBroken | warning | `www.ryftapp.de` does not answer a redirect to the apex from any probe, 10 min | the `www-to-apex` Middleware, the Ingress hosts |
-| SiteCertificateExpiring | warning | the served certificate (apex or www) expires in < 14 days, 1 h | `kubectl -n ryft-web get certificate ryftapp-de-tls`, cert-manager's events (CertificateExpiring is the inside view of the same certificate) |
+| SiteWwwRedirectBroken | warning | `www.ryftlab.de` does not answer a redirect to the apex from any probe, 10 min | the `www-to-apex` Middleware, the Ingress hosts |
+| SiteCertificateExpiring | warning | the served certificate (apex or www) expires in < 14 days, 1 h | `kubectl -n ryft-web get certificate ryftlab-de-tls`, cert-manager's events (CertificateExpiring is the inside view of the same certificate) |
 | AdmissionPolicyViolation | info | a Warn+Audit binding (or Pod Security's warn/audit mode) flagged an admitted request in the last 10 min; not for bindings that deny. Info, not warning: findings that repeat on every Argo CD refresh would page all day | OPERATIONS → Admission policy signals: the day's Logs Insights query by object |
 | AdmissionPolicyDenied | warning | a Deny+Audit binding refused a request in the last 10 min (not `ryft-workloads-pods`, `ryft-workloads-pods-vault`, `ryft-operator-reach`, `ryft-auth-env`) | `argocd app get`, the audit annotation; fix the object in Git |
 | AdmissionPodDenied | critical | a Pod-capable binding (`ryft-workloads-pods`, `ryft-workloads-pods-vault`, `ryft-operator-reach`, `ryft-auth-env`: step C, vault's pods and P5, the design's critical class) or Pod Security's enforce mode refused a request in the last 10 min. The counter has no resource label, so a P5 or P8 refusal of another object pages too | `FailedCreate` events; break-glass the binding first if workloads cannot be re-created |
@@ -659,7 +659,7 @@ refused if it is `/`, `$HOME` or a non-empty directory without the `.ryft-load-o
 route's error rate is above 1 % (`LOAD_MAX_ERROR_RATE`) or an optional k6 threshold (`LOAD_P95_SYNC_MS`,
 `LOAD_P95_DAYS_MS`) failed. In local mode `INGEST_URL` and `API_URL` are only the readiness probes from the host; k6
 talks to the services over the compose network. A plain URL on localhost is required: `LOAD_ALLOW_REMOTE=1` allows
-other plain hosts (with `LOAD_REMOTE_API_KEY`, never the ambient `API_KEY`), but never `*.ryftapp.de` or
+other plain hosts (with `LOAD_REMOTE_API_KEY`, never the ambient `API_KEY`), but never `*.ryftlab.de` or
 `*.supabase.co`; never aim it at production. Each invocation leaves 200 accounts and about 250 000 samples in the dev
 database (`make down` clears it).
 

@@ -21,7 +21,7 @@ import {
 } from '../ui';
 
 /** A link is shared or copied only when it is a RYFT invite link: whatever the api sent. */
-const INVITE_LINK = 'https://ryftapp.de/invite/';
+const INVITE_LINK = 'https://ryftlab.de/invite/';
 const linkOk = (link: string) => typeof link === 'string' && link.startsWith(INVITE_LINK);
 
 const TONE: Record<InviteStatus, Tone> = { open: 'ok', used: 'plain', expired: 'warn', revoked: 'bad' };

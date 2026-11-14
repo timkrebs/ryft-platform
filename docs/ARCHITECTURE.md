@@ -415,8 +415,8 @@ and nothing else (D187).
     the web image built from `web/` in this repository (pages, legal texts, nginx config,
     AASA), pinned in `overlays/eks` (D106, D107, OPERATIONS → Apex site).
   - Two operator UIs are public through Traefik, each behind its own login, a per-IP
-    rate limit and HSTS: Argo CD at `argocd.ryftapp.de` (`argocd`) and the RabbitMQ
-    management UI at `rabbitmq.ryftapp.de` (Traefik → the nodes' 15671, verified
+    rate limit and HSTS: Argo CD at `argocd.ryftlab.de` (`argocd`) and the RabbitMQ
+    management UI at `rabbitmq.ryftlab.de` (Traefik → the nodes' 15671, verified
     against the internal CA). No IP allow-list or SSO yet (D103).
 - **Pods:** Pod Security `restricted` on every namespace. Everything runs as non-root
   with a read-only root filesystem (the in-cluster Postgres of `local-postgres`

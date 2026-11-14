@@ -8,7 +8,7 @@
 # other token, and writes no token role, auth method, auth role or config, identity or policy, and restores no
 # snapshot (bootstrap/admin.hcl): nothing it makes outlives the session, and every new way in is a root token's.
 # The OIDC files (oidc-*.json) are the documented later option, written nowhere in the rebuild: they are the Google
-# Workspace version (D193, bound to hd = ryftapp.de, and Google Workspace is gone), so a personal Google account
+# Workspace version (D193, bound to hd = ryftlab.de, and Google Workspace is gone), so a personal Google account
 # needs a reviewed change of them first (infra/vault/README.md -> bootstrap/). They stay pinned so that change is a
 # deliberate one.
 locals {

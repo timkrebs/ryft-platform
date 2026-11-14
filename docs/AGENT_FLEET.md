@@ -24,7 +24,7 @@ flowchart TB
         db[database-engineer<br/>migrations · grants · RLS]
         ops[gitops-engineer<br/>deploy/ · Argo CD · CI · promote]
         infra[infra-engineer<br/>Terraform, prepared not applied]
-        web[web-engineer<br/>web/ · ryftapp.de · legal]
+        web[web-engineer<br/>web/ · ryftlab.de · legal]
         test[test-engineer]
     end
     subgraph verify [Verify · read-only]

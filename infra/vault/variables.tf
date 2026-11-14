@@ -221,7 +221,7 @@ variable "database" {
 variable "demo_email" {
   description = "Email of the App Review demo account (scripts/seed_demo.sh); its password is generated into kv-operator/demo"
   type        = string
-  default     = "review@ryftapp.de"
+  default     = "review@ryftlab.de"
 
   validation {
     condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[a-z]{2,}$", var.demo_email))

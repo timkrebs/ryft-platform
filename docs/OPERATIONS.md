@@ -45,7 +45,7 @@ the policy are the isolation. `monitoring` and the import service have theirs th
 On EKS `infra/vault` creates the namespaces (Pod Security `restricted`), the service
 accounts, the Vault side and the operator manifests; the overlay only deploys workloads.
 
-## EKS (api.ryftapp.de)
+## EKS (api.ryftlab.de)
 
 The AWS side is Terraform in three roots, then Vault in a fourth, each applied by hand
 in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/README.md) and
@@ -54,8 +54,8 @@ in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/READM
 | Step | Command | Done when |
 | --- | --- | --- |
 | 0. State | the four HCP Terraform workspaces with execution mode Local, Terraform 1.16.6, `terraform login` | see **Terraform state** below; states from before HCP: `make tf-migrate-hcp` once |
-| 1. Zone | `cd infra/aws/dns && terraform init && terraform apply` (the zone survived the decommission; this apply switches the mail records to the no-mail set, **Mail for ryftapp.de**) | `terraform output name_servers` lists four awsdns servers |
-| 2. Delegate | GoDaddy → ryftapp.de → Nameservers → *I'll use my own* → those four | `dig NS ryftapp.de @a.nic.de +short` shows them |
+| 1. Zone | `cd infra/aws/dns && terraform init && terraform apply` (the zone `ryftlab.de` with CAA and the Microsoft 365 records, D213/D214, **Mail for ryftlab.de**; the rebuild's order is `docs/REBUILD.md` step 1) | `terraform output name_servers` lists four awsdns servers, and every record answers from them |
+| 2. Delegate | GoDaddy → ryftlab.de → Nameservers → *I'll use my own* → those four | `dig +norecurse NS ryftlab.de @a.nic.de` shows them |
 | 3. Cluster | `cd infra/aws && terraform apply`, then `aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ryft-prod-euc1` | `kubectl get nodes` Ready; `kubectl get sc` has no unencrypted default |
 | 4. Edge | `cd infra/aws/kubernetes && terraform apply` (`acme_email` in tfvars; the Vault add-on with `vault_vso_peer = false` and `vault_collector_peer = false`, opened in Vault → Bootstrap step 11) | `kubectl get clusterissuer` Ready; Traefik Service has an NLB hostname; `gp3-encrypted (default)`; `kubectl -n vault-secrets-operator-system get deploy` Ready; `kubectl -n vault get pods` three Running, `0/1` (uninitialised, D196) |
 | 5. Supabase | the checklist in [`SUPABASE.md`](SUPABASE.md) | project ref, pooler host, database password, secret key at hand |
@@ -118,8 +118,8 @@ for s in ingest scoring api notify migrate; do kubectl -n ryft-$s get vaultstati
 kubectl -n ryft-rabbitmq get vaultstaticsecret,secret,rabbitmqcluster          # amqp-user-*, ALLREPLICASREADY
 kubectl -n ryft-api get ingress,certificate                  # certificate READY True (DNS-01, ~1–2 min)
 kubectl -n ryft-ingest get ingress,certificate
-dig +short api.ryftapp.de                                    # NLB addresses (ExternalDNS, from the api Ingress)
-curl -sI https://api.ryftapp.de/v1/me                        # 401 without a token
+dig +short api.ryftlab.de                                    # NLB addresses (ExternalDNS, from the api Ingress)
+curl -sI https://api.ryftlab.de/v1/me                        # 401 without a token
 ```
 
 If a pod is stuck in `CreateContainerConfigError`, its namespace has no `ryft-secrets`
@@ -144,7 +144,7 @@ real project. It never touches real accounts:
 ```bash
 SUPABASE_URL=https://<ref>.supabase.co SUPABASE_ANON_KEY=<publishable key> \
 SMOKE_EMAIL=<test user> SMOKE_PASSWORD=<…> SUPABASE_SECRET_KEY=sb_secret_… \
-API_URL=https://api.ryftapp.de INGEST_URL=https://api.ryftapp.de make smoke-supabase
+API_URL=https://api.ryftlab.de INGEST_URL=https://api.ryftlab.de make smoke-supabase
 ```
 
 1. **Contract checks:** it signs in the dedicated test user (`SUPABASE.md` checklist)
@@ -286,11 +286,11 @@ promote PR #124 (the scoring and notify lifecycle change) was left unmerged; the
 
 Closing a promote PR, or switching its auto-merge off, is not a hold: a newer promote PR is a new PR.
 
-**The UI and CLI** at `https://argocd.ryftapp.de` (D103), user `admin`:
+**The UI and CLI** at `https://argocd.ryftlab.de` (D103), user `admin`:
 
 ```bash
 terraform -chdir=infra/aws/kubernetes output -raw argocd_admin_password; echo   # the password
-argocd login argocd.ryftapp.de --grpc-web --username admin \
+argocd login argocd.ryftlab.de --grpc-web --username admin \
   --password "$(terraform -chdir=infra/aws/kubernetes output -raw argocd_admin_password)"
 kubectl -n argocd port-forward svc/argocd-server 8080:80            # without the Ingress: http://localhost:8080
 argocd app list
@@ -396,7 +396,7 @@ allowlist:
    kinds and Secrets in `argocd`). With a stolen controller token an attacker can, for example,
    - deploy a workload in `cert-manager` as the cert-manager ServiceAccount (it reads Secrets
      cluster-wide and holds Route53 rights through Pod Identity: a DNS-01 certificate for
-     `api.ryftapp.de`);
+     `api.ryftlab.de`);
    - deploy in `kube-system` as a controller-manager ServiceAccount;
    - patch `argocd-cm` or `argocd-rbac-cm` (anonymous admin on the public UI, D103) or the
      `argocd-server` Deployment;
@@ -602,7 +602,7 @@ The kind run does this for the kinds of the apps (`claim-i-list`). The pattern i
   `clusterRoleRules.enabled = false`) is refused by that guard on purpose; do not edit around it. **If the
   revert conflicts with later edits of `argocd.tf`, stop** and resolve it in review; do not apply a plan from
   a half-reverted tree.
-  Watch the Argo CD UI (`https://argocd.ryftapp.de`) and `argocd app list`: every application Synced and
+  Watch the Argo CD UI (`https://argocd.ryftlab.de`) and `argocd app list`: every application Synced and
   Healthy again, `kubectl -n argocd get pods` all Ready after the controller restarts.
 
 **Pause** (a deploy must not happen now, or break-glass): the root re-applies every
@@ -847,7 +847,7 @@ merges**, and the cluster stays on the rolled-back pin until the second is throu
 kubectl get deploy -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,IMAGE:.spec.template.spec.containers[*].image' | grep ghcr.io/timkrebs/ryft
 kubectl get rs -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,DES:.spec.replicas,READY:.status.readyReplicas,IMG:.spec.template.spec.containers[0].image' | grep -E '^(NS|ryft-)'   # one ReplicaSet with replicas per service, the old at 0
 kubectl -n argocd get app ryft-platform -o jsonpath='{.status.operationState.phase}{"\n"}{range .status.operationState.syncResult.resources[?(@.hookType)]}{.kind}/{.name} {.hookType} {.hookPhase}{"\n"}{end}'
-curl -s -o /dev/null -w '%{http_code}\n' https://api.ryftapp.de/v1/me     # 401 (alive, wants a token)
+curl -s -o /dev/null -w '%{http_code}\n' https://api.ryftlab.de/v1/me     # 401 (alive, wants a token)
 make smoke-prod                   # needs SUPABASE_* and SMOKE_* in the environment
 ```
 
@@ -1432,7 +1432,7 @@ certificates). The users' passwords come from `infra/vault` (Secret
 
 **The UI and the CLI:**
 
-The UI is at `https://rabbitmq.ryftapp.de` (D103), with the operator's default user:
+The UI is at `https://rabbitmq.ryftlab.de` (D103), with the operator's default user:
 
 ```bash
 kubectl -n ryft-rabbitmq get secret rabbitmq-default-user -o go-template='{{.data.username | base64decode}} {{.data.password | base64decode}}{{"\n"}}'
@@ -1780,7 +1780,7 @@ attribute in `infra/aws/kubernetes`). Check it from one machine, expecting `429`
 after the first ~100:
 
 ```bash
-for i in $(seq 1 150); do curl -s -o /dev/null -w '%{http_code}\n' https://api.ryftapp.de/v1/me; done | sort | uniq -c
+for i in $(seq 1 150); do curl -s -o /dev/null -w '%{http_code}\n' https://api.ryftlab.de/v1/me; done | sort | uniq -c
 ```
 
 The services' own per-user limit (D36) applies after the token, so the two complement
@@ -1792,7 +1792,7 @@ Friends on TestFlight (D78–D83). Everything here uses the api's `ADMIN_API_KEY
 
 ```bash
 ADMIN=$(terraform -chdir=infra/vault output -raw admin_api_key)    # locally: dev-admin-key-change-me-0123456789abcdef
-API=https://api.ryftapp.de
+API=https://api.ryftlab.de
 ```
 
 **Consent.** `POST /v1/sync` answers `403 consent_required` until the account consented
@@ -2021,7 +2021,7 @@ A role set this way appears only in tokens issued after the update: sign in agai
 The api only reads `admin_accounts`; it is operator configuration, not user data (account
 deletion does not touch it; a deleted account's tombstone refuses the row). Which pages may
 read the answers: `ADMIN_WEB_ORIGINS` in `deploy/k8s/base/api/config.env` (a comma-separated
-list of exact origins, e.g. `https://ryftapp.de`; empty means no browser page can, scripts are
+list of exact origins, e.g. `https://ryftlab.de`; empty means no browser page can, scripts are
 unaffected; a malformed value stops the api at start-up, before it waits for the database, and a
 test parses the committed line). Every `/v1/admin/*` request is limited per client address (10 a
 second, bursts of 20, per pod; the address is the rightmost `X-Forwarded-For` entry, Traefik's;
@@ -2037,7 +2037,7 @@ email* and *Secure email change* on), and `make alerts-apply` must have run (abo
    else and **not** your Apple ID address (Supabase links identities of the same verified email, so an app sign-in
    with Apple could land in it), a long random password from the password manager, *Auto confirm*. Note its UUID.
    Grant nothing yet.
-2. **Enrol the TOTP on the live page:** open `https://ryftapp.de/admin`, sign in, scan the QR code (or open the
+2. **Enrol the TOTP on the live page:** open `https://ryftlab.de/admin`, sign in, scan the QR code (or open the
    `otpauth://` link; the page has no copy button for the secret on purpose) and enter the code. The page then
    says "This account is not an operator account." and ends this session only (`scope=local`): expected, the
    account has no role yet.
@@ -2054,7 +2054,7 @@ email* and *Secure email change* on), and `make alerts-apply` must have run (abo
 
    Optional, to test the aal check itself: set the limit to 2, run the probe (expect `403 insufficient_aal`), set
    it back to 1 and run it again (expect `422 too_many_enrolled_mfa_factors`). Either way below is enough:
-   - Devtools on `https://ryftapp.de/admin`: sign in with the password and stop at "Enter your code" (the tab now
+   - Devtools on `https://ryftlab.de/admin`: sign in with the password and stop at "Enter your code" (the tab now
      holds the aal1 session), then in the console (the page's CSP allows exactly this origin and path; put in the
      two values of `web/config/admin.json`):
      ```js
@@ -2116,7 +2116,7 @@ it is recorded).
 **Evidence that the page works in production:** merged (#128), pinned (#138, web `bb74830`), confirmed by the owner on
 2026-11-05 (pasted output): the web pods rolled, `/admin` answers `200` with the admin CSP and `Cache-Control:
 no-store`, `/` keeps `connect-src 'none'`, the api rolled with `ADMIN_WEB_ORIGINS` (`"web_origins":1`, the `OPTIONS`
-preflight `204` with `access-control-allow-origin: https://ryftapp.de`), and the operator's sign-in on the page worked.
+preflight `204` with `access-control-allow-origin: https://ryftlab.de`), and the operator's sign-in on the page worked.
 
 **Alerts.** `AdminUnauthorized` (warning): more than 20 requests with a bad bearer in 10 minutes,
 a scanner or a stale or foreign token; read the `admin auth rejected` lines. The api never sees a
@@ -2377,7 +2377,7 @@ admin routes and the api's `ADMIN_API_KEY` (generated by `infra/vault`):
 
 ```bash
 ADMIN=$(terraform -chdir=infra/vault output -raw admin_api_key)    # locally: dev-admin-key-change-me-0123456789abcdef
-API=https://api.ryftapp.de
+API=https://api.ryftlab.de
 curl -s -H "Authorization: Bearer $ADMIN" $API/v1/admin/flags | jq            # every flag
 # On for two testers only (their user IDs: GET /v1/me → id):
 curl -s -X PUT -H "Authorization: Bearer $ADMIN" $API/v1/admin/flags/today.redesign \
@@ -2486,7 +2486,7 @@ Cloud. Access to the Grafana stack is therefore access to the cluster's telemetr
 the stack's members to yourself.
 
 **Synthetic Monitoring, once** (the site from outside; OBSERVABILITY → Synthetic
-Monitoring). The checks are code (`deploy/grafana/synthetics/ryftapp.json`); the token is
+Monitoring). The checks are code (`deploy/grafana/synthetics/ryftlab.json`); the token is
 yours and is never committed or put in a chat:
 
 1. Grafana Cloud → your stack → Testing & synthetics → Synthetics. The first visit asks
@@ -3469,7 +3469,7 @@ hour. **To verify** in kind: that 2.2.1 reads the encoded token from stdin with 
    admin token as above. Simpler and it never expires, but it is one standing credential that
    is everything, usable without any share; a leak is invisible until it is used.
 2. **OIDC with a personal Google account, later.** The bootstrap files `oidc-*.json` are the
-   Google Workspace version (`hd = ryftapp.de`) and are written nowhere. A personal account has
+   Google Workspace version (`hd = ryftlab.de`) and are written nowhere. A personal account has
    no `hd` claim: a reviewed change of the files and their tests first
    (`infra/vault/README.md` → `bootstrap/`), then the login is additive; the generate-root
    session stays the break-glass path.
@@ -4277,11 +4277,17 @@ when the month is forecast to exceed it.
 
 ## Apex site and apple-app-site-association
 
-`https://ryftapp.de` is the **web** image group (D106, D107):
+**Not deployed since the rebuild of 2026-11 (D215):** `overlays/eks` does not list the web unit, so
+`ryftlab.de` and `www` have no address, no certificate and no AASA. The image is still built and pinned,
+and the checks below hold once it is back: `docs/REBUILD.md` → **Optional: the web pod for the legal pages**.
+Until then the Synthetic Monitoring checks stay unapplied (deleted in Grafana Cloud) and the `ryft-site`
+rules have no data.
+
+`https://ryftlab.de` is the **web** image group (D106, D107):
 `ghcr.io/timkrebs/ryft/web:<short-sha>`, built from **`web/`** in this repository by `ci`
 on a push to main that changes it (a public package, pulled anonymously like the service
 images). The pages, the legal texts (`web/content/legal/{en,de}/`), nginx's config and the
-AASA live there; its rules are `web/CLAUDE.md`. `www.ryftapp.de` redirects to the apex.
+AASA live there; its rules are `web/CLAUDE.md`. `www.ryftlab.de` redirects to the apex.
 The Deployment (`deploy/k8s/base/web`, uid 101, read-only root filesystem, `/healthz`), its
 Service and NetworkPolicy, and in `overlays/eks` the Ingress, the `www` redirect, the rate
 limit and **web's pin** (this repository's short SHA, like the services', quoted).
@@ -4292,7 +4298,7 @@ limit and **web's pin** (this repository's short SHA, like the services', quoted
   (`../app/docs/API_REQUESTS.md`): `/day/*`, `/sleep/*`, `/insights/*`,
   `/train/sessions/*`, `/train/session/*`, `/train/exercises/*`, `/train/plan/*`,
   `/train/history`, `/invite/*` (since 2026-10-21), `/auth/*`. The app's entitlements
-  list `webcredentials:ryftapp.de` and `applinks:ryftapp.de`.
+  list `webcredentials:ryftlab.de` and `applinks:ryftlab.de`.
 - **Those paths in a browser** (a phone without the app) get an "Open in RYFT" page.
 - **The legal pages**, English at `/privacy`, `/terms`, `/support`, `/impressum`, German
   under `/de/…`, each version of the privacy policy also at `/privacy/<version>`.
@@ -4324,13 +4330,13 @@ kubectl -n argocd get applications ryft-platform                                
 kubectl -n ryft-web get pods -l app=web -o jsonpath='{.items[*].spec.containers[0].image}'; echo   # the deploy PR's pin, both pods
 V=$(sed -nE 's/^.*ryft-api,.*PRIVACY_POLICY_VERSION=([^]]*)\].*$/\1/p' deploy/k8s/overlays/eks/kustomization.yaml)   # the policy version in force
 for p in "" privacy terms support impressum de/privacy de/impressum privacy/$V day/2026-10-19 auth/callback invite/TEST; do
-  curl -s -o /dev/null -w "%{http_code} %{content_type} /$p\n" https://ryftapp.de/$p; done          # 200 text/html each
-curl -sI https://ryftapp.de/.well-known/apple-app-site-association | grep -iE "^HTTP|content-type|location"   # 200, application/json, no location
-curl -s https://ryftapp.de/.well-known/apple-app-site-association | python3 -m json.tool | head -30           # appIDs and paths as above
-curl -s https://ryftapp.de/support | grep -o 'mailto:[^"]*' | head -1                                     # the real address
-curl -sI https://ryftapp.de/privacy | grep -i content-security-policy | grep -c "sha256-"                   # 1; and no CSP error in the browser console
-curl -s -o /dev/null -D - https://www.ryftapp.de/ | grep -i location                                                      # https://ryftapp.de/
-curl -s https://app-site-association.cdn-apple.com/a/v1/ryftapp.de          # Apple's CDN copy (updates within a day)
+  curl -s -o /dev/null -w "%{http_code} %{content_type} /$p\n" https://ryftlab.de/$p; done          # 200 text/html each
+curl -sI https://ryftlab.de/.well-known/apple-app-site-association | grep -iE "^HTTP|content-type|location"   # 200, application/json, no location
+curl -s https://ryftlab.de/.well-known/apple-app-site-association | python3 -m json.tool | head -30           # appIDs and paths as above
+curl -s https://ryftlab.de/support | grep -o 'mailto:[^"]*' | head -1                                     # the real address
+curl -sI https://ryftlab.de/privacy | grep -i content-security-policy | grep -c "sha256-"                   # 1; and no CSP error in the browser console
+curl -s -o /dev/null -D - https://www.ryftlab.de/ | grep -i location                                                      # https://ryftlab.de/
+curl -s https://app-site-association.cdn-apple.com/a/v1/ryftlab.de          # Apple's CDN copy (updates within a day)
 ```
 
 ### When a synthetic alert fires
@@ -4340,12 +4346,12 @@ Monitoring). First look, read-only; the `job` label names the check:
 
 ```bash
 # what the probes see, the way they see it (no redirects followed)
-curl -sI https://ryftapp.de/ | grep -iE "^HTTP|content-type"                                     # ryft-site-home: 200, text/html
-curl -s https://ryftapp.de/privacy | grep -c 'Art. 9(2)(a) GDPR'                               # ryft-site-privacy: 1 or more
-curl -sI https://ryftapp.de/.well-known/apple-app-site-association | grep -iE "^HTTP|content-type|location"   # ryft-site-aasa: 200, application/json, no location
-curl -s https://ryftapp.de/.well-known/apple-app-site-association | grep -c 'M77SKHKG63.dev.timkrebs.ryft'    # 1 or more
-curl -s -o /dev/null -D - https://www.ryftapp.de/ | grep -iE "^HTTP|location"                                    # ryft-site-www-redirect: 301, https://ryftapp.de/
-echo | openssl s_client -connect ryftapp.de:443 -servername ryftapp.de 2>/dev/null | openssl x509 -noout -enddate   # the served certificate
+curl -sI https://ryftlab.de/ | grep -iE "^HTTP|content-type"                                     # ryft-site-home: 200, text/html
+curl -s https://ryftlab.de/privacy | grep -c 'Art. 9(2)(a) GDPR'                               # ryft-site-privacy: 1 or more
+curl -sI https://ryftlab.de/.well-known/apple-app-site-association | grep -iE "^HTTP|content-type|location"   # ryft-site-aasa: 200, application/json, no location
+curl -s https://ryftlab.de/.well-known/apple-app-site-association | grep -c 'M77SKHKG63.dev.timkrebs.ryft'    # 1 or more
+curl -s -o /dev/null -D - https://www.ryftlab.de/ | grep -iE "^HTTP|location"                                    # ryft-site-www-redirect: 301, https://ryftlab.de/
+echo | openssl s_client -connect ryftlab.de:443 -servername ryftlab.de 2>/dev/null | openssl x509 -noout -enddate   # the served certificate
 # inside
 kubectl -n argocd get applications ryft-platform
 kubectl -n ryft-web get pods -l app=web -o wide
@@ -4358,10 +4364,10 @@ kubectl -n ryft-web logs -l app=web --tail=50
   failed: status code, header or body regexp). A regexp that no longer matches after a web
   deploy is the usual cause: the privacy marker (`Art. 9(2)(a) GDPR`) after a policy
   revision, the AASA after an app ID change. If the page is right and the regexp is stale,
-  fix `deploy/grafana/synthetics/ryftapp.json` and `make synthetics-apply`; if the page is
+  fix `deploy/grafana/synthetics/ryftlab.json` and `make synthetics-apply`; if the page is
   wrong, roll back the web pin ("Deploy and roll back") and fix forward.
 - **SiteDown, `curl` fails:** pods not ready or none (`get pods`), the Ingress or the
-  Traefik service (`kubectl -n kube-system get pods -l app.kubernetes.io/name=traefik`), DNS (`dig +short ryftapp.de`, ExternalDNS
+  Traefik service (`kubectl -n kube-system get pods -l app.kubernetes.io/name=traefik`), DNS (`dig +short ryftlab.de`, ExternalDNS
   in `infra/aws/kubernetes`), the certificate. The AASA wrong or missing means universal
   links and password AutoFill stop working for testers: treat it like a down site.
 - **SiteProbeFlapping:** a single failed run is noise, which is why the rule needs two in
@@ -4371,8 +4377,8 @@ kubectl -n ryft-web logs -l app=web --tail=50
   something else is hitting the limit), a 5xx (one pod: `kubectl -n ryft-web logs <pod>`). If it recurs for days,
   replace the probe in the JSON.
 - **SiteWwwRedirectBroken:** the `www-to-apex` Middleware (`overlays/eks/web.yaml`) and the
-  Ingress' second host; the check wants 301 or 308 with `Location: https://ryftapp.de/`.
-- **SiteCertificateExpiring:** `kubectl -n ryft-web describe certificate ryftapp-de-tls`
+  Ingress' second host; the check wants 301 or 308 with `Location: https://ryftlab.de/`.
+- **SiteCertificateExpiring:** `kubectl -n ryft-web describe certificate ryftlab-de-tls`
   and `get challenges,orders -n ryft-web` (DNS-01), cert-manager's log (the flow:
   "EKS", Certificates). A renewed certificate shows in the next run; Traefik may need a
   moment to pick up the secret.
@@ -4385,77 +4391,67 @@ kubectl -n ryft-web logs -l app=web --tail=50
 The block above uses GET where it matters: `curl -I` sends HEAD, and Traefik answers a HEAD
 for `www` with 308 where a GET gets 301 (the check accepts both).
 
-## Mail for ryftapp.de
+## Mail for ryftlab.de
 
-**ryftapp.de sends and receives no mail** (D212). Google Workspace (D142) was deleted with
-the decommission (2026-11-10). `infra/aws/dns` (Terraform, the user applies) publishes, next
-to the CAA records, the no-mail set:
+**`support@ryftlab.de` runs on Microsoft 365, bought through GoDaddy** (D214, live since
+2026-11-14). The mailbox, its users and any forwarding are configured at GoDaddy and Microsoft.
+`infra/aws/dns` (Terraform, the user applies) publishes the records the tenant needs, as code in
+`infra/aws/dns/mail.tf` (public values, no tfvars), next to the CAA records:
 
 | Record | Name | Value |
 | --- | --- | --- |
-| MX | `ryftapp.de` | `0 .`: the null MX (RFC 7505), senders bounce at once instead of retrying |
-| TXT | `ryftapp.de` | `v=spf1 -all`: no host may send as the domain |
-| TXT | `_dmarc.ryftapp.de` | `v=DMARC1; p=reject; adkim=s; aspf=s`: no `rua`, there is no mailbox for reports |
-| DKIM | none | no key is published (no mail is sent) |
+| MX | `ryftlab.de` | `0 ryftlab-de.mail.protection.outlook.com.` |
+| TXT (two values) | `ryftlab.de` | `NETORGFT21311797.onmicrosoft.com` (the tenant's verification) and `v=spf1 include:secureserver.net -all` |
+| TXT | `_dmarc.ryftlab.de` | `v=DMARC1; p=quarantine; adkim=r; aspf=r; rua=mailto:dmarc_rua@onsecureserver.net;` (GoDaddy collects the reports) |
+| CNAME | `selector2._domainkey.ryftlab.de` | `selector2-ryftlab-de._domainkey.netorgft21311797.d-v1.dkim.mail.microsoft.` (DKIM) |
+| CNAME | `autodiscover.ryftlab.de` | `autodiscover.outlook.com.` |
+| CNAME | `email.ryftlab.de` | `email.secureserver.net.` (GoDaddy's webmail) |
+| CNAME | `lyncdiscover.ryftlab.de`, `sip.ryftlab.de` | `webdir.online.lync.com.`, `sipdir.online.lync.com.` |
+| CNAME | `msoid.ryftlab.de` | `clientconfig.microsoftonline-p.net.` |
+| SRV | `_sip._tls.ryftlab.de` | `100 1 443 sipdir.online.lync.com.` |
+| SRV | `_sipfederationtls._tcp.ryftlab.de` | `100 1 5061 sipfed.online.lync.com.` |
 
-ExternalDNS keeps its ownership records under prefixed names (`a-www.ryftapp.de`), so nothing
-collides at the apex.
+Not published: GoDaddy's parking A records on the apex (the apex has no address while web is not
+deployed, D215), `www`, and `selector1._domainkey`, which did not resolve on 2026-11-14. Once GoDaddy
+shows a `selector1` value that resolves, uncomment its line in `mail.tf` (with GoDaddy's exact value),
+plan (`1 to add`), apply. Microsoft signs with one selector at a time and rotates between the two, so
+DKIM fails on the day it signs with a selector that is not published.
 
-**The switch from Google's records** (still in the zone and its state after the
-decommission): with no mail values in `infra/aws/dns/terraform.tfvars` and no
-`TF_VAR_dkim_record` in the shell, the plan is expected to show `aws_route53_record.dkim` moved
-to `dkim[0]` and destroyed, and `mx`, `apex_txt` and `dmarc` updated in place:
-`0 to add, 3 to change, 1 to destroy`. The zone, CAA or any replace: stop.
+ExternalDNS keeps its ownership records under prefixed names (`a-api.ryftlab.de`), so nothing
+collides with these.
 
-**Until a provider is chosen, no @ryftapp.de address works.** That affects:
-- **the Impressum**: §5 DDG needs an address that receives mail, and it names
-  `support@ryftapp.de` (as does the support page, the site's `SUPPORT_EMAIL`);
-- **the privacy policy's contact**, the same address;
-- **the budget alerts** (`budget_alert_emails` in `infra/aws`) and **`acme_email`**
-  (`infra/aws/kubernetes`, Let's Encrypt's expiry notices), if they use the domain;
-- **Supabase Auth SMTP**, if it pointed at Google (Supabase → Authentication → SMTP): then
-  confirmation and reset mails fail. Supabase's built-in sender is rate-limited and sends only
-  to the organisation's members' addresses (**to verify** in Supabase's documentation).
-
-Mail must work again before, or soon after, the testers return.
-
-**To use a provider**, copy its values into `infra/aws/dns/terraform.tfvars` (git-ignored):
-`mx_records`, `apex_txt_verifications`, `spf`, `dkim_selector`, `dkim_record`, `dmarc`. Google
-Workspace is the example in `terraform.tfvars.example`. Then plan and apply:
-
+**Check every record** against one of the zone's own nameservers (works before the delegation),
+then once more against a public resolver after it:
 ```bash
-terraform -chdir=infra/aws/dns plan -out=tfplan   # mx, apex_txt and dmarc change, dkim[0] is added; nothing else
+ns=$(terraform -chdir=infra/aws/dns output -json name_servers | jq -r '.[0]')
+d() { printf '%-5s %-38s ' "$1" "$2"; dig +short +norecurse "$1" "$2" @"$ns" | tr '\n' ' '; echo; }
+d MX ryftlab.de; d TXT ryftlab.de; d TXT _dmarc.ryftlab.de; d CAA ryftlab.de; d CAA '*.ryftlab.de'
+for n in selector2._domainkey autodiscover email lyncdiscover sip msoid; do d CNAME "$n.ryftlab.de"; done
+d SRV _sip._tls.ryftlab.de; d SRV _sipfederationtls._tcp.ryftlab.de
+```
+Every line prints the table's value (CAA: `0 issue "letsencrypt.org"` and `0 issuewild "letsencrypt.org"`).
+For the public check, set `ns=1.1.1.1` and drop `+norecurse`. Then send a mail from an outside account to
+`support@ryftlab.de` and one back, and check "Show original" for `SPF: PASS`, `DKIM: PASS`,
+`DMARC: PASS`; a DKIM failure that names `selector1` means the line above is due.
+
+**Who processes the mail:** Microsoft (with GoDaddy as the reseller) receives and stores what is sent
+to `support@ryftlab.de`, and GoDaddy receives the DMARC aggregate reports. The privacy policy in force
+(2026-10-26) still names Google Workspace for email: correcting that is a new policy text and version,
+the owner's call (D214).
+
+**Also on the domain now:** the budget alerts (`budget_alert_emails` in `infra/aws`) and `acme_email`
+(`infra/aws/kubernetes`) may use an `@ryftlab.de` address. Supabase Auth's SMTP is not part of this:
+if it should send as the domain, that is its own setup at Microsoft (not built).
+
+**A change at the provider** (GoDaddy shows new values, a DKIM key rotates to a new target, DMARC
+moves to `p=reject`): edit the value in `mail.tf`, then
+```bash
+terraform -chdir=infra/aws/dns plan -out=tfplan   # only the records you changed
 terraform -chdir=infra/aws/dns apply tfplan
 rm infra/aws/dns/tfplan
-dig +short MX ryftapp.de; dig +short TXT ryftapp.de; dig +short TXT _dmarc.ryftapp.de
 ```
-
-A provider that publishes DKIM as CNAMEs (several selectors) needs a change to `main.tf`
-first: this root writes one TXT key. Then send a test mail to the new mailbox and one from it
-to an outside address, and check "Show original" for `SPF: PASS`, `DKIM: PASS`,
-`DMARC: PASS`.
-
-**DMARC ramp.** Start at `p=none` with a `rua` mailbox that exists (aggregate reports, XML,
-daily): `v=DMARC1; p=none; rua=mailto:<mailbox>; adkim=s; aspf=s`. After 2 to 4 clean weeks
-(only the provider's sources passing), `p=quarantine`, plan, apply; then `p=reject`. A
-legitimate sender that fails (a newsletter tool, a contact form) is added to SPF or DKIM
-first.
-
-**The reference: Google Workspace as it was** (D142, until 2026-11-10; the values in
-`terraform.tfvars.example`):
-
-| Record | Name | Value |
-| --- | --- | --- |
-| MX | `ryftapp.de` | `1 smtp.google.com` |
-| TXT (two values) | `ryftapp.de` | `google-site-verification=…` and `v=spf1 include:_spf.google.com ~all` |
-| TXT | `google._domainkey.ryftapp.de` | `v=DKIM1; k=rsa; p=…` (2048-bit; the record splits it into strings of ≤255 characters) |
-| TXT | `_dmarc.ryftapp.de` | `v=DMARC1; p=none; rua=mailto:support@ryftapp.de; adkim=s; aspf=s` |
-
-Each TXT value is its own string: the verification goes into `apex_txt_verifications`, the SPF
-into `spf`, never both inside one pair of quotes (that was the first hand-made record's fault,
-and its SPF did not count). Google's DKIM rotation: Admin console → Apps → Google Workspace →
-Gmail → Authenticate email → generate a new record (2048-bit), set it as `dkim_record`, apply,
-and only then click "Start authentication".
+and run the check above. Each TXT value is its own string in the list, never two values inside one
+pair of quotes (the first hand-made record's fault in 2026-10: its SPF did not count).
 
 **A forwarding target is never in the repository.** Any private address mail is forwarded to
 is configured at the provider only; it never appears in a DNS record, this repository or a
@@ -4463,7 +4459,7 @@ Terraform variable.
 
 ## App Review demo account
 
-App Review signs in with an email account: `review@ryftapp.de`, filled by
+App Review signs in with an email account: `review@ryftlab.de`, filled by
 `scripts/seed_demo.sh` with 60 days of synthetic Apple Watch and iPhone data (three
 workouts a week), two logged strength sessions (the second yesterday, so a records
 card shows), a week of journal, consent and beta access. The script checks that Today,

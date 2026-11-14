@@ -165,7 +165,7 @@ describe('the admin bundle', async () => {
   it('holds no third-party code and no URL but the two configured origins', () => {
     expect(bundle).not.toMatch(/supabase-js|auth-js|gotrue-js|@supabase/);
     // The two origins, plus the constant prefix of an invite link (a link is shared only if it starts so).
-    const allowed = new Set([config.apiUrl, config.supabaseUrl, 'https://ryftapp.de']);
+    const allowed = new Set([config.apiUrl, config.supabaseUrl, 'https://ryftlab.de']);
     const urls = new Set([...bundle.matchAll(/https?:\/\/[^"'`\s\\)]+/g)].map((m) => m[0]));
     expect([...urls].filter((u) => !allowed.has(u) && !allowed.has(new URL(u).origin))).toEqual([]);
   });

@@ -5,7 +5,7 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
 S=$HERE/scripts/synthetics.sh
-F=$HERE/deploy/grafana/synthetics/ryftapp.json
+F=$HERE/deploy/grafana/synthetics/ryftlab.json
 tmp=$(mktemp -d)
 pid=
 stop_mock() { [ -z "$pid" ] || { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true; pid=; }; }
@@ -33,7 +33,7 @@ reject '.checks[2].job = "x"' 'job must match'
 reject '.checks[3].settings.http.validStatusCodes = []' 'validStatusCodes'
 reject '.checks[0].settings.http.noFollowRedirects = false' 'noFollowRedirects'
 reject '.checks[0].settings.http.failIfNotSSL = false' 'failIfNotSSL'
-reject '.checks[0].target = "http://ryftapp.de/"' 'target must be'
+reject '.checks[0].target = "http://ryftlab.de/"' 'target must be'
 reject '.checks[0].target = "https://evil.example/"' 'target must be'
 reject '.checks[0].extra = 1' 'unknown key'
 reject '.checks[0].settings.http.proxyURL = "http://x"' 'unknown http setting'
@@ -61,7 +61,7 @@ mode, logpath, portfile = sys.argv[1], sys.argv[2], sys.argv[3]
 PROBES = [{"id": 11, "name": "Frankfurt", "region": "EMEA", "public": True, "online": True},
           {"id": 12, "name": "Amsterdam", "region": "EMEA", "public": True, "online": True}]
 CHECKS = [] if mode == "null-list" else [
-    {"id": 5, "tenantId": 99, "job": "ryft-site-home", "target": "https://ryftapp.de/"},
+    {"id": 5, "tenantId": 99, "job": "ryft-site-home", "target": "https://ryftlab.de/"},
     {"id": 6, "tenantId": 99, "job": "other", "target": "https://example.org/"}]
 nextid = [100]
 def log(s):

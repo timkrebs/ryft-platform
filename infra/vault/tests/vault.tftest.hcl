@@ -348,8 +348,8 @@ run "the_demo_password_stays_with_the_operator" {
     error_message = "the demo password lives at kv-operator/demo"
   }
   assert {
-    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.k8s_demo.data_json).email) == "review@ryftapp.de"
-    error_message = "the demo account is review@ryftapp.de"
+    condition     = nonsensitive(jsondecode(vault_kv_secret_v2.k8s_demo.data_json).email) == "review@ryftlab.de"
+    error_message = "the demo account is review@ryftlab.de"
   }
   assert {
     condition     = alltrue([for s, v in vault_policy.k8s_service : !strcontains(v.policy, "operator")]) && !strcontains(vault_policy.k8s_snapshot.policy, "operator")
@@ -1064,7 +1064,7 @@ run "the_oidc_files_stay_the_reviewed_later_option" {
   assert {
     condition = alltrue([for r in [local.bootstrap.oidc_role_admin, local.bootstrap.oidc_role_enroll] : (
       r.role_type == "oidc" && r.user_claim == "sub" && r.verbose_oidc_logging == false &&
-      r.bound_claims == { hd = "ryftapp.de" } && r.bound_claims_type == "string" && length(r.oidc_scopes) == 0 &&
+      r.bound_claims == { hd = "ryftlab.de" } && r.bound_claims_type == "string" && length(r.oidc_scopes) == 0 &&
       tolist(r.allowed_redirect_uris) == tolist(["http://localhost:8250/oidc/callback"]) &&
       r.max_age == 600 && tolist(r.token_bound_cidrs) == tolist(["127.0.0.1/32"]) && r.token_type == "service" &&
       length(setintersection(keys(r), ["claim_mappings", "groups_claim", "bound_subject", "user_claim_json_pointer", "bound_audiences"])) == 0

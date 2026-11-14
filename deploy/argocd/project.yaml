@@ -49,7 +49,7 @@ spec:
       # cert-manager's, from the vault-ca Certificate in every vault-namespaces overlay (D190).
       - { kind: Secret, name: vault-ca }
       - { kind: Secret, name: rabbitmq-tls }
-      - { kind: Secret, name: rabbitmq-ryftapp-de-tls }
+      - { kind: Secret, name: rabbitmq-ryftlab-de-tls }
       - { kind: Secret, name: amqp-client }
       - { kind: Secret, name: amqp-user-ingest }
       - { kind: Secret, name: amqp-user-api }

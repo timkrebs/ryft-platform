@@ -83,7 +83,7 @@ func decimal(v float64, lang string) string {
 	return s
 }
 
-const site = "https://ryftapp.de"
+const site = "https://ryftlab.de"
 
 // Morning is MORNING_SCORE: "Recovery 82%" and the readiness sentence for
 // its state. It expires at the end of the local day.

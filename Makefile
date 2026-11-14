@@ -278,7 +278,7 @@ alerts-apply: alerts-check
 	  -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY \
 	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml /alerts/admission-intended.yaml
 
-# External checks of ryftapp.de in Grafana Cloud Synthetic Monitoring (deploy/grafana/synthetics).
+# External checks of ryftlab.de in Grafana Cloud Synthetic Monitoring (deploy/grafana/synthetics).
 # synthetics-check validates the definitions offline; synthetics-apply upserts them by job name
 # through the SM API (SM_API_URL, SM_ACCESS_TOKEN; docs/OPERATIONS.md -> Monitoring).
 synthetics-check:
@@ -366,7 +366,7 @@ k8s-check-images:
 	if [ -n "$$bad" ]; then echo "✗ malformed or unpinned images in overlays/eks (check newTag):"; printf '%s\n' "$$bad" | sed 's/^/  [/; s/$$/]/'; exit 1; fi; \
 	echo "✓ $$(printf '%s\n' "$$imgs" | wc -l | tr -d ' ') images in overlays/eks, all pinned and well-formed"
 
-# --- web/ (ryftapp.de, D107): one place for the site's checks; `make hooks` once per clone ---
+# --- web/ (ryftlab.de, D107): one place for the site's checks; `make hooks` once per clone ---
 # The drift checks and some tests read the app from ../app (RYFT_APP_DIR overrides it: absolute,
 # or relative to web/).
 

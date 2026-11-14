@@ -15,9 +15,9 @@ variable "cluster_name" {
 }
 
 variable "domain" {
-  description = "Route 53 zone created by infra/aws/dns; Ingress hosts live under it"
+  description = "Route 53 zone created by infra/aws/dns; Ingress hosts live under it, and ExternalDNS and cert-manager may write only this zone (D213)"
   type        = string
-  default     = "ryftapp.de"
+  default     = "ryftlab.de"
 }
 
 variable "region" {

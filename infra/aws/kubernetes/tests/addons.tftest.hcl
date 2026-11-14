@@ -18,7 +18,7 @@ mock_provider "aws" {
     defaults = {
       zone_id = "Z0123456789ABCDEFGHIJ"
       arn     = "arn:aws:route53:::hostedzone/Z0123456789ABCDEFGHIJ"
-      name    = "ryftapp.de"
+      name    = "ryftlab.de"
     }
   }
   mock_data "aws_partition" {
@@ -125,7 +125,7 @@ run "external_dns_manages_only_the_domain" {
   command = plan
 
   assert {
-    condition     = yamldecode(helm_release.external_dns.values[0]).domainFilters == ["ryftapp.de"]
+    condition     = yamldecode(helm_release.external_dns.values[0]).domainFilters == ["ryftlab.de"]
     error_message = "ExternalDNS must be limited to the RYFT zone"
   }
 
@@ -148,7 +148,7 @@ run "issuers_solve_dns01_in_the_zone" {
   command = plan
 
   assert {
-    condition     = yamldecode(helm_release.cluster_issuers.values[0]).hostedZoneID == "Z0123456789ABCDEFGHIJ" && yamldecode(helm_release.cluster_issuers.values[0]).dnsZone == "ryftapp.de"
+    condition     = yamldecode(helm_release.cluster_issuers.values[0]).hostedZoneID == "Z0123456789ABCDEFGHIJ" && yamldecode(helm_release.cluster_issuers.values[0]).dnsZone == "ryftlab.de"
     error_message = "the ClusterIssuers must solve DNS-01 in the RYFT zone"
   }
 }
@@ -227,7 +227,7 @@ run "argocd_is_behind_traefik_single_replica_and_keeps_no_initial_secret" {
 
   assert {
     condition = (
-      yamldecode(helm_release.argocd.values[0]).global.domain == "argocd.ryftapp.de" &&
+      yamldecode(helm_release.argocd.values[0]).global.domain == "argocd.ryftlab.de" &&
       yamldecode(helm_release.argocd.values[0]).server.ingress.ingressClassName == "traefik" &&
       yamldecode(helm_release.argocd.values[0]).server.ingress.tls == true &&
       yamldecode(helm_release.argocd.values[0]).server.ingress.annotations["cert-manager.io/cluster-issuer"] == "letsencrypt-prod" &&
@@ -247,7 +247,7 @@ run "argocd_is_behind_traefik_single_replica_and_keeps_no_initial_secret" {
     error_message = "TLS ends at Traefik (argocd-server plain HTTP behind it), and no SSO"
   }
   assert {
-    condition     = output.argocd_url == "https://argocd.ryftapp.de"
+    condition     = output.argocd_url == "https://argocd.ryftlab.de"
     error_message = "argocd_url names the public host"
   }
   assert {

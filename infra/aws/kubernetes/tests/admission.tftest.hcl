@@ -18,7 +18,7 @@ mock_provider "aws" {
     defaults = {
       zone_id = "Z0123456789ABCDEFGHIJ"
       arn     = "arn:aws:route53:::hostedzone/Z0123456789ABCDEFGHIJ"
-      name    = "ryftapp.de"
+      name    = "ryftlab.de"
     }
   }
   mock_data "aws_partition" {

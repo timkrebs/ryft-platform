@@ -50,7 +50,7 @@ func TestLoadAuthAPIKeyAndOverrides(t *testing.T) {
 		t.Fatalf("%+v %v", a, err)
 	}
 	// Custom domain / local GoTrue: explicit issuer and JWKS URL need no project ref.
-	setAuthEnv(t, map[string]string{"SUPABASE_ISSUER": "https://auth.ryftapp.de/auth/v1/", "SUPABASE_JWKS_URL": "http://gotrue:9999/.well-known/jwks.json"})
+	setAuthEnv(t, map[string]string{"SUPABASE_ISSUER": "https://auth.ryftlab.de/auth/v1/", "SUPABASE_JWKS_URL": "http://gotrue:9999/.well-known/jwks.json"})
 	if a, err = LoadAuth(); err != nil || strings.HasSuffix(a.Issuer, "/") {
 		t.Fatalf("%+v %v", a, err)
 	}
@@ -109,7 +109,7 @@ func TestLoadAdmin(t *testing.T) {
 	t.Setenv("ADMIN_API_KEY", "")
 	t.Setenv("ADMIN_WEB_ORIGINS", "")
 	t.Setenv("PUBLIC_WEB_URL", "")
-	if a, err := LoadAdmin(); err != nil || a.Key != "" || len(a.WebOrigins) != 0 || a.PublicWebURL != "https://ryftapp.de" {
+	if a, err := LoadAdmin(); err != nil || a.Key != "" || len(a.WebOrigins) != 0 || a.PublicWebURL != "https://ryftlab.de" {
 		t.Fatalf("unset: off, no CORS, the default site: %+v %v", a, err)
 	}
 	t.Setenv("ADMIN_API_KEY", "short")
@@ -128,9 +128,9 @@ func TestLoadAdminWebOrigins(t *testing.T) {
 	}{
 		{"unset", "", nil},
 		{"blank", "  \t ", nil},
-		{"the site", "https://ryftapp.de", []string{"https://ryftapp.de"}},
-		{"trimmed, deduplicated, ordered", " https://ryftapp.de , http://localhost:3000,https://ryftapp.de",
-			[]string{"https://ryftapp.de", "http://localhost:3000"}},
+		{"the site", "https://ryftlab.de", []string{"https://ryftlab.de"}},
+		{"trimmed, deduplicated, ordered", " https://ryftlab.de , http://localhost:3000,https://ryftlab.de",
+			[]string{"https://ryftlab.de", "http://localhost:3000"}},
 		{"loopback over http", "http://127.0.0.1:8080,http://[::1]:3000,http://localhost", []string{"http://127.0.0.1:8080", "http://[::1]:3000", "http://localhost"}},
 		{"explicit port", "https://admin.example.com:8443", []string{"https://admin.example.com:8443"}},
 		{"five", "https://a.de,https://b.de,https://c.de,https://d.de,https://e.de",
@@ -145,30 +145,30 @@ func TestLoadAdminWebOrigins(t *testing.T) {
 		})
 	}
 	for name, env := range map[string]string{
-		"trailing slash":        "https://ryftapp.de/",
-		"a path":                "https://ryftapp.de/admin",
-		"a query":               "https://ryftapp.de?x=1",
-		"a fragment":            "https://ryftapp.de#x",
-		"userinfo":              "https://user:pw@ryftapp.de",
-		"http outside loopback": "http://ryftapp.de",
+		"trailing slash":        "https://ryftlab.de/",
+		"a path":                "https://ryftlab.de/admin",
+		"a query":               "https://ryftlab.de?x=1",
+		"a fragment":            "https://ryftlab.de#x",
+		"userinfo":              "https://user:pw@ryftlab.de",
+		"http outside loopback": "http://ryftlab.de",
 		"http on a lookalike":   "http://localhost.evil.example",
 		"wildcard":              "*",
-		"wildcard subdomain":    "https://*.ryftapp.de",
+		"wildcard subdomain":    "https://*.ryftlab.de",
 		"null":                  "null",
-		"no scheme":             "ryftapp.de",
-		"another scheme":        "ftp://ryftapp.de",
-		"upper-case host":       "https://RyftApp.de",
-		"upper-case scheme":     "HTTPS://ryftapp.de",
-		"default https port":    "https://ryftapp.de:443",
+		"no scheme":             "ryftlab.de",
+		"another scheme":        "ftp://ryftlab.de",
+		"upper-case host":       "https://RyftLab.de",
+		"upper-case scheme":     "HTTPS://ryftlab.de",
+		"default https port":    "https://ryftlab.de:443",
 		"default http port":     "http://localhost:80",
-		"empty port":            "https://ryftapp.de:",
-		"bad port":              "https://ryftapp.de:abc",
-		"empty entry":           "https://ryftapp.de,,https://b.de",
-		"trailing comma":        "https://ryftapp.de,",
+		"empty port":            "https://ryftlab.de:",
+		"bad port":              "https://ryftlab.de:abc",
+		"empty entry":           "https://ryftlab.de,,https://b.de",
+		"trailing comma":        "https://ryftlab.de,",
 		"six origins":           "https://a.de,https://b.de,https://c.de,https://d.de,https://e.de,https://f.de",
-		"quoted":                `"https://ryftapp.de"`,
-		"inline comment":        "https://ryftapp.de # prod",
-		"semicolon list":        "https://ryftapp.de;https://b.de",
+		"quoted":                `"https://ryftlab.de"`,
+		"inline comment":        "https://ryftlab.de # prod",
+		"semicolon list":        "https://ryftlab.de;https://b.de",
 		"host only colon":       "https://",
 	} {
 		t.Run("malformed: "+name, func(t *testing.T) {
@@ -187,7 +187,7 @@ func TestLoadAdminPublicWebURL(t *testing.T) {
 	if a, err := LoadAdmin(); err != nil || a.PublicWebURL != "https://staging.example.com" {
 		t.Fatalf("%+v %v", a, err)
 	}
-	for _, bad := range []string{"https://ryftapp.de/", "ryftapp.de", "http://ryftapp.de", "https://ryftapp.de/invite"} {
+	for _, bad := range []string{"https://ryftlab.de/", "ryftlab.de", "http://ryftlab.de", "https://ryftlab.de/invite"} {
 		t.Setenv("PUBLIC_WEB_URL", bad)
 		if _, err := LoadAdmin(); err == nil || !strings.Contains(err.Error(), "PUBLIC_WEB_URL") {
 			t.Errorf("%q must stop the api: %v", bad, err)

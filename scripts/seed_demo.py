@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The App Review demo account (docs/OPERATIONS.md → App Review demo account).
 
-Creates, or resets, the Supabase email user DEMO_EMAIL (review@ryftapp.de) with the
+Creates, or resets, the Supabase email user DEMO_EMAIL (review@ryftlab.de) with the
 password from Vault, gives it beta access and consent, and fills it like a few weeks of
 real use, so Today, Sleep, Strain, Train and Insights all have something to show: 60 days
 of synthetic HealthKit data through POST /v1/sync (scripts/synth.py --demo: an Apple Watch
@@ -19,9 +19,9 @@ import json, os, subprocess, sys, time, urllib.error, urllib.request, uuid
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-API = os.environ.get("API_URL", "https://api.ryftapp.de").rstrip("/")
+API = os.environ.get("API_URL", "https://api.ryftlab.de").rstrip("/")
 INGEST = os.environ.get("INGEST_URL", API).rstrip("/")
-EMAIL = os.environ.get("DEMO_EMAIL", "review@ryftapp.de")
+EMAIL = os.environ.get("DEMO_EMAIL", "review@ryftlab.de")
 TZ = "Europe/Berlin"
 DAYS = 60
 HERE = os.path.dirname(os.path.abspath(__file__))

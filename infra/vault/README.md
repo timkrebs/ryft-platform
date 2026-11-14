@@ -134,7 +134,7 @@ Never edit them by hand.
 **The App Review demo password** (`docs/OPERATIONS.md` → App Review demo account):
 generated into `kv-operator/demo` (no role's policy reaches it); `terraform output -raw
 demo_password`; rotate with `terraform apply -replace=random_password.demo`, then
-`scripts/seed_demo.sh` and App Store Connect. `demo_email` defaults to `review@ryftapp.de`.
+`scripts/seed_demo.sh` and App Store Connect. `demo_email` defaults to `review@ryftlab.de`.
 
 **The APNs key** (notify, `docs/OPERATIONS.md` → Push): `service_secrets.notify` with
 `APNS_KEY_ID`, `APNS_TEAM_ID` and `APNS_KEY_P8`, all three or none (validated). Without
@@ -210,7 +210,7 @@ rewrite its own policy or mint an admin token):
   (D209).
 - `token-role-terraform.json`: the token role `terraform` (above).
 - `oidc-config.json`, `oidc-role-admin.json`, `oidc-role-enroll.json`: **a documented later
-  option, written nowhere.** They are the Google Workspace version (`hd = ryftapp.de`), and
+  option, written nowhere.** They are the Google Workspace version (`hd = ryftlab.de`), and
   Google Workspace is gone. A login with a personal Google account has no `hd` claim, so it
   needs a reviewed change first (a binding to the account's `sub`, passed at the setup and
   never committed, and the tests' allowlist with it). Until then the login is the

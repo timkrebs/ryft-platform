@@ -2,7 +2,7 @@
   "role_type": "oidc",
   "user_claim": "sub",
   "bound_claims_type": "string",
-  "bound_claims": { "hd": "ryftapp.de" },
+  "bound_claims": { "hd": "ryftlab.de" },
   "oidc_scopes": [],
   "allowed_redirect_uris": ["http://localhost:8250/oidc/callback"],
   "verbose_oidc_logging": false,

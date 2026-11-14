@@ -13,7 +13,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 host() { [ "$(url_host "$1")" = "$2" ] || fail "url_host $1 = '$(url_host "$1")', want '$2'"; }
 host http://localhost:8081 localhost
 host http://LOCALHOST/v1/x localhost
-host https://api.ryftapp.de/v1/me api.ryftapp.de
+host https://api.ryftlab.de/v1/me api.ryftlab.de
 host http://user:pw@127.0.0.1:8082/x 127.0.0.1
 host 'http://[::1]:8082/v1' ::1
 host 'http://evil.example?h=localhost' evil.example
@@ -26,7 +26,7 @@ ok http://localhost:8081
 ok http://127.0.0.1:8082
 ok 'http://[::1]:8082'
 ok http://127.1.2.3
-no https://api.ryftapp.de
+no https://api.ryftlab.de
 no http://localhost.evil.example
 no http://localhost@evil.example/
 no http://127.0.0.1.evil.example
@@ -45,7 +45,7 @@ no 'http://localhost:8081/	x'
 no 'ftp://localhost'
 no 'localhost:8081'
 (export LOAD_ALLOW_REMOTE=1; no_remote() { guard_target "$1" && fail "guard let $1 through with LOAD_ALLOW_REMOTE=1"; return 0; }
- no_remote https://ryftapp.de; no_remote https://api.ryftapp.de/v1; no_remote https://abc.supabase.co
+ no_remote https://ryftlab.de; no_remote https://api.ryftlab.de/v1; no_remote https://abc.supabase.co
  no_remote 'http://evil.com#@localhost'; no_remote 'http://a@b.example')
 (LOAD_ALLOW_REMOTE=1 guard_target https://staging.example) || fail "LOAD_ALLOW_REMOTE=1 must allow"
 (LOAD_ALLOW_REMOTE=0 guard_target https://staging.example) && fail "only LOAD_ALLOW_REMOTE=1 allows"

@@ -3,7 +3,7 @@
 # and the admin key, found without typing it (docs/OPERATIONS.md → Beta). Works with
 # macOS's bash 3.2.
 #
-#   API_URL       default https://api.ryftapp.de (compose: http://localhost:8082)
+#   API_URL       default https://api.ryftlab.de (compose: http://localhost:8082)
 #   ADMIN_API_KEY else `terraform -chdir=infra/vault output -raw admin_api_key`,
 #                 else the in-cluster Vault (the only Vault, D207; Community Edition: no namespaces)
 #                 through your own port-forward (VAULT_ADDR=https://127.0.0.1:8200, VAULT_CACERT, a
@@ -12,7 +12,7 @@
 #                 unset or https loopback and VAULT_SKIP_VERIFY is unset.
 #   RYFT_VAULT    gone with HCP Vault: unset, or `ce` (the old name of the in-cluster Vault; changes
 #                 nothing). Any other value is refused.
-API_URL=${API_URL:-https://api.ryftapp.de}
+API_URL=${API_URL:-https://api.ryftlab.de}
 RYFT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
 # ryft_vault_ok: the vault CLI talks to your port-forward, verified: VAULT_ADDR unset (the CLI's

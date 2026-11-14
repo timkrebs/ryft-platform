@@ -13,10 +13,10 @@ flow, the schema and the scoring model. The HTTP contract with the app is
 
 ```
 backend/      Go module: cmd/{ingest,scoring,api}, internal/{scoring,insights,store,db,events,httpx,metrics,model,config}
-infra/aws/    Terraform: VPC + EKS cluster (modules/network, modules/eks), dns/ (ryftapp.de zone),
+infra/aws/    Terraform: VPC + EKS cluster (modules/network, modules/eks), dns/ (ryftlab.de zone),
               kubernetes/ (Traefik, cert-manager, ExternalDNS, LB controller, encrypted storage)
-deploy/k8s/   kustomize: overlays/eks (api.ryftapp.de), base/ (the services, Ingress, policies, backups), overlays local-postgres; deploy/rabbitmq (the broker); deploy/argocd
-web/          ryftapp.de: static Next.js site, legal texts, AASA, nginx image (web/CLAUDE.md, make web-*)
+deploy/k8s/   kustomize: overlays/eks (api.ryftlab.de), base/ (the services, Ingress, policies, backups), overlays local-postgres; deploy/rabbitmq (the broker); deploy/argocd
+web/          ryftlab.de: static Next.js site, legal texts, AASA, nginx image (web/CLAUDE.md, make web-*)
 ../app/          SwiftUI app (HealthKit sync, Today / Trends / Settings)
 scripts/      synth.py (fake Health data), smoke.sh (end-to-end test), print_days.py
 docker-compose.yml   local stack
