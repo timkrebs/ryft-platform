@@ -1,319 +1,379 @@
 # promtool unit tests for ryft.yaml (make alerts-check): each alert fires on the
 # series it is about and stays quiet just under its threshold.
+# The app's series are OTLP pushes (ryft.yaml's header): one sample per instance every 15 minutes
+# at best (interval: 15m), labels job="ryft/<svc>" and instance. Two shapes recur: a long-lived
+# instance (a sample every 15 minutes, increase() sees the change) and a short-lived one (one or two
+# samples, only the new-series term sees what it counted). Prometheus 3 ranges are left-open:
+# [30m] at minute 60 holds the samples after minute 30, not the one at 30.
 rule_files: [/rules/ryft.rules.yaml]
 evaluation_interval: 1m
 tests:
-  - name: 5xx over 2 % for 10 minutes
-    interval: 1m
+  # ---- group ryft ---------------------------------------------------------------------
+  - name: Panics, a long-lived instance; a steady counter stays quiet
+    interval: 15m
     input_series:
-      # api: 100 requests a minute, 5 of them 500 (5 %); ingest: 1 % fails.
-      - { series: 'ryft_http_requests_total{namespace="ryft-api",route="GET /v1/me",code="200"}', values: '0+95x30' }
-      - { series: 'ryft_http_requests_total{namespace="ryft-api",route="GET /v1/me",code="500"}', values: '0+5x30' }
-      - { series: 'ryft_http_requests_total{namespace="ryft-ingest",route="POST /v1/sync",code="200"}', values: '0+99x30' }
-      - { series: 'ryft_http_requests_total{namespace="ryft-ingest",route="POST /v1/sync",code="503"}', values: '0+1x30' }
+      - { series: 'ryft_http_panics_total{job="ryft/api",instance="api-1",route="GET /v1/me"}', values: '0 0 0 1x8' }
+      - { series: 'ryft_goroutine_panics_total{job="ryft/ingest",instance="ingest-1"}', values: '0x11' }
     alert_rule_test:
-      - { eval_time: 8m, alertname: HTTP5xxRatio, exp_alerts: [] }
-      - eval_time: 20m
-        alertname: HTTP5xxRatio
-        exp_alerts:
-          - exp_labels: { severity: critical, namespace: ryft-api }
-            exp_annotations: { summary: "ryft-api: more than 2 % of requests answer 5xx" }
-  - name: crash loop
-    interval: 5m
-    input_series:
-      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-scoring",pod="scoring-1",container="scoring"}', values: '0 1 2 3 4 5 6' }
-      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-api",pod="api-1",container="api"}', values: '0 0 1 1 1 1 1' }
-      # Vault is in scope too; a pod in another namespace (vault-secrets-operator-system) is not.
-      - { series: 'kube_pod_container_status_restarts_total{namespace="vault",pod="vault-1",container="vault"}', values: '0 1 2 3 4 5 6' }
-      - { series: 'kube_pod_container_status_restarts_total{namespace="vault-secrets-operator-system",pod="vso-1",container="manager"}', values: '0 1 2 3 4 5 6' }
-    alert_rule_test:
-      - eval_time: 30m
-        alertname: PodRestarting
-        exp_alerts:
-          - exp_labels: { severity: critical, namespace: ryft-scoring, pod: scoring-1 }
-            exp_annotations: { summary: "scoring-1 restarted more than 3 times in 30 minutes" }
-          - exp_labels: { severity: critical, namespace: vault, pod: vault-1 }
-            exp_annotations: { summary: "vault-1 restarted more than 3 times in 30 minutes" }
-  - name: a service exited and restarted
-    interval: 1m
-    input_series:
-      # Any restart of the four services fires, whatever the exit code says: scoring
-      # panicked in a goroutine (exit 2); notify was killed by a failed probe and exited
-      # 0 after SIGTERM; ingest restarted and kube-state-metrics has no exit code for it;
-      # a pod of the web site restarted outside the set; a pod that a rollout replaced is
-      # a new series at 0 and never restarted.
-      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-scoring",pod="scoring-1",container="scoring"}', values: '0x5 1x60' }
-      - { series: 'kube_pod_container_status_last_terminated_exitcode{namespace="ryft-scoring",pod="scoring-1",container="scoring"}', values: '_x5 2x60' }
-      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-notify",pod="notify-1",container="notify"}', values: '0x5 1x60' }
-      - { series: 'kube_pod_container_status_last_terminated_exitcode{namespace="ryft-notify",pod="notify-1",container="notify"}', values: '_x5 0x60' }
-      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-ingest",pod="ingest-1",container="ingest"}', values: '0x5 1x60' }
-      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-web",pod="web-1",container="web"}', values: '0x5 1x60' }
-      - { series: 'kube_pod_container_status_restarts_total{namespace="ryft-api",pod="api-2",container="api"}', values: '_x20 0x40' }
-    alert_rule_test:
-      - { eval_time: 4m, alertname: ServiceExited, exp_alerts: [] }
-      - eval_time: 10m
-        alertname: ServiceExited
-        exp_alerts:
-          - exp_labels: { severity: critical, namespace: ryft-scoring, pod: scoring-1, container: scoring }
-            exp_annotations:
-              summary: "ryft-scoring scoring-1: the service exited and restarted (the previous container's log, OPERATIONS.md → A service exited)"
-              runbook: "docs/OPERATIONS.md → A service exited"
-          - exp_labels: { severity: critical, namespace: ryft-notify, pod: notify-1, container: notify }
-            exp_annotations:
-              summary: "ryft-notify notify-1: the service exited and restarted (the previous container's log, OPERATIONS.md → A service exited)"
-              runbook: "docs/OPERATIONS.md → A service exited"
-          - exp_labels: { severity: critical, namespace: ryft-ingest, pod: ingest-1, container: ingest }
-            exp_annotations:
-              summary: "ryft-ingest ingest-1: the service exited and restarted (the previous container's log, OPERATIONS.md → A service exited)"
-              runbook: "docs/OPERATIONS.md → A service exited"
-      # Fifteen minutes after the restart the increase has left the window.
-      - { eval_time: 30m, alertname: ServiceExited, exp_alerts: [] }
-  - name: panics in a handler, an event handler or a goroutine
-    interval: 1m
-    input_series:
-      # The labelled counters are created by their first panic at 1 (api at minute 30,
-      # scoring's event handler at 40); the goroutine counter is 0 from the start of the
-      # process and rises to 1 at minute 80.
-      - { series: 'ryft_http_panics_total{namespace="ryft-api",pod="api-1",route="GET /v1/me"}', values: '_x30 1x120' }
-      - { series: 'ryft_event_handler_panics_total{namespace="ryft-scoring",pod="scoring-1",subject="ingested"}', values: '_x40 1x110' }
-      - { series: 'ryft_goroutine_panics_total{namespace="ryft-notify",pod="notify-1"}', values: '0x80 1x70' }
-      # Nothing here is new after the first quarter hour: a counter at 3 with a 20 minute
-      # scrape gap that leaves earlier samples inside the hour, and a goroutine counter
-      # that stays 0.
-      - { series: 'ryft_http_panics_total{namespace="ryft-ingest",pod="ingest-1",route="POST /v1/sync"}', values: '3x80 _x20 3x50' }
-      - { series: 'ryft_goroutine_panics_total{namespace="ryft-scoring",pod="scoring-1"}', values: '0x150' }
-    alert_rule_test:
-      - { eval_time: 20m, alertname: Panics, exp_alerts: [] }
-      # api's first panic: the series is born at 1, which increase() never sees.
-      - eval_time: 32m
+      - { eval_time: 40m, alertname: Panics, exp_alerts: [] }
+      - eval_time: 50m
         alertname: Panics
         exp_alerts:
-          - exp_labels: { severity: critical, namespace: ryft-api }
+          - exp_labels: { severity: critical, job: ryft/api }
             exp_annotations:
-              summary: "ryft-api: a panic in the last 15 minutes (the msg=\"panic\" line has the stack)"
+              summary: 'ryft/api: a panic in the last hour (the msg="panic" line in Cloud Logging has the stack)'
               runbook: "docs/OPERATIONS.md → A panic (Panics)"
-      # scoring's event handler panicked at minute 40; api's has left the window.
-      - eval_time: 45m
-        alertname: Panics
-        exp_alerts:
-          - exp_labels: { severity: critical, namespace: ryft-scoring }
-            exp_annotations:
-              summary: "ryft-scoring: a panic in the last 15 minutes (the msg=\"panic\" line has the stack)"
-              runbook: "docs/OPERATIONS.md → A panic (Panics)"
-      - { eval_time: 65m, alertname: Panics, exp_alerts: [] }
-      # notify's goroutine counter rose from 0 to 1: increase() sees it.
-      - eval_time: 82m
-        alertname: Panics
-        exp_alerts:
-          - exp_labels: { severity: critical, namespace: ryft-notify }
-            exp_annotations:
-              summary: "ryft-notify: a panic in the last 15 minutes (the msg=\"panic\" line has the stack)"
-              runbook: "docs/OPERATIONS.md → A panic (Panics)"
-      - { eval_time: 105m, alertname: Panics, exp_alerts: [] }
-      - { eval_time: 130m, alertname: Panics, exp_alerts: [] }
-  - name: dead letters, database
-    interval: 1m
+      - { eval_time: 120m, alertname: Panics, exp_alerts: [] }
+  - name: Panics, a short-lived instance seen by its first push only
+    interval: 15m
     input_series:
-      - { series: 'ryft_events_dlq_total{subject="ingested",result="ok"}', values: '0 0 1 1 1' }
-      - { series: 'ryft_db_up{service="api"}', values: '1 1 0 0 0 0 0 0' }
-      - { series: 'ryft_db_up{service="ingest"}', values: '1 1 1 1 1 1 1 1' }
+      # the tick's push at minute 45 and the SIGTERM push at 60, nothing before or after
+      - { series: 'ryft_event_handler_panics_total{job="ryft/scoring",instance="scoring-7",key="ingested"}', values: '_ _ _ 1 1' }
     alert_rule_test:
-      - eval_time: 4m
-        alertname: DeadLetters
+      - { eval_time: 30m, alertname: Panics, exp_alerts: [] }
+      - eval_time: 50m
+        alertname: Panics
         exp_alerts:
-          - exp_labels: { severity: warning, subject: ingested }
-            exp_annotations: { summary: "ingested: an event was dead-lettered (KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list)" }
-      - eval_time: 5m
+          - exp_labels: { severity: critical, job: ryft/scoring }
+            exp_annotations:
+              summary: 'ryft/scoring: a panic in the last hour (the msg="panic" line in Cloud Logging has the stack)'
+              runbook: "docs/OPERATIONS.md → A panic (Panics)"
+      - { eval_time: 100m, alertname: Panics, exp_alerts: [] }
+  - name: TextRefusedByDatabase, a short-lived instance; refusals at the input do not count
+    interval: 15m
+    input_series:
+      - { series: 'ryft_http_text_refused_total{job="ryft/ingest",instance="ingest-2",route="POST /v1/sync",at="database"}', values: '_ _ _ 1' }
+      - { series: 'ryft_http_text_refused_total{job="ryft/ingest",instance="ingest-2",route="POST /v1/sync",at="input"}', values: '_ _ _ 7' }
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: TextRefusedByDatabase
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft/ingest, route: "POST /v1/sync" }
+            exp_annotations: { summary: "ryft/ingest POST /v1/sync: the database refused a request's text (OBSERVABILITY.md → Alerts)" }
+      - { eval_time: 100m, alertname: TextRefusedByDatabase, exp_alerts: [] }
+  - name: RateLimited, 2000 refusals every 15 minutes
+    interval: 15m
+    input_series:
+      - { series: 'ryft_rate_limited_total{job="ryft/api",instance="api-1",class="ip"}', values: '0+2000x8' }
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: RateLimited
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "Over 1800 requests refused by the rate limits in 30 minutes" }
+  - name: RateLimited, 600 every 15 minutes (1200 in 30) stays quiet, from the first push on
+    interval: 15m
+    input_series:
+      - { series: 'ryft_rate_limited_total{job="ryft/api",instance="api-1",class="ip"}', values: '0+600x8' }
+    alert_rule_test:
+      - { eval_time: 30m, alertname: RateLimited, exp_alerts: [] }
+      - { eval_time: 90m, alertname: RateLimited, exp_alerts: [] }
+  - name: AuthUnavailable for 15 minutes; jwks_refresh_limited does not count
+    interval: 15m
+    input_series:
+      - { series: 'ryft_auth_failures_total{job="ryft/api",instance="api-1",reason="jwks_unavailable"}', values: '0 0 0 0 3 6 9 9 9 9 9 9' }
+      - { series: 'ryft_auth_failures_total{job="ryft/api",instance="api-1",reason="jwks_refresh_limited"}', values: '0+5x11' }
+    alert_rule_test:
+      # the increase shows from minute 60 (pending), firing from 75 until the window holds none
+      - { eval_time: 70m, alertname: AuthUnavailable, exp_alerts: [] }
+      - eval_time: 80m
+        alertname: AuthUnavailable
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations: { summary: "Sign-ins fail: the signing keys or a user lookup cannot be reached (reason jwks_unavailable or internal)" }
+      - { eval_time: 150m, alertname: AuthUnavailable, exp_alerts: [] }
+  - name: DatabaseDown, notify's ticks report 0; one api instance that stops with 0 does not page
+    interval: 15m
+    input_series:
+      - { series: 'ryft_db_up{job="ryft/notify",instance="notify-1"}', values: '1 1 0 0 0 0 0 0' }
+      - { series: 'ryft_db_up{job="ryft/api",instance="api-1"}', values: '1x7' }
+      - { series: 'ryft_db_up{job="ryft/api",instance="api-2"}', values: '_ _ 0' }
+    alert_rule_test:
+      - { eval_time: 45m, alertname: DatabaseDown, exp_alerts: [] }
+      - eval_time: 55m
         alertname: DatabaseDown
         exp_alerts:
-          - exp_labels: { severity: critical, service: api }
-            exp_annotations: { summary: "api cannot reach the database" }
-  - name: APNs failures over 10 %, 410 not counted
-    interval: 1m
+          - exp_labels: { severity: critical, job: ryft/notify }
+            exp_annotations: { summary: "ryft/notify cannot reach the database (its ticks set ryft_db_up to 0)" }
+  - name: TickMissing, absence included; a fresh instance per tick counts
+    interval: 15m
     input_series:
-      - { series: 'ryft_apns_responses_total{push_type="alert",status="200"}', values: '0+8x40' }
-      - { series: 'ryft_apns_responses_total{push_type="alert",status="410"}', values: '0+4x40' }
-      # From minute 21, 3 a minute answer 400: 60 of 420 in the last 30 minutes (14 %).
-      - { series: 'ryft_apns_responses_total{push_type="alert",status="400"}', values: '0x20 0+3x20' }
+      # api and notify: one instance each, ticking every 15 minutes
+      - { series: 'ryft_ticks_total{job="ryft/api",instance="api-1"}', values: '1+1x11' }
+      - { series: 'ryft_ticks_total{job="ryft/notify",instance="notify-1"}', values: '5+1x11' }
+      # ingest at zero: each tick starts an instance that pushes once (and again at SIGTERM); the last at 60
+      - { series: 'ryft_ticks_total{job="ryft/ingest",instance="ingest-1"}', values: '1 1' }
+      - { series: 'ryft_ticks_total{job="ryft/ingest",instance="ingest-2"}', values: '_ _ 1' }
+      - { series: 'ryft_ticks_total{job="ryft/ingest",instance="ingest-3"}', values: '_ _ _ _ 1' }
+      # scoring: never a tick
     alert_rule_test:
-      - { eval_time: 15m, alertname: APNsFailing, exp_alerts: [] }
-      - eval_time: 40m
+      - eval_time: 100m
+        alertname: TickMissing
+        exp_alerts:
+          - exp_labels: { severity: critical, job: ryft/scoring }
+            exp_annotations:
+              summary: "ryft/scoring has handled no tick for 45 minutes (Scheduler job ryft-tick, subscription tick-<svc>)"
+              runbook: "docs/OPERATIONS.md → GCP"
+      - eval_time: 110m
+        alertname: TickMissing
+        exp_alerts:
+          - exp_labels: { severity: critical, job: ryft/ingest }
+            exp_annotations:
+              summary: "ryft/ingest has handled no tick for 45 minutes (Scheduler job ryft-tick, subscription tick-<svc>)"
+              runbook: "docs/OPERATIONS.md → GCP"
+          - exp_labels: { severity: critical, job: ryft/scoring }
+            exp_annotations:
+              summary: "ryft/scoring has handled no tick for 45 minutes (Scheduler job ryft-tick, subscription tick-<svc>)"
+              runbook: "docs/OPERATIONS.md → GCP"
+
+  # ---- group ryft-pipeline --------------------------------------------------------------
+  - name: DeadLetterPublishFailing, a short-lived instance; a dead letter that went out does not count
+    interval: 15m
+    input_series:
+      - { series: 'ryft_events_dlq_total{job="ryft/scoring",instance="scoring-3",result="error"}', values: '_ _ _ 1' }
+      - { series: 'ryft_events_dlq_total{job="ryft/scoring",instance="scoring-3",result="ok"}', values: '_ _ _ 4' }
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: DeadLetterPublishFailing
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations: { summary: "A dead-letter publish failed (Cloud Logging has the event)" }
+      - { eval_time: 100m, alertname: DeadLetterPublishFailing, exp_alerts: [] }
+  - name: OutboxBacklog over 30 minutes for 15; 1700 s stays quiet
+    interval: 15m
+    input_series:
+      - { series: 'ryft_outbox_oldest_seconds{job="ryft/ingest",instance="ingest-1",publisher="ingest"}', values: '0 0 600 1500 2400 3300 4200 0 0' }
+      - { series: 'ryft_outbox_oldest_seconds{job="ryft/api",instance="api-1",publisher="api"}', values: '1700x8' }
+    alert_rule_test:
+      - { eval_time: 70m, alertname: OutboxBacklog, exp_alerts: [] }
+      - eval_time: 80m
+        alertname: OutboxBacklog
+        exp_alerts:
+          - exp_labels: { severity: warning, publisher: ingest }
+            exp_annotations: { summary: "ingest: outbox events waiting over 30 minutes for Pub/Sub" }
+      - { eval_time: 120m, alertname: OutboxBacklog, exp_alerts: [] }
+  - name: OutboxStuck
+    interval: 15m
+    input_series:
+      - { series: 'ryft_outbox_stuck{job="ryft/api",instance="api-1",publisher="api"}', values: '0 0 2 2' }
+    alert_rule_test:
+      - { eval_time: 20m, alertname: OutboxStuck, exp_alerts: [] }
+      - eval_time: 35m
+        alertname: OutboxStuck
+        exp_alerts:
+          - exp_labels: { severity: warning, publisher: api }
+            exp_annotations: { summary: "api: outbox events set aside after 50 failed sends" }
+  - name: PublishFailing for 15 minutes
+    interval: 15m
+    input_series:
+      - { series: 'ryft_events_published_total{job="ryft/ingest",instance="ingest-1",result="error"}', values: '0 0 0 2 4 4 4 4 4 4 4' }
+      - { series: 'ryft_events_published_total{job="ryft/ingest",instance="ingest-1",result="ok"}', values: '0+10x10' }
+    alert_rule_test:
+      - { eval_time: 55m, alertname: PublishFailing, exp_alerts: [] }
+      - eval_time: 65m
+        alertname: PublishFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "Publishing to Pub/Sub fails (the outbox keeps the events and retries)" }
+      - { eval_time: 150m, alertname: PublishFailing, exp_alerts: [] }
+  - name: SyncToScoreSlow, every day scored between 2 and 5 minutes after its sync
+    interval: 15m
+    input_series:
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-1",le="60"}', values: '0x12' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-1",le="120"}', values: '0x12' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-1",le="300"}', values: '0+10x12' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-1",le="+Inf"}', values: '0+10x12' }
+    alert_rule_test:
+      - { eval_time: 40m, alertname: SyncToScoreSlow, exp_alerts: [] }
+      - eval_time: 60m
+        alertname: SyncToScoreSlow
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "Scores take over 2 minutes after a sync (p95 over an hour)" }
+  - name: SyncToScoreSlow stays quiet just under 2 minutes (p95 117 s)
+    interval: 15m
+    input_series:
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-1",le="60"}', values: '0x12' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-1",le="120"}', values: '0+10x12' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-1",le="300"}', values: '0+10x12' }
+      - { series: 'ryft_sync_to_score_seconds_bucket{job="ryft/scoring",instance="scoring-1",le="+Inf"}', values: '0+10x12' }
+    alert_rule_test:
+      - { eval_time: 60m, alertname: SyncToScoreSlow, exp_alerts: [] }
+  - name: ScoringErrors, a short-lived instance; scored days do not count
+    interval: 15m
+    input_series:
+      - { series: 'ryft_days_scored_total{job="ryft/scoring",instance="scoring-9",result="error"}', values: '_ _ _ 3 3' }
+      - { series: 'ryft_days_scored_total{job="ryft/scoring",instance="scoring-9",result="ok"}', values: '_ _ _ 50 50' }
+    alert_rule_test:
+      - { eval_time: 55m, alertname: ScoringErrors, exp_alerts: [] }
+      - eval_time: 65m
+        alertname: ScoringErrors
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "Days fail to score" }
+      - { eval_time: 100m, alertname: ScoringErrors, exp_alerts: [] }
+  - name: NoSync, the last sync at minute 0 and no push after it
+    interval: 15m
+    input_series:
+      # the gauge holds the Unix time of the newest sync; the test clock starts at 0
+      - { series: 'ryft_last_sync_timestamp_seconds{job="ryft/ingest",instance="ingest-1"}', values: '0' }
+    alert_rule_test:
+      - { eval_time: 5h, alertname: NoSync, exp_alerts: [] }
+      - eval_time: 6h30m
+        alertname: NoSync
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "No RYFT sync for over six hours" }
+  - name: NoSync stays quiet while syncs come in
+    interval: 15m
+    input_series:
+      - { series: 'ryft_last_sync_timestamp_seconds{job="ryft/ingest",instance="ingest-1"}', values: '0+900x40' }
+    alert_rule_test:
+      - { eval_time: 7h, alertname: NoSync, exp_alerts: [] }
+
+  # ---- group ryft-ops -------------------------------------------------------------------
+  - name: APNs failures over 10 % in an hour
+    interval: 15m
+    input_series:
+      - { series: 'ryft_apns_responses_total{job="ryft/notify",instance="notify-1",push_type="alert",status="200"}', values: '0+8x8' }
+      - { series: 'ryft_apns_responses_total{job="ryft/notify",instance="notify-1",push_type="alert",status="500"}', values: '0+2x8' }
+    alert_rule_test:
+      - eval_time: 60m
         alertname: APNsFailing
         exp_alerts:
           - exp_labels: { severity: warning }
             exp_annotations: { summary: "Over 10 % of APNs requests fail (status label: 400 = wrong environment, 403 = the key)" }
-  - name: sync to score over two minutes
-    interval: 1m
+  - name: APNs 410 is no failure
+    interval: 15m
     input_series:
-      # Ten days scored a minute, all between 2 and 5 minutes after their sync.
-      - { series: 'ryft_sync_to_score_seconds_bucket{le="60"}', values: '0x40' }
-      - { series: 'ryft_sync_to_score_seconds_bucket{le="120"}', values: '0x40' }
-      - { series: 'ryft_sync_to_score_seconds_bucket{le="300"}', values: '0+10x40' }
-      - { series: 'ryft_sync_to_score_seconds_bucket{le="+Inf"}', values: '0+10x40' }
-      # Elsewhere: a quick scoring, under a minute.
-      - { series: 'ryft_sync_to_score_seconds_bucket{le="60",x="fast"}', values: '0x40' }
+      - { series: 'ryft_apns_responses_total{job="ryft/notify",instance="notify-1",push_type="alert",status="200"}', values: '0+8x8' }
+      - { series: 'ryft_apns_responses_total{job="ryft/notify",instance="notify-1",push_type="alert",status="410"}', values: '0+5x8' }
     alert_rule_test:
-      - { eval_time: 10m, alertname: SyncToScoreSlow, exp_alerts: [] }
-      - eval_time: 35m
-        alertname: SyncToScoreSlow
+      - { eval_time: 60m, alertname: APNsFailing, exp_alerts: [] }
+  - name: PushFailing, a short-lived instance; unconfigured does not count
+    interval: 15m
+    input_series:
+      - { series: 'ryft_push_notifications_total{job="ryft/notify",instance="notify-4",result="failed"}', values: '_ _ _ 1' }
+      - { series: 'ryft_push_notifications_total{job="ryft/notify",instance="notify-4",result="unconfigured"}', values: '_ _ _ 4' }
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: PushFailing
         exp_alerts:
           - exp_labels: { severity: warning }
-            exp_annotations: { summary: "Scores take over 2 minutes after a sync (p95)" }
-  - name: the database refuses a route's text for the first time
-    interval: 1m
+            exp_annotations: { summary: "Push notifications are not reaching devices" }
+      - { eval_time: 100m, alertname: PushFailing, exp_alerts: [] }
+  - name: APNsRejectsOurKey, one 403
+    interval: 15m
     input_series:
-      # The series appears at 1 (the counter is created by its first refusal), which
-      # increase() alone never sees; the client's own refusals (at="body") never alert.
-      - { series: 'ryft_http_text_refused_total{namespace="ryft-api",pod="api-1",route="POST /v1/feedback",at="database"}', values: '_x10 1x100' }
-      - { series: 'ryft_http_text_refused_total{namespace="ryft-api",pod="api-1",route="POST /v1/feedback",at="body"}', values: '1+5x110' }
+      - { series: 'ryft_apns_responses_total{job="ryft/notify",instance="notify-1",push_type="alert",status="403"}', values: '0 0 0 1x8' }
+      - { series: 'ryft_apns_responses_total{job="ryft/notify",instance="notify-1",push_type="alert",status="200"}', values: '0+5x11' }
     alert_rule_test:
-      - { eval_time: 5m, alertname: TextRefusedByDatabase, exp_alerts: [] }
-      - eval_time: 15m
-        alertname: TextRefusedByDatabase
+      - { eval_time: 40m, alertname: APNsRejectsOurKey, exp_alerts: [] }
+      - eval_time: 50m
+        alertname: APNsRejectsOurKey
         exp_alerts:
-          - exp_labels: { severity: warning, namespace: ryft-api, route: POST /v1/feedback }
-            exp_annotations: { summary: "ryft-api POST /v1/feedback: the database refused a request's text (OBSERVABILITY.md → Alerts)" }
-      - { eval_time: 90m, alertname: TextRefusedByDatabase, exp_alerts: [] }
-  - name: the database refuses a route's text again
-    interval: 1m
+          - exp_labels: { severity: critical }
+            exp_annotations: { summary: "APNs refuses notify's provider token (check APNS_KEY_ID, APNS_TEAM_ID, the apns-key-p8 pin)" }
+      - { eval_time: 120m, alertname: APNsRejectsOurKey, exp_alerts: [] }
+  - name: AccountDeletionIncomplete, the Apple step; a database step does not count
+    interval: 15m
     input_series:
-      - { series: 'ryft_http_text_refused_total{namespace="ryft-ingest",pod="ingest-1",route="POST /v1/sync",at="database"}', values: '1x100 2x30' }
+      - { series: 'ryft_account_deletions_total{job="ryft/api",instance="api-5",step="apple",result="error"}', values: '_ _ 1' }
+      - { series: 'ryft_account_deletions_total{job="ryft/api",instance="api-5",step="db",result="error"}', values: '_ _ 1' }
     alert_rule_test:
-      - { eval_time: 90m, alertname: TextRefusedByDatabase, exp_alerts: [] }
-      - eval_time: 110m
-        alertname: TextRefusedByDatabase
+      - eval_time: 35m
+        alertname: AccountDeletionIncomplete
         exp_alerts:
-          - exp_labels: { severity: warning, namespace: ryft-ingest, route: POST /v1/sync }
-            exp_annotations: { summary: "ryft-ingest POST /v1/sync: the database refused a request's text (OBSERVABILITY.md → Alerts)" }
-  - name: a scrape gap is not a route's first refusal
-    interval: 1m
+          - exp_labels: { severity: warning }
+            exp_annotations: { summary: "A deleted account still has its Supabase sign-in or Apple grant" }
+      - { eval_time: 80m, alertname: AccountDeletionIncomplete, exp_alerts: [] }
+  - name: NewFeedback
+    interval: 15m
     input_series:
-      # Ten scrapes missing around 58m, the hour before 118m: the series is not new.
-      - { series: 'ryft_http_text_refused_total{namespace="ryft-api",pod="api-1",route="POST /v1/feedback",at="database"}', values: '1x50 _x10 1x80' }
+      - { series: 'ryft_feedback_received_total{job="ryft/api",instance="api-1"}', values: '0 0 1x8' }
     alert_rule_test:
-      - { eval_time: 118m, alertname: TextRefusedByDatabase, exp_alerts: [] }
-  - name: feedback and certificates
-    interval: 1m
-    input_series:
-      - { series: 'ryft_feedback_received_total{category="bug"}', values: '0 0 0 1 1' }
-      - { series: 'certmanager_certificate_expiration_timestamp_seconds{namespace="ryft-web",name="ryftlab-tls"}', values: '864000x90' }
-      # Vault's server certificate is covered by the same rule (no namespace filter); vault-ca with
-      # 300 days left is not.
-      - { series: 'certmanager_certificate_expiration_timestamp_seconds{namespace="vault",name="vault-tls"}', values: '864000x90' }
-      - { series: 'certmanager_certificate_expiration_timestamp_seconds{namespace="vault",name="vault-ca"}', values: '25920000x90' }
-    alert_rule_test:
-      - eval_time: 4m
+      - { eval_time: 20m, alertname: NewFeedback, exp_alerts: [] }
+      - eval_time: 35m
         alertname: NewFeedback
         exp_alerts:
           - exp_labels: { severity: info }
             exp_annotations: { summary: "New beta feedback (scripts/beta_report.sh feedback)" }
-      - eval_time: 70m
-        alertname: CertificateExpiring
-        exp_alerts:
-          - exp_labels: { severity: warning, namespace: ryft-web, name: ryftlab-tls }
-            exp_annotations: { summary: "Certificate ryft-web/ryftlab-tls expires in under 14 days" }
-          - exp_labels: { severity: warning, namespace: vault, name: vault-tls }
-            exp_annotations: { summary: "Certificate vault/vault-tls expires in under 14 days" }
-  - name: argo cd
-    interval: 1m
+      - { eval_time: 120m, alertname: NewFeedback, exp_alerts: [] }
+  - name: refused admin requests, a scanner on two instances
+    interval: 15m
     input_series:
-      - { series: 'argocd_app_info{name="ryft-platform",health_status="Degraded",sync_status="Synced",autosync_enabled="true"}', values: '1x40' }
-      - { series: 'argocd_app_info{name="vault-api",health_status="Healthy",sync_status="OutOfSync",autosync_enabled="true"}', values: '1x40' }
-      # Auto-sync paused (the adoption step): out of sync on purpose, no alert.
-      - { series: 'argocd_app_info{name="broker-rabbitmq",health_status="Healthy",sync_status="OutOfSync",autosync_enabled="false"}', values: '1x40' }
-      - { series: 'argocd_app_sync_total{name="ryft-platform",phase="Failed"}', values: '0 0 0 1 1 1' }
-      - { series: 'argocd_app_sync_total{name="vault-api",phase="Succeeded"}', values: '0 1 2 3 4 5' }
+      - { series: 'ryft_admin_requests_total{job="ryft/api",instance="api-1",result="unauthorized"}', values: '0+30x8' }
+      - { series: 'ryft_admin_requests_total{job="ryft/api",instance="api-2",result="unauthorized"}', values: '0+30x8' }
+      - { series: 'ryft_admin_requests_total{job="ryft/api",instance="api-1",result="ok"}', values: '0+100x8' }
     alert_rule_test:
-      - { eval_time: 5m, alertname: ArgoAppDegraded, exp_alerts: [] }
-      - eval_time: 15m
-        alertname: ArgoAppDegraded
+      - eval_time: 60m
+        alertname: AdminUnauthorized
         exp_alerts:
-          - exp_labels: { severity: warning, name: ryft-platform }
-            exp_annotations: { summary: "Argo CD application ryft-platform is Degraded (argocd app get, OPERATIONS.md → Deploy)" }
-      - { eval_time: 20m, alertname: ArgoAppOutOfSync, exp_alerts: [] }
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
+              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
+  - name: refused admin requests just under 20 in 30 minutes; other results do not count
+    interval: 15m
+    input_series:
+      # 9 every 15 minutes is 18 in 30; a missing second factor and a forbidden route are other results
+      - { series: 'ryft_admin_requests_total{job="ryft/api",instance="api-1",result="unauthorized"}', values: '0+9x8' }
+      - { series: 'ryft_admin_requests_total{job="ryft/api",instance="api-1",result="mfa_required"}', values: '0+30x8' }
+      - { series: 'ryft_admin_requests_total{job="ryft/api",instance="api-1",result="forbidden"}', values: '0+30x8' }
+      - { series: 'ryft_admin_requests_total{job="ryft/api",instance="api-1",result="ok"}', values: '0+100x8' }
+    alert_rule_test:
+      - { eval_time: 60m, alertname: AdminUnauthorized, exp_alerts: [] }
+      - { eval_time: 90m, alertname: AdminUnauthorized, exp_alerts: [] }
+  - name: AdminWebUsed, a short-lived instance; the key does not count
+    interval: 15m
+    input_series:
+      - { series: 'ryft_admin_authorized_total{job="ryft/api",instance="api-3",actor="user"}', values: '_ _ 1' }
+      - { series: 'ryft_admin_authorized_total{job="ryft/api",instance="api-1",actor="key"}', values: '0+10x8' }
+    alert_rule_test:
       - eval_time: 35m
-        alertname: ArgoAppOutOfSync
+        alertname: AdminWebUsed
         exp_alerts:
-          - exp_labels: { severity: warning, name: vault-api }
-            exp_annotations: { summary: "Argo CD application vault-api has not matched git for 30 minutes" }
-      - eval_time: 5m
-        alertname: ArgoSyncFailed
-        exp_alerts:
-          - exp_labels: { severity: critical, name: ryft-platform }
-            exp_annotations: { summary: "Argo CD sync of ryft-platform failed (its last operation names the step)" }
-  - name: argo cd not scraped
-    interval: 1m
+          - exp_labels: { severity: info }
+            exp_annotations:
+              summary: "The admin page was used (GET /v1/admin/audit shows by whom; OPERATIONS.md → Beta → Admin sign-in)"
+              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in (lost phone: delete the admin_accounts row)"
+      - { eval_time: 80m, alertname: AdminWebUsed, exp_alerts: [] }
+  - name: InviteEmailPurgeFailing, three failed passes in three hours
+    interval: 15m
     input_series:
-      - { series: 'up{job="something-else"}', values: '1x30' }
+      # one failed pass an hour (minutes 60, 120, 180)
+      - { series: 'ryft_invite_email_purge_total{job="ryft/api",instance="api-1",result="error"}', values: '0 0 0 0 1 1 1 1 2 2 2 2 3 3 3 3' }
     alert_rule_test:
-      - eval_time: 20m
-        alertname: ArgoMetricsMissing
+      - { eval_time: 170m, alertname: InviteEmailPurgeFailing, exp_alerts: [] }
+      - eval_time: 180m
+        alertname: InviteEmailPurgeFailing
         exp_alerts:
           - exp_labels: { severity: warning }
-            exp_annotations: { summary: "No Argo CD metrics for 15 minutes" }
-  - name: rabbitmq
-    interval: 1m
+            exp_annotations:
+              summary: "The job that clears bound invite emails keeps failing (OPERATIONS.md → Beta → A code for one person)"
+              runbook: "docs/OPERATIONS.md → Beta → A code for one person"
+
+  # ---- the services from outside: one sample per probe about every 2 minutes ----------------
+  - name: ApiDown needs every probe; SiteDown leaves the services alone
+    interval: 2m
     input_series:
-      - { series: 'rabbitmq_queue_messages_ready{vhost="ryft",queue="scoring"}', values: '150x30' }
-      - { series: 'rabbitmq_queue_messages_ready{vhost="ryft",queue="scoring.retry.5m"}', values: '500x30' }
-      - { series: 'rabbitmq_queue_messages{vhost="ryft",queue="dlq.notify"}', values: '0 0 1x20' }
-      - { series: 'rabbitmq_queue_messages{vhost="ryft",queue="notify"}', values: '9x30' }
-      - { series: 'rabbitmq_alarms_memory_used_watermark{rabbitmq_node="a"}', values: '0 0 1x20' }
-      - { series: 'rabbitmq_alarms_free_disk_space_watermark{rabbitmq_node="a"}', values: '0x30' }
-      - { series: 'rabbitmq_identity_info{rabbitmq_cluster="rabbitmq",rabbitmq_node="a"}', values: '1x30' }
-      - { series: 'rabbitmq_identity_info{rabbitmq_cluster="rabbitmq",rabbitmq_node="b"}', values: '1x30' }
-      - { series: 'ryft_amqp_connected{namespace="ryft-scoring"}', values: '0x30' }
-      - { series: 'ryft_amqp_connected{namespace="ryft-api"}', values: '1x30' }
-      - { series: 'ryft_events_published_total{reason="sync",result="unroutable"}', values: '0 0 1 1' }
+      # api: both probes fail from minute 20; ingest: only Frankfurt does
+      - { series: 'probe_success{job="ryft-api-ready",instance="https://api.ryftlab.de/health/ready",probe="Frankfurt"}', values: '1x9 0x20' }
+      - { series: 'probe_success{job="ryft-api-ready",instance="https://api.ryftlab.de/health/ready",probe="Amsterdam"}', values: '1x9 0x20' }
+      - { series: 'probe_success{job="ryft-ingest-ready",instance="https://ingest.ryftlab.de/health/ready",probe="Frankfurt"}', values: '1x9 0x20' }
+      - { series: 'probe_success{job="ryft-ingest-ready",instance="https://ingest.ryftlab.de/health/ready",probe="Amsterdam"}', values: '1x29' }
     alert_rule_test:
-      # A retry queue's backlog is waiting by design, not a backlog.
-      - eval_time: 20m
-        alertname: RabbitMQBacklog
+      - { eval_time: 26m, alertname: ApiDown, exp_alerts: [] }
+      - eval_time: 30m
+        alertname: ApiDown
         exp_alerts:
-          - exp_labels: { severity: warning, queue: scoring }
-            exp_annotations: { summary: "RabbitMQ scoring: over 100 events waiting for 15 minutes" }
-      - eval_time: 10m
-        alertname: RabbitMQDeadLetters
-        exp_alerts:
-          - exp_labels: { severity: warning, queue: dlq.notify }
-            exp_annotations: { summary: "RabbitMQ dlq.notify holds dead letters (KUBE_CONTEXT=ryft-prod-euc1 scripts/dlq.sh list)" }
-      - eval_time: 5m
-        alertname: RabbitMQAlarm
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations: { summary: "RabbitMQ blocks publishers (memory or disk alarm)" }
-      - eval_time: 10m
-        alertname: RabbitMQNodeDown
-        exp_alerts:
-          - exp_labels: { severity: warning }
-            exp_annotations: { summary: "RabbitMQ: only 2 of 3 nodes report" }
-      - eval_time: 10m
-        alertname: AMQPDisconnected
-        exp_alerts:
-          - exp_labels: { severity: warning, namespace: ryft-scoring }
-            exp_annotations: { summary: "ryft-scoring is not connected to RabbitMQ" }
-      - eval_time: 3m
-        alertname: EventsUnroutable
-        exp_alerts:
-          - exp_labels: { severity: critical, reason: sync }
-            exp_annotations: { summary: "sync events are unroutable on RabbitMQ" }
-  - name: outbox
-    interval: 1m
-    input_series:
-      - { series: 'ryft_outbox_oldest_seconds{publisher="ingest"}', values: '0 60 400x20' }
-      - { series: 'ryft_outbox_oldest_seconds{publisher="api"}', values: '30x20' }
-      - { series: 'ryft_outbox_stuck{publisher="scoring"}', values: '0 0 1x10' }
-    alert_rule_test:
-      - eval_time: 10m
-        alertname: OutboxBacklog
-        exp_alerts:
-          - exp_labels: { severity: warning, publisher: ingest }
-            exp_annotations: { summary: "ingest: outbox events waiting over 5 minutes for the broker" }
-      - eval_time: 3m
-        alertname: OutboxStuck
-        exp_alerts:
-          - exp_labels: { severity: warning, publisher: scoring }
-            exp_annotations: { summary: "scoring: outbox events set aside after 50 failed sends" }
+          - exp_labels: { severity: critical, job: ryft-api-ready, instance: "https://api.ryftlab.de/health/ready" }
+            exp_annotations:
+              summary: "https://api.ryftlab.de/health/ready fails from every probe (job ryft-api-ready)"
+              runbook: "docs/OPERATIONS.md → GCP"
+      - { eval_time: 30m, alertname: SiteDown, exp_alerts: [] }
+      - { eval_time: 30m, alertname: SiteProbeFlapping, exp_alerts: [] }
+
   # ---- the site from outside: Synthetic Monitoring, one sample per probe every 5 minutes ----
   - name: site down needs every probe
     interval: 5m
@@ -396,10 +456,12 @@ tests:
   - name: one check reports nothing
     interval: 5m
     input_series:
-      # home, aasa and www report; the privacy check was deleted or disabled
+      # home, aasa, www and the two service checks report; the privacy check was deleted or disabled
       - { series: 'probe_success{job="ryft-site-home",instance="https://ryftlab.de/",probe="Frankfurt"}', values: '1x10' }
       - { series: 'probe_success{job="ryft-site-aasa",instance="https://ryftlab.de/.well-known/apple-app-site-association",probe="Frankfurt"}', values: '1x10' }
       - { series: 'probe_success{job="ryft-site-www-redirect",instance="https://www.ryftlab.de/",probe="Frankfurt"}', values: '1x10' }
+      - { series: 'probe_success{job="ryft-api-ready",instance="https://api.ryftlab.de/health/ready",probe="Frankfurt"}', values: '1x10' }
+      - { series: 'probe_success{job="ryft-ingest-ready",instance="https://ingest.ryftlab.de/health/ready",probe="Frankfurt"}', values: '1x10' }
     alert_rule_test:
       - { eval_time: 10m, alertname: SyntheticsMissing, exp_alerts: [] }
       - eval_time: 25m
@@ -408,6 +470,22 @@ tests:
           - exp_labels: { severity: warning, job: ryft-site-privacy }
             exp_annotations:
               summary: "No Synthetic Monitoring results for ryft-site-privacy for 25 minutes"
+              runbook: "docs/OPERATIONS.md → Monitoring (Grafana Cloud)"
+  - name: a service check reports nothing
+    interval: 5m
+    input_series:
+      - { series: 'probe_success{job="ryft-site-home",instance="https://ryftlab.de/",probe="Frankfurt"}', values: '1x10' }
+      - { series: 'probe_success{job="ryft-site-privacy",instance="https://ryftlab.de/privacy",probe="Frankfurt"}', values: '1x10' }
+      - { series: 'probe_success{job="ryft-site-aasa",instance="https://ryftlab.de/.well-known/apple-app-site-association",probe="Frankfurt"}', values: '1x10' }
+      - { series: 'probe_success{job="ryft-site-www-redirect",instance="https://www.ryftlab.de/",probe="Frankfurt"}', values: '1x10' }
+      - { series: 'probe_success{job="ryft-api-ready",instance="https://api.ryftlab.de/health/ready",probe="Frankfurt"}', values: '1x10' }
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SyntheticsMissing
+        exp_alerts:
+          - exp_labels: { severity: warning, job: ryft-ingest-ready }
+            exp_annotations:
+              summary: "No Synthetic Monitoring results for ryft-ingest-ready for 25 minutes"
               runbook: "docs/OPERATIONS.md → Monitoring (Grafana Cloud)"
   # The agent republishes a run's last result about every 2 minutes, so the real series has
   # roughly three samples per 5-minute run; the recovery cases use one sample a minute.
@@ -462,1304 +540,3 @@ tests:
               runbook: "docs/OPERATIONS.md → Apex site and apple-app-site-association"
       # SiteDown's condition (no probe passes for 10 minutes) never holds
       - { eval_time: 100m, alertname: SiteDown, exp_alerts: [] }
-
-
-
-
-  # ---- admission policies (T12-e) --------------------------------------------------------
-  # Counters: the first event of a new child (created at 1, nothing to subtract), steady and
-  # growing series, the scrape's own start and a recovered scrape, Pod Security without any
-  # binding. Bindings: kube-state-metrics' series against the committed actions, which the
-  # tests feed as ryft:admission_binding_intended (scripts/admission_intended.sh generates it).
-  - name: admission violation, first event of a new series (no increase to see)
-    interval: 1m
-    input_series:
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="warn",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.2.9:443"}', values: '_x30 1x90' }
-    alert_rule_test:
-      - { eval_time: 25m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
-      - eval_time: 31m
-        alertname: AdmissionPolicyViolation
-        exp_alerts:
-          - exp_labels: { severity: info, policy: ryft-namespaces, policy_binding: ryft-namespaces }
-            exp_annotations:
-              summary: "Admission policy ryft-namespaces (ryft-namespaces) flagged a request that was admitted"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-      # a single event resolves after its 10 minutes
-      - { eval_time: 50m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
-  - name: admission violation, steady counters stay quiet and an increase fires
-    interval: 1m
-    input_series:
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '3x60 4x60' }
-    alert_rule_test:
-      # the scrape's first minutes: the series look new, but the scrape was not up 12 minutes ago
-      - { eval_time: 5m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
-      - { eval_time: 20m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
-      - { eval_time: 59m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
-      - eval_time: 61m
-        alertname: AdmissionPolicyViolation
-        exp_alerts:
-          - exp_labels: { severity: info, policy: ryft-namespaces, policy_binding: ryft-namespaces }
-            exp_annotations:
-              summary: "Admission policy ryft-namespaces (ryft-namespaces) flagged a request that was admitted"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - { eval_time: 80m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
-  - name: admission alerts stay quiet in Phase 0 (no ryft policies, no bindings)
-    interval: 1m
-    input_series:
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'up{job="ryft/admission-bindings",instance="10.0.3.3:8080"}', values: '1x200' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="other",policy_binding="other",enforcement_action="deny",error_type="compile_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="other",policy_binding="ryft-workloads-pods",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-vso",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-operators-cluster",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-broker",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-namespaces",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-workloads-templates",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-netpol",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-auth-env",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-traefik",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-workloads-pods",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-operator-reach",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-argocd",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-argocd-operation",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-vault-trust",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-namespaces-vault",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-workloads-templates-vault",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-workloads-pods-vault",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-netpol-vault",intended_action="deny"}', values: '1x300' }
-    alert_rule_test:
-      - { eval_time: 31m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
-      - { eval_time: 31m, alertname: AdmissionPolicyDenied, exp_alerts: [] }
-      - { eval_time: 31m, alertname: AdmissionPodDenied, exp_alerts: [] }
-      - { eval_time: 31m, alertname: AdmissionPolicyError, exp_alerts: [] }
-      - { eval_time: 31m, alertname: AdmissionBindingMissing, exp_alerts: [] }
-      - { eval_time: 31m, alertname: AdmissionBindingNotDenying, exp_alerts: [] }
-      - { eval_time: 31m, alertname: AdmissionBindingDrift, exp_alerts: [] }
-      - { eval_time: 31m, alertname: AdmissionBreakGlass, exp_alerts: [] }
-      - { eval_time: 31m, alertname: AdmissionSignalsMissing, exp_alerts: [] }
-      - { eval_time: 31m, alertname: AdmissionScrapeDown, exp_alerts: [] }
-  - name: admission denials, pod-capable bindings are critical, the rest warning, violations that were denied are not
-    interval: 1m
-    input_series:
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-workloads",policy_binding="ryft-workloads-pods",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-operator-reach",policy_binding="ryft-operator-reach",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-auth-env",policy_binding="ryft-auth-env",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-workloads",policy_binding="ryft-workloads-templates",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-workloads",policy_binding="ryft-workloads-pods-vault",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-netpol",policy_binding="ryft-netpol-vault",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-    alert_rule_test:
-      - eval_time: 31m
-        alertname: AdmissionPolicyDenied
-        exp_alerts:
-          - exp_labels: { severity: warning, policy: ryft-namespaces, policy_binding: ryft-namespaces }
-            exp_annotations:
-              summary: "Admission policy ryft-namespaces (ryft-namespaces) refused a request"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: warning, policy: ryft-workloads, policy_binding: ryft-workloads-templates }
-            exp_annotations:
-              summary: "Admission policy ryft-workloads (ryft-workloads-templates) refused a request"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: warning, policy: ryft-netpol, policy_binding: ryft-netpol-vault }
-            exp_annotations:
-              summary: "Admission policy ryft-netpol (ryft-netpol-vault) refused a request"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - eval_time: 31m
-        alertname: AdmissionPodDenied
-        exp_alerts:
-          - exp_labels: { severity: critical, source: ValidatingAdmissionPolicy, policy_binding: ryft-workloads-pods }
-            exp_annotations:
-              summary: "A Pod was refused by admission (ValidatingAdmissionPolicy); a re-create can be refused too"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: critical, source: ValidatingAdmissionPolicy, policy_binding: ryft-operator-reach }
-            exp_annotations:
-              summary: "A Pod was refused by admission (ValidatingAdmissionPolicy); a re-create can be refused too"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: critical, source: ValidatingAdmissionPolicy, policy_binding: ryft-auth-env }
-            exp_annotations:
-              summary: "A Pod was refused by admission (ValidatingAdmissionPolicy); a re-create can be refused too"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: critical, source: ValidatingAdmissionPolicy, policy_binding: ryft-workloads-pods-vault }
-            exp_annotations:
-              summary: "A Pod was refused by admission (ValidatingAdmissionPolicy); a re-create can be refused too"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-      # the audit counts of a binding that denies are the denial, not a violation
-      - { eval_time: 31m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
-      - { eval_time: 50m, alertname: AdmissionPolicyDenied, exp_alerts: [] }
-      - { eval_time: 50m, alertname: AdmissionPodDenied, exp_alerts: [] }
-  - name: admission pod security enforce refusals page without any binding (new child and increase)
-    interval: 1m
-    input_series:
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="enforce",resource="pod",policy_level="baseline",instance="10.0.1.5:443"}', values: '_x30 1x170' }
-      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="enforce",resource="pod",policy_level="restricted",instance="10.0.1.5:443"}', values: '1x100 2x100' }
-      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="allow",mode="enforce",resource="pod",policy_level="baseline",instance="10.0.1.5:443"}', values: '50+50x200' }
-    alert_rule_test:
-      - { eval_time: 29m, alertname: AdmissionPodDenied, exp_alerts: [] }
-      - eval_time: 31m
-        alertname: AdmissionPodDenied
-        exp_alerts:
-          - exp_labels: { severity: critical, source: Pod Security, policy_level: baseline }
-            exp_annotations:
-              summary: "A Pod was refused by admission (Pod Security); a re-create can be refused too"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - { eval_time: 50m, alertname: AdmissionPodDenied, exp_alerts: [] }
-      # restricted: an existing child that increments at 100m
-      - { eval_time: 90m, alertname: AdmissionPodDenied, exp_alerts: [] }
-      - eval_time: 102m
-        alertname: AdmissionPodDenied
-        exp_alerts:
-          - exp_labels: { severity: critical, source: Pod Security, policy_level: restricted }
-            exp_annotations:
-              summary: "A Pod was refused by admission (Pod Security); a re-create can be refused too"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - { eval_time: 120m, alertname: AdmissionPodDenied, exp_alerts: [] }
-  - name: admission pod security, warn and audit denials are violations, enforce on other resources is neither
-    interval: 1m
-    input_series:
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="warn",resource="pod",policy_level="restricted",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="audit",resource="pod",policy_level="baseline",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="enforce",resource="job",policy_level="baseline",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="allow",mode="warn",resource="pod",policy_level="restricted",instance="10.0.1.5:443"}', values: '50+50x200' }
-    alert_rule_test:
-      - eval_time: 31m
-        alertname: AdmissionPolicyViolation
-        exp_alerts:
-          - exp_labels: { severity: info, policy: pod-security, policy_binding: pod-security-warn, mode: warn }
-            exp_annotations:
-              summary: "Admission policy pod-security (pod-security-warn) flagged a request that was admitted"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: info, policy: pod-security, policy_binding: pod-security-audit, mode: audit }
-            exp_annotations:
-              summary: "Admission policy pod-security (pod-security-audit) flagged a request that was admitted"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - { eval_time: 31m, alertname: AdmissionPodDenied, exp_alerts: [] }
-  - name: admission a recovered scrape does not make old children look new
-    interval: 1m
-    input_series:
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '0x90 1x100' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-workloads",policy_binding="ryft-workloads-pods",enforcement_action="deny",error_type="no_error",instance="10.0.1.5:443"}', values: '_x90 1x100' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-namespaces",policy_binding="ryft-namespaces",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x90 1x100' }
-      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="enforce",resource="pod",policy_level="baseline",instance="10.0.1.5:443"}', values: '_x90 1x100' }
-      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="warn",resource="pod",policy_level="baseline",instance="10.0.1.5:443"}', values: '_x90 1x100' }
-      # an endpoint with no up series at all
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-workloads",policy_binding="ryft-workloads-pods",enforcement_action="deny",error_type="no_error",instance="10.0.9.9:443"}', values: '_x30 1x160' }
-      - { series: 'pod_security_evaluations_total{job="ryft/kube-apiserver-admission",decision="deny",mode="enforce",resource="pod",policy_level="baseline",instance="10.0.9.9:443"}', values: '_x30 1x160' }
-    alert_rule_test:
-      - { eval_time: 31m, alertname: AdmissionPodDenied, exp_alerts: [] }
-      - { eval_time: 92m, alertname: AdmissionPodDenied, exp_alerts: [] }
-      - { eval_time: 95m, alertname: AdmissionPodDenied, exp_alerts: [] }
-      - { eval_time: 150m, alertname: AdmissionPodDenied, exp_alerts: [] }
-      - { eval_time: 31m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
-      - { eval_time: 92m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
-      - { eval_time: 95m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
-      - { eval_time: 150m, alertname: AdmissionPolicyViolation, exp_alerts: [] }
-  - name: admission policy evaluation error, critical when it refuses, warning when admitted
-    interval: 1m
-    input_series:
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x200' }
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.2.9:443"}', values: '1x200' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-operators-cluster",policy_binding="ryft-operators-cluster",enforcement_action="deny",error_type="compile_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-broker",policy_binding="ryft-broker",enforcement_action="deny",error_type="out_of_budget",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-operators-cluster",policy_binding="ryft-operators-cluster",enforcement_action="audit",error_type="compile_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-broker",policy_binding="ryft-broker",enforcement_action="audit",error_type="out_of_budget",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-vso",policy_binding="ryft-vso",enforcement_action="audit",error_type="invalid_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-traefik",policy_binding="ryft-traefik",enforcement_action="warn",error_type="invalid_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-      - { series: 'apiserver_validating_admission_policy_check_total{job="ryft/kube-apiserver-admission",policy="ryft-vso",policy_binding="ryft-vso",enforcement_action="audit",error_type="no_error",instance="10.0.1.5:443"}', values: '_x30 1x90' }
-    alert_rule_test:
-      - eval_time: 31m
-        alertname: AdmissionPolicyError
-        exp_alerts:
-          - exp_labels: { severity: critical, policy: ryft-operators-cluster, policy_binding: ryft-operators-cluster, error_type: compile_error }
-            exp_annotations:
-              summary: "Admission policy ryft-operators-cluster (ryft-operators-cluster) fails to evaluate (compile_error) and refuses requests"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: critical, policy: ryft-broker, policy_binding: ryft-broker, error_type: out_of_budget }
-            exp_annotations:
-              summary: "Admission policy ryft-broker (ryft-broker) fails to evaluate (out_of_budget) and refuses requests"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: warning, policy: ryft-vso, policy_binding: ryft-vso, error_type: invalid_error }
-            exp_annotations:
-              summary: "Admission policy ryft-vso (ryft-vso) fails to evaluate (invalid_error); requests are admitted"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: warning, policy: ryft-traefik, policy_binding: ryft-traefik, error_type: invalid_error }
-            exp_annotations:
-              summary: "Admission policy ryft-traefik (ryft-traefik) fails to evaluate (invalid_error); requests are admitted"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - { eval_time: 50m, alertname: AdmissionPolicyError, exp_alerts: [] }
-  - name: admission bindings, sixteen of seventeen
-    interval: 1m
-    input_series:
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operators-cluster",policy_name="ryft-operators-cluster"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates",policy_name="ryft-workloads-templates"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",policy_name="ryft-netpol"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-auth-env",policy_name="ryft-auth-env"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-traefik",policy_name="ryft-traefik"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vault-trust",policy_name="ryft-vault-trust"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces-vault",policy_name="ryft-namespaces"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates-vault",policy_name="ryft-workloads-templates-vault"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods-vault",policy_name="ryft-workloads-pods-vault"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol-vault",policy_name="ryft-netpol"}', values: '1x120' }
-    alert_rule_test:
-      - { eval_time: 5m, alertname: AdmissionBindingMissing, exp_alerts: [] }
-      - eval_time: 15m
-        alertname: AdmissionBindingMissing
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "16 of 17 admission policy bindings exist"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-  - name: admission bindings, sixteen of ryft and one that is not ours
-    interval: 1m
-    input_series:
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operators-cluster",policy_name="ryft-operators-cluster"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates",policy_name="ryft-workloads-templates"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",policy_name="ryft-netpol"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-auth-env",policy_name="ryft-auth-env"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-traefik",policy_name="ryft-traefik"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vault-trust",policy_name="ryft-vault-trust"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces-vault",policy_name="ryft-namespaces"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates-vault",policy_name="ryft-workloads-templates-vault"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods-vault",policy_name="ryft-workloads-pods-vault"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol-vault",policy_name="ryft-netpol"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="other-binding",policy_name="ryft-other-binding"}', values: '1x120' }
-    alert_rule_test:
-      - eval_time: 15m
-        alertname: AdmissionBindingMissing
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "16 of 17 admission policy bindings exist"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-  - name: admission bindings, all seventeen
-    interval: 1m
-    input_series:
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operators-cluster",policy_name="ryft-operators-cluster"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates",policy_name="ryft-workloads-templates"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",policy_name="ryft-netpol"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-auth-env",policy_name="ryft-auth-env"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-traefik",policy_name="ryft-traefik"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vault-trust",policy_name="ryft-vault-trust"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces-vault",policy_name="ryft-namespaces"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates-vault",policy_name="ryft-workloads-templates-vault"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods-vault",policy_name="ryft-workloads-pods-vault"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol-vault",policy_name="ryft-netpol"}', values: '1x120' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd-operation",policy_name="ryft-argocd-operation"}', values: '1x120' }
-    alert_rule_test:
-      - { eval_time: 30m, alertname: AdmissionBindingMissing, exp_alerts: [] }
-  - name: admission bindings, none ever (chart disabled)
-    interval: 1m
-    input_series:
-      - { series: 'up{job="ryft/admission-bindings",instance="10.0.3.3:8080"}', values: '1x120' }
-    alert_rule_test:
-      - { eval_time: 30m, alertname: AdmissionBindingMissing, exp_alerts: [] }
-  - name: admission bindings, all gone after they existed
-    interval: 1m
-    input_series:
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operators-cluster",policy_name="ryft-operators-cluster"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates",policy_name="ryft-workloads-templates"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",policy_name="ryft-netpol"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-auth-env",policy_name="ryft-auth-env"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-traefik",policy_name="ryft-traefik"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods",policy_name="ryft-workloads-pods"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-operator-reach",policy_name="ryft-operator-reach"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vault-trust",policy_name="ryft-vault-trust"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces-vault",policy_name="ryft-namespaces"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-templates-vault",policy_name="ryft-workloads-templates-vault"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-workloads-pods-vault",policy_name="ryft-workloads-pods-vault"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol-vault",policy_name="ryft-netpol"}', values: '1x60' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd-operation",policy_name="ryft-argocd-operation"}', values: '1x60' }
-    alert_rule_test:
-      - { eval_time: 65m, alertname: AdmissionBindingMissing, exp_alerts: [] }
-      - eval_time: 80m
-        alertname: AdmissionBindingMissing
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "0 of 17 admission policy bindings exist"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-  - name: admission binding committed as deny that does not deny, while others do
-    interval: 5m
-    input_series:
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-vso",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-broker",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-namespaces",intended_action="audit"}', values: '1x300' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",action="Deny"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",action="Audit"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",action="Warn"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",action="Audit"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",action="Warn"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",action="Audit"}', values: '1x80' }
-    alert_rule_test:
-      - { eval_time: 5m, alertname: AdmissionBindingNotDenying, exp_alerts: [] }
-      - eval_time: 1h
-        alertname: AdmissionBindingNotDenying
-        exp_alerts:
-          - exp_labels: { severity: warning, validatingadmissionpolicybinding: ryft-broker, intended_action: deny }
-            exp_annotations:
-              summary: "Binding ryft-broker is committed as deny but does not deny"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-      # one binding denies: that is not the break-glass
-      - { eval_time: 5h, alertname: AdmissionBreakGlass, exp_alerts: [] }
-      - { eval_time: 5h, alertname: AdmissionBindingDrift, exp_alerts: [] }
-  - name: admission binding drift against the committed action
-    interval: 5m
-    input_series:
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-vso",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-broker",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-namespaces",intended_action="audit"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-netpol",intended_action="audit"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-traefik",intended_action="audit"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-argocd",intended_action="audit"}', values: '1x300' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",policy_name="ryft-netpol"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-traefik",policy_name="ryft-traefik"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",policy_name="ryft-argocd"}', values: '1x80' }
-      # fine: Deny+Audit for deny, Warn+Audit for audit
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",action="Deny"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",action="Audit"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",action="Warn"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",action="Audit"}', values: '1x80' }
-      # deny without Audit
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",action="Deny"}', values: '1x80' }
-      # audit with Deny (and the others)
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",action="Deny"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",action="Warn"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-netpol",action="Audit"}', values: '1x80' }
-      # audit without Warn
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-traefik",action="Audit"}', values: '1x80' }
-      # audit without Audit
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-argocd",action="Warn"}', values: '1x80' }
-    alert_rule_test:
-      - { eval_time: 1h, alertname: AdmissionBindingDrift, exp_alerts: [] }
-      - eval_time: 3h
-        alertname: AdmissionBindingDrift
-        exp_alerts:
-          - exp_labels: { severity: warning, validatingadmissionpolicybinding: ryft-broker, intended_action: deny }
-            exp_annotations:
-              summary: "Binding ryft-broker does not carry the actions it was committed with (deny)"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: warning, validatingadmissionpolicybinding: ryft-netpol, intended_action: audit }
-            exp_annotations:
-              summary: "Binding ryft-netpol does not carry the actions it was committed with (audit)"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: warning, validatingadmissionpolicybinding: ryft-traefik, intended_action: audit }
-            exp_annotations:
-              summary: "Binding ryft-traefik does not carry the actions it was committed with (audit)"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-          - exp_labels: { severity: warning, validatingadmissionpolicybinding: ryft-argocd, intended_action: audit }
-            exp_annotations:
-              summary: "Binding ryft-argocd does not carry the actions it was committed with (audit)"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-      - { eval_time: 3h, alertname: AdmissionBindingNotDenying, exp_alerts: [] }
-      - { eval_time: 3h, alertname: AdmissionBreakGlass, exp_alerts: [] }
-  - name: admission break-glass left on (no binding denies)
-    interval: 5m
-    input_series:
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-vso",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-broker",intended_action="deny"}', values: '1x300' }
-      - { series: 'ryft:admission_binding_intended{validatingadmissionpolicybinding="ryft-namespaces",intended_action="audit"}', values: '1x300' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",policy_name="ryft-vso"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",policy_name="ryft-broker"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_info{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",policy_name="ryft-namespaces"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",action="Warn"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-vso",action="Audit"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",action="Warn"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-broker",action="Audit"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",action="Warn"}', values: '1x80' }
-      - { series: 'kube_validatingadmissionpolicybinding_validation_action{job="ryft/admission-bindings",validatingadmissionpolicybinding="ryft-namespaces",action="Audit"}', values: '1x80' }
-    alert_rule_test:
-      - { eval_time: 3h, alertname: AdmissionBreakGlass, exp_alerts: [] }
-      - eval_time: 5h
-        alertname: AdmissionBreakGlass
-        exp_alerts:
-          - exp_labels: { severity: warning }
-            exp_annotations:
-              summary: "No admission binding denies although 2 are committed as deny (break-glass?) for 4 hours"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-      # NotDenying leaves the all-bindings case to AdmissionBreakGlass
-      - { eval_time: 5h, alertname: AdmissionBindingNotDenying, exp_alerts: [] }
-  - name: admission scrapes missing and down
-    interval: 1m
-    input_series:
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x60' }
-      - { series: 'up{job="ryft/admission-bindings",instance="10.0.3.3:8080"}', values: '1x10 0x50' }
-    alert_rule_test:
-      - { eval_time: 20m, alertname: AdmissionSignalsMissing, exp_alerts: [] }
-      - { eval_time: 20m, alertname: AdmissionScrapeDown, exp_alerts: [] }
-      - eval_time: 40m
-        alertname: AdmissionScrapeDown
-        exp_alerts:
-          - exp_labels: { severity: warning, job: ryft/admission-bindings, instance: "10.0.3.3:8080" }
-            exp_annotations:
-              summary: "The admission scrape ryft/admission-bindings of 10.0.3.3:8080 has been down for 15 minutes"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-  - name: refused admin requests, a scanner
-    interval: 1m
-    input_series:
-      # Two pods refuse 5 a minute each (100 in 10 minutes). Granted requests, a missing second factor and a
-      # key-only route are other results and must not count.
-      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0+5x30' }
-      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-2"}', values: '0+5x30' }
-      - { series: 'ryft_admin_requests_total{result="ok",pod="api-1"}', values: '0+100x30' }
-      - { series: 'ryft_admin_requests_total{result="mfa_required",pod="api-1"}', values: '0+30x30' }
-      - { series: 'ryft_admin_requests_total{result="forbidden",pod="api-1"}', values: '0+30x30' }
-    alert_rule_test:
-      - { eval_time: 1m, alertname: AdminUnauthorized, exp_alerts: [] }
-      - eval_time: 20m
-        alertname: AdminUnauthorized
-        exp_alerts:
-          - exp_labels: { severity: warning }
-            exp_annotations:
-              summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
-              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
-  - name: refused admin requests, a trickle and other results
-    interval: 1m
-    input_series:
-      # One refusal a minute is exactly 10 in any ten-minute window, under 20 (a 30-minute window would
-      # reach 29). A real operator without a second factor, forbidden routes and granted calls are other
-      # results and must not count, however many (a result filter that is lost or widened fires here).
-      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0+1x30' }
-      - { series: 'ryft_admin_requests_total{result="mfa_required",pod="api-1"}', values: '0+50x30' }
-      - { series: 'ryft_admin_requests_total{result="forbidden",pod="api-1"}', values: '0+50x30' }
-      - { series: 'ryft_admin_requests_total{result="ok",pod="api-1"}', values: '0+50x30' }
-    alert_rule_test:
-      - { eval_time: 20m, alertname: AdminUnauthorized, exp_alerts: [] }
-      - { eval_time: 30m, alertname: AdminUnauthorized, exp_alerts: [] }
-  # The threshold is "more than 20 in ten minutes". A counter that starts at 0 and jumps inside the window
-  # is not extrapolated (promtool clamps at zero), so 21 and 20 are exactly 21 and 20.
-  - name: 21 refused admin requests in ten minutes fire
-    interval: 1m
-    input_series:
-      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0x9 21' }
-    alert_rule_test:
-      - { eval_time: 9m, alertname: AdminUnauthorized, exp_alerts: [] }
-      - eval_time: 10m
-        alertname: AdminUnauthorized
-        exp_alerts:
-          - exp_labels: { severity: warning }
-            exp_annotations:
-              summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
-              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
-  - name: 20 refused admin requests in ten minutes do not
-    interval: 1m
-    input_series:
-      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0x9 20' }
-    alert_rule_test:
-      - { eval_time: 10m, alertname: AdminUnauthorized, exp_alerts: [] }
-  - name: refused admin requests spread over the whole ten minutes fire
-    interval: 1m
-    input_series:
-      # Three a minute: 30 in ten minutes, but only about 15 in the last five (a shorter window misses it).
-      - { series: 'ryft_admin_requests_total{result="unauthorized",pod="api-1"}', values: '0+3x12' }
-    alert_rule_test:
-      - eval_time: 10m
-        alertname: AdminUnauthorized
-        exp_alerts:
-          - exp_labels: { severity: warning }
-            exp_annotations:
-              summary: "Repeated admin requests with a bad bearer (OPERATIONS.md → Beta → Admin sign-in; password attacks are in Supabase → Logs → Auth)"
-              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in"
-  - name: a forged key id is not an auth outage
-    interval: 1m
-    input_series:
-      # Anyone can send a token with an unknown key id: the refresh limit answers 503 jwks_refresh_limited,
-      # a retry and not an outage. It must not page.
-      - { series: 'ryft_auth_failures_total{reason="jwks_refresh_limited",pod="api-1"}', values: '0+10x30' }
-      - { series: 'ryft_auth_failures_total{reason="expired",pod="api-1"}', values: '0+10x30' }
-    alert_rule_test:
-      - { eval_time: 20m, alertname: AuthUnavailable, exp_alerts: [] }
-  - name: signing keys or a lookup unreachable is an auth outage
-    interval: 1m
-    input_series:
-      - { series: 'ryft_auth_failures_total{reason="jwks_unavailable",pod="api-1"}', values: '0+1x30' }
-    alert_rule_test:
-      - { eval_time: 3m, alertname: AuthUnavailable, exp_alerts: [] }
-      - eval_time: 12m
-        alertname: AuthUnavailable
-        exp_alerts:
-          - exp_labels: { severity: critical }
-  - name: a failed lookup behind an auth decision is an auth outage (the admin allow-list check counts as internal)
-    interval: 1m
-    input_series:
-      - { series: 'ryft_auth_failures_total{reason="internal",pod="api-2"}', values: '0+1x30' }
-    alert_rule_test:
-      - eval_time: 12m
-        alertname: AuthUnavailable
-        exp_alerts:
-          - exp_labels: { severity: critical }
-  - name: the admin page is used
-    interval: 1m
-    input_series:
-      # A pod that started at 0 (the api creates the series at start) and is used once at 5 minutes. The
-      # key's calls are another actor and do not fire it. A second pod saw nothing.
-      - { series: 'ryft_admin_authorized_total{actor="user",pod="api-1"}', values: '0x5 1x25' }
-      - { series: 'ryft_admin_authorized_total{actor="user",pod="api-2"}', values: '0x30' }
-      - { series: 'ryft_admin_authorized_total{actor="key",pod="api-1"}', values: '0+10x30' }
-    alert_rule_test:
-      - { eval_time: 3m, alertname: AdminWebUsed, exp_alerts: [] }
-      - eval_time: 8m
-        alertname: AdminWebUsed
-        exp_alerts:
-          - exp_labels: { severity: info }
-            exp_annotations:
-              summary: "The admin page was used (GET /v1/admin/audit shows by whom; OPERATIONS.md → Beta → Admin sign-in)"
-              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in (lost phone: delete the admin_accounts row)"
-      # Seven minutes after the use it still fires: a window shorter than ten minutes would have let go.
-      - eval_time: 12m
-        alertname: AdminWebUsed
-        exp_alerts:
-          - exp_labels: { severity: info }
-            exp_annotations:
-              summary: "The admin page was used (GET /v1/admin/audit shows by whom; OPERATIONS.md → Beta → Admin sign-in)"
-              runbook: "docs/OPERATIONS.md → Beta → Admin sign-in (lost phone: delete the admin_accounts row)"
-      # The window moves on: 10 minutes after the use nothing is left to fire.
-      - { eval_time: 25m, alertname: AdminWebUsed, exp_alerts: [] }
-  - name: the invite email purge keeps failing
-    interval: 10m
-    input_series:
-      # One pod fails every hourly pass for three hours; a second pod is fine.
-      - { series: 'ryft_invite_email_purge_total{result="error",pod="api-1"}', values: '0 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19' }
-      - { series: 'ryft_invite_email_purge_total{result="ok",pod="api-2"}', values: '0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20' }
-    alert_rule_test:
-      - { eval_time: 10m, alertname: InviteEmailPurgeFailing, exp_alerts: [] }
-      - eval_time: 150m
-        alertname: InviteEmailPurgeFailing
-        exp_alerts:
-          - exp_labels: { severity: warning }
-            exp_annotations:
-              summary: "The job that clears bound invite emails keeps failing (OPERATIONS.md → Beta → A code for one person)"
-              runbook: "docs/OPERATIONS.md → Beta → A code for one person"
-  - name: one failed purge pass is not an alert
-    interval: 10m
-    input_series:
-      - { series: 'ryft_invite_email_purge_total{result="error",pod="api-1"}', values: '0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1' }
-    alert_rule_test:
-      - { eval_time: 150m, alertname: InviteEmailPurgeFailing, exp_alerts: [] }
-  - name: the admin page is not used, only the key
-    interval: 1m
-    input_series:
-      - { series: 'ryft_admin_authorized_total{actor="user",pod="api-1"}', values: '0x30' }
-      - { series: 'ryft_admin_authorized_total{actor="key",pod="api-1"}', values: '0+10x30' }
-    alert_rule_test:
-      - { eval_time: 20m, alertname: AdminWebUsed, exp_alerts: [] }
-  - name: admission scrapes, nothing reports the bindings
-    interval: 1m
-    input_series:
-      - { series: 'up{job="ryft/kube-apiserver-admission",instance="10.0.1.5:443"}', values: '1x60' }
-    alert_rule_test:
-      - eval_time: 30m
-        alertname: AdmissionSignalsMissing
-        exp_alerts:
-          - exp_labels: { severity: warning, job: ryft/admission-bindings }
-            exp_annotations:
-              summary: "No ryft/admission-bindings scrape results for 15 minutes; the admission alerts are blind"
-              runbook: "docs/OPERATIONS.md → Admission policy signals"
-
-  # ---- group ryft-vault -------------------------------------------------------------
-  # "Initialised" is a server pod labelled vault-initialized=true (kube_pod_labels) in the last
-  # hour or a snapshot that has succeeded once; the tests use one or the other, so both halves of
-  # the gate count. Vault resets the label to "false" at every process start and sets "true" only
-  # on unseal, so a pod that restarts and stays sealed carries vault-initialized="false".
-  - name: vault before the init (every pod running, none ready, the collector not admitted) is quiet
-    interval: 1m
-    input_series:
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '0x1600' }
-      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x1600' }
-      - { series: 'kube_statefulset_status_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x1600' }
-      - { series: 'kube_statefulset_status_replicas_updated{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x1600' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '1x1600' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x1600' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '0x1600' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x1600' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '0x1600' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x1600' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '0x1600' }
-      # Every run fails before the init (no role yet): scheduled, never successful.
-      - { series: 'kube_cronjob_status_last_schedule_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1020x1600' }
-      # The NetworkPolicy does not admit the collector yet (var.vault_collector_peer false).
-      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '0x1600' }
-      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x1600' }
-    alert_rule_test:
-      - { eval_time: 60m, alertname: VaultSealed, exp_alerts: [] }
-      - { eval_time: 60m, alertname: VaultSealedQuorum, exp_alerts: [] }
-      - { eval_time: 60m, alertname: VaultUnavailable, exp_alerts: [] }
-      - { eval_time: 60m, alertname: VaultNoActiveNode, exp_alerts: [] }
-      - { eval_time: 60m, alertname: VaultRaftPeersBelow3, exp_alerts: [] }
-      - { eval_time: 60m, alertname: VaultScrapeDown, exp_alerts: [] }
-      - { eval_time: 26h, alertname: VaultUpdatePending, exp_alerts: [] }
-      - { eval_time: 14h, alertname: VaultSnapshotStale, exp_alerts: [] }
-      - { eval_time: 14h, alertname: VaultSnapshotFailing, exp_alerts: [] }
-  - name: vault sealed (one pod)
-    interval: 1m
-    input_series:
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x60' }
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x10 2x50' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x60' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x60' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x60' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x10 0x50' }
-      # Not running at all (Pending, a crash loop) is not "sealed": PodRestarting, VaultRaftPeersBelow3.
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x10 0x50' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x10 0x50' }
-      # Not a server: an operator's pod with a container named vault (the restore drill's, say).
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-restore-debug",container="vault"}', values: '1x60' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-restore-debug",container="vault"}', values: '0x60' }
-    alert_rule_test:
-      - { eval_time: 14m, alertname: VaultSealed, exp_alerts: [] }
-      - eval_time: 20m
-        alertname: VaultSealed
-        exp_alerts:
-          - exp_labels: { severity: warning, pod: vault-1 }
-            exp_annotations:
-              summary: "vault-1 runs but has not been ready for 5 minutes: shamir, unseal by hand (OPERATIONS → Vault → A pod is sealed); awskms, the KMS key or its role; or a standby without the active node"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealed)"
-      - { eval_time: 20m, alertname: VaultSealedQuorum, exp_alerts: [] }
-  - name: shamir, one pod restarts and stays sealed overnight, VaultSealed holds until the unseal by hand
-    interval: 1m
-    input_series:
-      # D208: vault-1 restarts at 10 minutes and stays sealed until the operator unseals it at
-      # 8 h (480 m). Its own label is "false" from the restart on; vault-0 and vault-2 keep
-      # vault-initialized="true", so the gate does not lapse however long the operator takes.
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x600' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-2",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="false"}', values: '1x600' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-1",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="false"}', values: '1x10 _x469 1x120' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-1",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '_x10 1x469' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x600' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x600' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x600' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x10 0x468 1x120' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x600' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x600' }
-    alert_rule_test:
-      - eval_time: 7h
-        alertname: VaultSealed
-        exp_alerts:
-          - exp_labels: { severity: warning, pod: vault-1 }
-            exp_annotations:
-              summary: "vault-1 runs but has not been ready for 5 minutes: shamir, unseal by hand (OPERATIONS → Vault → A pod is sealed); awskms, the KMS key or its role; or a standby without the active node"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealed)"
-      - { eval_time: 7h, alertname: VaultSealedQuorum, exp_alerts: [] }
-      # Unsealed at 480 m: ready again, resolved.
-      - { eval_time: 485m, alertname: VaultSealed, exp_alerts: [] }
-  - name: two vault pods sealed, the quorum is gone
-    interval: 1m
-    input_series:
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x10 1x50' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-1",label_vault_initialized="true",label_vault_sealed="true",label_vault_active="false"}', values: '1x60' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x60' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x60' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x60' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x10 0x50' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x60' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x10 0x50' }
-    alert_rule_test:
-      - { eval_time: 14m, alertname: VaultSealedQuorum, exp_alerts: [] }
-      - eval_time: 20m
-        alertname: VaultSealedQuorum
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "2 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone. shamir: unseal each by hand (OPERATIONS → Vault → A pod is sealed); awskms: the KMS key or its role"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealedQuorum)"
-      # One alert for the quorum, not one per pod as well.
-      - { eval_time: 20m, alertname: VaultSealed, exp_alerts: [] }
-      # One server is still ready: not VaultUnavailable.
-      - { eval_time: 25m, alertname: VaultUnavailable, exp_alerts: [] }
-  - name: vault unavailable, the gate held by the last snapshot
-    interval: 1m
-    input_series:
-      # Every pod gone (a node group lost, the pods Pending): no pod labels, no running container;
-      # the CronJob's lastSuccessfulTime remains.
-      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x60' }
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x10 0x50' }
-    alert_rule_test:
-      - { eval_time: 19m, alertname: VaultUnavailable, exp_alerts: [] }
-      - eval_time: 25m
-        alertname: VaultUnavailable
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "No Vault server has been ready for 10 minutes: logins and reads fail"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultUnavailable)"
-  - name: vault without an active node
-    interval: 1m
-    input_series:
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x40' }
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x10 0x30' }
-      - { series: 'vault_core_active{job="ryft/vault",pod="vault-0",vault_cluster="vault-integrated-storage"}', values: '1x10 0x30' }
-      - { series: 'vault_core_active{job="ryft/vault",pod="vault-1",vault_cluster="vault-integrated-storage"}', values: '0x40' }
-      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '1x40' }
-      - { series: 'up{job="ryft/vault",pod="vault-1"}', values: '1x40' }
-    alert_rule_test:
-      - { eval_time: 11m, alertname: VaultNoActiveNode, exp_alerts: [] }
-      - eval_time: 20m
-        alertname: VaultNoActiveNode
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "No Vault node has been active for 2 minutes: logins and reads fail"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultNoActiveNode)"
-      # The gate here is the pod label alone.
-      - eval_time: 25m
-        alertname: VaultUnavailable
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "No Vault server has been ready for 10 minutes: logins and reads fail"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultUnavailable)"
-  - name: every vault server scrape fails, so no node is active is not known
-    interval: 1m
-    input_series:
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x40' }
-      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
-      - { series: 'kubelet_volume_stats_capacity_bytes{namespace="vault",persistentvolumeclaim="data-vault-0"}', values: '10737418240x40' }
-      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
-      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '0x40' }
-      - { series: 'up{job="ryft/vault",pod="vault-1"}', values: '0x40' }
-    alert_rule_test:
-      # Blind, not leaderless: VaultScrapeDown says so, VaultNoActiveNode does not page.
-      - { eval_time: 20m, alertname: VaultNoActiveNode, exp_alerts: [] }
-      - eval_time: 30m
-        alertname: VaultScrapeDown
-        exp_alerts:
-          - exp_labels: { severity: warning, job: ryft/vault, pod: vault-0 }
-            exp_annotations:
-              summary: "The Vault scrape ryft/vault of vault-0 has failed or sent nothing for 15 minutes; the Vault alerts are blind"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
-          - exp_labels: { severity: warning, job: ryft/vault, pod: vault-1 }
-            exp_annotations:
-              summary: "The Vault scrape ryft/vault of vault-1 has failed or sent nothing for 15 minutes; the Vault alerts are blind"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
-  - name: one vault server is not scraped
-    interval: 1m
-    input_series:
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-1",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="false"}', values: '1x40' }
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
-      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
-      - { series: 'kubelet_volume_stats_capacity_bytes{namespace="vault",persistentvolumeclaim="data-vault-0"}', values: '10737418240x40' }
-      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
-      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '0x40' }
-      - { series: 'up{job="ryft/vault",pod="vault-1"}', values: '1x40' }
-    alert_rule_test:
-      # vault-0's scrape fails while vault-1's works: the rule names the failing pod.
-      - { eval_time: 10m, alertname: VaultScrapeDown, exp_alerts: [] }
-      - eval_time: 30m
-        alertname: VaultScrapeDown
-        exp_alerts:
-          - exp_labels: { severity: warning, job: ryft/vault, pod: vault-0 }
-            exp_annotations:
-              summary: "The Vault scrape ryft/vault of vault-0 has failed or sent nothing for 15 minutes; the Vault alerts are blind"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
-  - name: the vault server scrape is not configured at all
-    interval: 1m
-    input_series:
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x40' }
-      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
-      - { series: 'kubelet_volume_stats_capacity_bytes{namespace="vault",persistentvolumeclaim="data-vault-0"}', values: '10737418240x40' }
-      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
-    alert_rule_test:
-      - eval_time: 30m
-        alertname: VaultScrapeDown
-        exp_alerts:
-          - exp_labels: { severity: warning, job: ryft/vault }
-            exp_annotations:
-              summary: "The Vault scrape ryft/vault has failed or sent nothing for 15 minutes; the Vault alerts are blind"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
-  - name: no kubelet volume stats for vault
-    interval: 1m
-    input_series:
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x40' }
-      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
-      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
-      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '1x40' }
-    alert_rule_test:
-      - { eval_time: 10m, alertname: VaultScrapeDown, exp_alerts: [] }
-      - eval_time: 30m
-        alertname: VaultScrapeDown
-        exp_alerts:
-          - exp_labels: { severity: warning, job: kubelet volume stats, namespace: vault }
-            exp_annotations:
-              summary: "The Vault scrape kubelet volume stats has failed or sent nothing for 15 minutes; the Vault alerts are blind"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
-  - name: the server scrape gate holds for an hour after the last initialised label
-    interval: 1m
-    input_series:
-      # vault-0 restarts at 20 minutes and stays sealed (label back to "false"); its scrape fails
-      # all along. The gate holds until an hour after the last "true" sample (20 m), so the alert
-      # fires at 50 m and has stopped at 85 m.
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x20' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '_x20 1x80' }
-      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x100' }
-      - { series: 'kubelet_volume_stats_capacity_bytes{namespace="vault",persistentvolumeclaim="data-vault-0"}', values: '10737418240x100' }
-      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x100' }
-      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '0x100' }
-    alert_rule_test:
-      - eval_time: 50m
-        alertname: VaultScrapeDown
-        exp_alerts:
-          - exp_labels: { severity: warning, job: ryft/vault, pod: vault-0 }
-            exp_annotations:
-              summary: "The Vault scrape ryft/vault of vault-0 has failed or sent nothing for 15 minutes; the Vault alerts are blind"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
-      - { eval_time: 85m, alertname: VaultScrapeDown, exp_alerts: [] }
-  - name: kube-state-metrics for vault is not scraped
-    interval: 1m
-    input_series:
-      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '1x40' }
-    alert_rule_test:
-      - { eval_time: 10m, alertname: VaultScrapeDown, exp_alerts: [] }
-      - eval_time: 30m
-        alertname: VaultScrapeDown
-        exp_alerts:
-          - exp_labels: { severity: warning, job: ryft/vault-state }
-            exp_annotations:
-              summary: "The Vault scrape ryft/vault-state has failed or sent nothing for 15 minutes; the Vault alerts are blind"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
-  - name: no vault deployed, nothing to scrape
-    interval: 1m
-    input_series:
-      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
-    alert_rule_test:
-      - { eval_time: 30m, alertname: VaultScrapeDown, exp_alerts: [] }
-  - name: the server StatefulSet removed for a restore, the CronJob's history remains
-    interval: 1m
-    input_series:
-      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x40' }
-      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
-    alert_rule_test:
-      - { eval_time: 30m, alertname: VaultScrapeDown, exp_alerts: [] }
-  - name: before the init, one pod up and answering the scrape, the others Pending, is quiet
-    interval: 1m
-    input_series:
-      # A restore into a fresh cluster with the collector peer left on by mistake: vault-0 is
-      # running, uninitialised and scraped; vault-1 and vault-2 wait for nodes.
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '1x60' }
-      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x60' }
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '0x60' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x60' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '0x60' }
-      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '1x60' }
-      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x60' }
-    alert_rule_test:
-      - { eval_time: 40m, alertname: VaultSealed, exp_alerts: [] }
-      - { eval_time: 40m, alertname: VaultNoActiveNode, exp_alerts: [] }
-      - { eval_time: 40m, alertname: VaultUnavailable, exp_alerts: [] }
-      - { eval_time: 40m, alertname: VaultScrapeDown, exp_alerts: [] }
-  - name: the gate held by the last snapshot alone (no pod labels)
-    interval: 1m
-    input_series:
-      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x40' }
-      - { series: 'kube_statefulset_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x40' }
-      - { series: 'kubelet_volume_stats_capacity_bytes{namespace="vault",persistentvolumeclaim="data-vault-0"}', values: '10737418240x40' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x40' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x40' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x40' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '0x40' }
-      - { series: 'up{job="ryft/vault-state",instance="10.0.2.7:8080"}', values: '1x40' }
-      - { series: 'up{job="ryft/vault",pod="vault-0"}', values: '1x40' }
-      - { series: 'up{job="ryft/vault",pod="vault-1"}', values: '1x40' }
-      - { series: 'up{job="ryft/vault",pod="vault-2"}', values: '0x40' }
-    alert_rule_test:
-      - eval_time: 30m
-        alertname: VaultSealed
-        exp_alerts:
-          - exp_labels: { severity: warning, pod: vault-1 }
-            exp_annotations:
-              summary: "vault-1 runs but has not been ready for 5 minutes: shamir, unseal by hand (OPERATIONS → Vault → A pod is sealed); awskms, the KMS key or its role; or a standby without the active node"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealed)"
-      - eval_time: 30m
-        alertname: VaultNoActiveNode
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "No Vault node has been active for 2 minutes: logins and reads fail"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultNoActiveNode)"
-      - eval_time: 30m
-        alertname: VaultScrapeDown
-        exp_alerts:
-          - exp_labels: { severity: warning, job: ryft/vault, pod: vault-2 }
-            exp_annotations:
-              summary: "The Vault scrape ryft/vault of vault-2 has failed or sent nothing for 15 minutes; the Vault alerts are blind"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultScrapeDown)"
-  - name: the quorum gate held by the last snapshot alone
-    interval: 1m
-    input_series:
-      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x40' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x40' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '0x40' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x40' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '0x40' }
-    alert_rule_test:
-      - eval_time: 20m
-        alertname: VaultSealedQuorum
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "2 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone. shamir: unseal each by hand (OPERATIONS → Vault → A pod is sealed); awskms: the KMS key or its role"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealedQuorum)"
-  - name: every pod restarts and stays sealed, the gate held by the last snapshot alone
-    interval: 1m
-    input_series:
-      # At 30 minutes every server restarts (a node group replaced) and none unseals (shamir: the
-      # operator has not unsealed them yet; awskms: the KMS key unreachable): Vault's service
-      # registration writes vault-initialized="false" at start, so the label half of the gate
-      # lapses at 1 h 30 m; the snapshot's success keeps it.
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x30' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '_x30 1x150' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x180' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x30 0x150' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-1",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="false"}', values: '1x30' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-1",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '_x30 1x150' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x180' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x30 0x150' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-2",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="false"}', values: '1x30' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-2",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '_x30 1x150' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x180' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x30 0x150' }
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x30 0x150' }
-      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x180' }
-    alert_rule_test:
-      - eval_time: 150m
-        alertname: VaultSealedQuorum
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "3 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone. shamir: unseal each by hand (OPERATIONS → Vault → A pod is sealed); awskms: the KMS key or its role"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealedQuorum)"
-      - eval_time: 150m
-        alertname: VaultUnavailable
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "No Vault server has been ready for 10 minutes: logins and reads fail"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultUnavailable)"
-  - name: every pod restarts and stays sealed before the first snapshot, the gate lapses after an hour
-    interval: 1m
-    input_series:
-      # The same outage without any successful snapshot (hence the hand-run first snapshot right
-      # after the init, OPERATIONS.md → Vault metrics (once)): the alerts fire while the last
-      # "true" label is under an hour old and stop after that.
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="true"}', values: '1x30' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-0",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '_x30 1x150' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x180' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-0",container="vault"}', values: '1x30 0x150' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-1",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="false"}', values: '1x30' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-1",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '_x30 1x150' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x180' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-1",container="vault"}', values: '1x30 0x150' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-2",label_vault_initialized="true",label_vault_sealed="false",label_vault_active="false"}', values: '1x30' }
-      - { series: 'kube_pod_labels{job="ryft/vault-state",namespace="vault",pod="vault-2",label_vault_initialized="false",label_vault_sealed="true",label_vault_active="false"}', values: '_x30 1x150' }
-      - { series: 'kube_pod_container_status_running{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x180' }
-      - { series: 'kube_pod_container_status_ready{job="ryft/vault-state",namespace="vault",pod="vault-2",container="vault"}', values: '1x30 0x150' }
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x30 0x150' }
-    alert_rule_test:
-      - eval_time: 45m
-        alertname: VaultSealedQuorum
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "3 Vault server pods run but have not been ready for 5 minutes: the Raft quorum is gone. shamir: unseal each by hand (OPERATIONS → Vault → A pod is sealed); awskms: the KMS key or its role"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultSealedQuorum)"
-      - eval_time: 45m
-        alertname: VaultUnavailable
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "No Vault server has been ready for 10 minutes: logins and reads fail"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultUnavailable)"
-      - { eval_time: 95m, alertname: VaultSealedQuorum, exp_alerts: [] }
-      - { eval_time: 95m, alertname: VaultUnavailable, exp_alerts: [] }
-  - name: a scrape gap of hours does not hide a stale snapshot
-    interval: 10m
-    input_series:
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x100' }
-      # The last success at 18 minutes; kube-state-metrics' series stop at 12 h (a scrape gap).
-      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x72' }
-    alert_rule_test:
-      - eval_time: 13h30m
-        alertname: VaultSnapshotStale
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
-              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
-  - name: raft peers below 3
-    interval: 1m
-    input_series:
-      - { series: 'vault_core_active{job="ryft/vault",pod="vault-0",vault_cluster="vault-integrated-storage"}', values: '1x40' }
-      - { series: 'vault_autopilot_node_healthy{job="ryft/vault",pod="vault-0",node_id="vault-0"}', values: '1x40' }
-      - { series: 'vault_autopilot_node_healthy{job="ryft/vault",pod="vault-0",node_id="vault-1"}', values: '1x40' }
-      - { series: 'vault_autopilot_node_healthy{job="ryft/vault",pod="vault-0",node_id="vault-2"}', values: '1x10 0x30' }
-    alert_rule_test:
-      - { eval_time: 15m, alertname: VaultRaftPeersBelow3, exp_alerts: [] }
-      - eval_time: 30m
-        alertname: VaultRaftPeersBelow3
-        exp_alerts:
-          - exp_labels: { severity: warning }
-            exp_annotations:
-              summary: "Only 2 of 3 Raft peers are healthy: one more loss ends the quorum"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultRaftPeersBelow3)"
-  - name: raft peers all healthy
-    interval: 1m
-    input_series:
-      - { series: 'vault_core_active{job="ryft/vault",pod="vault-1",vault_cluster="vault-integrated-storage"}', values: '1x40' }
-      - { series: 'vault_autopilot_node_healthy{job="ryft/vault",pod="vault-1",node_id="vault-0"}', values: '1x40' }
-      - { series: 'vault_autopilot_node_healthy{job="ryft/vault",pod="vault-1",node_id="vault-1"}', values: '1x40' }
-      - { series: 'vault_autopilot_node_healthy{job="ryft/vault",pod="vault-1",node_id="vault-2"}', values: '1x40' }
-    alert_rule_test:
-      - { eval_time: 30m, alertname: VaultRaftPeersBelow3, exp_alerts: [] }
-  - name: vault snapshots every 6 hours are fresh
-    interval: 10m
-    input_series:
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x120' }
-      # Runs at 17 past every sixth hour, each done a minute later.
-      - { series: 'kube_cronjob_status_last_schedule_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1020x35 22620x35 44220x35 65820x14' }
-      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x35 22680x35 44280x35 65880x14' }
-    alert_rule_test:
-      - { eval_time: 19h, alertname: VaultSnapshotStale, exp_alerts: [] }
-      - { eval_time: 19h, alertname: VaultSnapshotFailing, exp_alerts: [] }
-  - name: a run that succeeded in the second it was scheduled is not failing
-    interval: 5m
-    input_series:
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x30' }
-      - { series: 'kube_cronjob_status_last_schedule_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1020x30' }
-      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1020x30' }
-    alert_rule_test:
-      - { eval_time: 2h, alertname: VaultSnapshotFailing, exp_alerts: [] }
-  - name: vault snapshot stale after 13 hours
-    interval: 10m
-    input_series:
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x120' }
-      # The last success at 18 minutes; every run after that fails.
-      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x120' }
-    alert_rule_test:
-      - { eval_time: 790m, alertname: VaultSnapshotStale, exp_alerts: [] }
-      - eval_time: 810m
-        alertname: VaultSnapshotStale
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
-              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
-  - name: a stale snapshot of a vault that is down now pages as VaultUnavailable, not stale
-    interval: 10m
-    input_series:
-      # The last success at 18 minutes; every server down from 13 h 50 m.
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x82 0x38' }
-      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x120' }
-    alert_rule_test:
-      - eval_time: 13h30m
-        alertname: VaultSnapshotStale
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
-              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
-      - { eval_time: 14h, alertname: VaultSnapshotStale, exp_alerts: [] }
-  - name: vault snapshot never succeeded in 13 hours of a ready vault
-    interval: 10m
-    input_series:
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x120' }
-      - { series: 'kube_cronjob_status_last_schedule_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1020x120' }
-    alert_rule_test:
-      - { eval_time: 770m, alertname: VaultSnapshotStale, exp_alerts: [] }
-      - eval_time: 800m
-        alertname: VaultSnapshotStale
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
-              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
-  - name: a vault down in between gets 13 new hours for its first snapshot
-    interval: 10m
-    input_series:
-      # Ready from 0 to 5 h, down until 6 h, ready again; no success ever.
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x30 0x6 3x90' }
-    alert_rule_test:
-      - { eval_time: 14h, alertname: VaultSnapshotStale, exp_alerts: [] }
-      - eval_time: 19h40m
-        alertname: VaultSnapshotStale
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
-              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
-  - name: the success series has been gone for 13 hours, not 12
-    interval: 10m
-    input_series:
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x130' }
-      # lastSuccessfulTime reported until 1 h, then gone (the CronJob replaced, its status empty).
-      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x6' }
-    alert_rule_test:
-      - { eval_time: 13h30m, alertname: VaultSnapshotStale, exp_alerts: [] }
-      - eval_time: 14h10m
-        alertname: VaultSnapshotStale
-        exp_alerts:
-          - exp_labels: { severity: critical }
-            exp_annotations:
-              summary: "No Vault snapshot has succeeded for over 13 hours (RPO 6 h)"
-              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
-  - name: a fresh init has 13 hours for its first snapshot
-    interval: 10m
-    input_series:
-      # Ready from 5 hours in (the init); no success yet at 14 hours.
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '0x30 3x90' }
-    alert_rule_test:
-      - { eval_time: 14h, alertname: VaultSnapshotStale, exp_alerts: [] }
-  - name: one vault snapshot run failed
-    interval: 5m
-    input_series:
-      # The 6:17 run (22620 s) fails; the last success is the 0:17 run's.
-      - { series: 'kube_cronjob_status_last_schedule_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1020x75 22620x30' }
-      - { series: 'kube_cronjob_status_last_successful_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '1080x105' }
-    alert_rule_test:
-      - { eval_time: 300m, alertname: VaultSnapshotFailing, exp_alerts: [] }
-      - { eval_time: 400m, alertname: VaultSnapshotFailing, exp_alerts: [] }
-      - eval_time: 420m
-        alertname: VaultSnapshotFailing
-        exp_alerts:
-          - exp_labels: { severity: warning }
-            exp_annotations:
-              summary: "The latest Vault snapshot run did not succeed"
-              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
-  - name: the first snapshot runs after the init fail
-    interval: 5m
-    input_series:
-      # Ready from 35 minutes (the init); the run scheduled at 40 minutes (2400 s) fails.
-      - { series: 'kube_statefulset_status_replicas_ready{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '0x6 3x30' }
-      - { series: 'kube_cronjob_status_last_schedule_time{job="ryft/vault-state",namespace="vault",cronjob="vault-snapshot"}', values: '_x8 2400x28' }
-    alert_rule_test:
-      - { eval_time: 65m, alertname: VaultSnapshotFailing, exp_alerts: [] }
-      - eval_time: 75m
-        alertname: VaultSnapshotFailing
-        exp_alerts:
-          - exp_labels: { severity: warning }
-            exp_annotations:
-              summary: "The latest Vault snapshot run did not succeed"
-              runbook: "docs/OPERATIONS.md → Vault → Snapshots"
-  - name: vault audit writes fail
-    interval: 1m
-    input_series:
-      # Vault adds 0 or 1 on every request, so a counter is cumulative and stays while requests
-      # come; 2 minutes without one and it expires.
-      # vault-0: a live counter that moves from 0 to 1 at 20 minutes.
-      - { series: 'vault_audit_log_request_failure{job="ryft/vault",pod="vault-0",vault_cluster="vault-integrated-storage"}', values: '0x20 1x30' }
-      # vault-1: no request for a while, then a failing one: the counter appears at 2 and expires.
-      - { series: 'vault_audit_log_response_failure{job="ryft/vault",pod="vault-1",vault_cluster="vault-integrated-storage"}', values: '_x20 2 2 _x30' }
-      # vault-2: one failure long ago, none since: the counter stays at 3 and must not alert.
-      - { series: 'vault_audit_log_request_failure{job="ryft/vault",pod="vault-2",vault_cluster="vault-integrated-storage"}', values: '3x50' }
-      - { series: 'vault_audit_log_request_count{job="ryft/vault",pod="vault-2",vault_cluster="vault-integrated-storage"}', values: '1+1x50' }
-    alert_rule_test:
-      - { eval_time: 15m, alertname: VaultAuditFailing, exp_alerts: [] }
-      - eval_time: 25m
-        alertname: VaultAuditFailing
-        exp_alerts:
-          - exp_labels: { severity: critical, pod: vault-0 }
-            exp_annotations:
-              summary: "vault-0 failed to write audit entries in the last 10 minutes"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultAuditFailing)"
-          - exp_labels: { severity: critical, pod: vault-1 }
-            exp_annotations:
-              summary: "vault-1 failed to write audit entries in the last 10 minutes"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultAuditFailing)"
-      - { eval_time: 45m, alertname: VaultAuditFailing, exp_alerts: [] }
-  - name: a vault response audit write fails on a live counter
-    interval: 1m
-    input_series:
-      - { series: 'vault_audit_log_response_failure{job="ryft/vault",pod="vault-2",vault_cluster="vault-integrated-storage"}', values: '0x20 1x30' }
-    alert_rule_test:
-      - eval_time: 25m
-        alertname: VaultAuditFailing
-        exp_alerts:
-          - exp_labels: { severity: critical, pod: vault-2 }
-            exp_annotations:
-              summary: "vault-2 failed to write audit entries in the last 10 minutes"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultAuditFailing)"
-      - { eval_time: 45m, alertname: VaultAuditFailing, exp_alerts: [] }
-  - name: a vault request audit write fails on a counter that appears
-    interval: 1m
-    input_series:
-      # No request for a while, then a failing one: the request counter appears at 1 and expires.
-      - { series: 'vault_audit_log_request_failure{job="ryft/vault",pod="vault-0",vault_cluster="vault-integrated-storage"}', values: '_x20 1 1 _x30' }
-    alert_rule_test:
-      - eval_time: 25m
-        alertname: VaultAuditFailing
-        exp_alerts:
-          - exp_labels: { severity: critical, pod: vault-0 }
-            exp_annotations:
-              summary: "vault-0 failed to write audit entries in the last 10 minutes"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultAuditFailing)"
-      - { eval_time: 45m, alertname: VaultAuditFailing, exp_alerts: [] }
-  - name: a vault volume over 80 %
-    interval: 1m
-    input_series:
-      - { series: 'kubelet_volume_stats_used_bytes{namespace="vault",persistentvolumeclaim="data-vault-0"}', values: '9663676416x40' }
-      - { series: 'kubelet_volume_stats_capacity_bytes{namespace="vault",persistentvolumeclaim="data-vault-0"}', values: '10737418240x40' }
-      - { series: 'kubelet_volume_stats_used_bytes{namespace="vault",persistentvolumeclaim="audit-vault-0"}', values: '1073741824x40' }
-      - { series: 'kubelet_volume_stats_capacity_bytes{namespace="vault",persistentvolumeclaim="audit-vault-0"}', values: '5368709120x40' }
-    alert_rule_test:
-      - { eval_time: 10m, alertname: VaultVolumeFilling, exp_alerts: [] }
-      - eval_time: 20m
-        alertname: VaultVolumeFilling
-        exp_alerts:
-          - exp_labels: { severity: warning, namespace: vault, persistentvolumeclaim: data-vault-0 }
-            exp_annotations:
-              summary: "data-vault-0 is 90% full"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultVolumeFilling)"
-  - name: a vault template change waits for the pod-by-pod restart
-    interval: 4m
-    input_series:
-      # The change is applied at 1 h; only one pod is restarted.
-      - { series: 'kube_statefulset_status_replicas{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x420' }
-      - { series: 'kube_statefulset_status_replicas_updated{job="ryft/vault-state",namespace="vault",statefulset="vault"}', values: '3x14 1x405' }
-    alert_rule_test:
-      - { eval_time: 20h, alertname: VaultUpdatePending, exp_alerts: [] }
-      - eval_time: 26h
-        alertname: VaultUpdatePending
-        exp_alerts:
-          - exp_labels: { severity: info }
-            exp_annotations:
-              summary: "2 Vault pod(s) still run the previous template: restart them one by one"
-              runbook: "docs/OPERATIONS.md → Vault alerts (VaultUpdatePending)"

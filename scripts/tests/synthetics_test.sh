@@ -15,7 +15,9 @@ command -v jq >/dev/null || fail "jq is needed"
 command -v python3 >/dev/null || fail "python3 is needed (the API stand-in)"
 command -v go >/dev/null || fail "go is needed (the RE2 check)"
 
-"$S" check >/dev/null || fail "the committed definitions do not validate"
+out=$("$S" check) || fail "the committed definitions do not validate"
+# 4 site checks every 5 min and 2 service checks every 10 min, from 2 probes: 69,120 + 17,280
+grep -q '6 checks (6 enabled), 2 probes, about 86400 executions in 30 days' <<<"$out" || fail "the budget line changed: $out"
 
 # rejected: a jq edit of the committed file, and a word of the expected message
 reject() {
@@ -45,6 +47,15 @@ reject '.checks |= map(.enabled = false)' 'disabled'
 reject '.checks[1].enabled = false' 'SyntheticsMissing'
 reject 'del(.checks[3])' 'SyntheticsMissing'
 reject '.checks += [(.checks[0] | .job = "ryft-site-extra")]' 'SyntheticsMissing'
+# the service checks (checks 4 and 5): their own host, the startup probe, exactly 200
+reject '.checks[4].target = "https://ingest.ryftlab.de/health/ready"' 'target must be https://api.ryftlab.de/health/ready'
+reject '.checks[5].target = "https://ingest.ryftlab.de/v1/sync"' 'target must be https://ingest.ryftlab.de/health/ready'
+reject '.checks[4].target = "https://ryftlab.de/health/ready"' 'target must be https://api'
+reject '.checks[4].job = "ryft-scoring-ready"' 'job must match'
+reject '.checks[5].settings.http.validStatusCodes = [200, 503]' 'must be \[200\]'
+reject '.checks[1].target = "https://api.ryftlab.de/health/ready"' 'target must be https://ryftlab.de'
+# SyntheticsMissing names the service checks too
+reject '.checks[5].enabled = false' 'SyntheticsMissing'
 reject '.checks[0].settings.http.failIfHeaderNotMatchesRegexp[0].extra = 1' 'unknown key extra'
 reject '.checks[0].labels = [{"name": "a", "value": "b", "x": 1}]' 'unknown key x'
 # the markers must exist in the site's own sources
@@ -145,17 +156,17 @@ grep -q 'ryft-site-home: would update' <<<"$out" || fail "dry run: no update for
 grep -q 'settings.http.method' <<<"$out" || fail "dry run: no field diff: $out"
 grep -q 'ryft-site-aasa: would add' <<<"$out" || fail "dry run: no add: $out"
 
-# apply: update by job (with id and tenantId), three adds, others untouched, POSTs authenticated
+# apply: update by job (with id and tenantId), five adds, others untouched, POSTs authenticated
 out=$("$S" apply)
 grep -q '^POST /api/v1/check/update auth=ok id=5 tenant=99 probes=\[11, 12\] job=ryft-site-home$' "$tmp/api.log" || fail "the existing check was not updated by job: $(cat "$tmp/api.log")"
-[ "$(grep -c '^POST /api/v1/check/add auth=ok id=None' "$tmp/api.log")" = 3 ] || fail "expected three adds: $(cat "$tmp/api.log")"
+[ "$(grep -c '^POST /api/v1/check/add auth=ok id=None' "$tmp/api.log")" = 5 ] || fail "expected five adds: $(cat "$tmp/api.log")"
 grep -q 'not in the file: other' <<<"$out" || fail "a check outside the file was not reported"
 grep -q 'job=other' "$tmp/api.log" && fail "a check outside the file was touched"
 # a second apply is a true no-op
 : > "$tmp/api.log"
 out=$("$S" apply)
 [ ! -s "$tmp/api.log" ] || fail "a second apply wrote: $(cat "$tmp/api.log")"
-[ "$(grep -c '^unchanged: ' <<<"$out")" = 4 ] || fail "a second apply: expected four unchanged: $out"
+[ "$(grep -c '^unchanged: ' <<<"$out")" = 6 ] || fail "a second apply: expected six unchanged: $out"
 # a changed field is found again
 jq '.checks[0].timeout = 8000' "$F" > "$tmp/t8.json"
 SYNTHETICS_FILE=$tmp/t8.json "$S" apply >/dev/null
@@ -174,7 +185,7 @@ expect_updates() {  # <jq edit of the committed file> <number of updates it must
 expect_updates 'del(.checks[1].settings.http.failIfBodyNotMatchesRegexp)' 1
 expect_updates '.checks[3].settings.http.validStatusCodes = [301]' 1
 expect_updates 'del(.checks[0].settings.http.failIfHeaderNotMatchesRegexp)' 1
-expect_updates '.probes = ["Frankfurt"]' 4   # every check lists the probes
+expect_updates '.probes = ["Frankfurt"]' 6   # every check lists the probes
 
 # an unknown or duplicate probe name stops before any write
 start_mock plain
@@ -186,7 +197,7 @@ grep -q 'Amsterdam' <<<"$out" || fail "the probes on offer were not listed: $out
 # a fresh stack: check/list is null
 start_mock null-list
 "$S" apply >/dev/null || fail "apply on an empty stack (null list) failed"
-[ "$(grep -c '^POST /api/v1/check/add' "$tmp/api.log")" = 4 ] || fail "an empty stack: expected four adds: $(cat "$tmp/api.log")"
+[ "$(grep -c '^POST /api/v1/check/add' "$tmp/api.log")" = 6 ] || fail "an empty stack: expected six adds: $(cat "$tmp/api.log")"
 
 # a failure in the middle stops cleanly and names what was applied
 start_mock fail:ryft-site-aasa

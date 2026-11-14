@@ -45,7 +45,747 @@ the policy are the isolation. `monitoring` and the import service have theirs th
 On EKS `infra/vault` creates the namespaces (Pod Security `restricted`), the service
 accounts, the Vault side and the operator manifests; the overlay only deploys workloads.
 
+## GCP
+
+RYFT runs on GCP serverless in the project `ryftlab-prod`, region `europe-west1`, with no
+organisation (D216–D227; the design is `docs/work/2026-11-14-gcp/design.md`). `infra/gcp`
+owns the platform. Its README lists what it owns and what it doesn't. Its state and runs live in
+HCP Terraform: org `ryft-lab`, workspace `ryft-gcp`, CLI-driven, remote execution. CI's
+`deploy.yml` owns the revisions (`deploy/run`). You apply Terraform. Nothing else does.
+
+**The shell.** Every step runs in a shell where `TF_TOKEN_app_terraform_io` is unset, so
+Terraform and the API calls use your `ryft-lab` login (`terraform login`). Steps marked
+**old org** run against `tim-krebs-org`. Only that one command gets
+`TF_TOKEN_app_terraform_io='<old token>'` in front of it, with a leading space so it stays out
+of the history. In zsh, once per shell (or in `~/.zshrc`):
+
+```zsh
+setopt HIST_IGNORE_SPACE INTERACTIVE_COMMENTS
+```
+
+In bash: `HISTCONTROL=ignorespace`. `INTERACTIVE_COMMENTS` matters for pasting. Without it,
+zsh treats a pasted `X=1   # note` as the command `#` with `X` in its environment, and `X` is
+never set.
+
+**When each step can run.** B is `infra, deploy: GCP and the deploy workflow`. A is the backend
+on Pub/Sub and Cloud Run.
+
+| # | Step | Can run |
+| --- | --- | --- |
+| 0 | Old org: the data key into 1Password | now |
+| 1–6 | The project, bootstrap, budget rule, apply 1, secret values, the DNS move | B merged |
+| 7 | Supabase | B merged. `make smoke-supabase` on 6543 waits for A |
+| 7a | The config PR | B merged |
+| 8 | First deploy | waits for A |
+| 9 | Apply 2: invokers and mappings | waits for A |
+| 10 | The site and the app | waits for A and C1 |
+| 11 | Observability | B merged for a–g. The OTLP half and the synthetics (h, i) wait for A and step 9 |
+| 12–14 | Old org: retire Route 53, AWS and the old workspaces | after step 10, with D1, D2, D3 |
+| 15 | Testers | step 10 done, C2 in force |
+
+Each step ends with its stop rule. A stop means: do nothing further, find the cause, then start
+that step again.
+
+### 0. Old org: the data key into 1Password
+
+Design §5.3 steps 1–2. It can run today, before anything else.
+
+```bash
+ TF_TOKEN_app_terraform_io='<old token>' scripts/recover_data_key.sh
+```
+
+It prints the state version, a fingerprint and the decoded length, never the value. Note the
+fingerprint for step 5. The value is in `~/.config/ryft/data-key-api` (0600, its folder out of
+Time Machine). Put it into 1Password as the item "RYFT data key" without printing it:
+
+```bash
+pbcopy < ~/.config/ryft/data-key-api     # paste it into the 1Password item, then
+pbcopy < /dev/null                       # clear the clipboard
+```
+
+Keep the file for step 5.
+
+**Stop if** no state version is found, or the length isn't 32.
+
+### 1. The project, as it is
+
+```bash
+gcloud projects describe ryftlab-prod --format='value(projectNumber,parent.id)'   # a number, no parent
+gcloud billing projects describe ryftlab-prod --format='value(billingEnabled)'     # True
+gcloud projects get-iam-policy ryftlab-prod --format='table(bindings.role,bindings.members)'   # only you
+```
+
+2-step verification is on for your Google account. In Search Console, add the domain property
+`ryftlab.de` and copy its TXT value (`google-site-verification=…`, not secret) for step 2e.
+Don't verify yet. The record answers only after step 6.
+
+**Stop if** a parent (an organisation) appears, or another principal.
+
+### 2. Bootstrap
+
+Run this as the project owner, in bash or zsh, from the repository root on main. Leave
+`TF_TOKEN_app_terraform_io` unset. You need to be logged in to `ryft-lab` (`terraform login`
+once; `tfc_auth` reads that token) and to GitHub (`gh auth status`).
+
+```bash
+P=ryftlab-prod
+PN=$(gcloud projects describe "$P" --format='value(projectNumber)')
+TFC_ORG_ID=org-aus6gvWumndxZixQ                     # ryft-lab
+POOL=hcp-terraform; PROVIDER=app-terraform-io
+PLAN_SA=hcp-terraform-plan@$P.iam.gserviceaccount.com
+APPLY_SA=hcp-terraform-apply@$P.iam.gserviceaccount.com
+
+# 2a. APIs: the keep list on, everything else off.
+KEEP=(artifactregistry.googleapis.com billingbudgets.googleapis.com cloudbilling.googleapis.com
+  cloudresourcemanager.googleapis.com cloudscheduler.googleapis.com cloudtrace.googleapis.com dns.googleapis.com
+  iam.googleapis.com iamcredentials.googleapis.com logging.googleapis.com monitoring.googleapis.com
+  pubsub.googleapis.com run.googleapis.com secretmanager.googleapis.com serviceusage.googleapis.com sts.googleapis.com)
+gcloud services enable "${KEEP[@]}" --project="$P"
+for s in $(gcloud services list --enabled --project="$P" --format='value(config.name)'); do
+  case " ${KEEP[*]} " in *" $s "*) continue ;; esac
+  gcloud services disable "$s" --project="$P" || echo "still on: $s"
+done
+gcloud services list --enabled --project="$P" --format='value(config.name)'
+
+# 2b. The workspace in ryft-lab (CLI-driven, remote execution, the root's Terraform version).
+#     The token goes through stdin, never argv.
+tfc_auth() { jq -r '"Authorization: Bearer " + .credentials["app.terraform.io"].token' ~/.terraform.d/credentials.tfrc.json; }
+API=https://app.terraform.io/api/v2; CT='Content-Type: application/vnd.api+json'
+tfc_auth | curl -sS -H @- -H "$CT" -X POST "$API/organizations/ryft-lab/workspaces" \
+  --data '{"data":{"type":"workspaces","attributes":{"name":"ryft-gcp","execution-mode":"remote","auto-apply":false,"terraform-version":"1.16.6"}}}' \
+  | jq -r '.data.id // .errors'
+WS_ID=$(tfc_auth | curl -sS -H @- "$API/organizations/ryft-lab/workspaces/ryft-gcp" | jq -r .data.id)
+echo "$WS_ID"                                       # ws-…
+
+# 2c. The pool for app.terraform.io, pinned to the org and workspace IDs.
+gcloud iam workload-identity-pools create "$POOL" --project="$P" --location=global \
+  --display-name="HCP Terraform ryft-lab"
+gcloud iam workload-identity-pools providers create-oidc "$PROVIDER" --project="$P" --location=global \
+  --workload-identity-pool="$POOL" --issuer-uri=https://app.terraform.io \
+  --attribute-mapping='google.subject=assertion.sub,attribute.terraform_organization_id=assertion.terraform_organization_id,attribute.terraform_workspace_id=assertion.terraform_workspace_id,attribute.terraform_run_phase=assertion.terraform_run_phase' \
+  --attribute-condition="assertion.terraform_organization_id == '$TFC_ORG_ID' && assertion.terraform_workspace_id == '$WS_ID'"
+gcloud iam workload-identity-pools providers describe "$PROVIDER" --project="$P" --location=global \
+  --workload-identity-pool="$POOL" --format='value(attributeCondition)'   # both IDs, no name
+
+# 2d. Two SAs: plan reads, apply writes. Each is usable only by its run phase.
+gcloud iam service-accounts create hcp-terraform-plan --project="$P" --display-name="HCP Terraform plan (ryft-gcp)"
+gcloud iam service-accounts create hcp-terraform-apply --project="$P" --display-name="HCP Terraform apply (ryft-gcp)"
+for r in roles/viewer roles/iam.securityReviewer; do
+  gcloud projects add-iam-policy-binding "$P" --member="serviceAccount:$PLAN_SA" --role="$r" --condition=None
+done
+for r in roles/run.admin roles/pubsub.admin roles/cloudscheduler.admin roles/secretmanager.admin \
+         roles/artifactregistry.admin roles/dns.admin roles/logging.configWriter roles/iam.serviceAccountAdmin \
+         roles/iam.serviceAccountUser roles/iam.workloadIdentityPoolAdmin roles/resourcemanager.projectIamAdmin \
+         roles/serviceusage.serviceUsageAdmin; do
+  gcloud projects add-iam-policy-binding "$P" --member="serviceAccount:$APPLY_SA" --role="$r" --condition=None
+done
+PS=principalSet://iam.googleapis.com/projects/$PN/locations/global/workloadIdentityPools/$POOL
+gcloud iam service-accounts add-iam-policy-binding "$PLAN_SA" --project="$P" \
+  --role=roles/iam.workloadIdentityUser --member="$PS/attribute.terraform_run_phase/plan"
+gcloud iam service-accounts add-iam-policy-binding "$APPLY_SA" --project="$P" \
+  --role=roles/iam.workloadIdentityUser --member="$PS/attribute.terraform_run_phase/apply"
+gcloud projects get-iam-policy "$P" --flatten='bindings[].members' --filter="bindings.members:$APPLY_SA" \
+  --format='value(bindings.role)'                   # the twelve roles above, never roles/owner
+
+# 2e. The workspace's variables (none sensitive; each prints 201, a 422 means the key exists: change it in the UI).
+tfc_var() {  # tfc_var KEY VALUE [env|terraform]
+  tfc_auth | curl -sS -o /dev/null -w "%{http_code} $1\n" -H @- -H "$CT" -X POST "$API/workspaces/$WS_ID/vars" \
+    --data "$(jq -nc --arg k "$1" --arg v "$2" --arg c "${3:-env}" \
+      '{data:{type:"vars",attributes:{key:$k,value:$v,category:$c,sensitive:false}}}')"
+}
+tfc_var TFC_GCP_PROVIDER_AUTH true
+tfc_var TFC_GCP_WORKLOAD_PROVIDER_NAME "projects/$PN/locations/global/workloadIdentityPools/$POOL/providers/$PROVIDER"
+tfc_var TFC_GCP_PLAN_SERVICE_ACCOUNT_EMAIL "$PLAN_SA"
+tfc_var TFC_GCP_APPLY_SERVICE_ACCOUNT_EMAIL "$APPLY_SA"
+tfc_var google_site_verification 'google-site-verification=<value from step 1>' terraform
+# The GitHub WIF condition matches the repository and its owner by ID, not by name.
+read -r REPO_ID OWNER_ID < <(gh api repos/timkrebs/ryft-platform --jq '"\(.id) \(.owner.id)"')
+echo "$REPO_ID $OWNER_ID"                           # two numbers
+tfc_var github_repository_id "$REPO_ID" terraform
+tfc_var github_repository_owner_id "$OWNER_ID" terraform
+# From step 11, not now (the data source must exist first):
+#   tfc_var grafana_url https://<stack>.grafana.net terraform
+#   tfc_var grafana_datasource_uid '<the data source UID>' terraform
+# grafana_auth, the Grafana token, is sensitive: the workspace UI only (step 11c), never here, never on argv.
+
+# 2f. Connect and plan once (speculative: it proves the plan SA's sign-in).
+terraform -chdir=infra/gcp init                     # connects to ryft-gcp, which 2b made
+terraform -chdir=infra/gcp plan                     # 114 to add (step 4)
+```
+
+- **APIs.** Without `--force`, `gcloud services disable` refuses a service that was used in
+  the last 30 days, was enabled in the last 3 days, or that an enabled service depends on.
+  `--force` would disable the dependants as well, so it is never used here. The project is new,
+  so most defaults will be "still on" at first. Run 2a's loop again from day 4. What stays on
+  after that is a dependency or in use. Terraform owns the same keep list
+  (`google_project_service`, `disable_on_destroy = false`).
+- **Audience.** The provider has no `--allowed-audiences`. That gives GCP's default audience,
+  the provider's full name. HCP Terraform sends it when only `TFC_GCP_WORKLOAD_PROVIDER_NAME`
+  is set.
+- **The condition** checks both IDs, not names. Workspace names can change. Module test runs
+  carry no workspace claims, so they can't match.
+- **The apply SA is owner-equivalent in effect**, because `projectIamAdmin` can grant any role.
+  That comes with Terraform owning IAM. The boundary is the condition (one org, one workspace,
+  apply phase only) plus `auto-apply` off. The stop rule still refuses `roles/owner` itself.
+- **The Terraform version.** 2b pins the workspace to 1.16.6, the root's `required_version`.
+  A remote run on another version fails at `init`.
+- **Never** set `serve` or `public_invokers` as workspace variables. They live in
+  `infra/gcp/gates.auto.tfvars`, so each flip is a reviewed PR.
+
+**Stop if** a plan fails authentication; `attributeCondition` lacks either ID; or the apply SA
+would need `roles/owner`.
+
+### 3. The budget's 10 % rule
+
+The budget "RYFT 50 EUR" exists (made by hand, design §7). Add the early warning at €5:
+
+```bash
+BILLING_ACCOUNT=$(gcloud billing projects describe ryftlab-prod --format='value(billingAccountName)')
+BILLING_ACCOUNT=${BILLING_ACCOUNT#billingAccounts/}
+BUDGET=$(gcloud billing budgets list --billing-account="$BILLING_ACCOUNT" \
+  --filter='displayName="RYFT 50 EUR"' --format='value(name)')
+echo "$BUDGET"   # one line: billingAccounts/<id>/budgets/<budget-id>
+gcloud billing budgets update "$BUDGET" --add-threshold-rule=percent=0.10
+gcloud billing budgets describe "$BUDGET" --format='yaml(amount,thresholdRules,budgetFilter)'
+```
+
+`describe` must show `0.1, 0.5, 0.9, 1.0`. If `budgetFilter` names no project, the budget counts
+the whole billing account. That is fine while `ryftlab-prod` is its only project with a bill.
+
+**Stop if** `describe` doesn't list `0.1`.
+
+### 4. `infra/gcp` apply 1
+
+`gates.auto.tfvars` on main says `serve = false`. Apply 1 creates everything except the
+services' invokers and the domain mappings.
+
+```bash
+terraform -chdir=infra/gcp plan -out=apply-1.tfplan
+terraform -chdir=infra/gcp apply apply-1.tfplan
+rm infra/gcp/apply-1.tfplan
+```
+
+```text
+# Apply 1: 114 to add, 0 to change, 0 to destroy.
+#   16 APIs + 1 audit config (Secret Manager) + 2 service agents (Pub/Sub, Scheduler)        = 19
+#    8 accounts + 1 token creator + 1 run.developer + 5 actAs + 1 monitoring.viewer          = 16  (35)
+#    1 GitHub pool + 1 provider + 1 workloadIdentityUser                                     =  3  (38)
+#   11 secrets + 11 accessor bindings                                                        = 22  (60)
+#    9 topics + 9 publisher bindings + 10 push subs + 6 dead-letter source bindings + 2 hold = 36  (96)
+#    1 Scheduler job + 1 Artifact Registry + 1 registry writer                               =  3  (99)
+#    1 zone + 12 record sets (CAA, MX, apex TXT, DMARC, 6 CNAME, 2 SRV)                      = 13 (112)
+#    1 log bucket + 1 sink                                                                   =  2 (114)
+```
+
+Every line is a `+`. Expect one warning: the check `default_log_sink_disabled`, because the
+`_Default` sink is still on. No change to the bootstrap: the pool `hcp-terraform`, the two
+`hcp-terraform-*` SAs and their roles, your owner binding, the budget. Terraform adds IAM
+members and never writes the project's whole policy, so none of them appears.
+
+Then, once:
+
+```bash
+gcloud logging sinks update _Default --disabled --project=ryftlab-prod
+gcloud logging sinks describe _Default --project=ryftlab-prod --format='value(disabled)'   # True
+terraform -chdir=infra/gcp plan                     # No changes, and no warning
+terraform -chdir=infra/gcp output name_servers      # the four ns-cloud-* servers (step 6)
+```
+
+Pub/Sub's service agent can take a minute to exist. If the apply fails on
+`service-<number>@gcp-sa-pubsub.iam.gserviceaccount.com`, wait, then plan and apply again. The
+new plan holds only what is left.
+
+**Stop if** the plan has any change or destroy, or the add count isn't 114.
+
+### 5. Secret values
+
+The 11 containers exist since step 4. Each value goes in through stdin or a file, never on argv
+and never on screen. Each `add` prints `Created version [N] of the secret [<id>]`. Every `N` must
+be `1`, because `deploy/run` pins version 1. If one isn't, a PR moves that secret's pin in
+`deploy/run` before step 8. For a `db-password-*` secret, that means `migrate.yaml` and the
+service's YAML in one commit.
+
+```bash
+# The four role passwords: random, nobody needs to know them (step 8's migrate sets them in Postgres).
+openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add db-password-api --project=ryftlab-prod --data-file=-
+openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add db-password-ingest --project=ryftlab-prod --data-file=-
+openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add db-password-scoring --project=ryftlab-prod --data-file=-
+openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add db-password-notify --project=ryftlab-prod --data-file=-
+# The owner: Supabase's database password from 1Password, copied there:
+pbpaste | gcloud secrets versions add db-password-owner --project=ryftlab-prod --data-file=-
+# Supabase -> Project Settings -> API Keys -> the secret key, copied:
+pbpaste | gcloud secrets versions add supabase-secret-key --project=ryftlab-prod --data-file=-
+# ADMIN_API_KEY: a new value from 1Password's generator (item "RYFT ADMIN_API_KEY"), copied:
+pbpaste | gcloud secrets versions add admin-api-key --project=ryftlab-prod --data-file=-
+# The two .p8 keys, saved from 1Password (their names carry the key IDs that step 7a needs):
+gcloud secrets versions add apple-key-p8 --project=ryftlab-prod --data-file="$HOME/Downloads/AuthKey_<APPLE_KEY_ID>.p8"
+gcloud secrets versions add apns-key-p8 --project=ryftlab-prod --data-file="$HOME/Downloads/AuthKey_<APNS_KEY_ID>.p8"
+rm "$HOME/Downloads/AuthKey_<APPLE_KEY_ID>.p8" "$HOME/Downloads/AuthKey_<APNS_KEY_ID>.p8"
+# The OTLP token: Grafana Cloud -> Access policies -> a policy on the stack with metrics:write only -> Add token, copied:
+pbpaste | gcloud secrets versions add otlp-token --project=ryftlab-prod --data-file=-
+pbcopy < /dev/null
+```
+
+- `db-password-owner`: if 1Password lacks the value, reset it in Supabase → Database →
+  Settings. Nothing else uses it while EKS is down.
+- `otlp-token` must hold a value now, even though step 11 turns the push on. Every service pins
+  version 1, and a revision whose secret version is missing doesn't start.
+
+The data key, design §5.3 steps 3–5. Use the version `add` prints. If it isn't `1`, the pin
+in `deploy/run/api.yaml` moves too.
+
+```bash
+gcloud secrets versions add data-key --project=ryftlab-prod --data-file="$HOME/.config/ryft/data-key-api"
+gcloud secrets versions access 1 --secret=data-key --project=ryftlab-prod | shasum -a 256 | cut -c1-16   # step 0's fingerprint
+gcloud secrets versions access 1 --secret=data-key --project=ryftlab-prod | base64 -d | wc -c             # 32
+rm "$HOME/.config/ryft/data-key-api"
+```
+
+If step 0's file is gone, pipe the 1Password item through `pbpaste … --data-file=-`
+instead, then clear the clipboard. The two checks stay the same. `rm` overwrites nothing on
+APFS: FileVault protects the freed blocks (D211).
+
+```bash
+for s in $(gcloud secrets list --project=ryftlab-prod --format='value(name.basename())'); do
+  echo "$s $(gcloud secrets versions list "$s" --project=ryftlab-prod --format='value(name.basename(),state)' | tr '\n' ' ')"
+done                                                # 11 lines, each one version: 1 ENABLED
+```
+
+**Stop if** the data key's fingerprint differs or its length isn't 32. Then use D211's fallback:
+a new key, with the one-off statement before the api starts.
+
+### 6. The DNS move
+
+```bash
+dig +short NS ryftlab.de @1.1.1.1 | tee ~/ryft-route53-ns.txt     # Route 53's four: keep the file for a rollback
+scripts/dns_compare.sh "$(head -n1 ~/ryft-route53-ns.txt)"          # must end with "every record matches"
+dig +norecurse DS ryftlab.de @a.nic.de                               # no DS record (the script checks it too)
+terraform -chdir=infra/gcp output -raw godaddy_instructions
+```
+
+`scripts/dns_compare.sh` asks one Route 53 server and one Cloud DNS server (the first of
+`name_servers`) for each of the 12 record sets of `infra/aws/dns`: MX, the apex TXT, DMARC, the
+DKIM and other mail CNAMEs, both SRVs, CAA. It does this without recursion. It checks the two
+intended differences exactly: CAA's added `0 issue "pki.goog"`, and one added
+`google-site-verification=` string. Exit 1 means a difference or a DS. Exit 2 means a server
+didn't answer or isn't authoritative.
+
+Then switch: GoDaddy → My Products → ryftlab.de → DNS → Nameservers → Change → "I'll use my own
+nameservers". Enter the four `ns-cloud-*` from the output, without the trailing dot.
+
+```bash
+dig +norecurse NS ryftlab.de @a.nic.de     # again until the authority section lists the four ns-cloud-* servers
+dig +short MX ryftlab.de @1.1.1.1          # the Microsoft 365 MX, unchanged
+```
+
+Send a mail from an outside address to your `ryftlab.de` address, and reply to it. **Route 53
+stays for 48 h.** Resolvers that cached its NS records still ask it. Note the switch time:
+step 12 comes no earlier than 48 hours after it.
+
+Then verify the domain: `dig +short TXT ryftlab.de @1.1.1.1` must show the
+`google-site-verification=` string, then Search Console → ryftlab.de → Verify. Then make
+`hcp-terraform-apply@ryftlab-prod.iam.gserviceaccount.com` a **verified owner**: Search Console →
+Settings → Users and permissions → Manage property owners → Add an owner. Verification belongs
+to the user who did it. The apply SA creates the domain mappings in step 9, and it can't as a
+plain user.
+
+**Stop if** a record differs, except the two intended ones (the script checks them exactly); or
+a DS exists. If mail fails after the switch, set the old name servers back at GoDaddy at once
+(`~/ryft-route53-ns.txt`; Route 53 is still live).
+
+### 7. Supabase
+
+In the dashboard:
+- Connect → Transaction pooler: the host (`aws-<n>-eu-central-1.pooler.supabase.com`) and port
+  6543 for the services. Session pooler: 5432 for migrate. The host and the project ref go into
+  step 7a.
+- Database → Settings → Connection pooling: the pool size. The default 15 is enough for at most
+  26 clients (design §4).
+- Project Settings → Data API: still off.
+- Authentication → URL Configuration: the Site URL `https://ryftlab.de`, and redirect URLs only
+  on `ryftlab.de`.
+- Database → Settings → SSL Configuration → Download certificate: `prod-ca-2021.crt` (public).
+
+One `verify-full` login as the owner on each port. It proves the CA and the host name on both
+ports, and step 5's owner value:
+
+```bash
+read -r REF; read -r POOLER                         # the project ref and the pooler host (not secret)
+PGPASSWORD=$(gcloud secrets versions access 1 --secret=db-password-owner --project=ryftlab-prod) && export PGPASSWORD
+for port in 5432 6543; do
+  psql "host=$POOLER port=$port dbname=postgres user=postgres.$REF sslmode=verify-full sslrootcert=$HOME/Downloads/prod-ca-2021.crt" \
+    -tAc 'select current_user' || break               # postgres, twice; after a failure, no second try
+done
+unset PGPASSWORD
+```
+
+The design's login as `ryft_api.<ref>` on 6543 moves to the start of step 9. Postgres learns
+that role's password from step 8's migrate. A failed login trips Supavisor's breaker for the
+whole role (`SUPABASE.md`).
+
+*Waits for A:* `make smoke-supabase` against port 6543, as PR A documents it (design §4: pgx's
+unnamed statements through Supavisor). If it signs in as a service role, it also comes after
+step 8's migrate.
+
+**Stop if** a login fails or `ECIRCUITBREAKER` appears. Stop and wait it out. Don't retry in a
+loop.
+
+### 7a. The config PR (before step 8)
+
+Some values are known only after apply 1 and step 7. They replace the `FILL_ME_IN`
+placeholders in `deploy/run/config.env`. None of them is secret.
+
+```bash
+terraform -chdir=infra/gcp output -raw project_number; echo      # GCP_PROJECT_NUMBER
+terraform -chdir=infra/gcp output -raw push_sa_unique_id; echo   # PUSH_SA_ID
+```
+
+- `SUPABASE_PROJECT_REF` and `SUPABASE_POOLER_HOST` come from step 7.
+- `APPLE_KEY_ID` and `APNS_KEY_ID` come from Apple Developer → Keys: the 10 characters in
+  `AuthKey_<id>.p8`.
+
+Run `make cloudrun-check`, then open the PR. Merge it before step 8: `deploy.yml` refuses to
+run while a placeholder is left.
+
+**Stop if** `make cloudrun-check` fails.
+
+### 8. First deploy *(waits for A)*
+
+Set `GCP_DEPLOY=on`, then run `deploy.yml` by hand with the `smoke` input off. The commands are
+in **Deploy, roll back, rotate** below. **Stop if** `migrate` doesn't log `migration applied` /
+`up to date`, or a revision isn't ready.
+
+### 9. Apply 2: invokers and mappings *(waits for A)*
+
+First, the role login moved here from step 7. Do it once. Step 8's migrate set the password.
+
+```bash
+read -r REF; read -r POOLER                         # as in step 7 (a new shell lacks them)
+PGPASSWORD=$(gcloud secrets versions access 1 --secret=db-password-api --project=ryftlab-prod) && export PGPASSWORD
+psql "host=$POOLER port=6543 dbname=postgres user=ryft_api.$REF sslmode=verify-full sslrootcert=$HOME/Downloads/prod-ca-2021.crt" \
+  -tAc 'select current_user'                        # ryft_api
+unset PGPASSWORD
+```
+
+Then open a PR that sets `serve = true` in `infra/gcp/gates.auto.tfvars`. It is one line, and
+CI's `terraform` job must be green. Once it is merged:
+
+```bash
+git pull
+terraform -chdir=infra/gcp plan -out=apply-2.tfplan
+terraform -chdir=infra/gcp apply apply-2.tfplan
+rm infra/gcp/apply-2.tfplan
+```
+
+```text
+# Apply 2: 10 to add, 1 to change, 0 to destroy.
+#   4 ryft-push invokers (api, ingest, scoring, notify) + 2 allUsers invokers (api, ingest)
+#   + 2 domain mappings (api., ingest.ryftlab.de) + 2 CNAME record sets (from the mappings)  = 10 to add
+#   ryft-tick: paused true -> false                                                           =  1 to change
+```
+
+No change to the zone's other records, the secrets, the topics and subscriptions, the
+accounts, or the WIF pool. After the apply, the check `domain_mappings_ready` warns until the
+certificates are issued (15 minutes to 24 hours). If a CNAME fails its precondition because the
+mapping has no record yet, plan and apply again after a minute.
+
+```bash
+for h in api ingest; do
+  gcloud beta run domain-mappings describe --domain="$h.ryftlab.de" --region=europe-west1 \
+    --project=ryftlab-prod --format='value(status.conditions)'   # Ready True once the certificate is issued
+  dig +short CNAME "$h.ryftlab.de" @1.1.1.1                       # ghs.googlehosted.com.
+done
+```
+
+Then the tests (design §1, §3, §5.1):
+
+```bash
+# 1. The smoke, as after every deploy (SUPABASE_URL, SUPABASE_ANON_KEY, SMOKE_EMAIL, SMOKE_PASSWORD).
+make smoke-prod
+
+# 2. 33 MiB through ingest.ryftlab.de must get OUR JSON 413, which proves HTTP/2 end to end.
+#    Google's front end would answer an HTML 413. The smoke user's token never reaches argv.
+read -r SMOKE_EMAIL; read -rs SMOKE_PASSWORD        # the smoke user (1Password); the password not echoed
+SUPABASE_URL=https://$REF.supabase.co; SUPABASE_ANON_KEY='<the publishable key>'
+TOKEN=$(jq -nc --arg e "$SMOKE_EMAIL" --arg p "$SMOKE_PASSWORD" '{email: $e, password: $p}' \
+  | curl -fsS -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" -H "apikey: $SUPABASE_ANON_KEY" \
+      -H 'Content-Type: application/json' --data @- | jq -r .access_token)
+unset SMOKE_PASSWORD
+f=$(mktemp); { printf '{"pad":"'; head -c $((33 << 20)) /dev/zero | tr '\0' a; printf '"}'; } > "$f"
+printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -H @- -H 'Content-Type: application/json' \
+  --data-binary @"$f" -w '\n%{http_code} %{content_type}\n' https://ingest.ryftlab.de/v1/sync
+rm -f "$f"; unset TOKEN                             # "request body over 33554432 bytes", then 413 application/json
+
+# 3. A forged X-Forwarded-For, from a known address.
+dig +short myip.opendns.com @resolver1.opendns.com  # your address
+for h in api ingest; do
+  curl -sS -o /dev/null -w "%{http_code} $h\n" -H 'X-Forwarded-For: 203.0.113.7' "https://$h.ryftlab.de/health/ready"
+done
+```
+
+For test 3, PR A names the log line that shows the address `httpx.ClientIP` picked (design
+§5.1). It must be your address, not `203.0.113.7` and not a Google one.
+
+Undo apply 2 with a PR that sets `serve = false`, then apply: 10 to destroy and 1 to change,
+nothing stateful.
+
+**Stop if** the plan touches anything but those 10 and the tick; a certificate is still pending
+after 24 hours (then design §1's fallback, which you decide); the smoke fails; or the 413 isn't
+ours (then a contract change, a 31 MiB cap: design §3, api-contract-owner).
+
+### 10. The site and the app *(waits for C1)*
+
+The site project first. This half can run any time. Run it as you, logged in to gcloud and
+`firebase login`, with no billing account anywhere:
+
+```bash
+S=ryftlab-site                                       # if the ID is taken, pick another and use it in C1's config
+gcloud projects create "$S" --name="RYFT site"       # no --organization; never link a billing account
+gcloud billing projects describe "$S" --format='value(billingEnabled)'   # False
+gcloud services enable firebase.googleapis.com firebasehosting.googleapis.com iam.googleapis.com \
+  iamcredentials.googleapis.com --project="$S"
+npx --yes firebase-tools@<C1's pin> projects:addfirebase "$S"       # Spark, because there is no billing account
+npx --yes firebase-tools@<C1's pin> hosting:sites:list --project "$S"   # the default site, ryftlab-site
+
+# The deploy SA: Hosting only, usable only through the GitHub pool in ryftlab-prod.
+gcloud iam service-accounts create site-deployer --project="$S" --display-name="CI: Firebase Hosting deploys"
+SITE_SA=site-deployer@$S.iam.gserviceaccount.com
+gcloud projects add-iam-policy-binding "$S" --member="serviceAccount:$SITE_SA" \
+  --role=roles/firebasehosting.admin --condition=None
+gcloud iam service-accounts add-iam-policy-binding "$SITE_SA" --project="$S" \
+  --role=roles/iam.workloadIdentityUser --member="$(terraform -chdir=infra/gcp output -raw github_principal_set)"
+gcloud projects get-iam-policy "$S" --format='table(bindings.role,bindings.members)'  # you as owner, the SA, nothing else
+gcloud iam service-accounts keys list --iam-account="$SITE_SA" --managed-by=user       # empty
+```
+
+The GitHub pool's condition already pins `deploy.yml` on main and the `deploy` environment, so
+this binding needs only the repository. If the first deploy names a missing permission, add
+only that one (for example `roles/serviceusage.serviceUsageConsumer` on `ryftlab-site`).
+
+Then, with C1 merged:
+1. Firebase console → Hosting → Add custom domain: `ryftlab.de`, then `www.ryftlab.de` with
+   "redirect to `ryftlab.de`".
+2. Put the A and TXT values the wizard shows into `infra/gcp`'s site variables (C1 names them).
+   Then **apply 3**:
+   `terraform -chdir=infra/gcp plan -out=apply-3.tfplan`, then `apply apply-3.tfplan`. It adds
+   only the site's record sets.
+3. Run `deploy.yml` by hand once (the `site` job).
+4. Check:
+
+   ```bash
+   for p in /privacy /de/privacy /impressum /terms /support; do
+     curl -s -o /dev/null -w "%{http_code} $p\n" "https://ryftlab.de$p"            # 200 each
+   done
+   curl -sI https://ryftlab.de/.well-known/apple-app-site-association           # content-type: application/json, no redirect
+   curl -sI 'https://ryftlab.de//evil.example/' | grep -i '^location' || echo 'no location'   # no location
+   curl -sI https://www.ryftlab.de/privacy | grep -i '^location'                # https://ryftlab.de/privacy
+   ```
+
+5. The app build uses `https://api.ryftlab.de` and `https://ingest.ryftlab.de`. App Store
+   Connect's privacy, support and marketing URLs move to `https://ryftlab.de/…` (REBUILD step
+   12). Check the AASA's team ID. The Sign in with Apple return URL stays Supabase's. Until
+   here, only you sign in.
+
+**Stop if** the console asks for Blaze to connect a domain (Spark doesn't allow it: stop, you
+decide); apply 3 touches anything but the site's record sets; a certificate is still pending
+after 24 hours; or any check above fails.
+
+### 11. Observability
+
+a–g need only B merged. h and i wait for A and step 9.
+
+**a. The reader key**, the one JSON key RYFT has (design §5.2). It is made by hand, never in
+Terraform:
+
+```bash
+d=$(mktemp -d)                                      # 0700
+gcloud iam service-accounts keys create "$d/grafana-reader.json" \
+  --iam-account=grafana-reader@ryftlab-prod.iam.gserviceaccount.com
+```
+
+**b. The data source.** Grafana Cloud → Connections → Add new connection → Google Cloud
+Monitoring → Add new data source. Set Authentication to Google JWT File, upload
+`$d/grafana-reader.json`, and set Default project to `ryftlab-prod`. Save & test. Then:
+
+```bash
+rm -r "$d"
+```
+
+Its UID is the last part of the data source page's URL (`…/connections/datasources/edit/<uid>`).
+
+**c. The Grafana variables.** Paste step 2's `API=…` line, `tfc_auth`, the `WS_ID=…` line and
+`tfc_var` again first:
+
+```bash
+tfc_var grafana_url https://<stack>.grafana.net terraform
+tfc_var grafana_datasource_uid '<uid>' terraform
+```
+
+Then the token. Grafana → Administration → Users and access → Service accounts → Add service
+account `terraform-ryft-gcp` with the role Editor → Add service account token. Then HCP
+Terraform → ryft-lab → ryft-gcp → Variables → Add variable → Terraform variable: key
+`grafana_auth`, the token as its value, **Sensitive** on. Never set it in a script or on argv.
+
+**d. The rules' apply:**
+
+```bash
+terraform -chdir=infra/gcp plan -out=grafana.tfplan   # 2 to add: grafana_folder.gcp[0], grafana_rule_group.gcp[0]
+terraform -chdir=infra/gcp apply grafana.tfplan
+rm infra/gcp/grafana.tfplan
+```
+
+There is no change to anything in GCP. Grafana → Alerting → Alert rules → folder "RYFT GCP
+(infra/gcp)" then holds HTTP5xxRatio, SyncSlow, DeadLetters, PushBacklog and Saturated.
+
+**e. The app rules:** `make alerts-apply` (OBSERVABILITY → Alerts):
+
+```bash
+export GRAFANA_PROM_URL=https://prometheus-prod-<NN>-<region>.grafana.net GRAFANA_PROM_USER=<instance id>
+( read -rs GRAFANA_RULES_TOKEN; export GRAFANA_RULES_TOKEN; make alerts-apply )
+```
+
+**f. The EKS-only groups.** If they are still live in the ruler, delete `ryft-admission` and
+`ryft-vault` (namespace `ryft`):
+
+```bash
+IMG=$(sed -n 's/^MIMIRTOOL_IMAGE := //p' Makefile); C=$(command -v docker || command -v podman)
+( read -rs MIMIR_API_KEY; export MIMIR_API_KEY       # the rules token: not echoed, not on argv
+  mt() { "$C" run --rm -e MIMIR_ADDRESS="$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$GRAFANA_PROM_USER" -e MIMIR_API_KEY "$IMG" "$@"; }
+  mt rules list                                      # what is live
+  mt rules delete ryft ryft-admission                # only if listed
+  mt rules delete ryft ryft-vault                    # only if listed
+  mt rules list )                                    # neither is left
+```
+
+**g. The key list:**
+
+```bash
+for sa in $(gcloud iam service-accounts list --project=ryftlab-prod --format='value(email)'); do
+  echo "$sa $(gcloud iam service-accounts keys list --iam-account="$sa" --managed-by=user --format='value(name)' | wc -l)"
+done                                                 # grafana-reader 1, every other account 0
+```
+
+**h. The OTLP half** *(waits for A)*. Open a config PR that sets `OTLP_ENDPOINT` and `OTLP_USER`
+in `deploy/run/config.env`, both at once (Grafana Cloud → the stack → OpenTelemetry: the
+endpoint and the instance ID). The token is step 5's `otlp-token`. The merge deploys. Within 30
+minutes, Explore (the Prometheus data source) shows `count by (job) (ryft_db_up)` with four
+series: `ryft/api`, `ryft/ingest`, `ryft/scoring`, `ryft/notify`.
+
+**i. Synthetics and one test alert** *(waits for step 9)*. Run `make synthetics-apply` for the
+`api.` and `ingest.ryftlab.de/health/ready` checks, as in **Synthetic Monitoring, once** (the
+site's two checks come with C1). Then Alerting → Contact points → yours → Test. It must reach
+your phone.
+
+**Stop if** there is no `ryft_db_up` from any service after 30 minutes: the ticks aren't
+arriving. Check
+`gcloud scheduler jobs describe ryft-tick --location=europe-west1 --project=ryftlab-prod --format='value(state,lastAttemptTime,status)'`
+and the `tick-*` subscriptions. Also stop if the key list shows any key besides
+grafana-reader's one.
+
+### 12. E, old org: Route 53
+
+At least 48 h after step 6's switch, with D1 merged (not built yet: it drops `prevent_destroy`
+from the zone in `infra/aws/dns`). `infra/aws/dns` runs locally (execution mode Local), with the
+AWS credentials it always used.
+
+```bash
+dig +norecurse NS ryftlab.de @a.nic.de                # still the four ns-cloud-* servers
+ TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws/dns init
+ TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws/dns apply -destroy
+```
+
+Read every line before `yes`.
+
+**Stop if** mail failed during the 48 h, or the plan lists anything but the zone and its
+records.
+
+### 13. D, old org: the Vault keys, the bucket, the AWS budget
+
+The README's two-PR route (`infra/aws/README.md`). D1 and D2 aren't built yet. With D1 merged:
+
+```bash
+ TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws init
+ TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws apply
+```
+
+Only the two key policies and the bucket's `force_destroy` change. With D2 merged, run the same
+`apply` again. It holds destroys only: the keys (scheduled, 30 days), the aliases, the bucket,
+the AWS budget.
+
+**Stop if** the first plan shows anything but those three changes; or the second shows a `+` or
+`~`, or a resource that isn't RYFT's (a shared account: check by IDs, never by tag).
+
+### 14. Old org: the old workspaces
+
+Do this only after step 5's data-key check (design §5.3 step 4) has passed, and E and D are
+applied. `ryft-prod-euc1-vault` holds the old data key's state, its only other copy. Safe delete
+refuses a workspace that still manages resources.
+
+```bash
+read -rs OLD_TOKEN                                   # the tim-krebs-org token: not echoed
+for w in ryft-prod-euc1-dns ryft-prod-euc1-platform ryft-prod-euc1-kubernetes ryft-prod-euc1-vault; do
+  printf 'Authorization: Bearer %s\n' "$OLD_TOKEN" | curl -q -sS -o /dev/null -w "%{http_code} $w\n" -H @- -X POST \
+    "https://app.terraform.io/api/v2/organizations/tim-krebs-org/workspaces/$w/actions/safe-delete"
+done                                                 # 2xx each; a 409 is a refusal
+unset OLD_TOKEN
+```
+
+Then merge D3 (not built yet), and delete the AWS and GHCR secrets in GitHub:
+
+```bash
+gh secret list; gh secret list --env deploy
+gh secret delete <name>                              # each AWS and GHCR one; add --env deploy for the environment's
+```
+
+**Stop if** a safe delete is refused. Resources are still in that state: find out why first.
+
+### 15. Testers
+
+Testers come after step 10's pages load and C2 is in force. C2 is a draft today, and its consent
+round runs first. `/privacy` must show C2's version: `scripts/check_policy_in_force.sh` (C1)
+reads the live page.
+
+**Stop if** `/privacy` doesn't show C2's version.
+
+### The €20 stop line
+
+The budget "RYFT 50 EUR" emails, but it caps nothing (design §7). Max-instances is the hard cap.
+At €20 actual spend in a month (Billing → Reports, project `ryftlab-prod`):
+
+```bash
+for svc in api ingest; do
+  gcloud run services remove-iam-policy-binding "$svc" --region=europe-west1 --project=ryftlab-prod \
+    --member=allUsers --role=roles/run.invoker
+done
+gcloud scheduler jobs pause ryft-tick --location=europe-west1 --project=ryftlab-prod
+```
+
+api and ingest then answer 403 to everyone: the app fails, and ApiDown fires. scoring and notify
+still drain what Pub/Sub holds. The tick stops.
+
+Then open a PR that sets `public_invokers = false` in `infra/gcp/gates.auto.tfvars`. Otherwise
+the next apply would add `allUsers` back. Once it is merged:
+
+```bash
+terraform -chdir=infra/gcp plan -out=stop.tfplan
+terraform -chdir=infra/gcp apply stop.tfplan
+rm infra/gcp/stop.tfplan
+```
+
+Expected: no changes. Terraform reports the two members and the pause as changes outside
+Terraform. If the gcloud commands haven't taken effect: 2 to destroy (the two `allUsers`
+members) and 1 to change (the tick paused). Anything else: stop.
+
+Find the cause in the billing report (Billing → Reports, group by SKU) before undoing either.
+The undo is a PR with `public_invokers = true`. Its apply adds the two members back and resumes
+the tick: 2 to add, 1 to change.
+
+An email of its own at €20 is optional. It is one more rule on the same budget:
+`gcloud billing budgets update "$BUDGET" --add-threshold-rule=percent=0.40` (step 3's `$BUDGET`).
+
 ## EKS (api.ryftlab.de)
+
+**Retired.** Production moves to GCP (**GCP** above), and D3 removes this section.
 
 The AWS side is Terraform in three roots, then Vault in a fourth, each applied by hand
 in order. Details, cost and teardown: [`infra/aws/README.md`](../infra/aws/README.md) and

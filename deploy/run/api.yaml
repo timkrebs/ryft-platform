@@ -1,0 +1,72 @@
+# api on Cloud Run (D223): the read side, settings, account deletion, the operator's /v1/admin routes.
+# A template: scripts/cloudrun_render.py fills its placeholders (a fixed list) from deploy/run/config.env
+# and the image digest, and deploy.yml runs `gcloud run services replace` on the result. CI owns the
+# revisions, Terraform the IAM (allUsers as invoker comes with infra/gcp's apply 2). Limits: design §3.
+# scripts/check_cloudrun.py pins the limits, ingress, account, port, probes, env and secret pins.
+# Secrets are pinned by version number, never latest (design §4); a role password moves with
+# scripts/rotate_db_password.sh, which moves migrate.yaml's pin in the same commit.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: api
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "3"
+        run.googleapis.com/cpu-throttling: "true"
+        run.googleapis.com/startup-cpu-boost: "true"
+    spec:
+      serviceAccountName: ryft-api@ryftlab-prod.iam.gserviceaccount.com
+      containerConcurrency: 40
+      timeoutSeconds: 60
+      containers:
+        - name: api
+          image: "${IMAGE}"
+          # h2c: HTTP/2 end to end, so a 32 MiB body is not cut by the front end's HTTP/1 limit (design §3).
+          # Cloud Run sets PORT to this port; PORT itself is reserved and never set here.
+          ports:
+            - { name: h2c, containerPort: 8080 }
+          resources:
+            limits: { cpu: "1", memory: 512Mi }
+          startupProbe:
+            httpGet: { path: /health/ready, port: 8080 }
+            periodSeconds: 1
+            timeoutSeconds: 1
+            failureThreshold: 120
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            periodSeconds: 30
+            timeoutSeconds: 2
+            failureThreshold: 3
+          env:
+            - { name: DATABASE_URL, value: "${DATABASE_URL}" }
+            - { name: PGPASSWORD, valueFrom: { secretKeyRef: { name: db-password-api, key: "1" } } }
+            - { name: AUTH_MODE, value: supabase }
+            - { name: SUPABASE_PROJECT_REF, value: "${SUPABASE_PROJECT_REF}" }
+            - { name: SUPABASE_SERVICE_ROLE_KEY, valueFrom: { secretKeyRef: { name: supabase-secret-key, key: "1" } } }
+            - { name: PRIVACY_POLICY_VERSION, value: "${PRIVACY_POLICY_VERSION}" }
+            - { name: PRIVACY_POLICY_URL, value: "https://ryftlab.de/privacy" }
+            - { name: ADMIN_WEB_ORIGINS, value: "https://ryftlab.de" }
+            - { name: ADMIN_API_KEY, valueFrom: { secretKeyRef: { name: admin-api-key, key: "1" } } }
+            - { name: APPLE_TEAM_ID, value: M77SKHKG63 }
+            - { name: APPLE_KEY_ID, value: "${APPLE_KEY_ID}" }
+            - { name: APPLE_CLIENT_ID, value: dev.timkrebs.ryft }
+            - { name: APPLE_KEY_P8, valueFrom: { secretKeyRef: { name: apple-key-p8, key: "1" } } }
+            - { name: DATA_ENCRYPTION_KEY, valueFrom: { secretKeyRef: { name: data-key, key: "1" } } }
+            - { name: GCP_PROJECT, value: ryftlab-prod }
+            - { name: PUBSUB_ENDPOINT, value: "https://europe-west1-pubsub.googleapis.com" }
+            - { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }
+            - { name: PUSH_SA_EMAIL, value: ryft-push@ryftlab-prod.iam.gserviceaccount.com }
+            - { name: PUSH_SA_ID, value: "${PUSH_SA_ID}" }
+            - { name: OTLP_ENDPOINT, value: "${OTLP_ENDPOINT}" }
+            - { name: OTLP_USER, value: "${OTLP_USER}" }
+            - { name: OTLP_TOKEN, valueFrom: { secretKeyRef: { name: otlp-token, key: "1" } } }
+            - { name: LOG_LEVEL, value: "${LOG_LEVEL}" }
+  # Every deploy sends all traffic to the new revision, which also ends a rollback's pin
+  # (gcloud run services update-traffic, docs/OPERATIONS.md → GCP).
+  traffic:
+    - { percent: 100, latestRevision: true }

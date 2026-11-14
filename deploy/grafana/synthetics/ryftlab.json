@@ -1,5 +1,5 @@
 {
-  "$comment": "External checks of ryftlab.de for Grafana Cloud Synthetic Monitoring. Validate: make synthetics-check. Upsert by job name: make synthetics-apply (SM_API_URL, SM_ACCESS_TOKEN). The shape is the SM API's Check (synthetic-monitoring-agent, pkg/pb/synthetic_monitoring/checks.proto), with probes given by name. The alert rules on these metrics are in deploy/grafana/alerts/ryft.yaml (job=~\"ryft-site-.*\"); what to do when one fires: docs/OPERATIONS.md -> Apex site. Free tier: 100k API test executions a month; 4 checks x 2 probes x every 5 min = about 69k.",
+  "$comment": "External checks of ryftlab.de and of the two public services on Cloud Run (api. and ingest., their startup probe /health/ready, design §6) for Grafana Cloud Synthetic Monitoring. Validate: make synthetics-check. Upsert by job name: make synthetics-apply (SM_API_URL, SM_ACCESS_TOKEN), after infra/gcp's apply 2 maps the two hosts (runbook step 11). The shape is the SM API's Check (synthetic-monitoring-agent, pkg/pb/synthetic_monitoring/checks.proto), with probes given by name. The alert rules on these metrics are in deploy/grafana/alerts/ryft.yaml (Site*: job=~\"ryft-site-.*\"; ApiDown: job=~\"ryft-(api|ingest)-ready\"); what to do when one fires: docs/OPERATIONS.md -> Apex site, and -> GCP for the services. Free tier: 100k API test executions a month; 4 site checks x 2 probes x every 5 min (8,640 runs each: 69,120) + 2 service checks x 2 probes x every 10 min (4,320 runs each: 17,280) = 86,400 in 30 days.",
   "probes": ["Frankfurt", "Amsterdam"],
   "checks": [
     {
@@ -89,6 +89,44 @@
           "failIfHeaderNotMatchesRegexp": [
             { "header": "Location", "regexp": "^https://ryftlab\\.de/$", "allowMissing": false }
           ]
+        }
+      }
+    },
+    {
+      "job": "ryft-api-ready",
+      "target": "https://api.ryftlab.de/health/ready",
+      "frequency": 600000,
+      "timeout": 10000,
+      "enabled": true,
+      "basicMetricsOnly": false,
+      "alertSensitivity": "none",
+      "labels": [],
+      "settings": {
+        "http": {
+          "method": "GET",
+          "ipVersion": "V4",
+          "noFollowRedirects": true,
+          "failIfNotSSL": true,
+          "validStatusCodes": [200]
+        }
+      }
+    },
+    {
+      "job": "ryft-ingest-ready",
+      "target": "https://ingest.ryftlab.de/health/ready",
+      "frequency": 600000,
+      "timeout": 10000,
+      "enabled": true,
+      "basicMetricsOnly": false,
+      "alertSensitivity": "none",
+      "labels": [],
+      "settings": {
+        "http": {
+          "method": "GET",
+          "ipVersion": "V4",
+          "noFollowRedirects": true,
+          "failIfNotSSL": true,
+          "validStatusCodes": [200]
         }
       }
     }

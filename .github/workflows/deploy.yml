@@ -1,0 +1,207 @@
+# The deploy to Cloud Run (design §9, ticket B2): a push to main, once ci.yml's `ci-ok` is green on
+# that commit, builds the five images (linux/amd64), scans them, pushes them to Artifact Registry
+# tagged with the short SHA, renders deploy/run with their digests, runs the migrate job and stops
+# when it fails (nothing rolls, as with the old PreSync), then replaces the services in the order
+# scoring, notify, ingest, api, and runs `make smoke-prod`. A manual run (workflow_dispatch, main
+# only: the WIF condition admits nothing else) does the same; its `smoke` input skips the smoke for
+# the first deploy, before anything is public (runbook step 8).
+#
+# Off until the repository variable GCP_DEPLOY is `on`: every job has that `if`, so on EKS this
+# workflow does nothing. DEPLOY_HOLD_SERVICES (a repository variable, the reason) holds the services:
+# nothing is built or deployed and the run ends green with a notice (D175's hold, now a variable).
+# Rollback: `gcloud run services update-traffic <svc> --to-revisions=<previous>=100` (the next deploy
+# sends all traffic to its own revision again); a revert of the merge redeploys the old code.
+# docs/OPERATIONS.md → GCP holds the steps. scripts/check_workflows.sh pins the shape of this file.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      smoke:
+        description: Run make smoke-prod after the deploy (off only for the first deploy, before infra/gcp's apply 2)
+        type: boolean
+        default: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ci.yml's required check on this very commit, read from the check-runs API (a workflow_run
+  # trigger is not allowed here, scripts/check_workflows.sh). Only the github-actions app's run
+  # named ci-ok counts, and check_workflows.sh lets only ci.yml define a job of that name.
+  ci:
+    name: wait for ci-ok
+    if: vars.GCP_DEPLOY == 'on'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    permissions:
+      checks: read
+    steps:
+      - name: ci-ok is green on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          deadline=$(( $(date +%s) + 95 * 60 ))
+          while :; do
+            state=$(gh api "repos/$REPO/commits/$SHA/check-runs?check_name=ci-ok&filter=latest&per_page=100" \
+              --jq '[.check_runs[] | select(.app.slug == "github-actions")] | if length == 0 then "missing" else (sort_by(.started_at) | last | if .status != "completed" then "pending" else .conclusion end) end') \
+              || state="unreadable"
+            case $state in
+              success) echo "ci-ok is green on $SHA"; exit 0 ;;
+              missing|pending|unreadable) echo "ci-ok on $SHA: $state, waiting" ;;
+              *) echo "::error title=deploy::ci-ok on $SHA concluded '$state': nothing is deployed"; exit 1 ;;
+            esac
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error title=deploy::no green ci-ok on $SHA within 95 minutes: nothing is deployed (re-run this workflow once ci is green)"
+              exit 1
+            fi
+            sleep 30
+          done
+
+  # The hold: nothing is built or deployed, and the run is green.
+  held:
+    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: The services are held
+        env:
+          REASON: ${{ vars.DEPLOY_HOLD_SERVICES }}
+        run: |
+          echo "::notice title=deploy held::DEPLOY_HOLD_SERVICES is set ($REASON): nothing was built or deployed. Delete the variable and run deploy.yml by hand to ship main."
+          printf '### Deploy held\nDEPLOY_HOLD_SERVICES: %s\n\nNothing was built or deployed.\n' "$REASON" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: [ci]
+    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # The environment admits main only (its deployment branch rule); the smoke user's secrets live there.
+    environment: deploy
+    permissions:
+      contents: read
+      id-token: write
+    # One deploy at a time, never cancelled half way (a migrate or a rollout cut off is worse than a
+    # late one). GitHub keeps at most one run waiting, the newest.
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    env:
+      PROJECT: ryftlab-prod
+      REGION: europe-west1
+      REGISTRY: europe-west1-docker.pkg.dev/ryftlab-prod/ryft
+      DEPLOYER: ryft-deployer@ryftlab-prod.iam.gserviceaccount.com
+      # The Trivy image of ci.yml, by digest.
+      TRIVY: aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Before anything is built: config.env is filled in (the config PR of runbook step 8 merged) and
+      # every template renders; a FILL_ME_IN left stops the run here. The digests are fakes.
+      - name: config.env has no placeholder left and deploy/run renders
+        run: |
+          printf -v z '%064d' 0
+          args=()
+          for s in api ingest scoring notify migrate; do args+=("--digest=$s=sha256:$z"); done
+          python3 -I scripts/cloudrun_render.py --out "$RUNNER_TEMP/dry-run" "${args[@]}"
+          rm -rf "$RUNNER_TEMP/dry-run"
+      # Workload Identity Federation with gcloud as the runner image ships it: no service account key,
+      # and no third-party action holds the token. The credential config (the external_account file
+      # google-github-actions/auth writes, built here from the environment, so the request token is in
+      # no command line) makes gcloud fetch a fresh GitHub OIDC token, audience the provider's https
+      # name, whenever it exchanges one, and impersonate ryft-deployer. The WIF condition (infra/gcp)
+      # admits this repository's deploy.yml on refs/heads/main, push or workflow_dispatch.
+      - name: Sign in to Google Cloud as ryft-deployer (WIF)
+        run: |
+          pn=$(sed -n 's/^GCP_PROJECT_NUMBER=//p' deploy/run/config.env)
+          [[ $pn =~ ^[1-9][0-9]{5,19}$ ]] || { echo "::error title=deploy::GCP_PROJECT_NUMBER in deploy/run/config.env is not a project number"; exit 1; }
+          export WIF_PROVIDER="projects/$pn/locations/global/workloadIdentityPools/github/providers/github-actions"
+          gcloud --version
+          (umask 077; python3 -I - > "$RUNNER_TEMP/gcp-wif.json" <<'PY'
+          import json, os, urllib.parse
+          p, sa = os.environ["WIF_PROVIDER"], os.environ["DEPLOYER"]
+          aud = urllib.parse.quote("https://iam.googleapis.com/" + p, safe="")
+          print(json.dumps({
+              "type": "external_account",
+              "audience": "//iam.googleapis.com/" + p,
+              "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+              "token_url": "https://sts.googleapis.com/v1/token",
+              "service_account_impersonation_url":
+                  f"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{sa}:generateAccessToken",
+              "credential_source": {
+                  "url": os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=" + aud,
+                  "headers": {"Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]},
+                  "format": {"type": "json", "subject_token_field_name": "value"},
+              },
+          }))
+          PY
+          )
+          gcloud auth login --cred-file="$RUNNER_TEMP/gcp-wif.json" --quiet
+          gcloud config set project "$PROJECT" --quiet
+          gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin "https://$REGION-docker.pkg.dev"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # Each image is built for Cloud Run's architecture into the runner and scanned; only when all five
+      # pass is anything pushed. The push reuses the builder's layer cache (no shared GHA cache: a
+      # poisoned entry must not reach a pushed image), so the pushed image is the scanned one.
+      - name: Build the five images (linux/amd64) and scan them (Trivy, fail on critical)
+        run: |
+          for s in api ingest scoring notify migrate; do
+            docker buildx build --platform linux/amd64 --build-arg "SERVICE=$s" --provenance=false --sbom=false \
+              --load -t "ryft-$s:scan" backend
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" \
+              image --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress "ryft-$s:scan"
+          done
+      - name: Push them, tagged with the short SHA, with provenance and an SBOM; record the digests
+        run: |
+          tag=${GITHUB_SHA::7}
+          : > "$RUNNER_TEMP/digests"
+          for s in api ingest scoring notify migrate; do
+            docker buildx build --platform linux/amd64 --build-arg "SERVICE=$s" --provenance=mode=max --sbom=true \
+              --push -t "$REGISTRY/$s:$tag" --metadata-file "$RUNNER_TEMP/$s.meta.json" backend
+            d=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$RUNNER_TEMP/$s.meta.json")
+            [[ $d =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error title=deploy::no digest for $s ($d)"; exit 1; }
+            echo "--digest=$s=$d" >> "$RUNNER_TEMP/digests"
+          done
+          { echo "### Images ($tag)"; echo '```'; sed 's/^--digest=//' "$RUNNER_TEMP/digests"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Render deploy/run with the digests
+        run: |
+          mapfile -t args < "$RUNNER_TEMP/digests"
+          python3 -I scripts/cloudrun_render.py --out "$RUNNER_TEMP/run" "${args[@]}"
+      # Migrations first; a failed run stops the workflow here and no service rolls.
+      - name: migrate (replace the job, execute it, wait)
+        run: |
+          gcloud run jobs replace "$RUNNER_TEMP/run/migrate.yaml" --region="$REGION" --project="$PROJECT" --quiet
+          gcloud run jobs execute migrate --region="$REGION" --project="$PROJECT" --wait --quiet
+      # The consumers before the producers: scoring and notify answer the pushes of the new code first.
+      # `services replace` waits until the new revision is ready and serving.
+      - name: The services, scoring, notify, ingest, api
+        run: |
+          for s in scoring notify ingest api; do
+            gcloud run services replace "$RUNNER_TEMP/run/$s.yaml" --region="$REGION" --project="$PROJECT" --quiet
+            rev=$(gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format='value(status.latestReadyRevisionName)')
+            echo "- $s: $rev" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: make smoke-prod
+        if: github.event_name != 'workflow_dispatch' || inputs.smoke
+        env:
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+        run: |
+          ref=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env)
+          SUPABASE_URL="https://$ref.supabase.co" make smoke-prod
+      - name: Sign out
+        if: always()
+        run: |
+          gcloud auth revoke --all --quiet 2>/dev/null || true
+          docker logout "https://$REGION-docker.pkg.dev" >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/gcp-wif.json"

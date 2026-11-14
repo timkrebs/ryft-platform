@@ -8,7 +8,7 @@ GOLANGCI_LINT_VERSION := v2.15.0
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: k8s-context k8s-context-local test check-api-doc test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod alerts-check alerts-apply synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest admission-e2e monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check
+.PHONY: k8s-context k8s-context-local test check-api-doc test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod cloudrun-check alerts-check alerts-apply alerts-retire-eks synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest admission-e2e monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -70,6 +70,12 @@ test-scripts:
 # dedicated smoke user's sign-in, /v1/me, one tiny sync, the day read back.
 smoke-prod:
 	./scripts/smoke_prod.sh
+
+# deploy/run, what deploy.yml applies to Cloud Run (CI's manifests job): config.env lints, every template
+# renders with fake values, and the result holds the limits, ingress, accounts, h2c port, probes, env,
+# secret pins and accessors of the design and ticket-b.md (scripts/check_cloudrun.py). Needs yq (mikefarah v4).
+cloudrun-check:
+	python3 -I scripts/check_cloudrun.py
 
 # After smoke, on macOS: decode every endpoint with the Swift mirror in docs/API.md
 # and with the app's current models (../app). See scripts/check_swift.sh.
@@ -207,18 +213,23 @@ KUBECONFORM_CRDS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main
 # Pinned by digest (the index, all platforms); the tags are prom/prometheus:v3.5.0 and
 # grafana/mimirtool:2.16.0. alerts-apply hands the rules token to mimirtool.
 # scripts/check_rule_groups.sh holds every group to Grafana Cloud's 20 rules (neither tool knows it).
+# ryft.yaml is RYFT on Cloud Run, the only file alerts-apply loads. eks-admission.yaml and
+# admission-intended.yaml are the EKS cluster's admission rules, checked here (with their tests) until
+# the EKS removal (D3) and never loaded; alerts-retire-eks deletes their live copies and the old Vault
+# group once EKS is gone (docs/OBSERVABILITY.md → Alerts → EKS leftovers).
 PROMTOOL_IMAGE := docker.io/prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
 MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool@sha256:f172fbe57ff63694a9b284f745e271deeb8eb782b97a3e3de9abaf07d45d276c
+ALERT_FILES := ryft eks-admission admission-intended
+EKS_RULE_GROUPS := ryft/ryft-admission ryft/ryft-vault ryft-admission/ryft-admission-intended
 alerts-check:
 	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; chmod 755 "$$d"; \
 	scripts/admission_intended.sh --check; \
-	scripts/check_rule_groups.sh deploy/grafana/alerts/ryft.yaml deploy/grafana/alerts/admission-intended.yaml; \
-	sed '/^namespace:/d' deploy/grafana/alerts/ryft.yaml > "$$d/ryft.rules.yaml"; \
-	sed '/^namespace:/d' deploy/grafana/alerts/admission-intended.yaml > "$$d/admission-intended.rules.yaml"; \
-	cp deploy/grafana/alerts/ryft.test.yaml "$$d/"; chmod a+r "$$d"/*; \
-	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules /rules/ryft.rules.yaml /rules/admission-intended.rules.yaml; \
-	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/ryft.test.yaml; \
-	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/ryft.yaml /alerts/admission-intended.yaml
+	scripts/check_rule_groups.sh $(foreach f,$(ALERT_FILES),deploy/grafana/alerts/$(f).yaml); \
+	for f in $(ALERT_FILES); do sed '/^namespace:/d' "deploy/grafana/alerts/$$f.yaml" > "$$d/$$f.rules.yaml"; done; \
+	cp deploy/grafana/alerts/ryft.test.yaml deploy/grafana/alerts/eks-admission.test.yaml "$$d/"; chmod a+r "$$d"/*; \
+	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules $(foreach f,$(ALERT_FILES),/rules/$(f).rules.yaml); \
+	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/ryft.test.yaml /rules/eks-admission.test.yaml; \
+	$(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check $(foreach f,$(ALERT_FILES),/alerts/$(f).yaml)
 
 # Per-package Go coverage and the internal/ total, as CI prints them (scripts/coverage.sh). The
 # profile and the numbers go to $(COVERDIR), a temp dir by default; tests that need Postgres or
@@ -276,7 +287,20 @@ alerts-apply: alerts-check
 	   "$${GRAFANA_RULES_TOKEN:?an access policy token with rules:read and rules:write}"
 	MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" $(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro \
 	  -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY \
-	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml /alerts/admission-intended.yaml
+	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml
+
+# Once EKS is gone (runbook step 14, or D3): delete the live rule groups no file loads any more,
+# the admission groups and the old Vault group. A load never deletes a group it does not name.
+alerts-retire-eks:
+	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-<NN>-<region>.grafana.net}" \
+	   "$${GRAFANA_PROM_USER:?the Prometheus instance id of the Grafana stack, a number}" \
+	   "$${GRAFANA_RULES_TOKEN:?an access policy token with rules:read and rules:write}"
+	@set -e; for g in $(EKS_RULE_GROUPS); do \
+	  echo "deleting rule group $${g#*/} in namespace $${g%%/*}"; \
+	  MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" $(CONTAINER) run --rm \
+	    -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY \
+	    $(MIMIRTOOL_IMAGE) rules delete "$${g%%/*}" "$${g#*/}"; \
+	done
 
 # External checks of ryftlab.de in Grafana Cloud Synthetic Monitoring (deploy/grafana/synthetics).
 # synthetics-check validates the definitions offline; synthetics-apply upserts them by job name

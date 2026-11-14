@@ -1,0 +1,57 @@
+# notify on Cloud Run (D223): Pub/Sub push (/push/scored, /push/session.scored, /push/refresh,
+# /push/wait) and the tick, then APNs. Ingress internal, invoked only by ryft-push (see scoring.yaml).
+# A template for scripts/cloudrun_render.py; see api.yaml for how it is rendered, deployed and checked.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: notify
+  annotations:
+    run.googleapis.com/ingress: internal
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "1"
+        run.googleapis.com/cpu-throttling: "true"
+        run.googleapis.com/startup-cpu-boost: "true"
+    spec:
+      serviceAccountName: ryft-notify@ryftlab-prod.iam.gserviceaccount.com
+      containerConcurrency: 10
+      timeoutSeconds: 60
+      containers:
+        - name: notify
+          image: "${IMAGE}"
+          ports:
+            - { name: h2c, containerPort: 8080 }
+          resources:
+            limits: { cpu: "1", memory: 256Mi }
+          startupProbe:
+            httpGet: { path: /health/ready, port: 8080 }
+            periodSeconds: 1
+            timeoutSeconds: 1
+            failureThreshold: 120
+          livenessProbe:
+            httpGet: { path: /health/live, port: 8080 }
+            periodSeconds: 30
+            timeoutSeconds: 2
+            failureThreshold: 3
+          env:
+            - { name: DATABASE_URL, value: "${DATABASE_URL}" }
+            - { name: PGPASSWORD, valueFrom: { secretKeyRef: { name: db-password-notify, key: "1" } } }
+            # All three APNs values or none (without them notify runs and sends nothing).
+            - { name: APNS_TOPIC, value: dev.timkrebs.ryft }
+            - { name: APNS_KEY_ID, value: "${APNS_KEY_ID}" }
+            - { name: APNS_TEAM_ID, value: M77SKHKG63 }
+            - { name: APNS_KEY_P8, valueFrom: { secretKeyRef: { name: apns-key-p8, key: "1" } } }
+            - { name: GCP_PROJECT, value: ryftlab-prod }
+            - { name: PUBSUB_ENDPOINT, value: "https://europe-west1-pubsub.googleapis.com" }
+            - { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }
+            - { name: PUSH_SA_EMAIL, value: ryft-push@ryftlab-prod.iam.gserviceaccount.com }
+            - { name: PUSH_SA_ID, value: "${PUSH_SA_ID}" }
+            - { name: OTLP_ENDPOINT, value: "${OTLP_ENDPOINT}" }
+            - { name: OTLP_USER, value: "${OTLP_USER}" }
+            - { name: OTLP_TOKEN, valueFrom: { secretKeyRef: { name: otlp-token, key: "1" } } }
+            - { name: LOG_LEVEL, value: "${LOG_LEVEL}" }
+  traffic:
+    - { percent: 100, latestRevision: true }

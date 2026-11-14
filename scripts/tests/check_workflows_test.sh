@@ -2,7 +2,8 @@
 # shellcheck disable=SC2154,SC1091,SC2015,SC2016
 # scripts/check_workflows.sh on throwaway workflow directories: the bypasses of a grep (flow style,
 # quoted or spaced keys, escaped names, anchors, external reusable workflows, secrets: inherit,
-# dynamic secrets, test hooks) all fail, the repository's own workflows pass.
+# dynamic secrets, test hooks), deploy.yml's gate, triggers, token and concurrency, and a second
+# ci-ok all fail; the repository's own workflows pass.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 fail() { echo "✗ check_workflows_test: $*" >&2; exit 1; }
@@ -16,7 +17,7 @@ if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>&1 | grep -q mikefarah; t
   exit 0
 fi
 d="$tmp/wf"
-fresh() { rm -rf "$d"; mkdir -p "$d"; cp "$HERE/.github/workflows/ci.yml" "$HERE/.github/workflows/pr.yml" "$HERE/.github/workflows/deploy-watch.yml" "$d/"; }
+fresh() { rm -rf "$d"; mkdir -p "$d"; cp "$HERE/.github/workflows/ci.yml" "$HERE/.github/workflows/pr.yml" "$HERE/.github/workflows/deploy-watch.yml" "$HERE/.github/workflows/deploy.yml" "$d/"; }
 run() { rc=0; "$HERE/scripts/check_workflows.sh" "$d" >"$tmp/out" 2>"$tmp/err" || rc=$?; }
 # bad <name> <expected message part> <yaml of x.yml>: the repository's workflows plus x.yml must fail with that message.
 bad() { fresh; printf '%s\n' "$3" > "$d/x.yml"; run; [ "$rc" = 1 ] || fail "$1 must fail (rc=$rc): $(cat "$tmp/err")"; grep -q "$2" "$tmp/err" || fail "$1: message lacks '$2': $(cat "$tmp/err")"; }
@@ -156,6 +157,44 @@ fresh; sed 's/^    environment: deploy$/    environment: { name: deploy, url: "h
 [ "$rc" = 0 ] || fail "promote with an environment mapping and a url is still fine: $(cat "$tmp/err")"
 fresh; cp "$d/ci.yml" "$d/ci2.yml"; run
 [ "$rc" = 1 ] || fail "the environment in another file named like ci must fail"
+fresh; cp "$d/deploy.yml" "$d/deploy2.yml"; run
+[ "$rc" = 1 ] && grep -q "deploy2.yml: job 'deploy' names an environment" "$tmp/err" || fail "the environment in a copy of deploy.yml must fail: $(cat "$tmp/err")"
+
+# --- deploy.yml (Cloud Run): the gate, the triggers, the token, the serialization, the wait.
+# deploy_swap <name> <expected message part> <line> <replacement>: deploy.yml with that exact line
+# replaced (awk -v: "\n" in the replacement is a line break) must fail with that message.
+deploy_swap() {
+  fresh
+  awk -v from="$3" -v to="$4" '$0 == from { $0 = to; hit = 1 } { print } END { exit !hit }' "$d/deploy.yml" > "$d/deploy.new" \
+    || fail "$1: the line '$3' is not in deploy.yml (the test is stale)"
+  mv "$d/deploy.new" "$d/deploy.yml"; run
+  [ "$rc" = 1 ] || fail "$1 must fail (rc=$rc)"
+  grep -q "$2" "$tmp/err" || fail "$1: message lacks '$2': $(cat "$tmp/err")"
+}
+deploy_swap "a deploy.yml job without the gate" "must start with vars.GCP_DEPLOY" "    if: vars.GCP_DEPLOY == 'on'" "    if: always()"
+deploy_swap "the gate behind an ||" "must start with vars.GCP_DEPLOY" \
+  "    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES == ''" "    if: vars.GCP_DEPLOY == 'on' || vars.DEPLOY_HOLD_SERVICES == ''"
+deploy_swap "the gate after another term" "must start with vars.GCP_DEPLOY" \
+  "    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES != ''" "    if: vars.DEPLOY_HOLD_SERVICES != '' && vars.GCP_DEPLOY == 'on'"
+deploy_swap "a deploy that can be cancelled" "cancel-in-progress: false" "      cancel-in-progress: false" "      cancel-in-progress: true"
+deploy_swap "a concurrency group per commit" "concurrency group" "      group: deploy" "      group: deploy-\${{ github.sha }}"
+deploy_swap "a pull_request trigger" "runs on exactly" "  workflow_dispatch:" "  pull_request:\n  workflow_dispatch:"
+deploy_swap "a push on every branch" "runs on exactly" "    branches: [main]" "    branches: ['**']"
+deploy_swap "a wider token" "id-token: write" "      id-token: write" "      id-token: write\n      packages: write"
+deploy_swap "the deploy in another environment" "must run in the environment" "    environment: deploy" "    environment: production"
+deploy_swap "a deploy that does not wait for ci-ok" "must need" "    needs: [ci]" "    needs: []"
+deploy_swap "workflow-level permissions" "permissions: {}" "permissions: {}" "permissions:\n  contents: write"
+bad "another job with the id ci-ok" 'only ci.yml' "name: x
+on: push
+jobs:
+  ci-ok:
+$JOB"
+bad "a job named ci-ok" 'only ci.yml' "name: x
+on: push
+jobs:
+  fake:
+    name: ci-ok
+$JOB"
 
 # --- the App key
 bad "another job reading the App key" 'RYFT_DEPLOY_APP_KEY' "name: x
@@ -391,4 +430,4 @@ fresh; sed 's/version: v2\.15\.0/version: v9.9.9/' "$d/ci.yml" > "$d/ci.new" && 
 [ "$rc" = 1 ] || fail "a golangci-lint version that differs from the Makefile's must fail (rc=$rc): $(cat "$tmp/err")"
 grep -q 'GOLANGCI_LINT_VERSION' "$tmp/err" || fail "the message does not name the Makefile variable: $(cat "$tmp/err")"
 
-echo "✓ check_workflows_test: parsed, not grepped: triggers, the environment and the App key only in promote, no external reusable workflows, no secrets: inherit or dynamic secrets, no test hooks"
+echo "✓ check_workflows_test: parsed, not grepped: triggers, the environment only in promote and deploy.yml's deploy, the App key only in promote, deploy.yml's gate, triggers, token and concurrency, ci-ok only in ci.yml, no external reusable workflows, no secrets: inherit or dynamic secrets, no test hooks"

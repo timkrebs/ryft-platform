@@ -52,8 +52,16 @@ validate_structure() {
           | . as $k | $c | err("unknown key " + $k) ),
         ( . as $c | (((http // {}) | keys) - ["method","ipVersion","noFollowRedirects","failIfNotSSL","validStatusCodes","failIfBodyNotMatchesRegexp","failIfHeaderNotMatchesRegexp"])[]
           | . as $k | $c | err("unknown http setting " + $k) ),
-        ( if ((.job // "") | test("^ryft-site-[a-z0-9-]+$") | not) then err("job must match ^ryft-site-[a-z0-9-]+$ (the alert rules select job=~\"ryft-site-.*\")") else empty end ),
-        ( if ((.target // "") | test("^https://(www\\.)?ryftlab\\.de/[A-Za-z0-9._~/-]*$") | not) then err("target must be https://ryftlab.de/... or https://www.ryftlab.de/...") else empty end ),
+        ( if ((.job // "") | test("^ryft-site-[a-z0-9-]+$|^ryft-(api|ingest)-ready$") | not)
+            then err("job must match ^ryft-site-[a-z0-9-]+$ (the site; the Site* rules select job=~\"ryft-site-.*\") or ^ryft-(api|ingest)-ready$ (a service; ApiDown)") else empty end ),
+        # A service check reads the startup probe of that service on its own host and wants exactly 200
+        # (a 503 is: not ready); a site check stays on the apex or www.
+        ( if ((.job // "") | test("^ryft-(api|ingest)-ready$")) then
+            ( (.job | ltrimstr("ryft-") | rtrimstr("-ready")) as $svc
+              | ( if .target != ("https://" + $svc + ".ryftlab.de/health/ready") then err("target must be https://" + $svc + ".ryftlab.de/health/ready (the startup probe of the service)") else empty end ),
+                ( if (http.validStatusCodes // []) != [200] then err("validStatusCodes must be [200] for a service check (503 is not ready)") else empty end ) )
+          elif ((.target // "") | test("^https://(www\\.)?ryftlab\\.de/[A-Za-z0-9._~/-]*$") | not) then err("target must be https://ryftlab.de/... or https://www.ryftlab.de/...")
+          else empty end ),
         ( if ((.frequency | type) != "number" or .frequency < 60000 or .frequency > 3600000)
             then err("frequency in milliseconds, 60000 to 3600000 (below a minute breaks the execution budget)") else empty end ),
         ( if ((.timeout | type) != "number" or .timeout < 1000 or .timeout > 60000 or ((.frequency | type) == "number" and .timeout > .frequency))
