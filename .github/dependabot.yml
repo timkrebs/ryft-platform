@@ -53,9 +53,10 @@ updates:
     directory: /backend
     schedule: { interval: weekly, day: monday }
     commit-message: { prefix: deps }
-    # backend/Dockerfile pins golang:1.25-alpine and distroless static-debian12:nonroot by tag
+    # backend/Dockerfile pins golang:1.27-alpine and distroless static-debian12:nonroot by tag
     # and digest (PR A2): new digests of the same tags arrive here. Go's minor version moves by
-    # hand, the build image with go.mod's floor, so no golang minor or major PRs.
+    # hand, so no golang minor or major PRs. The line must be one Go still fixes (D229): CI's
+    # `vulns` job goes red when it isn't. go.mod's floor may stay lower.
     cooldown: { default-days: 7 }
     ignore:
       - dependency-name: golang
