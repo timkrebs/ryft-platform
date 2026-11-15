@@ -70,7 +70,9 @@ smoke-supabase:
 # batch, SET LOCAL and pg_advisory_xact_lock in a READ ONLY transaction that it rolls back. The ref and
 # the host come from deploy/run/config.env, the owner's password only from PGPASSWORD in the environment.
 # One attempt: a failed login feeds Supavisor's circuit breaker for the whole role, so never rerun it in
-# a loop. CI's pooler job runs the same test against PgBouncer.
+# a loop. CI's pooler job runs the same test against PgBouncer. Supabase's extra_float_digits is 0 and the
+# owner has no role setting, so the test reports it and passes; the service roles get 1 from migration
+# 0035, which runbook step 9's login as ryft_api checks (D228).
 pooler-check:
 	@[ -n "$$PGPASSWORD" ] || { echo "pooler-check: export PGPASSWORD first, the owner's (db-password-owner; docs/OPERATIONS.md → GCP, step 7)" >&2; exit 2; }
 	@ref=$$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env); host=$$(sed -n 's/^SUPABASE_POOLER_HOST=//p' deploy/run/config.env); \

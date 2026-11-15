@@ -443,7 +443,7 @@ done
 
 Then, only if both printed `postgres`, pgx's unnamed statements through Supavisor's transaction
 mode (design §4, D221). The services can't run against Supabase before step 8's migrate (the
-schema lacks 0034), so this is `TestPooler`'s read-only queries instead of a smoke: one
+schema lacks 0034 and 0035), so this is `TestPooler`'s read-only queries instead of a smoke: one
 connection as the owner on 6543 with `default_query_exec_mode=exec`, everything in a
 `READ ONLY` transaction that is rolled back, one attempt, 30 s at most. It needs Go
 (`backend/go.mod`'s version):
@@ -453,15 +453,24 @@ make pooler-check                                    # "--- PASS: TestPooler", t
 unset PGPASSWORD
 ```
 
+It passes when it prints `--- PASS: TestPooler` and then `ok`. On the way it proves DateStyle,
+IntervalStyle and bytea output, `SET LOCAL`, `set_config(…, true)` and the advisory lock in one
+transaction, the store's parameter types there and back, a batch, and that no named statement is
+left. Its log names `extra_float_digits 0 (configuration file)`. That is Supabase's server
+config, and the owner has no role setting, so `TestPooler` reports it and skips the exact float8
+check (D228). The services' roles get 1 from migration 0035 at step 8, and step 9's role login
+checks it.
+
 The login as `ryft_api.<ref>` on 6543 is at the start of step 9: Postgres learns that role's
 password from step 8's migrate. A failed login trips Supavisor's breaker for the whole role
 (`SUPABASE.md`). `make smoke-supabase` runs at step 9, against the deployed hosts.
 
 **Stop if** a login fails, `ECIRCUITBREAKER` appears (wait it out; don't retry in a loop), or
-`pooler-check` fails. A failure in `TestPooler` after a good login (an error naming a
-prepared statement or a parameter type) means `exec` mode doesn't work through Supavisor: the
-fallback is `default_query_exec_mode=simple_protocol` (design §4), a PR in `deploy/run` and
-`internal/db`, before step 8.
+`pooler-check` fails (a `--- FAIL` line, or no `ok`). `extra_float_digits 0` in its log is not a
+stop. A failure in `TestPooler` after a good login (an error naming a prepared statement or a
+parameter type) means `exec` mode doesn't work through Supavisor: the fallback is
+`default_query_exec_mode=simple_protocol` (design §4), a PR in `deploy/run` and `internal/db`,
+before step 8.
 
 ### 7a. The config PR (before step 8)
 
@@ -486,23 +495,33 @@ refuses to run while a placeholder is left.
 
 Set `GCP_DEPLOY=on`, then run `deploy.yml` by hand with the `smoke` input off. The commands are
 in **Deploy, roll back, rotate** below. **Stop if** `migrate`'s log lacks a `migration applied`
-line for each new file, or doesn't end with `schema current`; or a revision isn't ready. This run
+line for each new file (`0034_outbox_available_at.sql`, `0035_float_digits.sql`), or doesn't end
+with `schema current`; or a revision isn't ready. This run
 proves the revisions start. It doesn't prove they reach the database (the startup probe is
 `/health/live`): step 9's role login and smoke do.
 
 ### 9. Apply 2: invokers and mappings
 
-First, the role login moved here from step 7. Do it once. Step 8's migrate set the password.
-From the repository root, as in step 7:
+First, the role login moved here from step 7. Do it once. Step 8's migrate set the password and,
+with 0035, the role's `extra_float_digits` (D228). From the repository root, as in step 7:
 
 ```bash
 REF=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env)
 POOLER=$(sed -n 's/^SUPABASE_POOLER_HOST=//p' deploy/run/config.env)
 PGPASSWORD=$(gcloud secrets versions access 1 --secret=db-password-api --project=ryftlab-prod) && export PGPASSWORD
 psql -w "host=$POOLER port=6543 dbname=postgres user=ryft_api.$REF sslmode=verify-full sslrootcert=backend/certs/supabase-ca.crt connect_timeout=10" \
-  -tAc 'select current_user'                        # ryft_api
+  -tAc "select current_user, current_setting('extra_float_digits')::int >= 1, '0.30000000000000004'::float8"
+                                                    # ryft_api|t|0.30000000000000004
 unset PGPASSWORD
 ```
+
+It passes on exactly `ryft_api|t|0.30000000000000004`. psql reads results as text, as the services
+do in `exec` mode, so the third field is the float8 a service reads back. Every `ryft_api` server
+connection opens after step 8's migrate (`deploy.yml` runs it before the services), so none still
+has the old value. **Stop if** the line is anything else: `f` or `0.3` means the role's setting
+doesn't hold through Supavisor's transaction mode. Then the fallback is
+`default_query_exec_mode=cache_describe` (binary results, D228): a PR in `deploy/run` and
+`internal/db`, deployed as in step 8, and then step 9 from the start.
 
 Then the hold, before the `serve = true` PR is merged. That merge is a push to main, so it starts
 `deploy.yml`, and its smoke would fail while nothing is public:

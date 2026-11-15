@@ -245,6 +245,16 @@ migrate:  postgresql://postgres.<ref>@<pooler host>:5432/postgres?sslmode=verify
   runs `exec` mode: unnamed statements, one round trip, parameter types from the Go types. A
   `[]byte` therefore goes as `bytea`: pass JSON for a `jsonb` column as a `string`. CI's `pooler`
   job runs the store's tests through PgBouncer in transaction mode with `exec`.
+- **Exact floats (D228).** In `exec` mode results come back as text. While `extra_float_digits` is
+  0, Postgres prints a float8 with 15 significant digits, so `0.30000000000000004` reads back as
+  `0.3`. Supabase's configuration file sets 0 (`SELECT setting, source FROM pg_settings WHERE name =
+  'extra_float_digits'` → `0 | configuration file`, on both ports). Migration 0035 sets 1 on the four
+  service roles. A role's setting outranks the file and applies when Supavisor opens that role's
+  server connection; connections already open keep the old value until they close. The owner keeps
+  Supabase's 0: `migrate` reads its results in binary on 5432 and reads no float. To check the roles:
+  `SELECT rolname, rolconfig FROM pg_roles WHERE rolname LIKE 'ryft\_%'` → `{extra_float_digits=1}`
+  on each. A new service role needs the same setting in its migration, or `internal/db`'s
+  `TestServiceRolesReadExactFloats` fails.
 - **`db.Open` refuses on Cloud Run** a password in the URL, any `sslmode` but `verify-full`, a
   missing `sslrootcert`, and for a service a port other than 6543, another exec mode, or a startup
   parameter other than `application_name`. It doesn't retry a refused login or `ECIRCUITBREAKER`:
@@ -253,7 +263,9 @@ migrate:  postgresql://postgres.<ref>@<pooler host>:5432/postgres?sslmode=verify
   (design §4). In transaction mode the pool size (Database → Settings → Connection pooling, default
   15) counts only open transactions. `max-instances` keeps the count bounded.
 - **Before the first deploy** (runbook step 7): `make pooler-check` runs `TestPooler`'s read-only
-  queries through 6543 as the owner, in a rolled-back transaction, one connection, one attempt.
+  queries through 6543 as the owner, in a rolled-back transaction, one connection, one attempt. It
+  reports the owner's `extra_float_digits 0` and passes. After step 8's migrate, step 9's login as
+  `ryft_api` checks the role's setting and an exact float8 (`ryft_api|t|0.30000000000000004`).
 
 On EKS (until D3) each pod used session mode (5432) with `sslmode=require`, which encrypts but
 doesn't verify the server certificate.

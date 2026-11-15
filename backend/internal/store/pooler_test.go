@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -24,8 +25,9 @@ import (
 //     server of RYFT_TEST_POSTGRES_URL): testStore hands the store a pool through it, so the store's
 //     own queries in every test go through the bouncer in exec mode. Set-up, migrations, the tests'
 //     own reads and writes and the role pools stay on the direct pool.
-//   - RYFT_POOLER_URL: TestPooler, read-only. CI runs it against the bouncer; runbook step 7
-//     against Supavisor before anything is deployed (make pooler-check).
+//   - RYFT_POOLER_URL: TestPooler, read-only. CI runs it against the bouncer, with the server's
+//     configuration file at extra_float_digits 0 as Supabase's is (D228); runbook step 7 against
+//     Supavisor before anything is deployed (make pooler-check).
 
 // pooledPool is the store's pool through RYFT_TEST_POOLER_URL for database name, or nil when that
 // is unset.
@@ -77,8 +79,9 @@ func oneAddress(ctx context.Context, host string) ([]string, error) {
 // TestPooler checks what the services need from a transaction-mode pooler with
 // default_query_exec_mode=exec, read-only: one login, one connection, the services' own pool
 // config (db.PoolConfig, its AfterConnect), and everything in a READ ONLY transaction that is
-// rolled back. The settings the text results depend on; parameters of the store's types (uuid,
-// uuid[], text, int, timestamptz, date, jsonb, text[], float8, bool, NULL) back as they went;
+// rolled back. The settings the text results depend on (extra_float_digits >= 1 required of a
+// service role, reported for anyone else); parameters of the store's types (uuid, uuid[], text, int,
+// timestamptz, date, jsonb, text[], float8 where exact, bool, NULL) back as they went;
 // a pgx.Batch; SET LOCAL, set_config(…, true) and pg_advisory_xact_lock seen by the next statement
 // of the same transaction (one server connection per transaction); and no named prepared statement
 // of ours on that connection.
@@ -118,17 +121,27 @@ func TestPooler(t *testing.T) {
 	defer func() { _ = tx.Rollback(context.Background()) }() // a no-op after the checked rollback below
 
 	// exec mode reads results as text: pgx parses ISO dates, postgres-style intervals and hex
-	// bytea, and floats are exact only with extra_float_digits >= 1 (the default since PG 12).
-	var who, version, dateStyle, intervalStyle, byteaOutput string
+	// bytea, and a float8 is exact only with extra_float_digits >= 1 (D228). Supabase's
+	// configuration file sets 0 and migration 0035 sets 1 on the services' roles, so >= 1 is
+	// required of a service role (db.ServiceRoles) and reported for anyone else: the owner at
+	// runbook step 7, before 0035 has run (step 9 checks it as ryft_api), and CI's pooler job.
+	var who, version, dateStyle, intervalStyle, byteaOutput, digitsSource string
 	var floatDigits int
 	if err := tx.QueryRow(ctx, poolerTag+`SELECT current_user, current_setting('server_version'), current_setting('DateStyle'),
-		current_setting('IntervalStyle'), current_setting('bytea_output'), current_setting('extra_float_digits')::int`).
-		Scan(&who, &version, &dateStyle, &intervalStyle, &byteaOutput, &floatDigits); err != nil {
+		current_setting('IntervalStyle'), current_setting('bytea_output'), setting::int, source
+		FROM pg_settings WHERE name = 'extra_float_digits'`).
+		Scan(&who, &version, &dateStyle, &intervalStyle, &byteaOutput, &floatDigits, &digitsSource); err != nil {
 		t.Fatal(err)
 	}
-	if len(dateStyle) < 3 || dateStyle[:3] != "ISO" || intervalStyle != "postgres" || byteaOutput != "hex" || floatDigits < 1 {
-		t.Errorf("DateStyle %q, IntervalStyle %q, bytea_output %q, extra_float_digits %d: pgx's text results need ISO, postgres, hex, >= 1",
-			dateStyle, intervalStyle, byteaOutput, floatDigits)
+	if len(dateStyle) < 3 || dateStyle[:3] != "ISO" || intervalStyle != "postgres" || byteaOutput != "hex" {
+		t.Errorf("DateStyle %q, IntervalStyle %q, bytea_output %q: pgx's text results need ISO, postgres, hex",
+			dateStyle, intervalStyle, byteaOutput)
+	}
+	service := slices.Contains(slices.Collect(maps.Values(db.ServiceRoles)), who)
+	exact := floatDigits >= 1
+	if service && !exact {
+		t.Errorf("extra_float_digits %d (%s) for %s: a service role needs >= 1, or its float8 results lose digits (migration 0035, D228)",
+			floatDigits, digitsSource, who)
 	}
 
 	// Transaction-scoped settings and lock (the relay's and the migrations' pattern).
@@ -192,8 +205,12 @@ func TestPooler(t *testing.T) {
 		t.Errorf("date %v", gotDay)
 	case gotDoc["kind"] != "hr" || gotDoc["ok"] != true:
 		t.Errorf("jsonb %v", gotDoc)
-	case gotF != f, !gotB, gotNull != nil:
+	case exact && gotF != f, !gotB, gotNull != nil:
 		t.Errorf("float8 %v (want %v exactly), bool %v, NULL %v", gotF, f, gotB, gotNull)
+	}
+	if !exact {
+		t.Logf("extra_float_digits %d (%s) for %s, not a service role: float8 %v read back as %v, not checked; "+
+			"the services' roles set 1 (migration 0035, D228), and runbook step 9 checks it as ryft_api", floatDigits, digitsSource, who, f, gotF)
 	}
 
 	// A batch: one pipeline, one Sync (the store's runBatch and SendBatch).
@@ -230,5 +247,6 @@ func TestPooler(t *testing.T) {
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
-	t.Logf("through %s:%d as %s (PostgreSQL %s): exec mode, one read-only transaction, rolled back", cc.Host, cc.Port, who, version)
+	t.Logf("through %s:%d as %s (PostgreSQL %s), extra_float_digits %d (%s): exec mode, one read-only transaction, rolled back",
+		cc.Host, cc.Port, who, version, floatDigits, digitsSource)
 }

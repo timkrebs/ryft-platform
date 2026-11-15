@@ -4771,7 +4771,9 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   - **CI's `pooler` job** runs the store's integration tests through PgBouncer (Ubuntu's package) in transaction mode
     with `exec`, plus `TestPooler`'s representative queries. It is in `ci-ok`, so it gates `images`.
   - **Step 7's check:** `make pooler-check` runs `TestPooler` once against Supavisor on 6543 as the owner, read-only,
-    in a rolled-back transaction, one connection. The services can't run there before step 8's migrate.
+    in a rolled-back transaction, one connection. The services can't run there before step 8's migrate. Amended by
+    D228: `exec` mode reads floats as text, and Supabase's `extra_float_digits` is 0, so the service roles set 1
+    (migration 0035), step 7 reports the owner's value, and step 9's role login checks the role's.
 - **Why:** Cloud Run's churn makes many short-lived clients, and transaction mode holds a server connection only per
   transaction. Supabase's shared pooler doesn't support prepared statements in transaction mode. The link crosses
   the internet from Google to AWS with health data and the SCRAM login, so `require` (unverified) isn't enough.
@@ -4889,3 +4891,48 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
 - **Why:** nothing is removed before its replacement serves, and a step that can't be undone (the KMS keys) comes
   after the data key is safe.
 - **Consequences:** D3 deletes the code and manifests of the superseded decisions; until then they stay as history.
+
+## D228 — Exact floats through the pooler: the service roles set `extra_float_digits = 1` (amends D221)
+
+- **Context:** runbook step 7 failed `make pooler-check` on 2026-11-15. Supavisor on 6543 as `postgres` (PostgreSQL
+  17.11) gave `extra_float_digits 0`, and `float8 0.3 (want 0.30000000000000004 exactly)`; everything else passed.
+  `pg_settings` says `0 | configuration file` on 5432 and 6543, and `pg_db_role_setting` has no entry, so it's
+  Supabase's server config, not Supavisor or a role. On EKS it never showed: pgx's default mode reads results in
+  binary. D221's `exec` mode reads them as text, and with 0 Postgres prints a float8 with 15 significant digits.
+- **Decision:**
+  - **Migration 0035** (additive) runs `ALTER ROLE … SET extra_float_digits = 1` for `ryft_ingest`, `ryft_scoring`,
+    `ryft_api` and `ryft_notify`. A role's setting outranks the configuration file, and Supavisor logs in as the
+    role when it opens a server connection, so the setting applies there. 1 is Postgres's default since 12: the
+    shortest text that reads back as the same float8. The owner may set it: it created the roles, so it holds
+    ADMIN OPTION on them (PG ≥ 16), the right that migrate's `ALTER ROLE … PASSWORD` already uses. Roles are
+    cluster-wide, and CI migrates many databases on one server at once, so 0035 skips a role that has the setting,
+    catches a lost race (`unique_violation`, "tuple concurrently updated"), and fails if a role still lacks it.
+  - **Not the owner** (`ALTER ROLE CURRENT_USER`): migrate logs in on the session pooler in pgx's default mode,
+    which reads results in binary, and its own reads are versions, booleans and role names, never a float. No
+    service SQL turns a float into text on the server (no `::text`, `to_json` or `format` of a float column). The
+    owner's defaults are also Supabase's dashboard's.
+  - **Step 7** (`TestPooler` as the owner, before 0035) reports `extra_float_digits` and its source and checks the
+    float8 only when it's ≥ 1. A service role (`db.ServiceRoles`) needs ≥ 1. Everything else is checked as before.
+  - **Step 9's role login** as `ryft_api` on 6543 checks it: `select current_user,
+    current_setting('extra_float_digits')::int >= 1, '0.30000000000000004'::float8` must print
+    `ryft_api|t|0.30000000000000004`.
+  - **CI:** `internal/db`'s `TestServiceRolesReadExactFloats` sets the test database to 0 (that ranks above the
+    configuration file and below a role, so it stands in for Supabase's file; `ALTER SYSTEM` would change the
+    server under other packages' tests). The owner must read 0.3 there, the proof that the stand-in holds. Each
+    service role must read `0.30000000000000004` in `exec` mode, with the setting's source `user`. The `pooler` job
+    runs `TestPooler` with `ALTER SYSTEM SET extra_float_digits = 0`, as on Supabase, checks that the 0 was in force,
+    and resets it before the store's tests, which log in through the bouncer as the owner.
+- **Why:** it's one additive migration, no change to the services, and `exec` mode stays (D221). The role's setting
+  is the narrowest place with the right owner.
+- **Alternatives:**
+  - `default_query_exec_mode=cache_describe`: binary results and unnamed statements, one round trip once cached.
+    A cached description goes stale when a migration changes a column's type, until the connection is recycled
+    (30 minutes), and the first use of a statement costs a second round trip. It's the fallback if step 9 shows the
+    role's setting doesn't hold through Supavisor.
+  - `ALTER DATABASE postgres SET`: it ranks below a role and would also change every Supabase role's sessions.
+  - A startup parameter: `serviceFindings` refuses it, and PgBouncer and Supavisor refuse unknown ones.
+  - `SET LOCAL` in every transaction: one more statement each time.
+- **Consequences:** a new service role needs the setting in its migration (`TestServiceRolesReadExactFloats` ranges
+  over `db.ServiceRoles`). A future migration that turns a float into text on the server runs as the owner with
+  Supabase's 0, so it must not rely on more than 15 digits. A server connection Supavisor already has open keeps
+  the old value until it closes. At the first deploy there are none, because migrate runs before the services.
