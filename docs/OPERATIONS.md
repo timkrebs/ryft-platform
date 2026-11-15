@@ -456,10 +456,11 @@ unset PGPASSWORD
 It passes when it prints `--- PASS: TestPooler` and then `ok`. On the way it proves DateStyle,
 IntervalStyle and bytea output, `SET LOCAL`, `set_config(…, true)` and the advisory lock in one
 transaction, the store's parameter types there and back, a batch, and that no named statement is
-left. Its log names `extra_float_digits 0 (configuration file)`. That is Supabase's server
-config, and the owner has no role setting, so `TestPooler` reports it and skips the exact float8
-check (D228). The services' roles get 1 from migration 0035 at step 8, and step 9's role login
-checks it.
+left. It also proves the owner holds CREATEROLE and ADMIN OPTION on each `ryft_*` role, which
+migration 0035 needs at step 8. Its log names `extra_float_digits 0 (configuration file)`. That is
+Supabase's server config, and the owner has no role setting, so `TestPooler` reports it and checks
+the float8 at the 15 digits Postgres prints then, not exactly (D228). The services' roles get 1
+from migration 0035 at step 8, and step 9's role login checks it.
 
 The login as `ryft_api.<ref>` on 6543 is at the start of step 9: Postgres learns that role's
 password from step 8's migrate. A failed login trips Supavisor's breaker for the whole role
@@ -470,6 +471,8 @@ password from step 8's migrate. A failed login trips Supavisor's breaker for the
 stop. A failure in `TestPooler` after a good login (an error naming a prepared statement or a
 parameter type) means `exec` mode doesn't work through Supavisor: the fallback is
 `default_query_exec_mode=simple_protocol` (design §4), a PR in `deploy/run` and `internal/db`,
+before step 8. An error that the owner `lacks CREATEROLE or ADMIN OPTION` means step 8's
+migrate would fail on 0035: the fallback is `cache_describe` (D228), a PR that drops 0035,
 before step 8.
 
 ### 7a. The config PR (before step 8)

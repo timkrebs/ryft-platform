@@ -69,12 +69,22 @@ func TestServiceRolesReadExactFloats(t *testing.T) {
 		}
 	}
 
-	// 0035 again (another database on this server, or a rerun by hand) skips the roles that have it.
+	// 0035 again (another database on this server, or a rerun by hand) skips the roles that have it:
+	// their rows in pg_db_role_setting keep the transaction that wrote them (xmin).
+	settingRows := func() string {
+		return scalar[string](t, pool, `SELECT string_agg(r.rolname || ':' || s.xmin::text, ',' ORDER BY r.rolname)
+			FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole
+			WHERE s.setdatabase = 0 AND r.rolname::text = ANY($1::text[])`, roleNames())
+	}
+	before := settingRows()
 	body, err := migrations.ReadFile("migrations/0035_float_digits.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, string(body)); err != nil {
 		t.Fatalf("0035 a second time: %v", err)
+	}
+	if after := settingRows(); after != before {
+		t.Errorf("0035 a second time rewrote role settings: %s, then %s", before, after)
 	}
 }

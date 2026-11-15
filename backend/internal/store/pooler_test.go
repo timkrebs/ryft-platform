@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -80,8 +81,9 @@ func oneAddress(ctx context.Context, host string) ([]string, error) {
 // default_query_exec_mode=exec, read-only: one login, one connection, the services' own pool
 // config (db.PoolConfig, its AfterConnect), and everything in a READ ONLY transaction that is
 // rolled back. The settings the text results depend on (extra_float_digits >= 1 required of a
-// service role, reported for anyone else); parameters of the store's types (uuid, uuid[], text, int,
-// timestamptz, date, jsonb, text[], float8 where exact, bool, NULL) back as they went;
+// service role, reported for anyone else); for the owner, the right to run migration 0035; parameters
+// of the store's types (uuid, uuid[], text, int, timestamptz, date, jsonb, text[], float8 exact or at
+// the server's rounding, bool, NULL) back as they went;
 // a pgx.Batch; SET LOCAL, set_config(…, true) and pg_advisory_xact_lock seen by the next statement
 // of the same transaction (one server connection per transaction); and no named prepared statement
 // of ours on that connection.
@@ -137,11 +139,26 @@ func TestPooler(t *testing.T) {
 		t.Errorf("DateStyle %q, IntervalStyle %q, bytea_output %q: pgx's text results need ISO, postgres, hex",
 			dateStyle, intervalStyle, byteaOutput)
 	}
-	service := slices.Contains(slices.Collect(maps.Values(db.ServiceRoles)), who)
+	roles := slices.Sorted(maps.Values(db.ServiceRoles))
+	service := slices.Contains(roles, who)
 	exact := floatDigits >= 1
 	if service && !exact {
 		t.Errorf("extra_float_digits %d (%s) for %s: a service role needs >= 1, or its float8 results lose digits (migration 0035, D228)",
 			floatDigits, digitsSource, who)
+	}
+	// The owner must be able to run 0035 at step 8: ALTER ROLE ... SET on another role needs CREATEROLE
+	// and ADMIN OPTION on it (PG >= 16). Creating a role grants that only since 16, so roles made before an
+	// upgrade may lack it. Only the roles that exist are asked (none on CI's fresh server).
+	if !service {
+		var lacking []string
+		if err := tx.QueryRow(ctx, poolerTag+`SELECT coalesce(array_agg(r.rolname ORDER BY r.rolname), '{}') FROM pg_roles r
+			WHERE r.rolname::text = ANY($1::text[]) AND NOT (pg_has_role(current_user, r.oid, 'MEMBER WITH ADMIN OPTION')
+				AND (SELECT rolsuper OR rolcreaterole FROM pg_roles WHERE rolname = current_user))`, roles).Scan(&lacking); err != nil {
+			t.Fatal(err)
+		}
+		if len(lacking) > 0 {
+			t.Errorf("%s lacks CREATEROLE or ADMIN OPTION on %v: migration 0035 would fail at step 8 (42501), and so would a password change", who, lacking)
+		}
 	}
 
 	// Transaction-scoped settings and lock (the relay's and the migrations' pattern).
@@ -174,6 +191,16 @@ func TestPooler(t *testing.T) {
 	texts := []string{"a", "b c", "", "NULL", " x"}
 	tenth := 0.1
 	f := tenth + 0.2
+	// What the float8 must read back as: f itself with extra_float_digits >= 1; with 0 or less, f at
+	// the 15 + extra_float_digits significant digits (at least 1) that Postgres prints then (float8out),
+	// so the parameter's way through the pooler is still checked.
+	wantF := f
+	if !exact {
+		var err error
+		if wantF, err = strconv.ParseFloat(strconv.FormatFloat(f, 'g', max(1, 15+floatDigits), 64), 64); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var (
 		gotID    uuid.UUID
 		gotIDs   []uuid.UUID
@@ -205,12 +232,13 @@ func TestPooler(t *testing.T) {
 		t.Errorf("date %v", gotDay)
 	case gotDoc["kind"] != "hr" || gotDoc["ok"] != true:
 		t.Errorf("jsonb %v", gotDoc)
-	case exact && gotF != f, !gotB, gotNull != nil:
-		t.Errorf("float8 %v (want %v exactly), bool %v, NULL %v", gotF, f, gotB, gotNull)
+	case gotF != wantF, !gotB, gotNull != nil:
+		t.Errorf("float8 %v (want %v exactly at extra_float_digits %d), bool %v, NULL %v", gotF, wantF, floatDigits, gotB, gotNull)
 	}
-	if !exact {
-		t.Logf("extra_float_digits %d (%s) for %s, not a service role: float8 %v read back as %v, not checked; "+
-			"the services' roles set 1 (migration 0035, D228), and runbook step 9 checks it as ryft_api", floatDigits, digitsSource, who, f, gotF)
+	if !exact && !service {
+		t.Logf("extra_float_digits %d (%s) for %s, not a service role: float8 %v read back as %v, its %d-digit rounding; "+
+			"the services' roles set 1 (migration 0035, D228), and runbook step 9 checks it as ryft_api",
+			floatDigits, digitsSource, who, f, gotF, max(1, 15+floatDigits))
 	}
 
 	// A batch: one pipeline, one Sync (the store's runBatch and SendBatch).

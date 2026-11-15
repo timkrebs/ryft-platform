@@ -213,7 +213,9 @@ Migration `0007_supabase_auth.sql`, Supabase part (skipped on plain Postgres):
 **Restoring a database migrated on plain Postgres into Supabase** (e.g. moving off the
 `local-postgres` overlay): migration 0007 is recorded as applied but its Supabase block
 never ran there. After the restore, run the `DO $$ … $$` block at the end of
-`0007_supabase_auth.sql` once in the SQL editor.
+`0007_supabase_auth.sql` once in the SQL editor. A `pg_dump` carries no role and no role
+setting, so if the service roles were created anew for the restore, also run
+`0035_float_digits.sql` there once, and check `rolconfig` as in **Connections**.
 
 Verify with: `SELECT tablename, rowsecurity FROM pg_tables WHERE schemaname = 'public';`
 and `SELECT has_table_privilege('anon', 'public.samples', 'SELECT');` (→ `false`).

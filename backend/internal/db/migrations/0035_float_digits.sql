@@ -9,8 +9,9 @@
 -- pooler in pgx's default mode, which reads results in binary, and it reads no float; the owner's defaults are
 -- also those of Supabase's dashboard, which is not ours to change.
 --
--- The owner may do this on Supabase: it created the roles (0009, 0015), so it holds ADMIN OPTION on them
--- (PG >= 16), the right migrate's ALTER ROLE ... PASSWORD already uses on every deploy.
+-- The owner needs CREATEROLE and ADMIN OPTION on each role (PG >= 16), the right migrate's ALTER ROLE ...
+-- PASSWORD uses whenever a password changes. Creating a role grants it only since 16, so roles made before an
+-- upgrade may lack it: TestPooler checks it read-only at runbook step 7 (make pooler-check), before this runs.
 --
 -- Roles are cluster-wide, and the integration tests migrate many databases on one server at once. Two
 -- ALTER ROLE ... SET of one role race: the loser fails with unique_violation (both inserted the role's row) or

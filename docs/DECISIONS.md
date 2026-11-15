@@ -4903,16 +4903,19 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   - **Migration 0035** (additive) runs `ALTER ROLE … SET extra_float_digits = 1` for `ryft_ingest`, `ryft_scoring`,
     `ryft_api` and `ryft_notify`. A role's setting outranks the configuration file, and Supavisor logs in as the
     role when it opens a server connection, so the setting applies there. 1 is Postgres's default since 12: the
-    shortest text that reads back as the same float8. The owner may set it: it created the roles, so it holds
-    ADMIN OPTION on them (PG ≥ 16), the right that migrate's `ALTER ROLE … PASSWORD` already uses. Roles are
-    cluster-wide, and CI migrates many databases on one server at once, so 0035 skips a role that has the setting,
-    catches a lost race (`unique_violation`, "tuple concurrently updated"), and fails if a role still lacks it.
+    shortest text that reads back as the same float8. The owner needs CREATEROLE and ADMIN OPTION on each role
+    (PG ≥ 16), the right that migrate's `ALTER ROLE … PASSWORD` uses whenever a password changes. Creating a role
+    grants it only since 16, and roles made before an upgrade may lack it, so step 7's `TestPooler` checks it
+    read-only. Roles are cluster-wide, and CI migrates many databases on one server at once, so 0035 skips a role
+    that has the setting, catches a lost race (`unique_violation`, "tuple concurrently updated"), and fails if a
+    role still lacks it.
   - **Not the owner** (`ALTER ROLE CURRENT_USER`): migrate logs in on the session pooler in pgx's default mode,
     which reads results in binary, and its own reads are versions, booleans and role names, never a float. No
     service SQL turns a float into text on the server (no `::text`, `to_json` or `format` of a float column). The
     owner's defaults are also Supabase's dashboard's.
-  - **Step 7** (`TestPooler` as the owner, before 0035) reports `extra_float_digits` and its source and checks the
-    float8 only when it's ≥ 1. A service role (`db.ServiceRoles`) needs ≥ 1. Everything else is checked as before.
+  - **Step 7** (`TestPooler` as the owner, before 0035) reports `extra_float_digits` and its source. It checks the
+    float8 exactly when the setting is ≥ 1, and otherwise at the 15 + n digits Postgres prints. A service role
+    (`db.ServiceRoles`) needs ≥ 1. Everything else is checked as before, plus the owner's right to run 0035.
   - **Step 9's role login** as `ryft_api` on 6543 checks it: `select current_user,
     current_setting('extra_float_digits')::int >= 1, '0.30000000000000004'::float8` must print
     `ryft_api|t|0.30000000000000004`.
@@ -4927,8 +4930,8 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
 - **Alternatives:**
   - `default_query_exec_mode=cache_describe`: binary results and unnamed statements, one round trip once cached.
     A cached description goes stale when a migration changes a column's type, until the connection is recycled
-    (30 minutes), and the first use of a statement costs a second round trip. It's the fallback if step 9 shows the
-    role's setting doesn't hold through Supavisor.
+    (30 minutes), and the first use of a statement costs a second round trip. It's the fallback if step 7 shows the
+    owner can't set the roles' setting, or step 9 shows the setting doesn't hold through Supavisor.
   - `ALTER DATABASE postgres SET`: it ranks below a role and would also change every Supabase role's sessions.
   - A startup parameter: `serviceFindings` refuses it, and PgBouncer and Supavisor refuse unknown ones.
   - `SET LOCAL` in every transaction: one more statement each time.
