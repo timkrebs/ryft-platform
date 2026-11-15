@@ -24,9 +24,11 @@ import (
 // sample rows; the deletion runs to completion even if the client hangs up.
 const deleteTimeout = 2 * time.Minute
 
-// reconcileEvery is how often each api pod retries Supabase deletions that
-// failed and erases accounts that reappeared (e.g. after a restore).
-const reconcileEvery = 15 * time.Minute
+// reconcileBudget is the reconcile's share of the 45 s tick, which retries Supabase
+// deletions that failed and erases accounts that reappeared (e.g. after a restore)
+// every 15 minutes (D219). What it leaves, the next tick takes: both steps are
+// idempotent.
+const reconcileBudget = 20 * time.Second
 
 // accounts deletes accounts: our rows (store), the Sign in with Apple grant
 // (apple + key; nil when not configured) and the Supabase auth user (admin;
@@ -163,23 +165,6 @@ func (a *accounts) reconcile(ctx context.Context) {
 	}
 	for _, id := range pending {
 		a.deleteAuthUser(ctx, id)
-	}
-}
-
-// reconcileEvery runs reconcile at start-up (right after a restore is when
-// deleted accounts reappear) and then every interval.
-func (a *accounts) reconcileEvery(ctx context.Context, every time.Duration) {
-	t := time.NewTicker(every)
-	defer t.Stop()
-	for {
-		pass, cancel := context.WithTimeout(ctx, every/2)
-		a.reconcile(pass)
-		cancel()
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
 	}
 }
 

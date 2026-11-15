@@ -41,6 +41,9 @@ var syncLogKeys = logcheck.Lines{
 	"request failed": logcheck.RequestFailed(),
 	"sync": {"device": logcheck.UUID, "samples": logcheck.Count, "sleep": logcheck.Count,
 		"workouts": logcheck.Count, "days": logcheck.Count},
+	// The sync's event is flushed before the answer (D219); a flush that cannot send names the publisher and the
+	// transport's error, never the event.
+	"outbox flush: events left for the next flush or tick": {"publisher": logcheck.Enum("ingest"), "err": logcheck.Text(1024)},
 }
 
 var syncStandardKeys = logcheck.Standard("ingest")

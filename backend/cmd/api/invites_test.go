@@ -28,10 +28,12 @@ import (
 // cases). The redeem tests run the handler on a real Postgres with a fake of the Supabase admin lookup; the
 // admin tests run the real chain (CORS, limit, bearer check, audit) with the key and with an operator's token.
 
-// fixedBinding is a bindingGate in one state (the settings guard without Supabase).
+// fixedBinding is a bindingGate in one state (the settings guard without Supabase): Prime reads nothing.
 type fixedBinding string
 
 func (f fixedBinding) State() string { return string(f) }
+
+func (fixedBinding) Prime(context.Context) {}
 
 // fakeEmails is the Supabase admin lookup: the confirmed email per account ("" for none or unconfirmed), and
 // an error for an outage. It counts the lookups, which is how the tests see when Supabase is asked.
@@ -838,11 +840,11 @@ func TestInviteEndToEnd(t *testing.T) {
 	}
 }
 
-// The purge ticker clears a stale bound email and stops with its context.
-func TestPurgeInviteEmailsTicker(t *testing.T) {
+// One purge pass (the tick's step) clears a stale bound email and keeps an open code's; a second pass
+// changes nothing (idempotent: whichever instance gets the tick runs it).
+func TestPurgeInviteEmailsPass(t *testing.T) {
 	r := newRedeemer(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	stale := r.bound("old@example.com")
 	fresh := r.bound("new@example.com")
 	pool := r.pool
@@ -850,31 +852,18 @@ func TestPurgeInviteEmailsTicker(t *testing.T) {
 		WHERE code = $1`, store.NormalizeInvite(stale)); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan struct{})
-	go func() { purgeInviteEmailsEvery(ctx, r.st, quietHandler().log, 20*time.Millisecond); close(done) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	for pass := range 2 {
+		if err := purgeInviteEmails(ctx, r.st, quietHandler().log); err != nil {
+			t.Fatalf("pass %d: %v", pass+1, err)
+		}
 		var n int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM beta_invite_codes WHERE email IS NOT NULL`).Scan(&n); err != nil {
-			t.Fatal(err)
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM beta_invite_codes WHERE email IS NOT NULL`).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("pass %d: %d codes keep an email, want 1 (%v)", pass+1, n, err)
 		}
-		if n == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the stale email was not cleared (%d codes keep one)", n)
-		}
-		time.Sleep(20 * time.Millisecond)
 	}
 	var kept *string
 	if err := pool.QueryRow(ctx, `SELECT email FROM beta_invite_codes WHERE code = $1`, store.NormalizeInvite(fresh)).Scan(&kept); err != nil || kept == nil {
 		t.Fatalf("an open code keeps its email: %v %v", kept, err)
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the purge loop did not stop with its context")
 	}
 }
 

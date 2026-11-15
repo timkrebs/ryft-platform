@@ -179,7 +179,7 @@ func TestFoldWorkoutsCancelStopsWithExit1AndFoldsNothingHalf(t *testing.T) {
 			cmd.Env = append(cmd.Env, kv)
 		}
 	}
-	cmd.Env = append(cmd.Env, "DATABASE_URL="+f.ingestURL)
+	cmd.Env = append(cmd.Env, "DATABASE_URL="+f.ingestURL, "PUBSUB_EMULATOR_HOST=127.0.0.1:1", "ALLOW_INSECURE_PUSH=true")
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Start(); err != nil {

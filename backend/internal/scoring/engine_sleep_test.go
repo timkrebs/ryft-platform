@@ -137,7 +137,7 @@ func TestEngineLearnsSleepBase(t *testing.T) {
 }
 
 // The morning hook: today's first recovery after a night with sleep calls it
-// once, with the stored row's values; a rescore of today, and past days, never.
+// once, with the user and the day only; a rescore of today, and past days, never.
 // "Today" is the user's local date. The engine reads the wall clock, so the
 // zones are chosen to make that testable at any hour: UTC+14 is a day ahead of
 // UTC from 10:00 UTC on, UTC−12 a day behind until 12:00 UTC, so at every
@@ -192,15 +192,13 @@ func TestEngineAnnouncesTodaysFirstRecovery(t *testing.T) {
 				t.Fatalf("one event, for %s: %+v", to, got[user])
 			}
 			row := scoresByDay(t, st, user, to, to)[to]
-			ev := got[user][0]
-			want := model.ScoredEvent{UserID: user, Day: to, Recovery: deref(row.Recovery), Readiness: row.Readiness,
-				State: row.State, SleepPerformance: row.SleepPerformance, SleepMin: 420}
-			// The night's 420 minutes against a need of about 8 h: readiness
-			// (0.6 recovery + 0.4 performance) differs from recovery, so the
-			// event cannot carry one for the other unnoticed.
-			if ev.Recovery <= 0 || ev.Readiness == nil || *ev.Readiness == ev.Recovery || ev.SleepPerformance == nil ||
-				!reflect.DeepEqual(ev, want) {
-				t.Fatalf("the event is the stored row:\n got %+v\nwant %+v", ev, want)
+			if row.Recovery == nil || deref(row.Recovery) <= 0 {
+				t.Fatalf("today has no recovery to announce: %+v", row)
+			}
+			// The event names the user and the day, and no value: notify reads
+			// the score when it sends, and the event waits in Pub/Sub for days.
+			if ev, want := got[user][0], (model.ScoredEvent{UserID: user, Day: to}); !reflect.DeepEqual(ev, want) {
+				t.Fatalf("the event:\n got %+v\nwant %+v", ev, want)
 			}
 			if err := engine.ComputeRange(ctx, user, from, to); err != nil || len(got[user]) != 1 {
 				t.Fatalf("a rescore announces nothing: %d events", len(got[user]))

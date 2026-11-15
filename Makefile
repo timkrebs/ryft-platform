@@ -8,7 +8,7 @@ GOLANGCI_LINT_VERSION := v2.15.0
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: k8s-context k8s-context-local test check-api-doc test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod cloudrun-check alerts-check alerts-apply alerts-retire-eks synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest admission-e2e monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check
+.PHONY: k8s-context k8s-context-local test check-api-doc test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod cloudrun-check alerts-check alerts-apply alerts-retire-eks synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest admission-e2e monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check topology-check
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -26,7 +26,8 @@ images:
 push: images
 	for s in $(SERVICES); do $(CONTAINER) push $(REGISTRY)/$$s:$(TAG); done
 
-# Local dev: Postgres + RabbitMQ + the services via docker compose.
+# Local dev via docker compose: Postgres, the Pub/Sub emulator with the generated topology
+# (deploy/pubsub-emulator/init.sh), a tick every TICK_EVERY seconds (default 60) and the services.
 up:
 	$(COMPOSE) up --build -d
 
@@ -248,8 +249,8 @@ alerts-check:
 	done
 
 # Per-package Go coverage and the internal/ total, as CI prints them (scripts/coverage.sh). The
-# profile and the numbers go to $(COVERDIR), a temp dir by default; tests that need Postgres or
-# RabbitMQ count only with RYFT_TEST_POSTGRES_URL / RYFT_TEST_AMQP_URL set, as in CI.
+# profile and the numbers go to $(COVERDIR), a temp dir by default; tests that need Postgres or the
+# Pub/Sub emulator count only with RYFT_TEST_POSTGRES_URL / RYFT_TEST_PUBSUB_EMULATOR_HOST set, as in CI.
 coverage:
 	@set -e; d=$${COVERDIR:-$$(mktemp -d)}; mkdir -p "$$d"; \
 	(cd backend && go test -race -count=1 -coverprofile="$$d/coverage.out" ./... > "$$d/test.log" 2>&1) \
@@ -346,7 +347,14 @@ k8s-validate:
 	@./scripts/check_operators_scope.sh
 	@./scripts/check_kustomize_refs.sh
 	@bash scripts/tests/config_rolls_test.sh
-	@cd backend && go run ./cmd/rabbitmq-topology -check
+	@$(MAKE) --no-print-directory topology-check
+
+# The Pub/Sub topology's generated files, infra/gcp/pubsub.auto.tfvars.json (Terraform's input) and
+# deploy/pubsub-emulator/init.sh (compose's emulator), are what backend/internal/events/pubsub/topology.go
+# writes; exit 1 names each one that drifted (`go run ./cmd/pubsub-topology` in backend/ rewrites both).
+# CI's `topology` job, and part of k8s-validate. deploy/rabbitmq's checks above stay until D3.
+topology-check:
+	cd backend && go run ./cmd/pubsub-topology -check
 
 # The admission policies (D120, infra/aws/kubernetes/charts/admission-policy) evaluated offline with the
 # Kubernetes CEL libraries against the renders of deploy/ and the fixtures in

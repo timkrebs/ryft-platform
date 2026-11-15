@@ -1,515 +1,337 @@
 #!/usr/bin/env bash
-# dlq.sh against a fake management API and a fake kubectl (make test-scripts); nothing here
-# reaches a cluster or a broker (KUBECONFIG=/dev/null, the fakes first on PATH). It checks:
-# every argument is checked before kubectl or curl runs; the cluster is named (KUBE_CONTEXT or
-# --context) and every cluster call carries it; credentials and bodies stay out of argv; a
-# replay marks each letter (x-ryft-replayed: true, a redelivery to its consumer) and strips
-# the Ryft-*, death and attempt headers, republishes only the keys its consumer is bound for,
-# puts the rest back unchanged, and loses no letter when the API fails half-way. The real
-# broker's side is amqpbus's TestReplayedLetterIsARedelivery.
+# dlq.sh against a fake gcloud (make test-scripts). Nothing here reaches Google, a cluster or an emulator:
+# the fake is first on PATH (checked), CLOUDSDK_CONFIG is the test's own directory, and a fake kubectl
+# records any call (there must be none). The fake keeps each hold subscription's letters, their leases and
+# their acks. It checks: every argument before any gcloud call; --project required and on every call; the
+# regional endpoint, or the emulator's without credentials; list and show pull without --auto-ack, ack
+# nothing and hand every letter back; a replay republishes only the keys the consumer handles, under the
+# key its source subscription (or the consumer's own filing) gives, to that topic, with ryft-replayed=true,
+# its own attributes minus Pub/Sub's and ryft-error, the ordering key on an ordered topic and the data as it
+# was (those three in a mode-600 flags file, never on argv, with gcloud's file log off), acks each letter only
+# after its publish, and refuses a foreign key and leaves the letter; a failed
+# publish or ack stops the run and acks nothing; notify's letters need --force; purge asks, then seeks.
+# The keys and topics come from infra/gcp/pubsub.auto.tfvars.json, so this also pins dlq.sh to topology.go.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 t=$(mktemp -d)
-trap 'pkill -f "dlq-test-listener $t" 2>/dev/null || true; rm -rf "$t"' EXIT
-mkdir "$t/bin" "$t/tmp"
+trap 'rm -rf "$t"' EXIT
+mkdir "$t/bin" "$t/tmp" "$t/store" "$t/fixtures" "$t/gcloud-config"
 fail() { echo "✗ dlq_test: $*" >&2; exit 1; }
-export KUBECONFIG=/dev/null RABBITMQ_VHOST=ryft FAKE_DIR=$t TMPDIR=$t/tmp
-unset KUBE_CONTEXT RABBITMQ_MGMT_URL RABBITMQ_USER RABBITMQ_PASSWORD
-PW=pw$RANDOM$RANDOM$RANDOM  # the broker user's password, made up at run time
+export FAKE_DIR=$t TMPDIR=$t/tmp CLOUDSDK_CONFIG=$t/gcloud-config
+unset PUBSUB_EMULATOR_HOST CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB CLOUDSDK_AUTH_DISABLE_CREDENTIALS FAKE_FAIL FAKE_GARBAGE
+P=ryft-test-proj
+U1=00000000-0000-0000-0000-000000000001
+U2=00000000-0000-0000-0000-000000000002
 
-# kubectl: two contexts; the broker's two Secrets; a port-forward that listens on its port.
+# gcloud: pubsub subscriptions pull|ack|modify-message-ack-deadline|seek and topics publish against
+# store/<subscription>.json (the letters) and store/<subscription>.leased (the ids pulled and neither acked
+# nor handed back: a pull skips them, as Pub/Sub does during a lease). Each call is a line of calls.jsonl:
+# its number, argv, the endpoint, credential and file-log settings it saw, and the --flags-file it was given
+# (its JSON, and whether it was mode 600 inside the script's own temporary directory). FAKE_FAIL="<verb>"
+# fails that verb ("pubsub topics publish", ...); FAKE_GARBAGE makes a pull answer something that is not JSON.
+cat > "$t/bin/gcloud" <<'G'
+#!/usr/bin/env bash
+set -euo pipefail
+d=$FAKE_DIR
+n=$(( $(cat "$d/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$d/n"
+ff='' ffjson=null private=false
+for a in "$@"; do case "$a" in --flags-file=*) ff=${a#--flags-file=} ;; esac; done
+if [ -n "$ff" ]; then
+  ffjson=$(jq -c . "$ff")
+  case "$ff" in
+    "$d"/tmp/dlq.*/*) if [ -n "$(find "$ff" -prune -perm 0600)" ]; then private=true; fi ;;
+  esac
+fi
+printf '%s\n' "$@" | jq -Rsc --argjson n "$n" --arg ep "${CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB-}" \
+  --arg nocred "${CLOUDSDK_AUTH_DISABLE_CREDENTIALS-}" --arg nolog "${CLOUDSDK_CORE_DISABLE_FILE_LOGGING-}" \
+  --argjson ff "$ffjson" --argjson private "$private" \
+  '{n: $n, argv: (split("\n") | .[:-1]), endpoint: $ep, nocred: $nocred, nolog: $nolog, flags_file: $ff, flags_private: $private}' >> "$d/calls.jsonl"
+pos=() limit=0 ids='' deadline=''
+for a in "$@"; do
+  case "$a" in
+    --limit=*) limit=${a#--limit=} ;;
+    --ack-ids=*) ids=${a#--ack-ids=} ;;
+    --ack-deadline=*) deadline=${a#--ack-deadline=} ;;
+    -*) ;;
+    *) pos+=("$a") ;;
+  esac
+done
+verb="${pos[0]-} ${pos[1]-} ${pos[2]-}"
+if [ "${FAKE_FAIL:-}" = "$verb" ]; then echo "ERROR: (gcloud) UNAVAILABLE: the fake fails $verb" >&2; exit 1; fi
+sub=${pos[3]-}
+store=$d/store/$sub.json leased=$d/store/$sub.leased
+drop() { { grep -vxF -- "$2" "$1" || true; } > "$1.new"; mv "$1.new" "$1"; }
+case "$verb" in
+  "pubsub subscriptions pull")
+    [ -f "$store" ] || { echo "ERROR: (gcloud.pubsub.subscriptions.pull) NOT_FOUND: $sub" >&2; exit 1; }
+    [ -z "${FAKE_GARBAGE:-}" ] || { echo "not json"; exit 0; }
+    touch "$leased"
+    jq -c --rawfile l "$leased" --argjson lim "$limit" --arg n "$n" \
+      '[.[] | select(.message.messageId as $id | any($l | split("\n")[]; . == $id) | not)] | .[:$lim]
+       | map(. + {ackId: ("ack." + $n + "." + .message.messageId)})' "$store" > "$d/pulled.json"
+    jq -r '.[].message.messageId' "$d/pulled.json" >> "$leased"
+    cat "$d/pulled.json" ;;
+  "pubsub subscriptions ack")
+    touch "$leased"
+    IFS=, read -ra list <<< "$ids"
+    for id in "${list[@]}"; do
+      jq -c --arg m "${id##*.}" 'map(select(.message.messageId != $m))' "$store" > "$store.new"; mv "$store.new" "$store"
+      drop "$leased" "${id##*.}"
+    done ;;
+  "pubsub subscriptions modify-message-ack-deadline")
+    touch "$leased"
+    if [ "$deadline" = 0 ]; then
+      IFS=, read -ra list <<< "$ids"
+      for id in "${list[@]}"; do drop "$leased" "${id##*.}"; done
+    fi ;;
+  "pubsub subscriptions seek")
+    echo '[]' > "$store"; : > "$leased" ;;
+  "pubsub topics publish")
+    echo "{\"messageIds\": [\"pub-$n\"]}" ;;
+  *) echo "fake gcloud: unexpected: $*" >&2; exit 3 ;;
+esac
+G
 cat > "$t/bin/kubectl" <<'K'
 #!/bin/sh
 echo "$*" >> "$FAKE_DIR/kubectl.calls"
-case "$*" in
-  "config get-contexts -o name") printf '%s\n' test-ctx kind-ryft ;;
-  *" -n ryft-rabbitmq get secret rabbitmq-tls -o jsonpath={.data.ca\.crt}") printf '%s' ZmFrZS1jYQ== ;;
-  *" -n ryft-rabbitmq get secret rabbitmq-default-user -o json") cat "$FAKE_DIR/user-secret.json" ;;
-  *" -n ryft-rabbitmq port-forward svc/rabbitmq "*":15671")
-    port=$(printf '%s\n' "$@" | sed -n 's/^\([0-9]*\):15671$/\1/p')
-    exec python3 -c 'import os, signal, socket, sys, time
-def killed(*_):  # the order of the way out: logged next to the curl calls
-    open(os.path.join(os.environ["FAKE_DIR"], "events"), "a").write("port-forward killed\n")
-    sys.exit(0)
-signal.signal(signal.SIGTERM, killed)
-s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(8)
-s.settimeout(1)
-end = time.time() + 60
-while time.time() < end:
-    try:
-        s.accept()[0].close()
-    except OSError:
-        pass' "$port" "dlq-test-listener $FAKE_DIR" ;;
-  *) echo "fake kubectl: unexpected: $*" >&2; exit 3 ;;
-esac
+exit 3
 K
-# curl: the management API (FAKE_SET=-broker answers <queue>-broker.json instead). Records each call (argv, method, path, the body from its file, the
-# curl config's mode and user) and answers /get from <queue>.json, a publish to ryft.events with
-# FAKE_ROUTED (default true), any other publish routed (but not the call numbers in
-# FAKE_UNROUTED_DLX), compact as RabbitMQ writes it. FAKE_FAIL (call numbers) and FAKE_FAIL_FROM
-# (a call number) make calls fail as a dropped connection does; through a port-forward (the
-# --resolve to 127.0.0.1) a call fails, as the real one would, once nothing listens there.
-cat > "$t/bin/curl" <<'C'
-#!/usr/bin/env python3
-import json, os, re, socket, stat, sys, time
-from urllib.parse import urlsplit
-d = os.environ["FAKE_DIR"]
-counter = os.path.join(d, "curl.n")
-n = int(open(counter).read()) + 1 if os.path.exists(counter) else 1
-open(counter, "w").write(str(n))
-args = sys.argv[1:]
-rec = {"n": n, "argv": args, "method": "GET", "data": None}
-for i, a in enumerate(args):
-    if a == "-X": rec["method"] = args[i + 1]
-    if a == "--data-binary": rec["data"] = json.load(open(args[i + 1][1:]))
-    if a == "--cacert": rec["cacert"] = open(args[i + 1]).read()
-    if a == "-K":
-        conf = args[i + 1]
-        rec["conf_mode"] = oct(stat.S_IMODE(os.stat(conf).st_mode))
-        user = re.search(r'^user = "(.*)"$', open(conf).read(), re.M).group(1)
-        rec["user"], rec["password_ok"] = user.split(":")[0], user.split(":", 1)[1] == os.environ.get("FAKE_PW")
-rec["path"] = path = urlsplit(args[-1]).path
-with open(os.path.join(d, "curl.calls"), "a") as f:
-    f.write(json.dumps(rec) + "\n")
-with open(os.path.join(d, "events"), "a") as f:
-    f.write("curl %d %s\n" % (n, path))
-if str(n) in os.environ.get("FAKE_FAIL", "").split() or n >= int(os.environ.get("FAKE_FAIL_FROM") or 10**9):
-    sys.stderr.write("curl: (7) Failed to connect\n"); sys.exit(7)
-if n >= int(os.environ.get("FAKE_SLOW_FROM") or 10**9):
-    time.sleep(1)  # a slow answer, for signals to arrive meanwhile
-for a in args:
-    m = re.fullmatch(r"rabbitmq\.ryft-rabbitmq\.svc:(\d+):127\.0\.0\.1", a)
-    if m:
-        try:
-            socket.create_connection(("127.0.0.1", int(m.group(1))), timeout=2).close()
-        except OSError:
-            sys.stderr.write("curl: (7) Failed to connect: the port-forward is gone\n"); sys.exit(7)
-if path.endswith("/get"):
-    sys.stdout.write("not json" if os.environ.get("FAKE_BAD_TAKE") else "[]" if os.environ.get("FAKE_EMPTY")
-                     else open(os.path.join(d, path.split("/")[-2] + os.environ.get("FAKE_SET", "") + ".json")).read())
-elif path.endswith("/ryft.events/publish"):
-    print('{"routed":%s}' % ("false" if os.environ.get("FAKE_ROUTED") == "false" else "true"))
-elif path.endswith("/publish"):
-    print('{"routed":%s}' % ("false" if str(n) in os.environ.get("FAKE_UNROUTED_DLX", "").split() else "true"))
-C
-chmod +x "$t/bin/kubectl" "$t/bin/curl"
+chmod +x "$t/bin/gcloud" "$t/bin/kubectl"
+[ "$(PATH="$t/bin:$PATH" command -v gcloud)" = "$t/bin/gcloud" ] || fail "the fake gcloud is not first on PATH"
 
-# Letters as the management API's /get returns them, built here: three to replay (one after six
-# failed attempts with the tiers' death headers and a header of its own, one replayed before,
-# one with a malformed marker), one whose type is not its key (forged: the subject is the routing
-# key, amqpbus subjectOf) and one whose key scoring's consumer is not bound for.
-FAKE_PW=$PW python3 - "$t" <<'PY'
-import base64, json, os, sys
-d = sys.argv[1]
-death = {"x-ryft-attempt": 5, "x-delivery-count": 2, "x-acquired-count": 3, "x-death": [{"count": 1, "exchange": "ryft.retry", "queue": "scoring.retry.5m",
-         "reason": "expired", "routing-keys": ["scoring.retry.5m"], "time": 1761200000}],
-         "x-first-death-exchange": "ryft.retry", "x-first-death-queue": "scoring.retry.5s", "x-first-death-reason": "expired",
-         "x-last-death-exchange": "ryft.retry", "x-last-death-queue": "scoring.retry.5m", "x-last-death-reason": "expired"}
-def letter(mid, subject, typ, consumer, extra):
-    h = {"Ryft-Subject": subject, "Ryft-Consumer": consumer, "Ryft-Deliveries": "6", "Ryft-Error": "day 2026-10-20: boom"}
-    h.update(death); h.update(extra)
-    body = json.dumps({"user_id": "00000000-0000-0000-0000-000000000001", "days": ["2026-10-20"], "reason": "sync"})
-    return {"payload_bytes": len(body), "redelivered": False, "exchange": "ryft.dlx", "routing_key": consumer, "message_count": 0,
-            "properties": {"message_id": mid, "type": typ, "delivery_mode": 2, "content_type": "application/json", "headers": h},
-            "payload": body, "payload_encoding": "string"}
-json.dump([letter("first", "ingested", "ingested", "scoring", {"trace": "kept"}),
-           letter("again", "ingested", "ingested", "scoring", {"x-ryft-replayed": True}),
-           letter("odd", "session.completed", "session.completed", "scoring", {"x-ryft-replayed": "yes"}),
-           letter("forged", "ingested", "scored", "scoring", {}),
-           letter("unbound", "scored", "scored", "scoring", {})], open(os.path.join(d, "dlq.scoring.json"), "w"))
-json.dump([letter("push", "scored", "scored", "notify", {})], open(os.path.join(d, "dlq.notify.json"), "w"))
-# Letters the broker dead-lettered itself (its delivery limit): an x-death entry for the consumer's
-# own queue, and no Ryft-* header the consumer wrote (a forged one may be there). The key is the
-# entry's routing key when its exchange is ryft.events, or, for a retry's copy (ryft.requeue, the
-# queue's name as routing key), its type when that is a key the consumer is bound for. The last one is a letter of a
-# pre-D150 image: Ryft-Subject is the publisher's type, and no entry names the consumer's queue.
-def broker(mid, typ, entry, extra):
-    h = {"x-delivery-count": 10}
-    h.update(extra)
-    if entry is not None:
-        h["x-death"] = [{"count": 1, "exchange": "ryft.retry", "queue": "scoring.retry.5s", "reason": "expired",
-                         "routing-keys": ["scoring.retry.5s"], "time": 1761200000}]
-        for n, e in enumerate(entry if isinstance(entry, list) else [entry]):
-            h["x-death"].append(dict(e, queue="scoring", reason=("delivery_limit", "rejected")[n % 2], count=1, time=1761200100))
-    body = json.dumps({"user_id": "00000000-0000-0000-0000-000000000001", "days": ["2026-10-20"], "reason": "sync"})
-    props = {"message_id": mid, "delivery_mode": 2, "content_type": "application/json", "headers": h}
-    if typ is not None:
-        props["type"] = typ
-    return {"payload_bytes": len(body), "redelivered": False, "exchange": "ryft.dlx", "routing_key": "scoring", "message_count": 0,
-            "properties": props, "payload": body, "payload_encoding": "string"}
-ev = {"exchange": "ryft.events", "routing-keys": ["ingested"]}
-rq = {"exchange": "ryft.requeue", "routing-keys": ["scoring"]}  # a retry's copy: the queue's name is its routing key
-json.dump([broker("b-ok", "ingested", ev, {}),
-           broker("b-forged-type", "session.completed", ev, {}),
-           broker("b-forged-subject", "ingested", ev, {"Ryft-Subject": "session.completed", "Ryft-Consumer": "scoring"}),
-           broker("b-no-type", None, ev, {}),
-           broker("b-requeued", "ingested", rq, {}),
-           broker("b-requeued-session", "session.completed", rq, {}),
-           broker("b-requeue-key", "ingested", {"exchange": "ryft.requeue", "routing-keys": ["ingested"]}, {}),
-           broker("b-requeued-notype", None, rq, {}),
-           broker("b-requeued-unbound", "scored", rq, {}),
-           broker("b-requeued-nonstring", 5, rq, {}),
-           broker("b-unbound", "scored", {"exchange": "ryft.events", "routing-keys": ["scored"]}, {}),
-           broker("b-two-keys", "ingested", [ev, {"exchange": "ryft.events", "routing-keys": ["session.completed"]}], {}),
-           broker("b-mixed", "ingested", [ev, rq], {}),
-           broker("pre-d150", "session.completed", None, {"Ryft-Subject": "session.completed", "Ryft-Deliveries": "6"})],
-          open(os.path.join(d, "dlq.scoring-broker.json"), "w"))
-json.dump([], open(os.path.join(d, "dlq.notify-broker.json"), "w"))
-b64 = lambda s: base64.b64encode(s.encode()).decode()
-json.dump({"kind": "Secret", "data": {"username": b64("dlq-user"), "password": b64(os.environ["FAKE_PW"])}},
-          open(os.path.join(d, "user-secret.json"), "w"))
-PY
-export FAKE_PW=$PW
+# The letters, as `gcloud pubsub subscriptions pull --format=json` returns them (without the ackId, which
+# the fake adds per pull). scoring's hold: three to replay (L1 dead-lettered by Pub/Sub from scoring-ingested,
+# with a ryft-error its publisher forged and an attribute of its own; L2 from scoring-session-completed by
+# its full name, no ryft-key; L3 filed by the consumer itself), and six to refuse: a ryft-key that is not
+# its subscription's (L4), a key scoring does not handle (L5), another consumer's subscription (L6),
+# neither Pub/Sub's nor the consumer's (L7), an ordered topic's event without a user_id (L8), another
+# project (L9). notify's hold: two to replay (N1 from notify-wait, N2 from notify-refresh), two to refuse.
+jq -n --arg u1 "$U1" --arg u2 "$U2" '
+def body($u): {user_id: $u, days: ["2026-11-14"], reason: "sync"} | tojson;
+def src($s): {CloudPubSubDeadLetterSourceSubscription: $s, CloudPubSubDeadLetterSourceSubscriptionProject: "ryft-test-proj",
+              CloudPubSubDeadLetterSourceDeliveryCount: "20", CloudPubSubDeadLetterSourceTopicPublishTime: "2026-11-15T07:00:00Z"};
+def letter($id; $a; $d): {message: {messageId: $id, publishTime: "2026-11-15T08:00:00Z", attributes: $a, data: ($d | @base64)}};
+{scoring: [
+   letter("L1"; src("scoring-ingested") + {"ryft-key": "ingested", "ryft-message-id": "m1", "ryft-reason": "sync",
+     "ryft-error": "forged by the publisher", trace: "kept"}; body($u1)),
+   letter("L2"; src("projects/ryft-test-proj/subscriptions/scoring-session-completed") + {"ryft-message-id": "m2"}; body($u2)),
+   letter("L3"; {"ryft-key": "ingested", "ryft-message-id": "m3", "ryft-error": "decode: unexpected end of JSON input"}; body($u1)),
+   letter("L4"; src("scoring-ingested") + {"ryft-key": "session.completed", "ryft-message-id": "m4"}; body($u1)),
+   letter("L5"; {"ryft-key": "scored", "ryft-message-id": "m5", "ryft-error": "bad"}; body($u1)),
+   letter("L6"; src("notify-scored") + {"ryft-message-id": "m6"}; body($u1)),
+   letter("L7"; {"ryft-key": "ingested", "ryft-message-id": "m7"}; body($u1)),
+   letter("L8"; src("scoring-ingested") + {"ryft-message-id": "m8"}; ({days: ["2026-11-14"]} | tojson)),
+   letter("L9"; src("scoring-ingested") + {"ryft-message-id": "m9", CloudPubSubDeadLetterSourceSubscriptionProject: "ryftlab-prod"}; body($u1))],
+ notify: [
+   letter("N1"; src("notify-wait") + {"ryft-key": "scored", "ryft-message-id": "n1", "ryft-reason": "sync"}; ({user_id: $u1, day: "2026-11-14"} | tojson)),
+   letter("N2"; src("notify-refresh") + {"ryft-message-id": "n2"}; ({user_id: $u1} | tojson)),
+   letter("N3"; src("notify-wait") + {"ryft-key": "ingested", "ryft-message-id": "n3"}; body($u1)),
+   letter("N4"; {"ryft-message-id": "n4", "ryft-error": "no ryft-key on /push/wait"}; body($u1))]}' > "$t/fixtures/all.json"
+jq '.scoring' "$t/fixtures/all.json" > "$t/fixtures/dlq-scoring-hold.json"
+jq '.notify' "$t/fixtures/all.json" > "$t/fixtures/dlq-notify-hold.json"
 
-run() { # mgmt|cluster <args>: dlq.sh with the fakes; mgmt against the fake API, cluster through the fake kubectl
-  rm -f "$t/kubectl.calls" "$t/curl.calls" "$t/curl.n" "$t/events"; touch "$t/kubectl.calls" "$t/curl.calls" "$t/events"
-  local mode=$1; shift
-  if [ "$mode" = mgmt ]; then
-    PATH="$t/bin:$PATH" RABBITMQ_MGMT_URL=${MGMT_URL:-http://dlq-test.invalid} RABBITMQ_USER=dlq-user RABBITMQ_PASSWORD=$PW \
-      bash "$ROOT/scripts/dlq.sh" "$@"
-  else
-    PATH="$t/bin:$PATH" bash "$ROOT/scripts/dlq.sh" "$@"
-  fi
+reset() { # the fixtures back in the store, no leases, no calls
+  [ ! -s "$t/calls.jsonl" ] || cat "$t/calls.jsonl" >> "$t/all-calls.jsonl"
+  rm -f "$t/store/"* "$t/n"; : > "$t/calls.jsonl"
+  cp "$t/fixtures/dlq-scoring-hold.json" "$t/fixtures/dlq-notify-hold.json" "$t/store/"
 }
-check() { # <python over calls (the curl calls), kcalls (kubectl's), letters (the scoring fixture)>
-  python3 -c '
-import json, sys
-calls = [json.loads(l) for l in open(sys.argv[1])]
-kcalls = open(sys.argv[2]).read().splitlines()
-letters = json.load(open(sys.argv[3]))
-exec(sys.argv[4])' "$t/curl.calls" "$t/kubectl.calls" "$t/dlq.scoring${FAKE_SET:-}.json" "$1"
+run() { PATH="$t/bin:$PATH" bash "$ROOT/scripts/dlq.sh" "$@"; }
+# calls <jq condition> <what>: the condition over the run's calls (an array), with the helpers below and
+# the fixtures as $fx; prints the calls when it does not hold. flag and has_flag read argv and the flags file
+# (as gcloud does); on_argv reads argv only.
+JQ='def cmd: .argv[0:3] | join(" ");
+def flag($k): ([.argv[] | select(startswith("--" + $k + "=")) | ltrimstr("--" + $k + "=")] + [(.flags_file // {})["--" + $k] // empty])[0];
+def on_argv($k): any(.argv[]; . == "--" + $k or startswith("--" + $k + "="));
+def has_flag($k): on_argv($k) or ((.flags_file // {}) | has("--" + $k));
+def ids: flag("ack-ids") | split(",") | map(sub("^ack\\.[0-9]+\\."; ""));
+def attrs: flag("attribute") | capture("^\\^(?<d>.)\\^(?<r>.*)$"; "s") as $m
+  | [$m.r | split($m.d)[] | capture("^(?<k>[^=]+)=(?<v>.*)$"; "s") | {(.k): .v}] | add;
+def pubs: [.[] | select(cmd == "pubsub topics publish")];
+def acks: [.[] | select(cmd == "pubsub subscriptions ack") | ids[]];
+def released: [.[] | select(cmd == "pubsub subscriptions modify-message-ack-deadline" and flag("ack-deadline") == "0") | ids[]];
+def body($set; $i): $fx[0][$set][$i].message.data | @base64d;
+def letter_off_argv: all(pubs[]; ((on_argv("message") or on_argv("attribute") or on_argv("ordering-key")) | not)
+    and .flags_private and ((.flags_file | keys) - ["--attribute", "--message", "--ordering-key"]) == [])
+  and all(.[]; all(.argv[]; (contains($u1) or contains($u2) or contains("ryft-message-id")) | not));
+'
+calls() {
+  jq -e -s --slurpfile fx "$t/fixtures/all.json" --arg u1 "$U1" --arg u2 "$U2" --arg p "$P" "$JQ $1" "$t/calls.jsonl" >/dev/null \
+    || { cat "$t/calls.jsonl" >&2; fail "$2 (the calls above)"; }
 }
-no_calls() { [ ! -s "$t/kubectl.calls" ] && [ ! -s "$t/curl.calls" ] || fail "$1: called kubectl ($(cat "$t/kubectl.calls")) or curl ($(cat "$t/curl.calls"))"; }
-refused() { # <mode> <args>: exit 2, and neither kubectl nor curl ran
-  local mode=$1 rc=0; shift
-  KUBE_CONTEXT=test-ctx run "$mode" "$@" >"$t/out" 2>&1 || rc=$?
-  [ "$rc" = 2 ] || fail "'dlq.sh $*' ($mode) must exit 2, got $rc: $(cat "$t/out")"
-  no_calls "'dlq.sh $*' ($mode)"
+left() { # <hold> <ids...>: what the hold subscription still holds, and nothing leased
+  local h=$1; shift
+  jq -e '[.[].message.messageId] == $ARGS.positional' "$t/store/$h.json" --args "$@" >/dev/null \
+    || fail "$h holds $(jq -c '[.[].message.messageId]' "$t/store/$h.json"), not $*"
+  [ ! -s "$t/store/$h.leased" ] || fail "$h still has leased letters: $(tr '\n' ' ' < "$t/store/$h.leased")"
+}
+clean() { [ -z "$(ls -A "$t/tmp")" ] || fail "$1 left $(ls -A "$t/tmp")"; }
+refused() { # <args>: exit 2, and gcloud never ran
+  local rc=0; reset
+  run "$@" >"$t/out" 2>&1 || rc=$?
+  [ "$rc" = 2 ] || fail "'dlq.sh $*' must exit 2, got $rc: $(cat "$t/out")"
+  [ ! -s "$t/calls.jsonl" ] || fail "'dlq.sh $*' called gcloud: $(cat "$t/calls.jsonl")"
 }
 
-# 1. Every argument before any call, in both modes (KUBE_CONTEXT is set: nothing else stops it).
-for mode in mgmt cluster; do
-  refused "$mode"
-  refused "$mode" show scoring x; refused "$mode" replay scoring -1; refused "$mode" show scoring al
-  refused "$mode" replay scoring 5O; refused "$mode" replay scoring all --dry-run; refused "$mode" show scoring 0
-  refused "$mode" show scoring 1001; refused "$mode" show scoring 01; refused "$mode" list extra; refused "$mode" list --force
-  refused "$mode" frob; refused "$mode" show; refused "$mode" replay elsewhere; refused "$mode" purge
-  refused "$mode" purge dlq.other; refused "$mode" purge scoring 5; refused "$mode" put-back "$t/none"
-  refused "$mode" replay scoring '1, "ackmode": "ack_requeue_true"'; refused "$mode" --context
-  refused "$mode" replay dlq.notify all; refused "$mode" replay notify 2
-done
-grep -q 'notify.s dead letters are not replayed' "$t/out" || fail "the notify refusal does not say why: $(cat "$t/out")"
-KUBE_CONTEXT=test-ctx run cluster >"$t/out" 2>&1 || true
-head -1 "$t/out" | grep -qx "RabbitMQ's dead letters (dlq.scoring, dlq.notify; D99, docs/OPERATIONS.md → RabbitMQ)" || fail "usage: $(head -2 "$t/out")"
-grep -q '^  scripts/dlq.sh replay <queue> \[n|all\]' "$t/out" || fail "usage misses replay: $(cat "$t/out")"
-grep -q '^The cluster is named' "$t/out" || fail "usage stops at a blank comment line: $(cat "$t/out")"
+# 1. Every argument before any call; the project is required and well-formed.
+refused; refused list; refused --project "$P"; refused --project "$P" frob; refused --project "$P" list extra
+refused --project "$P" list --force; refused --project "$P" show; refused --project "$P" show elsewhere
+refused --project "$P" show scoring x; refused --project "$P" show scoring 0; refused --project "$P" show scoring 01
+refused --project "$P" show scoring 1001; refused --project "$P" show scoring al; refused --project "$P" replay scoring -1
+refused --project "$P" replay scoring 5O; refused --project "$P" replay scoring all --dry-run; refused --project "$P" replay scoring 1 2
+refused --project "$P" purge; refused --project "$P" purge scoring 5; refused --project "$P" purge dlq-other-hold
+refused --project "$P" --force list; refused --project; refused --project= list; refused --context ryft-prod-euc1 list
+refused --project Ryft-Prod list; refused --project 'ryft-test-proj;id' list; refused --project "$P" replay dlq.scoring
+PUBSUB_EMULATOR_HOST=localhost refused --project "$P" list
+refused list scoring --project "$P"
+refused --project "$P" replay notify
+grep -q "notify's dead letters are not replayed" "$t/out" || fail "the notify refusal does not say why: $(cat "$t/out")"
+refused --project "$P" replay dlq-notify-hold 2
+refused list
+grep -q 'name the project: --project <id> (there is no default' "$t/out" || fail "no project: $(cat "$t/out")"
+rc=0; run > "$t/out" 2>&1 || rc=$?
+[ "$rc" = 2 ] || fail "no arguments must exit 2, got $rc"
+head -1 "$t/out" | grep -q '^The dead letters on Pub/Sub ' || fail "usage: $(head -2 "$t/out")"
+grep -qF '  scripts/dlq.sh --project <id> replay <consumer> [n|all] [--force]' "$t/out" || fail "usage misses replay: $(cat "$t/out")"
+grep -q '^A replay republishes only the keys' "$t/out" || fail "usage stops at a blank comment line: $(cat "$t/out")"
 if grep -q '^#' "$t/out" || grep -q '^set -euo' "$t/out"; then fail "usage prints code or # prefixes: $(cat "$t/out")"; fi
-run mgmt --help > "$t/out" 2>&1 || fail "--help must exit 0"
-grep -q '^  scripts/dlq.sh list' "$t/out" || fail "--help: $(cat "$t/out")"
+run --help > "$t/out" 2>&1 || fail "--help must exit 0"
+grep -qF '  scripts/dlq.sh --project <id> list' "$t/out" || fail "--help: $(cat "$t/out")"
 
-# 2. The cluster is named: without a context nothing runs; a context that is not listed stops at
-# the listing; a named one is used for every call, with the Secrets read once each.
-rc=0; run cluster list >/dev/null 2>"$t/err" || rc=$?
-if [ "$rc" != 2 ] || ! grep -q 'KUBE_CONTEXT' "$t/err"; then fail "no context must exit 2 naming KUBE_CONTEXT (got $rc): $(cat "$t/err")"; fi
-no_calls "no context"
-rc=0; KUBE_CONTEXT=nope run cluster list >/dev/null 2>"$t/err" || rc=$?
-[ "$rc" = 2 ] && [ "$(cat "$t/kubectl.calls")" = "config get-contexts -o name" ] && [ ! -s "$t/curl.calls" ] \
-  || fail "an unknown context must stop at the listing (got $rc): $(cat "$t/kubectl.calls")"
-rc=0; KUBE_CONTEXT='test-ctx;id' run cluster list >/dev/null 2>&1 || rc=$?
-[ "$rc" = 2 ] || fail "a context name with ; must exit 2"; no_calls "a context name with ;"
-rc=0; run mgmt --context test-ctx list >/dev/null 2>&1 || rc=$?
-[ "$rc" = 2 ] || fail "--context with RABBITMQ_MGMT_URL must exit 2"; no_calls "--context with RABBITMQ_MGMT_URL"
-for how in env flag; do
-  if [ "$how" = env ]; then out=$(KUBE_CONTEXT=test-ctx run cluster list 2>"$t/err") || fail "cluster list ($how): $(cat "$t/err")"; ctx=test-ctx
-  else out=$(KUBE_CONTEXT=test-ctx run cluster list --context kind-ryft 2>"$t/err") || fail "cluster list ($how): $(cat "$t/err")"; ctx=kind-ryft; fi
-  grep -qx "→ $ctx" "$t/err" || fail "the context is not announced ($how): $(cat "$t/err")"
-  echo "$out" | grep -q '^dlq.scoring: 5$' || fail "cluster list ($how): $out"
-  CTX=$ctx check '
-import os
-ctx = os.environ["CTX"]
-assert kcalls[0] == "config get-contexts -o name", kcalls
-rest = kcalls[1:]
-assert rest and all(c.startswith("--context %s -n ryft-rabbitmq " % ctx) for c in rest), rest
-assert sum("get secret rabbitmq-default-user -o json" in c for c in rest) == 1, rest
-assert sum("get secret rabbitmq-tls" in c for c in rest) == 1, rest
-assert sum(" port-forward svc/rabbitmq " in c for c in rest) == 1, rest
-port = [c for c in rest if "port-forward" in c][0].split()[-1].split(":")[0]
-assert len(calls) == 2, calls
-for c in calls:
-    assert c["argv"][-1].startswith("https://rabbitmq.ryft-rabbitmq.svc:%s/api/" % port), c
-    assert "rabbitmq.ryft-rabbitmq.svc:%s:127.0.0.1" % port in c["argv"] and c["cacert"] == "fake-ca", c
-    assert c["user"] == "dlq-user" and c["password_ok"] and c["conf_mode"] == "0o600", c
-' || fail "the cluster calls ($how, above)"
+# 2. list: both hold subscriptions, a line per letter with its verdict; nothing acked, no --auto-ack,
+# every letter handed back; the project and the regional endpoint on every call.
+reset
+out=$(run --project "$P" list 2>"$t/err") || fail "list: $(cat "$t/err")"
+grep -qx "→ project $P, https://europe-west1-pubsub.googleapis.com/" "$t/err" || fail "the project is not announced: $(cat "$t/err")"
+[ "$(sed -n 1p <<<"$out")" = "dlq-scoring-hold: 9" ] && [ "$(sed -n 11p <<<"$out")" = "dlq-notify-hold: 4" ] || fail "list printed: $out"
+sed -n '2,10p' <<<"$out" | jq -e -s '
+  [.[].letter_id] == ["L1","L2","L3","L4","L5","L6","L7","L8","L9"]
+  and [.[].verdict] == ["replay","replay","replay","refused","refused","refused","refused","refused","refused"]
+  and [.[].by] == ["pubsub","pubsub","consumer","pubsub","consumer","pubsub","unknown","pubsub","pubsub"]
+  and [.[].key] == ["ingested","session.completed","ingested","session.completed","scored",null,"ingested",null,null]
+  and .[0].attempts == "20" and .[0].error == null and .[0].source == "scoring-ingested" and .[0].message_id == "m1"
+  and .[1].source == "scoring-session-completed" and .[2].error == "decode: unexpected end of JSON input"
+  and all(.[]; .replayed_before == false and (has("data") | not))' >/dev/null || fail "list's scoring lines: $out"
+sed -n '12,15p' <<<"$out" | jq -e -s '[.[].verdict] == ["replay","replay","refused","refused"] and [.[].key] == ["scored","refresh","ingested",null]' >/dev/null \
+  || fail "list's notify lines: $out"
+calls 'all(.[]; .argv[-2:] == ["--project=" + $p, "--quiet"] and .endpoint == "https://europe-west1-pubsub.googleapis.com/" and .nocred == "")
+  and ([.[] | select(cmd == "pubsub subscriptions pull") | .argv[3]] | unique) == ["dlq-notify-hold", "dlq-scoring-hold"]
+  and all(.[] | select(cmd == "pubsub subscriptions pull"); flag("format") == "json" and (has_flag("auto-ack") | not))
+  and acks == [] and pubs == [] and ([.[] | select(cmd == "pubsub subscriptions seek")] == [])
+  and (released | sort) == ["L1","L2","L3","L4","L5","L6","L7","L8","L9","N1","N2","N3","N4"]' "list acks nothing and hands every letter back"
+left dlq-scoring-hold L1 L2 L3 L4 L5 L6 L7 L8 L9; left dlq-notify-hold N1 N2 N3 N4; clean list
+# An operator's CLOUDSDK_AUTH_DISABLE_CREDENTIALS never reaches a production call.
+reset; CLOUDSDK_AUTH_DISABLE_CREDENTIALS=true run --project "$P" list >/dev/null 2>&1 || fail "list with credentials disabled"
+calls 'all(.[]; .nocred == "")' "CLOUDSDK_AUTH_DISABLE_CREDENTIALS reached gcloud without the emulator"
+
+# 3. show: n letters in full, the data decoded; nothing acked.
+reset
+out=$(run --project "$P" show scoring 2 2>"$t/err") || fail "show: $(cat "$t/err")"
+jq -e --arg u1 "$U1" 'length == 2 and .[0].data.user_id == $u1 and .[0].attributes["ryft-error"] == "forged by the publisher"
+  and .[0].verdict == "replay" and .[1].letter_id == "L2"' <<<"$out" >/dev/null || fail "show printed: $out"
+calls '[.[] | select(cmd == "pubsub subscriptions pull") | flag("limit")] == ["2"] and acks == [] and pubs == [] and (released | sort) == ["L1","L2"]' "show"
+left dlq-scoring-hold L1 L2 L3 L4 L5 L6 L7 L8 L9; clean show
+
+# 4. replay: L1-L3 to their topics, marked, with their own attributes and data, the ordering key, each
+# acked after its publish; the six others refused, named and left.
+reset; rc=0
+out=$(run --project "$P" replay scoring all 2>"$t/err") || rc=$?
+[ "$rc" = 1 ] && [ "$out" = "replayed 3, refused 6" ] || fail "replay scoring: $rc $out $(cat "$t/err")"
+for want in \
+  'message_id "m4" (letter L4), key "session.completed", dead-lettered by Pub/Sub from scoring-ingested: its ryft-key "session.completed" is not the key of scoring-ingested (ingested)' \
+  'message_id "m5" (letter L5), key "scored", filed by the consumer: its ryft-key "scored" is not a key scoring handles' \
+  "message_id \"m6\" (letter L6), key null, dead-lettered by Pub/Sub from notify-scored: dead-lettered from \"notify-scored\", which is not one of scoring's subscriptions" \
+  'message_id "m7" (letter L7), key "ingested", of unknown origin: neither dead-lettered by Pub/Sub' \
+  "message_id \"m8\" (letter L8), key null, dead-lettered by Pub/Sub from scoring-ingested: ryft-ingested is ordered by the event's user_id, and its data has none" \
+  'message_id "m9" (letter L9), key null, dead-lettered by Pub/Sub from scoring-ingested: dead-lettered in project "ryftlab-prod", not ryft-test-proj'; do
+  grep -qF -- "! not replayed, left in dlq-scoring-hold: $want" "$t/err" || fail "not named: $want
+in: $(cat "$t/err")"
 done
-grep -rqF -- "$PW" "$t/curl.calls" "$t/kubectl.calls" && fail "the password is in an argv"
-sleep 0.5
-if pgrep -f "dlq-test-listener $t" >/dev/null; then fail "the port-forward outlived the script"; fi
+calls '([pubs[] | .argv[3]] == ["ryft-ingested", "ryft-session-completed", "ryft-ingested"])
+  and (pubs[0] | attrs) == {"ryft-key": "ingested", "ryft-message-id": "m1", "ryft-reason": "sync", "ryft-replayed": "true", "trace": "kept"}
+  and (pubs[1] | attrs) == {"ryft-key": "session.completed", "ryft-message-id": "m2", "ryft-replayed": "true"}
+  and (pubs[2] | attrs) == {"ryft-key": "ingested", "ryft-message-id": "m3", "ryft-replayed": "true"}
+  and [pubs[] | flag("ordering-key")] == [$u1, $u2, $u1]
+  and [pubs[] | flag("message")] == [body("scoring"; 0), body("scoring"; 1), body("scoring"; 2)]
+  and acks == ["L1", "L2", "L3"]
+  and [.[] | select(cmd == "pubsub topics publish" or cmd == "pubsub subscriptions ack") | cmd]
+      == ([range(3)] | map("pubsub topics publish", "pubsub subscriptions ack"))
+  and ([.[] | select(cmd == "pubsub subscriptions modify-message-ack-deadline")][0] | flag("ack-deadline") == "600" and (ids | length) == 9)
+  and ([.[] | select(cmd == "pubsub subscriptions modify-message-ack-deadline")][0].n < pubs[0].n)
+  and (released | sort) == ["L4", "L5", "L6", "L7", "L8", "L9"]
+  and all(.[]; has_flag("auto-ack") | not)' "the replay of scoring's letters"
+calls 'letter_off_argv' "a replay's data, attributes and ordering key are in a private flags file, never on argv"
+left dlq-scoring-hold L4 L5 L6 L7 L8 L9; clean "the replay"
+# One letter: the first, and nothing else pulled.
+reset
+out=$(run --project "$P" replay scoring 1 2>"$t/err") && [ "$out" = "replayed 1, refused 0" ] || fail "replay scoring 1: $out $(cat "$t/err")"
+calls '[.[] | select(cmd == "pubsub subscriptions pull") | flag("limit")] == ["1"] and acks == ["L1"]' "replay scoring 1"
+left dlq-scoring-hold L2 L3 L4 L5 L6 L7 L8 L9
 
-# 3./4. Replay: each bound letter to ryft.events with its key, marked, stripped, the rest of the
-# message as it was; the forged type and the unbound key back into the DLQ unchanged, and named;
-# the count and every body in a file, the credentials in a mode-600 config, never in argv.
-rc=0; out=$(run mgmt replay dlq.scoring all 2>"$t/err") || rc=$?
-[ "$rc" = 1 ] || fail "a replay that put letters back must exit 1 (got $rc): $(cat "$t/err")"
-[ "$out" = "replayed 3, put back 2" ] || fail "replay said: $out"
-grep -q '! not replayed, put back: message_id "forged", key "ingested": its type "scored" is not its key' "$t/err" \
-  || fail "the forged type is not named: $(cat "$t/err")"
-grep -q "! not replayed, put back: message_id \"unbound\", key \"scored\": not a key scoring's consumer is bound for" "$t/err" \
-  || fail "the unbound key is not named: $(cat "$t/err")"
-check '
-gets = [c for c in calls if c["path"].endswith("/get")]
-assert [g["path"] for g in gets] == ["/api/queues/ryft/dlq.scoring/get"], gets
-assert gets[0]["data"] == {"count": 1000, "ackmode": "ack_requeue_false", "encoding": "auto", "truncate": 50000}, gets
-# The take is gone from the queue before its answer arrives: half an hour for it, not two minutes.
-mt = lambda c: c["argv"][c["argv"].index("--max-time") + 1]
-assert mt(gets[0]) == "1800" and {mt(c) for c in calls if c is not gets[0]} == {"120"}, [mt(c) for c in calls]
-pubs = [c for c in calls if c["path"].endswith("/publish")]
-assert [p["path"].split("/")[-2] for p in pubs] == ["ryft.events"] * 3 + ["ryft.dlx"] * 2, pubs
-death = ("x-death", "x-ryft-attempt", "x-first-death-exchange", "x-first-death-queue", "x-first-death-reason",
-         "x-last-death-exchange", "x-last-death-queue", "x-last-death-reason", "x-delivery-count", "x-acquired-count")
-assert all(c["argv"][0] == "-q" for c in calls), [c["argv"][:2] for c in calls]  # no ~/.curlrc
-for p, m, own in zip(pubs[:3], letters, [{"trace": "kept"}, {}, {}]):
-    b, h = p["data"], p["data"]["properties"]["headers"]
-    assert h.get("x-ryft-replayed") is True and not [k for k in h if k.startswith("Ryft-") or k in death], h
-    assert h == dict(own, **{"x-ryft-replayed": True}), h
-    key = m["properties"]["headers"]["Ryft-Subject"]
-    assert b["routing_key"] == key and b["payload"] == m["payload"] and b["payload_encoding"] == "string", b
-    pr = b["properties"]
-    assert (pr["message_id"], pr["type"], pr["delivery_mode"], pr["content_type"]) == (m["properties"]["message_id"], key, 2, "application/json"), pr
-for p, m in zip(pubs[3:], letters[3:]):
-    b = p["data"]
-    assert b["routing_key"] == "scoring" and b["properties"]["headers"] == m["properties"]["headers"], b
-    assert b["properties"]["type"] == m["properties"]["type"] and b["payload"] == m["payload"], b
-for c in calls:
-    assert c["conf_mode"] == "0o600" and c["user"] == "dlq-user" and c["password_ok"], c
-    assert not [a for a in c["argv"] if a.startswith("{") or "count" in a], c["argv"]
-' || fail "the replay (above)"
-grep -qF -- "$PW" "$t/curl.calls" && fail "the password is in an argv"
-[ -z "$(ls -A "$t/tmp")" ] || fail "the replay left $(ls -A "$t/tmp")"
-
-# Not routed: every letter back into the DLQ exactly as it was (no marker added), and a failure.
-rc=0; out=$(FAKE_ROUTED=false run mgmt replay scoring 2>"$t/err") || rc=$?
-[ "$rc" = 1 ] && [ "$out" = "replayed 0, put back 5" ] || fail "unrouted replay: $rc $out $(cat "$t/err")"
-check '
-back = [c["data"] for c in calls if c["path"] == "/api/exchanges/ryft/ryft.dlx/publish"]
-assert len(back) == 5, calls
-for b, m in zip(back, letters):
-    assert b["routing_key"] == "scoring" and b["properties"]["headers"] == m["properties"]["headers"], b
-    assert b["payload"] == m["payload"] and b["properties"]["message_id"] == m["properties"]["message_id"], b
-' || fail "the letters put back (above)"
-
-# notify: --force anywhere, never taken as the count; the count reaches the body as a number.
-for args in "replay notify --force 2" "replay --force notify 2" "--force replay notify 2"; do
+# 5. notify, with --force anywhere: N1 back to ryft-notify-wait under its key, N2 to ryft-refresh, no
+# ordering key; N3 (a key notify does not handle) and N4 (no key) refused and left.
+for args in "replay notify --force" "--force replay notify" "replay --force dlq-notify-hold"; do
   read -ra words <<< "$args"
-  rc=0; out=$(run mgmt "${words[@]}" 2>"$t/err") || rc=$?
-  [ "$rc" = 0 ] && [ "$out" = "replayed 1, put back 0" ] || fail "'$args': $rc $out $(cat "$t/err")"
-  check '
-gets = [c["data"] for c in calls if c["path"] == "/api/queues/ryft/dlq.notify/get"]
-assert len(gets) == 1 and gets[0]["count"] == 2, gets
-pubs = [c["data"] for c in calls if c["path"].endswith("/publish")]
-assert len(pubs) == 1 and pubs[0]["routing_key"] == "scored" and pubs[0]["properties"]["headers"] == {"x-ryft-replayed": True}, pubs
-' || fail "'$args' (above)"
+  reset; rc=0
+  out=$(run --project "$P" "${words[@]}" 2>"$t/err") || rc=$?
+  [ "$rc" = 1 ] && [ "$out" = "replayed 2, refused 2" ] || fail "'$args': $rc $out $(cat "$t/err")"
+  grep -qF 'message_id "n3" (letter N3), key "ingested", dead-lettered by Pub/Sub from notify-wait: its ryft-key "ingested" is not a key notify handles' "$t/err" \
+    || fail "'$args': N3 not named: $(cat "$t/err")"
+  grep -qF '(letter N4), key null, filed by the consumer: filed by notify without a ryft-key' "$t/err" || fail "'$args': N4 not named: $(cat "$t/err")"
+  calls '[pubs[] | .argv[3]] == ["ryft-notify-wait", "ryft-refresh"]
+    and (pubs[0] | attrs) == {"ryft-key": "scored", "ryft-message-id": "n1", "ryft-reason": "sync", "ryft-replayed": "true"}
+    and (pubs[1] | attrs) == {"ryft-key": "refresh", "ryft-message-id": "n2", "ryft-replayed": "true"}
+    and [pubs[] | has_flag("ordering-key")] == [false, false]
+    and [pubs[] | flag("message")] == [body("notify"; 0), body("notify"; 1)]
+    and acks == ["N1", "N2"] and (released | sort) == ["N3", "N4"] and letter_off_argv' "'$args'"
+  left dlq-notify-hold N3 N4
 done
-out=$(run mgmt replay notify --force 2>"$t/err") || fail "replay notify --force: $(cat "$t/err")"
-check 'assert [c["data"]["count"] for c in calls if c["path"].endswith("/get")] == [1000], calls' || fail "--force taken as the count"
+reset; run --project "$P" replay notify --force 1 >/dev/null 2>&1 || fail "replay notify --force 1"
+calls '[.[] | select(cmd == "pubsub subscriptions pull") | flag("limit")] == ["1"]' "--force taken as the count"
 
-# 4b. Letters the broker dead-lettered (an x-death entry for the consumer's own queue): the key
-# comes from that entry alone and only when its exchange is ryft.events; every Ryft-* header is
-# ignored (a forged Ryft-Subject changes nothing); the type must be empty or the key; the rest
-# (a retry's copy, an unbound key, entries that disagree, a forged type) is put back and named
-# "check by hand". A letter of a pre-D150 image (no entry for the consumer's queue) keeps the
-# Ryft-Subject rule: bound key, type equal to it.
-rc=0; out=$(FAKE_SET=-broker run mgmt replay dlq.scoring all 2>"$t/err") || rc=$?
-[ "$rc" = 1 ] && [ "$out" = "replayed 6, put back 8" ] || fail "broker letters: $rc $out $(cat "$t/err")"
-for id in b-forged-type b-requeue-key b-requeued-notype b-requeued-unbound b-requeued-nonstring b-unbound b-two-keys b-mixed; do
-  grep -q "! not replayed, put back: message_id \"$id\".*dead-lettered by the broker: check by hand" "$t/err" || fail "$id is not named for a check by hand: $(cat "$t/err")"
-done
-grep -q 'message_id "b-forged-type", key "ingested": its type "session.completed" is not its key; dead' "$t/err" || fail "the forged type is not said: $(cat "$t/err")"
-grep -q 'b-requeued-notype", key "": a retry.s copy (ryft.requeue) whose type null is not a key scoring.s consumer is bound for' "$t/err" || fail "an untyped retry is not explained: $(cat "$t/err")"
-grep -q 'b-requeue-key", key "": its x-death entry says exchange "ryft.requeue", routing keys \["ingested"\]' "$t/err" || fail "a requeue with a key is not explained: $(cat "$t/err")"
-grep -q 'b-two-keys", key "": its x-death entries for scoring.s queue disagree' "$t/err" || fail "disagreeing entries are not explained: $(cat "$t/err")"
-check '
-pubs = [c for c in calls if c["path"].endswith("/publish")]
-events = [p["data"] for p in pubs if p["path"].split("/")[-2] == "ryft.events"]
-ids = [e["properties"]["message_id"] for e in events]
-assert ids == ["b-ok", "b-forged-subject", "b-no-type", "b-requeued", "b-requeued-session", "pre-d150"], ids
-# Each under its x-death routing key (the forged Ryft-Subject, session.completed, is not used) or, for
-# a retry'"'"'s copy, its type; typed with it, marked, and without anything the broker or the consumer wrote.
-keys = ["ingested", "ingested", "ingested", "ingested", "session.completed", "session.completed"]
-assert [e["routing_key"] for e in events] == keys, events
-assert [e["properties"]["type"] for e in events] == keys, events
-for e in events:
-    assert e["properties"]["headers"] == {"x-ryft-replayed": True}, e
-back = [p["data"]["properties"]["message_id"] for p in pubs if p["path"].split("/")[-2] == "ryft.dlx"]
-assert back == ["b-forged-type", "b-requeue-key", "b-requeued-notype", "b-requeued-unbound", "b-requeued-nonstring", "b-unbound", "b-two-keys", "b-mixed"], back
-' || fail "the broker letters (above)"
+# 6. A publish that fails stops the run: nothing acked, every letter handed back. An ack that fails
+# after its publish: the letter stays (a later replay sends it again), the run stops.
+reset; rc=0
+out=$(FAKE_FAIL="pubsub topics publish" run --project "$P" replay scoring 2>"$t/err") || rc=$?
+[ "$rc" = 1 ] && [ "$out" = "replayed 0, refused 0" ] || fail "a failed publish: $rc $out $(cat "$t/err")"
+grep -q 'the publish to ryft-ingested failed, the letter stays in dlq-scoring-hold: message_id "m1"' "$t/err" || fail "a failed publish is not said: $(cat "$t/err")"
+calls '(pubs | length) == 1 and acks == [] and (released | sort) == ["L1","L2","L3","L4","L5","L6","L7","L8","L9"]' "a failed publish"
+left dlq-scoring-hold L1 L2 L3 L4 L5 L6 L7 L8 L9; clean "a failed publish"
+reset; rc=0
+out=$(FAKE_FAIL="pubsub subscriptions ack" run --project "$P" replay scoring 2>"$t/err") || rc=$?
+[ "$rc" = 1 ] && [ "$out" = "replayed 0, refused 0" ] || fail "a failed ack: $rc $out $(cat "$t/err")"
+grep -q 'replayed to ryft-ingested (message pub-[0-9]*), but the ack failed: the letter stays in dlq-scoring-hold' "$t/err" || fail "a failed ack is not said: $(cat "$t/err")"
+calls '(pubs | length) == 1 and (released | sort) == ["L1","L2","L3","L4","L5","L6","L7","L8","L9"]' "a failed ack"
+left dlq-scoring-hold L1 L2 L3 L4 L5 L6 L7 L8 L9
+# A pull that does not answer JSON is an error, not "empty"; an empty hold is.
+reset; rc=0
+out=$(FAKE_GARBAGE=1 run --project "$P" replay scoring 2>"$t/err") || rc=$?
+[ "$rc" = 1 ] && grep -q 'did not answer a list of messages' "$t/err" || fail "a garbage pull: $rc $out $(cat "$t/err")"
+if grep -q empty <<<"$out"; then fail "a garbage pull is not empty: $out"; fi
+reset; echo '[]' > "$t/store/dlq-scoring-hold.json"
+out=$(run --project "$P" replay scoring 2>"$t/err") && [ "$out" = "dlq-scoring-hold is empty" ] || fail "empty: $out $(cat "$t/err")"
 
-# 5. Nothing is lost. The connection drops after the first replay: the publish of the second
-# letter and its put-back fail, the put-back on the way out too, so the four letters left stay
-# in a kept directory (mode 700, no credentials), named on stderr; put-back brings them home.
-rc=0; out=$(FAKE_FAIL_FROM=3 run mgmt replay scoring 2>"$t/err") || rc=$?
-[ "$rc" = 1 ] && [ "$out" = "replayed 1, put back 0" ] || fail "dropped connection: $rc $out $(cat "$t/err")"
-kept=$(sed -n 's/^✗ dlq.sh: kept \([^ ]*\) (mode 700).*/\1/p' "$t/err")
-case $kept in "$t/tmp/dlq."?*) ;; *) fail "the kept directory $kept is not in TMPDIR ($t/tmp)" ;; esac
-[ -n "$kept" ] && [ -d "$kept/pending" ] || fail "no kept directory named: $(cat "$t/err")"
-grep -q "4 letters are in no queue, only in $kept/pending: put them back with scripts/dlq.sh put-back $kept/pending" "$t/err" \
-  || fail "what is left is not said: $(cat "$t/err")"
-mode=$(stat -c %a "$kept" 2>/dev/null || stat -f %Lp "$kept")
-[ "$mode" = 700 ] || fail "the kept directory is mode $mode"
-[ "$(find "$kept/pending" -name '*.back.json' -exec basename {} \; | sort | tr '\n' ' ')" = "0002.back.json 0003.back.json 0004.back.json 0005.back.json " ] \
-  || fail "kept: $(find "$kept")"
-[ ! -e "$kept/curl.conf" ] || fail "the kept directory holds the credentials"
-grep -rqF -- "$PW" "$kept" && fail "the kept directory holds the password"
-[ "$(cat "$kept/pending/source.txt")" = "url http://dlq-test.invalid" ] || fail "the kept directory does not record where it is from: $(cat "$kept/pending/source.txt")"
-# Only where the letters came from: another broker, or a cluster, is refused before any call.
-rc=0; MGMT_URL=http://elsewhere.invalid run mgmt put-back "$kept/pending" >/dev/null 2>"$t/err" || rc=$?
-[ "$rc" = 2 ] && grep -q 'holds letters from url http://dlq-test.invalid, not from url http://elsewhere.invalid' "$t/err" && [ ! -s "$t/curl.calls" ] \
-  || fail "put-back into another broker: $rc $(cat "$t/err")"
-rc=0; KUBE_CONTEXT=test-ctx run cluster put-back "$kept/pending" >/dev/null 2>"$t/err" || rc=$?
-[ "$rc" = 2 ] && grep -q 'not from context test-ctx' "$t/err" && [ ! -s "$t/curl.calls" ] || fail "put-back into a cluster: $rc $(cat "$t/err")"
-mkdir "$t/nosrc"; cp "$kept/pending/0002.back.json" "$t/nosrc/"
-rc=0; run mgmt put-back "$t/nosrc" >/dev/null 2>"$t/err" || rc=$?
-[ "$rc" = 2 ] && grep -q 'has no source.txt' "$t/err" || fail "put-back without a source: $rc $(cat "$t/err")"
-rm -rf "$t/nosrc"
-rc=0; out=$(run mgmt put-back "$kept/pending" 2>"$t/err") || rc=$?
-[ "$rc" = 0 ] || fail "put-back: $rc $(cat "$t/err")"
-[ ! -e "$kept" ] || fail "put-back left $(ls -A "$kept")"
-check '
-back = [c["data"] for c in calls if c["path"] == "/api/exchanges/ryft/ryft.dlx/publish"]
-assert [b["properties"]["message_id"] for b in back] == ["again", "odd", "forged", "unbound"], back
-for b, m in zip(back, letters[1:]):
-    assert b["routing_key"] == "scoring" and b["properties"]["headers"] == m["properties"]["headers"], b
-' || fail "put-back (above)"
-echo '{"routing_key": "ryft.events", "properties": {}}' > "$t/x.back.json"; mkdir -p "$t/odd"; mv "$t/x.back.json" "$t/odd/"
-refused mgmt put-back "$t/odd"
+# 7. The emulator (compose's): its endpoint, no credentials.
+reset
+PUBSUB_EMULATOR_HOST=localhost:8085 run --project ryft-local list >/dev/null 2>"$t/err" || fail "list on the emulator: $(cat "$t/err")"
+calls 'length > 0 and all(.[]; .endpoint == "http://localhost:8085/" and .nocred == "true" and .argv[-2] == "--project=ryft-local")' "the emulator's calls"
 
-# A blip: the second letter's publish and put-back fail, the connection is back for the way
-# out, so every letter left is put back and nothing is kept.
-rc=0; out=$(FAKE_FAIL="3 4" run mgmt replay scoring 2>"$t/err") || rc=$?
-[ "$rc" = 1 ] && [ "$out" = "replayed 1, put back 0" ] || fail "blip: $rc $out $(cat "$t/err")"
-grep -q '^put back 4 letters into their dead-letter queue$' "$t/err" || fail "blip: $(cat "$t/err")"
-check '
-back = [c["data"]["properties"]["message_id"] for c in calls[4:] if c["path"].endswith("/ryft.dlx/publish")]
-assert back == ["again", "odd", "forged", "unbound"], back
-' || fail "blip (above)"
-[ -z "$(ls -A "$t/tmp")" ] || fail "the blip left $(ls -A "$t/tmp")"
+# 8. purge asks; anything but PURGE deletes nothing; PURGE seeks to the time it started.
+reset; rc=0
+out=$(printf 'yes\n' | run --project "$P" purge notify 2>"$t/err") || rc=$?
+[ "$rc" = 1 ] && [ "$out" = "nothing deleted" ] || fail "purge without PURGE: $rc $out $(cat "$t/err")"
+calls '[.[] | select(cmd == "pubsub subscriptions seek")] == [] and acks == [] and (released | sort) == ["N1","N2","N3","N4"]' "purge without PURGE"
+left dlq-notify-hold N1 N2 N3 N4
+reset
+out=$(printf 'PURGE\n' | run --project "$P" purge notify 2>"$t/err") || fail "purge: $(cat "$t/err")"
+grep -q '^dlq-notify-hold purged: every letter published before 20[0-9-]*T[0-9:]*Z$' <<<"$out" || fail "purge said: $out"
+calls '[.[] | select(cmd == "pubsub subscriptions seek") | [.argv[3], (flag("time") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))]]
+  == [["dlq-notify-hold", true]] and released == []' "purge"
+left dlq-notify-hold; clean purge
 
-# A put-back counts only when the broker routed it, in the loop and on the way out. In the
-# loop: nothing is routed to ryft.events, and the first put-back answers unrouted, so that
-# letter is neither replayed nor put back and the way out puts back all five.
-rc=0; out=$(FAKE_ROUTED=false FAKE_UNROUTED_DLX=3 run mgmt replay scoring 2>"$t/err") || rc=$?
-[ "$rc" = 1 ] && [ "$out" = "replayed 0, put back 0" ] || fail "an unrouted put-back in the loop: $rc $out $(cat "$t/err")"
-if ! grep -q 'neither replayed nor put back: message_id "first"' "$t/err" || ! grep -q '^put back 5 letters' "$t/err"; then
-  fail "an unrouted put-back in the loop: $(cat "$t/err")"
-fi
-check '
-back = [c["data"]["properties"]["message_id"] for c in calls if c["path"].endswith("/ryft.dlx/publish")]
-assert back == ["first", "first", "again", "odd", "forged", "unbound"], back
-' || fail "an unrouted put-back in the loop (above)"
-# On the way out: the second letter's publish and put-back fail, the way out's first put-back
-# answers unrouted, so four letters stay in the kept directory.
-rc=0; out=$(FAKE_FAIL="3 4" FAKE_UNROUTED_DLX=5 run mgmt replay scoring 2>"$t/err") || rc=$?
-[ "$rc" = 1 ] || fail "an unrouted put-back on the way out must fail (got $rc)"
-grep -q '^! dlq.sh: putting back the letters left in .*/pending$' "$t/err" || fail "the directory is not named first: $(cat "$t/err")"
-grep -q '4 letters are in no queue' "$t/err" || fail "an unrouted put-back on the way out: $(cat "$t/err")"
-kept=$(sed -n 's/^✗ dlq.sh: kept \([^ ]*\) (mode 700).*/\1/p' "$t/err")
-case $kept in "$t/tmp/dlq."?*) rm -rf "$kept" ;; *) fail "nothing kept after an unrouted put-back: $(cat "$t/err")" ;; esac
+# Over every run: no --auto-ack, no kubectl, and every call named the project.
+reset
+jq -e -s 'length > 0 and all(.[]; (.argv | index("--auto-ack") | not) and any(.argv[]; startswith("--project=")) and .nolog == "true")' \
+  "$t/all-calls.jsonl" >/dev/null || fail "a call acked on pull, named no project or had gcloud's file log on"
+[ ! -e "$t/kubectl.calls" ] || fail "kubectl was called: $(cat "$t/kubectl.calls")"
 
-# The way out goes through the port-forward, so it is killed only after the put-back (the
-# fake curl fails once nothing listens on the forward, as the real one does).
-rc=0; out=$(FAKE_FAIL="3 4" KUBE_CONTEXT=test-ctx run cluster replay scoring 2>"$t/err") || rc=$?
-[ "$rc" = 1 ] && [ "$out" = "replayed 1, put back 0" ] || fail "cluster way out: $rc $out $(cat "$t/err")"
-grep -q '^put back 4 letters into their dead-letter queue$' "$t/err" || fail "cluster way out: $(cat "$t/err")"
-python3 - "$t/events" <<'PY' || fail "the port-forward was killed before the put-back: $(cat "$t/events")"
-import sys
-ev = open(sys.argv[1]).read().splitlines()
-assert ev.count("port-forward killed") == 1, ev
-killed = ev.index("port-forward killed")
-dlx = [i for i, e in enumerate(ev) if e.endswith("/ryft.dlx/publish")]
-assert len(dlx) == 5 and killed > max(dlx) and killed == len(ev) - 1, ev  # 1 failed in the loop, 4 on the way out
-PY
-[ -z "$(ls -A "$t/tmp")" ] || fail "the cluster way out left $(ls -A "$t/tmp")"
-
-# Signals during the way out (a second Ctrl-C, a TERM, the session dropping) do not stop it:
-# every letter left is put back, the port-forward is killed and nothing stays behind. Job
-# control on, so the background run does not ignore SIGINT as non-interactive jobs do.
-rm -f "$t/kubectl.calls" "$t/curl.calls" "$t/curl.n" "$t/events"
-set -m
-PATH="$t/bin:$PATH" KUBE_CONTEXT=test-ctx FAKE_FAIL="3 4" FAKE_SLOW_FROM=5 bash "$ROOT/scripts/dlq.sh" replay scoring > "$t/out" 2> "$t/err" &
-pid=$!
-set +m
-for _ in $(seq 1 100); do grep -q 'putting back the letters left' "$t/err" 2>/dev/null && break; sleep 0.1; done
-grep -q 'putting back the letters left' "$t/err" || fail "the way out did not start: $(cat "$t/err")"
-for sig in INT INT TERM HUP; do kill -s "$sig" "$pid" 2>/dev/null || true; sleep 0.3; done
-rc=0; wait "$pid" || rc=$?
-if [ "$rc" != 1 ] || ! grep -q '^put back 4 letters into their dead-letter queue$' "$t/err"; then
-  fail "signals stopped the way out (exit $rc): $(cat "$t/err")"
-fi
-grep -q '^port-forward killed$' "$t/events" || fail "the port-forward was not killed: $(cat "$t/events")"
-[ -z "$(ls -A "$t/tmp")" ] || fail "the interrupted way out left $(ls -A "$t/tmp")"
-
-# An answer that is not JSON is an error with the raw answer kept, not "empty"; an empty DLQ is.
-rc=0; out=$(FAKE_BAD_TAKE=1 run mgmt replay scoring 2>"$t/err") || rc=$?
-[ "$rc" = 1 ] || fail "a bad take must fail (got $rc): $out $(cat "$t/err")"
-if echo "$out" | grep -q empty; then fail "a bad take is not empty: $out"; fi
-kept=$(sed -n 's/^✗ dlq.sh: kept \([^ ]*\) (mode 700).*/\1/p' "$t/err")
-case $kept in "$t/tmp/dlq."?*) ;; *) fail "the kept directory $kept is not in TMPDIR ($t/tmp)" ;; esac
-[ "$(cat "$kept/taken.json")" = "not json" ] || fail "the raw answer is not kept: $(cat "$t/err")"
-# The take's directory records its source from the start, so the documented recovery works: the
-# operator reads taken.json, writes a *.back.json per letter next to it, and puts them back.
-[ "$(cat "$kept/source.txt")" = "url http://dlq-test.invalid" ] || fail "a kept take does not record its source: $(ls -A "$kept")"
-letter_file() { # DIR NAME: the first fixture letter as a kept *.back.json
-  python3 -c '
-import json, sys
-m = json.load(open(sys.argv[1]))[0]
-json.dump({"routing_key": "scoring", "properties": m["properties"], "payload": m["payload"], "payload_encoding": "string"}, open(sys.argv[2], "w"))' "$t/dlq.scoring.json" "$1/$2"
-}
-letter_file "$kept" 0001.back.json
-rc=0; MGMT_URL=http://elsewhere.invalid run mgmt put-back "$kept" >/dev/null 2>"$t/err" || rc=$?
-[ "$rc" = 2 ] && grep -q 'not from url http://elsewhere.invalid' "$t/err" && [ -e "$kept/0001.back.json" ] || fail "put-back of a kept take into another broker: $rc $(cat "$t/err")"
-rc=0; run mgmt put-back "$kept" >/dev/null 2>"$t/err" || rc=$?
-[ "$rc" = 0 ] && [ ! -e "$kept/0001.back.json" ] && [ -e "$kept/taken.json" ] || fail "put-back of a kept take: $rc $(cat "$t/err") $(ls -A "$kept")"
-# From inside the directory (`put-back .`): the letters go back and nothing fails afterwards.
-echo "url http://dlq-test.invalid" > "$kept/source.txt"; letter_file "$kept" 0001.back.json
-rc=0; ( cd "$kept" && run mgmt put-back . ) >/dev/null 2>"$t/err" || rc=$?
-[ "$rc" = 0 ] && [ ! -e "$kept/0001.back.json" ] || fail "put-back . : $rc $(cat "$t/err")"
-rm -rf "$kept"
-# A directory of the operator's own that merely looks like ours is never removed, nor is anything in
-# its parent: only a directory that carries source.txt is tidied, and only with rmdir.
-mkdir -p "$t/tmp/dlq.backup/pending"; echo precious > "$t/tmp/dlq.backup/keepme"
-echo "url http://dlq-test.invalid" > "$t/tmp/dlq.backup/pending/source.txt"; letter_file "$t/tmp/dlq.backup/pending" 0001.back.json
-echo mine > "$t/tmp/dlq.backup/pending/notes.txt"
-rc=0; run mgmt put-back "$t/tmp/dlq.backup/pending" >/dev/null 2>"$t/err" || rc=$?
-[ "$rc" = 0 ] && [ "$(cat "$t/tmp/dlq.backup/keepme")" = precious ] && [ "$(cat "$t/tmp/dlq.backup/pending/notes.txt")" = mine ] \
-  || fail "put-back removed what is not dlq.sh's: $rc $(cat "$t/err") $(ls -A "$t/tmp/dlq.backup" "$t/tmp/dlq.backup/pending")"
-rm -rf "$t/tmp/dlq.backup"
-# A URL with a login, and an @ in the password: none of it reaches source.txt.
-rc=0; out=$(MGMT_URL='http://user:p@ss:w0rd@dlq-test.invalid:15672' FAKE_BAD_TAKE=1 run mgmt replay scoring 2>"$t/err") || rc=$?
-kept=$(sed -n 's/^✗ dlq.sh: kept \([^ ]*\) (mode 700).*/\1/p' "$t/err")
-[ "$(cat "$kept/source.txt")" = "url http://dlq-test.invalid:15672" ] || fail "the login is in source.txt: $(cat "$kept/source.txt")"
-rm -rf "$kept"
-out=$(FAKE_EMPTY=1 run mgmt replay scoring 2>"$t/err") && [ "$out" = "dlq.scoring is empty" ] || fail "empty: $out $(cat "$t/err")"
-
-# list: the letters stay; a letter that was replayed before says so (only the boolean counts).
-out=$(run mgmt list 2>"$t/err") || fail "list: $(cat "$t/err")"
-echo "$out" | python3 -c '
-import json, sys
-lines = sys.stdin.read().splitlines()
-assert lines[0] == "dlq.scoring: 5" and lines[6] == "dlq.notify: 1", lines
-rows = [json.loads(l) for l in lines[1:6]]
-assert [r["replayed_before"] for r in rows] == [False, True, False, False, False], rows
-assert all(r["attempts"] == "6" and r["dead_lettered_by_broker"] is False for r in rows), rows  # tier entries do not count
-' || fail "list printed: $out"
-out=$(FAKE_SET=-broker run mgmt list 2>"$t/err") || fail "list (broker): $(cat "$t/err")"
-echo "$out" | python3 -c '
-import json, sys
-lines = sys.stdin.read().splitlines()
-assert lines[0] == "dlq.scoring: 14" and lines[15] == "dlq.notify: 0", lines
-rows = [json.loads(l) for l in lines[1:15]]
-assert [r["dead_lettered_by_broker"] for r in rows] == [True] * 13 + [False], rows
-' || fail "list (broker) printed: $out"
-check '
-assert {c["data"]["ackmode"] for c in calls if c["path"].endswith("/get")} == {"ack_requeue_true"}, calls
-assert not [c for c in calls if c["path"].endswith("/publish")], calls
-' || fail "list must leave the letters in place (above)"
-
-echo "✓ dlq_test: arguments before any call, a named context on every cluster call, credentials and bodies out of argv, replay marks and strips, only bound keys, nothing lost on a dropped connection, put-back, list"
+echo "✓ dlq_test: arguments before any call, --project on every call, the regional endpoint (the emulator's without credentials), list and show without ack, a replay of only the handled keys under the key its source gives, marked, with its attributes, data and ordering key (in a private flags file, never on argv), acked after its publish, foreign keys refused and left, a failed publish or ack stops, notify needs --force, purge asks"

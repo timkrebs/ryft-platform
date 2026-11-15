@@ -168,6 +168,10 @@ as before, and `deploy/k8s/vault` is base + VaultStaticSecret. Image tags are no
 
 ## D17 — HPA owns replicas; scoring stays single
 
+- **Amended by D218:** on Pub/Sub, "one consumer" becomes "scoring max-instances 1, one message in flight per user".
+  The ordering key `user_id` on scoring's two topics holds a user's later messages until the current one is settled,
+  so scoring can run with concurrency 4. The 15-minute timer is a tick step (D219).
+
 api and ingest have no `replicas` in their Deployments (the HPA, min 2 / max 4, owns
 it); otherwise every `kubectl apply` would reset them to 1. `minAvailable: 1` PDBs plus a
 minimum of 2 replicas means drains never block. scoring is deliberately left at one
@@ -1673,6 +1677,8 @@ sent, and whether a second account shares its phone.
 
 ## D97 — RabbitMQ replaces NATS JetStream (supersedes the messaging review)
 
+- *(Superseded by D218: Pub/Sub replaces RabbitMQ, with a topic per key, push with OIDC and a DLQ per consumer.
+  `amqp091-go`, `amqpbus` and `cmd/rabbitmq-topology` are deleted. `deploy/rabbitmq` goes with D3.)*
 - **What it reverses:** `docs/MESSAGING_DESIGN.md` (2026-10-19) recommended keeping NATS
   and asked to record that as D48. It never was (D48 is Apple's token revocation); this
   entry supersedes the review itself.
@@ -1716,6 +1722,8 @@ sent, and whether a second account shares its phone.
 ## D98 — TLS inside the cluster from an internal CA in cert-manager
 
 - **Amended by D190:** Vault has a CA of its own, `ryft-vault`, beside `ryft-internal` (#145, #151).
+  *(Superseded: the AMQP mutual TLS and the per-user passwords by D218, where Google API TLS, per-SA tokens and push
+  with OIDC replace them. The cluster and its CA go with D216.)*
 - **The CA:** ClusterIssuer `ryft-internal` in `infra/aws/kubernetes`'s `cluster-issuers`
   chart (cert-manager is Terraform's): a self-signed bootstrap issuer signs one ten-year
   ECDSA root in the `cert-manager` namespace; the CA issuer signs from it. Nothing
@@ -1753,7 +1761,10 @@ sent, and whether a second account shares its phone.
 ## D99 — The broker's topology, retries and rights, defined once in Go
 
 - **Amended by D150:** a replayed dead letter is marked `x-ryft-replayed` and handled as a redelivery; the
-  key of a delivery from `ryft.events` is its routing key; `dlq.sh` replays only bound keys.
+  key of a delivery from `ryft.events` is its routing key; `dlq.sh` replays only bound keys. **Amended by D218:**
+  on Pub/Sub the rights are IAM per topic (one topic per key, `roles/pubsub.publisher` on its own topics only). The
+  topology is in `internal/events/pubsub/topology.go`, and `cmd/pubsub-topology` writes `infra/gcp`'s tfvars and the
+  emulator's `init.sh`. The retries are Pub/Sub's retry policy (10–600 s) and 20 attempts.
 - **One source:** `internal/events/amqpbus/topology.go`. `go run ./cmd/rabbitmq-topology`
   writes the Topology Operator's objects (`deploy/rabbitmq/topology/topology.yaml`, 63
   objects in sync waves after the cluster) and the definitions compose and the tests
@@ -1802,6 +1813,7 @@ sent, and whether a second account shares its phone.
 
 ## D100 — Idempotent handlers instead of publish dedup
 
+- *(Kept by D218: it still holds on Pub/Sub. Push delivers at least once, also after an ack, and has no exactly-once.)*
 - JetStream dropped a repeat of the same message id within two minutes; RabbitMQ
   delivers every copy (a publisher retry after a lost confirm, a redelivery after a
   consumer died). The handlers are idempotent, and now tests say so:
@@ -1817,6 +1829,10 @@ sent, and whether a second account shares its phone.
 
 ## D101 — A transactional outbox in front of the broker
 
+- **Amended by D219:** the relay is inline (`Flush` after the commit, 2 s) plus the tick's `Sweep`; there is no poll.
+  The drains are serialised per publisher with a transaction-level advisory lock, so one user's rows keep their
+  order. Rows have a not-before time (`available_at`, 0034), and only due rows are drained and counted. notify is a
+  publisher too (its deferrals). The broker is Pub/Sub (D218).
 - **The gap it closes, there with NATS too:** a sync was stored, then its event
   published; a failed publish (the broker down, a pod killed in between) left days
   stored but never announced, until scoring's 15-minute pass (only yesterday and today)
@@ -1856,6 +1872,8 @@ sent, and whether a second account shares its phone.
 
 ## D102 — The cutover: four releases, configuration only
 
+- *(Superseded by D218: the services speak Pub/Sub only, and `EVENTS_*` and `AMQP_*` are gone. Nothing is cut over in
+  place: the platform is rebuilt on GCP (D216).)*
 - **Both brokers in one build:** the services carry both clients until the last
   release; which one they publish on (`EVENTS_BACKEND`) and which they consume
   (`EVENTS_CONSUME`, a list) is configuration (`internal/eventbus.PlanFor`). Each
@@ -1940,6 +1958,7 @@ sent, and whether a second account shares its phone.
 
 ## D104 — RabbitMQ: memory request equal to the limit
 
+- *(Superseded by D218: no RabbitMQ.)*
 - After R1 (2026-10-21) the Cluster Operator reported `NoWarnings=False`
   (`MemoryRequestAndLimitDifferent`): the broker derives its memory alarm from the limit
   (80 % of it is RabbitMQ's, the alarm at 60 % of that), so with a 1 GiB request and a
@@ -3029,6 +3048,10 @@ Engine, and fails with the changed fields grouped by field.
 
 ## D150 — A replayed dead letter is a redelivery; operator scripts name their cluster (amends D99, D112)
 
+- **Amended by D218:** on Pub/Sub the marker is the attribute `ryft-replayed=true`, exactly `true`; anything else is
+  ignored and logged. `scripts/dlq.sh` pulls from the hold subscription with `gcloud` and republishes to the original
+  topic. The replay rule stays: only the keys the consumer handles, and only a letter whose key is its topic's. The
+  `x-death` and `Ryft-*` handling below is RabbitMQ's and goes with it.
 - **Why (2026-10-23):** `dlq.sh replay` stripped every header that said a letter had been handled
   before, so scoring took it as a first delivery and a re-score left half-done by the failed attempts
   stayed so (D112's open item). And while building the fix, an agent ran `dlq.sh` to read its usage:
@@ -4445,3 +4468,231 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   rules (with `SyntheticsMissing`) are silenced until the site is back (REBUILD step 10). Consent to a text nobody can
   open, and an Impressum that is not available (§5 DDG), are not acceptable for anyone but the owner, so REBUILD step 12
   stops before any tester or App Review signs in until `/privacy`, `/de/privacy` and `/impressum` load somewhere.
+
+## D216 — RYFT runs on GCP serverless, its Terraform in HCP org `ryft-lab` (**the user's decision**, 2026-11-14)
+
+- **Decision:** RYFT moves from EKS to GCP serverless. That means Cloud Run, Pub/Sub, Secret Manager, Cloud Scheduler,
+  Artifact Registry and Cloud DNS, in project `ryftlab-prod` (no organisation, billing on). The site goes on Firebase
+  Hosting in a project of its own, `ryftlab-site` (D225). Nothing stays in the HashiCorp AWS account.
+- **Terraform:** it runs in HCP Terraform org `ryft-lab` (`org-aus6gvWumndxZixQ`, the user's own account), with
+  CLI-driven workspaces, remote execution and GCP dynamic credentials. The old org `tim-krebs-org` is used only for the
+  retirement, one prefixed command at a time.
+- **The design:** `docs/work/2026-11-14-gcp/design.md`, accepted by the user the same day (§13).
+- **Why:**
+  - Since 2026-11-14 an SCP of the HashiCorp org denies `eks:CreateCluster` in account 173003892479.
+  - EKS cost about $400–450 a month, and that cost caused the shutdown on 11-10 (D206).
+  - In the user's words: "für eine pre-alpha absolut ausreichend". The target is a few euros a month for about ten
+    testers.
+- **Unchanged:** Supabase (Postgres and Auth, Frankfurt), Grafana Cloud, the Apple keys, the domain `ryftlab.de`
+  (D213, D214), the contract's shapes (`docs/API.md`), the outbox (D101) and idempotent handlers (D100).
+- **Who decided what (§13):** the platform, the project and the org are the user's. Putting the site in a separate
+  project without billing is head-architect's default, and the user can still choose `ryftlab-prod`.
+- **Consequences:**
+  - PR A1 replaces RabbitMQ with Pub/Sub (D218) and every timer with one tick (D219).
+  - A2 brings the Cloud Run runtime and writes D220–D227.
+  - B prepares `infra/gcp` and `deploy.yml`, applied by the user only.
+  - D3 removes Kubernetes, Argo CD, Vault and `deploy/rabbitmq` once production on GCP passes the smoke (design §10).
+  - The decisions of design §10's list are marked superseded or amended by the PR that makes them false.
+
+## D217 — europe-west1 with Cloud Run domain mappings, two API hosts, `min-instances 0` (**the user's decision**, 2026-11-14)
+
+- **Decision:**
+  - **Region:** everything regional runs in europe-west1: Cloud Run, Pub/Sub's message storage, the secrets,
+    Artifact Registry, Scheduler and the log bucket.
+  - **Domains:** the custom domains are Cloud Run domain mappings, which are Preview.
+  - **Two API hosts:** `https://api.ryftlab.de` (api) and `https://ingest.ryftlab.de` (ingest, `POST /v1/sync`). The
+    app's ingest URL becomes required (`API.md` → Base URLs; a documentation change, no shape change).
+  - **Scaling:** `min-instances 0` on every service.
+  - **Accepted gaps:** design §5.2's gaps are accepted for the pre-alpha: no Cloud Armor, TLS 1.0 and 1.1 on the
+    mapped hosts, no organisation, the one Grafana SA key, request logs at Google, unrestricted egress, and rate
+    limits per instance.
+- **Why:**
+  - The user first said Frankfurt, then chose west1 once he saw the cost. europe-west3 has no domain mappings, and
+    its alternative, a global load balancer (~$18 a month *(unchecked)*), would cost several times the rest of the
+    bill. west1 is also Tier 1 pricing.
+  - A mapping points a host only at `/`, so Traefik's `/v1/sync → ingest` on one host has no equivalent. Hence two
+    hosts.
+  - The price: a sync about 0.15 s slower and scoring a few days about a second slower *(estimate, unmeasured)*.
+    Both stay inside the sync-to-score target (p95 2 min).
+- **Who decided what (§13):** the region, the mappings and the two hosts are the user's answers, and so is the
+  Grafana SA key. `min-instances 0` and the other gaps of §5.2 are head-architect's defaults, which the user can
+  still object to.
+- **Revisit if** (design §1):
+  - a mapping fails or is withdrawn, or its latency hurts. Then move to europe-west3, or stay in west1, either way
+    behind a load balancer;
+  - Supabase moves;
+  - scoring latency starts to matter (a rescore of many days).
+- **Consequences:**
+  - Cold starts take roughly 0.5–1.5 s after idle *(unmeasured)*. The app already retries 503s.
+  - With request-based CPU nothing runs between requests, so every timer becomes a tick (D219).
+  - The 32 MiB sync needs HTTP/2 end to end (D220, A2). Runbook step 9 tests it.
+
+## D218 — Events on Pub/Sub: a topic per key, push with OIDC, a dead-letter topic per consumer (supersedes D97, D102, D104 and D98's AMQP TLS; amends D17, D99, D150; PR A1)
+
+- **Decision:**
+  - **Topology:**
+    - One topic per event key: `ryft-ingested`, `ryft-session-completed`, `ryft-scored`, `ryft-session-scored`,
+      `ryft-refresh`.
+    - Each publisher service holds `roles/pubsub.publisher` on its own topics only (D99's matrix).
+    - Two more topics: `ryft-notify-wait` and `ryft-tick` (D219).
+    - A dead-letter topic per consumer, `ryft-dlq-scoring` and `ryft-dlq-notify`, each with a pull hold subscription
+      that keeps letters 14 days.
+    - The topology is defined once, in Go (`internal/events/pubsub/topology.go`). `go run ./cmd/pubsub-topology` writes
+      `infra/gcp/pubsub.auto.tfvars.json` and `deploy/pubsub-emulator/init.sh`, and `-check` fails on drift.
+  - **Delivery:**
+    - Push subscriptions to each service's `run.app` URL, with an OIDC token of `ryft-push` and `oidc_token.audience`
+      set explicitly to that URL.
+    - Retry policy 10–600 s. For push, Pub/Sub may use its push backoff instead.
+    - 20 delivery attempts, then the consumer's DLQ.
+    - Per-user ordering (`ordering_key = user_id`) on scoring's two topics, published through the regional endpoint
+      `https://europe-west1-pubsub.googleapis.com`.
+  - **Transport:** `internal/events/pubsub`, stdlib only. It publishes over REST with a token from the metadata
+    server, and uses no Google client library. `amqp091-go`, `internal/events/amqpbus` and `cmd/rabbitmq-topology` are
+    deleted. `deploy/rabbitmq` stays until D3.
+  - **Interface:**
+    - `events.Handler` is `func(ctx, key, data) error`, called by the push handler.
+    - `Bus` has no `Ready` and no `Close`: a REST publish holds no connection.
+    - The status mapping:
+      - `nil` → 204.
+      - `Permanent` → 204, dropped.
+      - Any other error or a panic → 500.
+      - The new `events.Bad` → the consumer's own DLQ topic with `ryft-error`, then 204, or 500 when that publish
+        fails. A decode failure is `Bad`, and so is a `ryft-key` that isn't the push path's key (filed under the
+        path's key).
+      - `Defer` → an outbox row with a not-before time (D219), then 204.
+  - **The token check (the messaging part of D222):**
+    - It runs in the app on every `/push/*` and `/internal/*` of all four services: RS256 only, `exp` required.
+    - `iss` must be `https://accounts.google.com` or `accounts.google.com`, which Google's own verifiers also accept.
+    - `aud` must equal `PUSH_AUDIENCE` exactly, never the `Host` header.
+    - `email` must equal `PUSH_SA_EMAIL`, with `email_verified` true, and `sub` must equal `PUSH_SA_ID`.
+    - The keys are Google's JWKS, through `internal/auth`'s keyfunc, not the Supabase parser.
+    - A refusal is a 401, or a 503 while the token cannot be checked: no keys loaded, or an unknown key id while
+      the last fetch failed. Refusals count in `ryft_auth_failures_total` with the existing reasons.
+    - While no keys are loaded, a token fetches them first: at most once every 10 s per instance, within the
+      request's deadline and at most 5 s. A cold instance (`min-instances 0`) whose first fetch failed would
+      otherwise answer 503 until the hourly refresh, and Pub/Sub would dead-letter the pushes.
+    - An unknown key id after the minute's refresh is a 401 `unknown_key` while the last fetch worked, not a 503
+      `jwks_refresh_limited`: anyone can send one to the public api and ingest, and a 503 would feed the
+      availability alerts. Pub/Sub retries a 401 as well, so a real rotation inside that minute is delivered on a
+      later attempt. The Supabase verifier keeps its 503 (A2's runtime ticket).
+    - On api and ingest it is the only gate. On scoring and notify it is the backstop behind ingress `internal` and
+      Cloud Run IAM (`roles/run.invoker` for `ryft-push` only).
+    - `config.Load` refuses `ALLOW_INSECURE_PUSH=true` and `PUBSUB_EMULATOR_HOST` when `K_SERVICE` or `CLOUD_RUN_JOB` is
+      set, and a `PUBSUB_ENDPOINT` that is not `https://<name>.googleapis.com` (no port, path or userinfo): the
+      access token goes with every publish.
+  - **What a message holds and what is taken from it:**
+    - No health value in a body. `scored` is `{user_id, day, request_id}`; notify reads the score when it sends.
+      A message sits in Google's Pub/Sub up to 7 days, in a dead-letter hold 14 and in notify's waiting rows until
+      quiet hours end. Older images' `scored` messages, with the values, still decode.
+    - The envelope is the pusher's: a `messageId` that is not 1 to 32 decimal digits is a 400, the subscription
+      and a `ryft-key` that is not a key are cut in log lines, and a deferral keeps at most 256 bytes of
+      `ryft-message-id`.
+    - The `reason` label of `ryft_events_handled_total` is the event's reason only when it is one of
+      `events.Reasons`, else `unknown`: an ingested event's reason is in its body.
+    - A send no retry can deliver is `events.Rejected` (no topic for the key, an ordered event without a user,
+      Pub/Sub's 400, 403, 404 or 413); the outbox sets its row aside at once (D219).
+- **Why:**
+  - RabbitMQ needs a cluster: three nodes and two operators (D97, D104). The services no longer run on one (D216).
+  - Pub/Sub grants publishing per topic, not per attribute, so one topic per key keeps D99's rule ("ingest cannot
+    publish `session.completed`") without a broker.
+  - Push needs no consumer loop, which request-based CPU wouldn't run (D219).
+  - REST on the stdlib adds no dependency, which this repository's rule asks for.
+- **Kept:**
+  - Events are triggers, and the outbox stays (D101).
+  - Idempotent handlers (D100). Pub/Sub delivers at least once and can redeliver after an ack, and exactly-once
+    delivery isn't available for push. `ryft-message-id` stays stable per trigger, and nothing dedups on it.
+  - `Permanent` is dropped, not dead-lettered (D97's deviation).
+  - The key rule: the path's key, which the publisher can't change.
+  - D150's replay rule. The marker is `ryft-replayed=true`, and `scripts/dlq.sh` runs on `gcloud`.
+  - The name `ryft_nats_redeliveries_total`.
+- **Alternatives:**
+  - One topic per consumer with the key as an attribute: one binding would let ingest publish any key.
+  - Pull subscriptions: they need CPU between requests, so instance-based billing (D217, D219).
+  - Exactly-once delivery: not available for push.
+- **Consequences:**
+  - The retry spacing isn't ours to fix (push backoff), and the attempt count is best effort.
+  - Pub/Sub's own dead letters carry no `ryft-error`. The last error is in the consumer's log, by `messageId`.
+  - With a dead-letter topic, order "might not be" kept, because forwarding is best effort.
+  - A 429 from a saturated scoring counts as an attempt. `PushBacklog` alerts first.
+  - A captured token is valid for its hour, and D100 makes a replay harmless.
+  - The emulator checks no IAM and no OIDC: Terraform tests pin the matrix, and Go tests with signed tokens pin the
+    check.
+  - `ryft_amqp_*` and the `unroutable` result are gone. A key without a topic is an `error`.
+  - D17 becomes "scoring max-instances 1, one message in flight per user" (concurrency 4, set by the Cloud Run
+    runtime, A2/B).
+  - Details: `MESSAGING_DESIGN.md`, design §2.
+
+## D219 — One Scheduler tick replaces every timer; the outbox relays inline and has a not-before time (amends D101; PR A1)
+
+- **Decision:**
+  - **The tick:**
+    - Cloud Scheduler job `ryft-tick`, every 15 minutes, publishes `{}` with `ryft-key=tick` to topic `ryft-tick`.
+    - A push subscription per service delivers it to `POST /internal/tick`, whose token is checked as on a push (D218).
+    - The service's steps run in order within a budget: api, ingest and notify 45 s, scoring 240 s.
+      - api: db ping, outbox sweep, account reconcile, invite settings refresh, invite email purge.
+      - ingest: db ping, outbox sweep.
+      - scoring: db ping, outbox sweep, the scoring pass and housekeeping.
+      - notify: db ping, outbox sweep, the stale check.
+    - The answer is 204 after auth, whatever a step did. A tick that arrives while one runs in the same process gets
+      204 and counts as `overlap`. `ryft_ticks_total{service,result=ok|error|overlap}` is counted before the final hook
+      (A2's metrics push).
+    - A failed tick isn't retried: its subscription keeps a message 10 minutes and has no DLQ.
+  - **No timers in the services:** no tickers, no `db.Watch`, no outbox poll. The tick's db ping sets `ryft_db_up` and
+    `ryft_db_ping_failures_total`.
+  - **No Supabase call at start:** the api's invite settings refresh is a tick step, plus one lazy refresh on the
+    first bound invite. Bound invites are refused until a refresh succeeds (fail closed). A tick's read that the
+    tick's budget cuts short records nothing (as the db ping), so it neither makes the state unknown nor spares the
+    next request its lazy read.
+  - **The outbox, inline:**
+    - `Flush` runs after the commit and before the answer, with a 2 s budget, detached from the request's cancel. It
+      replaces `Kick`. `Send` is `Insert` plus `Flush`.
+    - `Sweep` runs in the tick.
+    - `Run` is for tests and local tools only.
+    - A failed send stops the drain and is recorded in `last_error`. Only a `Sweep` counts it as an attempt
+      (`MaxAttempts` 50, about 12 hours of ticks): a `Flush` runs per request, and during a Pub/Sub outage fifty
+      requests would set the head row aside in seconds. An `events.Rejected` send sets the row aside at once, from
+      either, and the rows after it go in the same drain.
+  - **Order:**
+    - The drains of each publisher are serialised with `pg_advisory_xact_lock(7419006, hashtext(publisher))`, with
+      `lock_timeout` taken from the drain's budget. Both are transaction-scoped, as the transaction pooler requires.
+      So one user's rows go out in id order across goroutines and instances.
+    - A `Flush` that loses the race waits for the lock within its 2 s budget, then takes what is due, its own row
+      included.
+    - `FOR UPDATE SKIP LOCKED` stays, so an older binary in a rollout never sends a row twice at once.
+  - **Not before:**
+    - Migration `0034_outbox_available_at.sql` adds `outbox.available_at timestamptz NOT NULL DEFAULT now()`.
+    - Only due rows are drained, and only they count in `ryft_outbox_pending` and `ryft_outbox_oldest_seconds`.
+    - The age is measured from the later of `created_at` and `available_at`.
+    - notify's deferral is a row of publisher `notify`, due at now + d. notify's tick sweep relays it to
+      `ryft-notify-wait` under its original key, and `/push/wait` hands it back to the handler.
+    - 0034 also widens the publisher CHECK to `notify`, adds the index `outbox_due`, and grants `ryft_notify` the
+      outbox with an RLS policy `publisher = 'notify'`.
+  - **Local:** compose runs the same runtime as Cloud Run (the emulator, `ALLOW_INSECURE_PUSH=true`, a ticker every
+    60 s), not a second mode.
+- **Why:**
+  - With request-based billing, "CPU is allocated when instances are processing requests". A timer goroutine, or a
+    relay after the response, may never run (design §3).
+  - Pub/Sub has no per-message delay, and backing off counts as attempts, so RabbitMQ's wait tiers have no
+    equivalent. The outbox already has rows, a relay and a sweep.
+  - With inline flushes, `SKIP LOCKED` alone let a second drain send a later row while the first still held an earlier
+    one.
+  - The due-only gauges: a deferral that came due after a night of quiet hours is no backlog of hours.
+- **Alternatives:**
+  - `min-instances 1` with instance-based billing for CPU outside requests: several euros a month *(unchecked)*.
+  - A Scheduler job per timer: the free tier has three jobs per billing account (design §7). One job fanned out
+    through a topic costs nothing.
+  - Deferring by nack: every back-off is an attempt, and a long quiet night would dead-letter the push.
+- **Consequences:**
+  - Precision is the tick. A deferred push can be up to 15 minutes late; the knob is a second Scheduler job every 5
+    minutes for `tick-notify`.
+  - The invite email purge runs every 15 minutes instead of hourly. It is idempotent.
+  - The old jobs' state in memory (`learner.tried`, `catchUp.failed`, `catchUp.next`) is per instance. A failing user
+    is retried every tick instead of once a day, and a pass starts from the first user. That is harmless at ten users,
+    and a `job_state` table would fix it.
+  - A row whose `Flush` failed waits for a tick.
+  - Absence is a signal: without ticks there is no sweep, no scoring pass and no `ryft_db_up`. `TickMissing` reads
+    `ryft_ticks_total`.
+  - Rollback: 0034 is additive, and older images ignore `available_at`. But no older image relays publisher `notify`,
+    so notify's waiting rows stay unsent until the images come back.
+  - `Grace` stays 30 s in A1. D169's 10 s comes with A2.
+  - Details: `MESSAGING_DESIGN.md` → The tick, The outbox.

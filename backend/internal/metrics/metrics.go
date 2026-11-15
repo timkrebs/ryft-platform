@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"net/http"
-	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -69,58 +68,66 @@ var (
 	// bug to fix; the response body stays generic (D37).
 	Panics = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_http_panics_total",
-		Help: "Handler panics recovered (answered 500), by route pattern.",
+		Help: "Handler panics recovered (answered 500; a tick step's: the tick goes on and answers 204), by route pattern.",
 	}, []string{"route"})
 
 	// GoroutinePanics counts panics that internal/app recovered in a service's own
-	// goroutines (consumers, timers, the outbox relay, the HTTP servers). The service
-	// then shuts down in order and exits 2, as an unrecovered panic does. A panic in a
-	// /readyz check is counted too, and the service keeps running. Any increase is a
-	// bug to fix. It has no label: the log line "panic" names the task or the check,
-	// and a handler's panic is counted by Panics or ConsumerPanics instead.
+	// goroutines (the HTTP and /metrics servers; consumers, timers and the relay are
+	// push routes, tick steps and inline flushes now, D219). The service then shuts
+	// down in order and exits 2, as an unrecovered panic does. A panic in a /readyz
+	// check is counted too, and the service keeps running. Any increase is a bug to
+	// fix. It has no label: the log line "panic" names the task or the check, and a
+	// handler's or a tick step's panic is counted by Panics or ConsumerPanics instead.
 	GoroutinePanics = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "ryft_goroutine_panics_total",
-		Help: "Panics recovered in a service's own goroutines (consumers, timers, relay, servers); the service then shuts down and exits 2 (a /readyz check's panic does not stop it).",
+		Help: "Panics recovered in a service's own goroutines (its servers); the service then shuts down and exits 2 (a /readyz check's panic does not stop it).",
 	})
 
-	// RateLimited counts requests answered 429 by the per-pod, per-user token bucket
+	// RateLimited counts requests answered 429 by the per-instance, per-user token bucket
 	// (ingest and api, D36).
 	RateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_rate_limited_total",
 		Help: "Requests answered 429 by the per-user limit, by class (sync, default, …), and by the per-address limit of /v1/admin (admin_ip).",
 	}, []string{"class"})
+	// AuthFailures also counts the push and tick tokens refused on /push/* and /internal/*
+	// (Google OIDC, D218) with the same reasons: subject there is a token of another
+	// account than the push service account (its sub, email or email_verified), and
+	// jwks_unavailable means Google's signing keys cannot be loaded.
 	AuthFailures = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_auth_failures_total",
-		Help: "Rejected /v1 requests by reason: missing_token, expired, signature, issuer, audience, unknown_key, " +
-			"role, anonymous, subject, api_key, deleted, … (401) and jwks_unavailable, jwks_refresh_limited, internal (503).",
+		Help: "Rejected /v1 requests and push/tick tokens by reason: missing_token, malformed, expired, signature, issuer, audience, " +
+			"unknown_key, key_mismatch, invalid, role, anonymous, subject, api_key, deleted, … (401) and jwks_unavailable, " +
+			"jwks_refresh_limited, internal (503).",
 	}, []string{"reason"})
 	AccountDeletions = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_account_deletions_total",
 		Help: "Account deletion steps: step=data (our rows), apple (revoking the Sign in with Apple token) or auth (the Supabase auth user); result=ok, error or skipped (not configured).",
 	}, []string{"step", "result"})
 
-	// EventsPublished counts sends to the broker (ingest, api and scoring publish).
-	// An error from the relay is retried from the outbox row. A sync and a session
-	// completion write their row with outbox.Insert in their own transaction, so a
-	// failure there rolls the request back. An error from outbox.Send means its INSERT
-	// failed, so there is no row, and the caller decides: recompute and session edits
-	// answer 503, while merge and scoring's three publishes only log it and that event
-	// is lost (D101).
+	// EventsPublished counts publishes to Pub/Sub (ingest, api, scoring, and notify's
+	// deferrals into ryft-notify-wait). An error from the relay is retried from the
+	// outbox row; a key without a topic is an error too, a rejection, and the outbox sets
+	// its row aside at once. A sync and a session completion write their row with outbox.Insert
+	// in their own transaction, so a failure there rolls the request back. An error from
+	// outbox.Send means its INSERT failed, so there is no row, and the caller decides:
+	// recompute and session edits answer 503, while merge and scoring's three publishes
+	// only log it and that event is lost (D101).
 	EventsPublished = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_published_total",
-		Help: "Events sent to the broker, by reason (sync, recompute, session, session_completed, scored, session_scored, refresh) " +
-			"and result (ok, error, unroutable: no queue bound for the key).",
+		Help: "Events published to Pub/Sub, by reason (sync, recompute, session, session_completed, scored, session_scored, refresh) " +
+			"and result (ok, error: refused, unreachable, or a key without a topic).",
 	}, []string{"reason", "result"})
 	EventsHandled = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_handled_total",
-		Help: "Events consumed, by reason and result: ok, retry (to the next retry tier), failed (the last attempt failed, " +
-			"dead-lettered), bad (unparseable, dead-lettered), dropped (cannot succeed, e.g. the user was deleted), deferred (notify: quiet hours).",
+		Help: "Pushed events handled, by reason and result: ok, retry (nacked, Pub/Sub delivers it again), failed (nacked on its " +
+			"last delivery attempt: Pub/Sub dead-letters it), bad (unparseable or the wrong key, dead-lettered by the consumer), " +
+			"dropped (cannot succeed, e.g. the user was deleted), deferred (notify: quiet hours, held in the outbox).",
 	}, []string{"reason", "result"})
 	// Redeliveries counts messages a consumer received again. The metric name is from
 	// NATS, kept so the dashboards and history stay (D102).
 	Redeliveries = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_nats_redeliveries_total",
-		Help: "Messages received again, per queue: redelivered by the broker, a retry tier's copy, or a dead letter replayed by hand.",
+		Help: "Messages received again, per consumer: a Pub/Sub delivery attempt above 1, or a dead letter replayed by hand (ryft-replayed).",
 	}, []string{"consumer"})
 
 	DaysScored = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -175,12 +182,20 @@ var (
 	}, []string{"result"})
 	DBUp = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ryft_db_up",
-		Help: "1 when the service's last database ping (every 30 s) succeeded, 0 when it failed.",
+		Help: "1 when the service's last database ping succeeded, 0 when it failed; set by each tick.",
 	}, []string{"service"})
 	DBPingFailures = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_db_ping_failures_total",
-		Help: "Failed database pings (every 30 s, 5 s timeout): Supabase or its pooler unreachable, or the role refused.",
+		Help: "Failed database pings, set by each tick: Supabase or its pooler unreachable, or the role refused.",
 	}, []string{"service"})
+	// Ticks counts the POST /internal/tick a service answered (D219): one per tick
+	// after authentication, whatever its steps did. TickMissing reads it, so it is
+	// counted before the tick's metrics push.
+	Ticks = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_ticks_total",
+		Help: "Ticks handled (POST /internal/tick), by service and result: ok (every step succeeded), error (a step failed or " +
+			"the budget ran out), overlap (a tick was still running in this instance).",
+	}, []string{"service", "result"})
 	UsersByLastSync = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ryft_users_by_last_sync",
 		Help: "Accounts by the age of their newest device sync (scoring, every 15 min): under_6h, 6h_to_24h, 1d_to_3d, over_3d, never.",
@@ -192,12 +207,12 @@ var (
 	})
 	ConsumerPanics = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_event_handler_panics_total",
-		Help: "Event handlers that panicked (the message is retried and, at the last delivery, dead-lettered), by subject.",
+		Help: "Event handlers that panicked (the push is nacked, delivered again and, after the last attempt, dead-lettered by Pub/Sub), by event key.",
 	}, []string{"subject"})
 	EventsDLQ = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_events_dlq_total",
-		Help: "Events dead-lettered (dlq.scoring, dlq.notify), by routing key: ok, or error (the publish failed; " +
-			"the message was rejected and the broker's delivery limit dead-letters it).",
+		Help: "Bad events a consumer dead-lettered itself (ryft-dlq-scoring, ryft-dlq-notify), by event key (unknown: no valid key): ok, " +
+			"or error (the publish failed; the push was nacked and Pub/Sub dead-letters it after its attempts).",
 	}, []string{"subject", "result"})
 	FeedbackReceived = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_feedback_received_total",
@@ -299,39 +314,22 @@ func Result(err error) string {
 
 // The transactional outbox (D101), per publishing service.
 var (
+	// OutboxPending, OutboxOldest and OutboxStuck are set by the tick's outbox Sweep
+	// (D219), so between two ticks they show the last sweep's numbers.
 	OutboxPending = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ryft_outbox_pending",
-		Help: "Events written to the outbox and not yet confirmed by the broker (updated every 15 s by the relay).",
+		Help: "Due outbox events not yet accepted by Pub/Sub; set by the tick's sweep.",
 	}, []string{"publisher"})
 	OutboxOldest = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ryft_outbox_oldest_seconds",
-		Help: "Age of the oldest event waiting in the outbox (0 when none waits).",
+		Help: "Seconds the oldest due event has waited since it became due; 0 when none.",
 	}, []string{"publisher"})
 	OutboxStuck = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ryft_outbox_stuck",
-		Help: "Outbox events set aside after 50 failed sends (an event no queue takes); they need a person.",
+		Help: "Outbox events set aside: after 50 failed sweeps, or at once when the transport rejects them for good (a key no topic takes, a body Pub/Sub refuses); they need a person.",
 	}, []string{"publisher"})
 	OutboxRelayed = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_outbox_relayed_total",
-		Help: "Outbox events the relay sent, by result: ok (confirmed), error (retried).",
+		Help: "Outbox events sent by flush or sweep, by result: ok, error (refused: a sweep's counts an attempt, a rejection sets the row aside).",
 	}, []string{"publisher", "result"})
 )
-
-// The RabbitMQ connection's metrics, registered by UseAMQP, which amqpbus.New
-// calls before it dials: a binary that never creates a bus (migrate) exposes none, so a 0 is never a false alarm.
-var (
-	AMQPConnected = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "ryft_amqp_connected",
-		Help: "1 while the service's connection to RabbitMQ is up, 0 while it reconnects.",
-	})
-	AMQPReconnects = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "ryft_amqp_reconnects_total",
-		Help: "Connections to RabbitMQ that closed and were dialled again.",
-	})
-	amqpOnce sync.Once
-)
-
-// UseAMQP registers the RabbitMQ connection metrics (once).
-func UseAMQP() {
-	amqpOnce.Do(func() { prometheus.MustRegister(AMQPConnected, AMQPReconnects) })
-}

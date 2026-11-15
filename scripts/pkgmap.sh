@@ -86,17 +86,17 @@ END {
     for (i = 1; i in im; i++) { r = rel(im[i]); if (r != "") deps = deps (deps == "" ? "" : ", ") short(r) }
     if (deps == "") deps = "none"
     # own tests, and what they need
-    nt = split(tests[k], tf, " "); pg = (testimp[k] ~ /(^| )internal\/testsupport( |$)/); mq = 0
+    nt = split(tests[k], tf, " "); pg = (testimp[k] ~ /(^| )internal\/testsupport( |$)/); ps = 0
     for (i = 1; i <= nt; i++) {
       f = dir[k] "/" tf[i]
       while ((getline line < f) > 0) {
         if (index(line, "RYFT_TEST_POSTGRES_URL")) pg = 1
-        if (index(line, "RYFT_TEST_AMQP_URL")) mq = 1
+        if (index(line, "RYFT_TEST_PUBSUB_EMULATOR_HOST")) ps = 1
       }
       close(f)
     }
     if (nt > 0) {
-      need = (pg ? "Postgres" : "") (pg && mq ? ", " : "") (mq ? "RabbitMQ" : "")
+      need = (pg ? "Postgres" : "") (pg && ps ? ", " : "") (ps ? "Pub/Sub emulator" : "")
       tested = plural(nt) (need == "" ? "" : " (" need ")")
     } else if (importer_of[path[k]] != "") tested = "via " importer_of[path[k]]
     else tested = "none"
@@ -113,9 +113,9 @@ END {
   echo
   echo "Owns is the first sentence of the package's \`doc.go\`; Depends on lists the direct imports of this module"
   echo "(\`internal/\` left out). Tested by is the number of the package's own test files, with the services the"
-  echo "tests need (they skip without \`RYFT_TEST_POSTGRES_URL\` or \`RYFT_TEST_AMQP_URL\`), else the packages whose"
-  echo "tests import it. \`make smoke\` and the golden fixtures are not attributed to a package;"
-  echo "\`cmd/rabbitmq-topology\` is checked by \`make k8s-validate\`."
+  echo "tests need (they skip without \`RYFT_TEST_POSTGRES_URL\` or \`RYFT_TEST_PUBSUB_EMULATOR_HOST\`), else the packages"
+  echo "whose tests import it. \`make smoke\` and the golden fixtures are not attributed to a package;"
+  echo "\`cmd/pubsub-topology\`'s outputs are checked by \`make topology-check\` (CI's \`topology\` job)."
   echo
 } >"$tmp/table"
 

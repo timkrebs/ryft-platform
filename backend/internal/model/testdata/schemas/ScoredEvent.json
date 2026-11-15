@@ -4,24 +4,7 @@
     "day": {
       "type": "string"
     },
-    "readiness": {
-      "nullable": true,
-      "type": "integer"
-    },
-    "recovery": {
-      "type": "integer"
-    },
     "request_id": {
-      "type": "string"
-    },
-    "sleep_min": {
-      "type": "integer"
-    },
-    "sleep_performance": {
-      "nullable": true,
-      "type": "integer"
-    },
-    "state": {
       "type": "string"
     },
     "user_id": {
@@ -31,11 +14,6 @@
   },
   "required": [
     "day",
-    "readiness",
-    "recovery",
-    "sleep_min",
-    "sleep_performance",
-    "state",
     "user_id"
   ],
   "title": "ScoredEvent",

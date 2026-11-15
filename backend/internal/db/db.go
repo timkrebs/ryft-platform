@@ -198,42 +198,32 @@ func locked(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) erro
 	return tx.Commit(ctx)
 }
 
-// WatchEvery is how often Watch pings the database.
-const WatchEvery = 30 * time.Second
+// PingTimeout bounds one Ping.
+const PingTimeout = 5 * time.Second
 
-// Watch pings the database every WatchEvery until ctx ends and reports it as
+// Pinger is what Ping pings: a *pgxpool.Pool.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
+// Ping pings the database once, within PingTimeout, and reports it as
 // ryft_db_up{service} (1 or 0) and ryft_db_ping_failures_total{service}: the
-// Supabase connection alert, independent of traffic. A failure and the
-// recovery after it are logged once each.
-func Watch(ctx context.Context, pool *pgxpool.Pool, service string, log *slog.Logger) {
-	t := time.NewTicker(WatchEvery)
-	defer t.Stop()
-	up := true
-	for {
-		short, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err := pool.Ping(short)
-		cancel()
-		switch {
-		case ctx.Err() != nil:
-			return
-		case err != nil:
-			metrics.DBPingFailures.WithLabelValues(service).Inc()
-			metrics.DBUp.WithLabelValues(service).Set(0)
-			if up {
-				log.Warn("database unreachable", "err", err)
-			}
-			up = false
-		default:
-			metrics.DBUp.WithLabelValues(service).Set(1)
-			if !up {
-				log.Info("database reachable again")
-			}
-			up = true
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
+// Supabase connection alert. Every service's tick calls it as its first step
+// (D219); there is no watch goroutine any more, as Cloud Run gives a service CPU
+// only while a request runs. The error is the tick's to log. A ping cut because ctx
+// ended (the tick's caller hung up) is no verdict on the database: it sets nothing.
+func Ping(ctx context.Context, pool Pinger, service string) error {
+	short, cancel := context.WithTimeout(ctx, PingTimeout)
+	defer cancel()
+	err := pool.Ping(short)
+	switch {
+	case err != nil && ctx.Err() != nil:
+		return err
+	case err != nil:
+		metrics.DBPingFailures.WithLabelValues(service).Inc()
+		metrics.DBUp.WithLabelValues(service).Set(0)
+		return fmt.Errorf("database unreachable: %w", err)
 	}
+	metrics.DBUp.WithLabelValues(service).Set(1)
+	return nil
 }

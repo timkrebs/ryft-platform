@@ -61,6 +61,7 @@ jobs:
       # (scripts/promote_only.sh). A manual run always runs it.
       run_admission: ${{ github.event_name == 'workflow_dispatch' || ((github.event_name != 'pull_request' || steps.filter.outputs.admission == 'true') && steps.promote.outputs.only != 'true') }}
       run_golden: ${{ github.event_name != 'pull_request' || steps.filter.outputs.golden == 'true' }}
+      run_topology: ${{ github.event_name != 'pull_request' || steps.filter.outputs.topology == 'true' }}
       # Image groups to build and pin (never on a pull request).
       services: ${{ steps.targets.outputs.services || 'false' }}
       web: ${{ steps.targets.outputs.web || 'false' }}
@@ -80,9 +81,11 @@ jobs:
               # a config-only change must run them.
               - 'deploy/k8s/base/*/config.env'
               - 'scripts/coverage.sh'
-              # amqpbus's replay tests run the script against the broker.
-              - 'scripts/dlq.sh'
-              - 'scripts/lib/kube.sh'
+              # internal/events/pubsub's tests compare the topology with the generated files and with
+              # Terraform's constants (pubsub.tf).
+              - 'infra/gcp/pubsub.auto.tfvars.json'
+              - 'infra/gcp/pubsub.tf'
+              - 'deploy/pubsub-emulator/**'
               - '.github/workflows/ci.yml'
             # The package map in docs/ARCHITECTURE.md is generated from the code (scripts/pkgmap.sh --check, in the
             # `lint` job): an edit of the doc or the script alone selects `lint`, not the whole Go suite.
@@ -97,7 +100,10 @@ jobs:
               - 'deploy/run/**'
               - 'docker-compose.yml'
               - 'Makefile'
-              - 'deploy/rabbitmq/dev/**'
+              # compose's emulator runs it
+              - 'deploy/pubsub-emulator/**'
+              # scripts/dlq.sh reads its keys and topics from it (scripts/tests/dlq_test.sh)
+              - 'infra/gcp/pubsub.auto.tfvars.json'
               - 'web/config/brand-denylist.json'
               - 'web/scripts/check-brand.mjs'
               - 'web/scripts/lib/brand.mjs'
@@ -115,8 +121,11 @@ jobs:
               - '**/.gitattributes'
               - '.gitmodules'
               - 'docker-compose.yml'
-              - 'backend/internal/events/amqpbus/**'
-              - 'backend/cmd/rabbitmq-topology/**'
+              # make k8s-validate runs the topology's drift check (make topology-check)
+              - 'backend/internal/events/*.go'
+              - 'backend/internal/events/pubsub/**'
+              - 'backend/cmd/pubsub-topology/**'
+              - 'infra/gcp/pubsub.auto.tfvars.json'
               - 'backend/go.mod'
               - 'web/content/legal/**'
               - 'web/scripts/check-policy-version.mjs'
@@ -183,6 +192,14 @@ jobs:
               - 'scripts/golden_guard.sh'
               - 'scripts/tests/golden_guard_test.sh'
               - '.github/workflows/ci.yml'
+            # The Pub/Sub topology's generated files against topology.go (`topology` job): the Go
+            # anywhere in the module (the keys come from internal/events), and the two outputs.
+            topology:
+              - 'backend/**'
+              - 'infra/gcp/pubsub.auto.tfvars.json'
+              - 'deploy/pubsub-emulator/**'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
       # The whole history: deploy_targets.sh compares with the running pin; the promote check below
       # diffs the change. On a pull request this is the merge of the PR (the default ref).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -234,20 +251,11 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s
           --health-timeout 5s --health-retries 15
-      # The broker production runs (deploy/rabbitmq/cluster), for internal/events/amqpbus:
-      # publish/consume, confirms, the retry tiers, dead letters, reconnects and the
-      # permission matrix, each test in a vhost of its own.
-      rabbitmq:
-        image: rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58
-        env: { RABBITMQ_DEFAULT_USER: admin, RABBITMQ_DEFAULT_PASS: admin }
-        ports: ["5672:5672", "15672:15672"]
-        options: >-
-          --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 5s
-          --health-timeout 10s --health-retries 30
     env:
       RYFT_TEST_POSTGRES_URL: postgres://postgres:pw@localhost:5432/postgres
-      RYFT_TEST_AMQP_URL: amqp://admin:admin@localhost:5672/
-      RYFT_TEST_AMQP_MGMT: http://admin:admin@localhost:15672
+      # The Pub/Sub emulator of the step below, for internal/events/pubsub's emulator test (publish,
+      # push, nack, dead letter).
+      RYFT_TEST_PUBSUB_EMULATOR_HOST: localhost:8085
     defaults:
       run:
         working-directory: backend
@@ -255,15 +263,38 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The gcloud Pub/Sub emulator, as compose runs it (docker-compose.yml, service pubsub: the same
+      # image). A step, not a service container: a service container cannot take a command. Host
+      # networking, so a push reaches a test's server on 127.0.0.1. It holds nothing but what the
+      # tests publish. TODO(pin): by digest, as in docker-compose.yml.
+      - name: Start the Pub/Sub emulator
+        env:
+          IMAGE: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+        run: |
+          docker run -d --name pubsub --network host "$IMAGE" \
+            gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=ryft-local
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
       - run: go vet ./...
+      # Any HTTP answer is the emulator serving (deploy/pubsub-emulator/init.sh waits the same way).
+      - name: Wait for the Pub/Sub emulator
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -s -o /dev/null "http://$RYFT_TEST_PUBSUB_EMULATOR_HOST/"; then exit 0; fi
+            sleep 2
+          done
+          docker logs pubsub 2>&1 | tail -50
+          echo "::error title=pubsub emulator::no answer on $RYFT_TEST_PUBSUB_EMULATOR_HOST after 2 minutes"
+          exit 1
       # -race makes the cover mode atomic; one profile for all packages (scripts/coverage.sh).
       - run: |
           mkdir -p coverage
           go test -race -count=1 -coverprofile=coverage/coverage.out ./...
+      - name: The emulator's log
+        if: failure()
+        run: docker logs pubsub 2>&1 | tail -200
       # The per-package table in the job summary, and total.txt (internal/) next to the profile.
       - run: ../scripts/coverage.sh report coverage/coverage.out coverage
       # Every run uploads; the newest one from main is the baseline of the next pull request.
@@ -308,6 +339,28 @@ jobs:
       # The package map in docs/ARCHITECTURE.md is generated (go list); fails when it is stale. Here, not in `smoke`:
       # this job has Go and the modules after the line above, and a change of docs/ARCHITECTURE.md alone selects it.
       - run: ./scripts/pkgmap.sh --check
+
+  # The Pub/Sub topology's drift check: infra/gcp/pubsub.auto.tfvars.json (Terraform creates the topics and
+  # subscriptions from it) and deploy/pubsub-emulator/init.sh (compose's) must be byte for byte what
+  # backend/internal/events/pubsub/topology.go generates (`make topology-check`; `go run ./cmd/pubsub-topology`
+  # in backend/ rewrites both). Its own job, so a stale file names itself; `ci-ok` needs it. `make k8s-validate`
+  # (the `manifests` job) runs it too.
+  topology:
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_topology == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - run: make topology-check
 
   # The bytes of every tracked file (scripts/check_bytes.sh), on every run: no path filter, no
   # `changes` dependency, so no diff can slip under a filter that forgot its directory (a
@@ -801,7 +854,7 @@ jobs:
     # always(), not !cancelled(): a cancelled run must still report (red), because a skipped
     # required check counts as passing for branch protection.
     if: always()
-    needs: [changes, bytes, test, lint, smoke, manifests, terraform, argocd-luatest, monitoring, admission, web-checks, web-e2e, secrets, golden-guard]
+    needs: [changes, bytes, test, lint, topology, smoke, manifests, terraform, argocd-luatest, monitoring, admission, web-checks, web-e2e, secrets, golden-guard]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -813,7 +866,7 @@ jobs:
 
   images:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.changes.outputs.services == 'true'
-    needs: [changes, bytes, test, lint, manifests, smoke]
+    needs: [changes, bytes, test, lint, topology, manifests, smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read

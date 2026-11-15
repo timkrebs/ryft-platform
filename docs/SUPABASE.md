@@ -193,14 +193,18 @@ Migration `0007_supabase_auth.sql`, Supabase part (skipped on plain Postgres):
   (`ALTER DEFAULT PRIVILEGES FOR ROLE postgres`).
 - Only the migrate job connects as `postgres`, which owns the tables and therefore bypasses
   RLS. Never `ALTER TABLE … FORCE ROW LEVEL SECURITY`.
-- The services connect as `ryft_ingest`, `ryft_scoring` and `ryft_api` (migration 0009),
-  which hold only the table privileges they need (`ARCHITECTURE.md` → Database roles).
-  RLS applies to them, so every table also has a policy `<table>_services` that admits
-  them. Through the pooler their user names are `<role>.<ref>`, e.g. `ryft_api.<ref>`.
+- The services connect as `ryft_ingest`, `ryft_scoring`, `ryft_api` (migration 0009) and
+  `ryft_notify` (0015), which hold only the table privileges they need (`ARCHITECTURE.md` →
+  Database roles). RLS applies to them, so every table also has a policy `<table>_services`
+  that admits them. One table also limits a role by row: on `outbox`, `outbox_services`
+  admits ingest, api and scoring to every row (the api deletes any publisher's rows with an
+  account), and `outbox_notify` (0034) admits `ryft_notify` only to rows with
+  `publisher = 'notify'`, its quiet-hours waits.
+  Through the pooler their user names are `<role>.<ref>`, e.g. `ryft_api.<ref>`.
   The migrate job sets their passwords from its environment, sending SCRAM verifiers, not
   plaintext. Check once after the first deploy:
   `SELECT rolname, rolcanlogin, rolbypassrls FROM pg_roles WHERE rolname LIKE 'ryft_%';`
-  (→ `true`, `false` for all three).
+  (→ `true`, `false` for all four).
 - Supavisor blocks a user for a while after repeated failed logins (`ECIRCUITBREAKER`
   … `too many authentication failures`). A role password that changes before Postgres
   knows it, or services starting before migrate has set it, trips that. Deploy and

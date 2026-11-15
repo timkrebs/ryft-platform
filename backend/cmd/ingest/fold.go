@@ -50,6 +50,9 @@ func foldRequest(ws []model.Workout) *store.FoldScope {
 
 // foldWorkouts is `ingest fold-workouts [-user <uuid>] [-dry-run]`: the one-off for copies
 // uploaded before the app sent deletions (D-c). It exits non-zero when any user failed.
+// It runs with the ingest service's environment (config.Load, Pub/Sub's settings
+// included) but publishes nothing: its ingested rows wait in ingest's outbox for the
+// next tick's sweep (D219).
 func foldWorkouts(args []string) int {
 	log := httpx.Logger("ingest-fold")
 	cfg, err := config.Load("ingest")

@@ -422,10 +422,10 @@ func (e *Engine) persist(ctx context.Context, userID uuid.UUID, p dayScore) (boo
 	}
 	// The morning push (OnScored): the first recovery of the user's local
 	// today after a night with sleep; a re-score or a past day announces nothing.
+	// The event names the day only: notify reads the score when it sends.
 	asleep := p.night.sleep.AsleepMin
 	if written.FirstRecovery && asleep > 0 && e.onScored != nil && p.day == time.Now().In(p.loc).Format(dayLayout) {
-		e.onScored(ctx, model.ScoredEvent{UserID: userID, Day: p.day, Recovery: *row.Recovery, Readiness: row.Readiness,
-			State: row.State, SleepPerformance: row.SleepPerformance, SleepMin: asleep})
+		e.onScored(ctx, model.ScoredEvent{UserID: userID, Day: p.day})
 	}
 	// Which day, by which model, and whether it moves the days after it: no
 	// score, input or state (docs/OPERATIONS.md → Data protection (logs)). The

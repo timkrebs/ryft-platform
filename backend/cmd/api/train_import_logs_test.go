@@ -29,6 +29,9 @@ var importLogKeys = logcheck.Lines{
 		"updated": logcheck.CountMax(train.MaxImportPlans + train.MaxImportSessions), "rejected": logcheck.CountMax(train.MaxImportPlans + train.MaxImportSessions),
 		"days": logcheck.Count, "duration_ms": logcheck.Count,
 	},
+	// The import's event is flushed before the answer (D219); a flush that cannot send names the publisher and
+	// the transport's error, never the event.
+	"outbox flush: events left for the next flush or tick": {"publisher": logcheck.Enum("api"), "err": logcheck.Text(1024)},
 }
 
 // checkImportLog fails on a line, key or kind of value importLogKeys does not allow and on
@@ -59,6 +62,17 @@ func TestImportLogKindsRejectMutations(t *testing.T) {
 		{"a result outside the enum", line(strings.Replace(ok, `"result":"ok"`, `"result":"busy"`, 1)), key("result")},
 		{"session ids", line(ok + `,"session_ids":["` + uuid.NewString() + `"]`), key("session_ids")},
 		{"a title under a new key", line(ok + `,"title":"Leg day"`), key("title")},
+	} {
+		logcheck.Rejects(t, logcheck.Standard("api"), importLogKeys, forbid, m.name, m.line, m.want)
+	}
+	flush := func(rest string) string {
+		return `{"time":"2026-10-26T07:38:47.3Z","level":"WARN","service":"api","msg":"outbox flush: events left for the next flush or tick",` + ctx + `,` + rest + `}`
+	}
+	okFlush := `"publisher":"api","err":"pubsub: publish ryft-ingested: 503 Service Unavailable"`
+	logcheck.Accepts(t, logcheck.Standard("api"), importLogKeys, forbid, flush(okFlush))
+	for _, m := range []struct{ name, line, want string }{
+		{"another publisher", flush(strings.Replace(okFlush, `"publisher":"api"`, `"publisher":"Leg day"`, 1)), key("publisher")},
+		{"the event's days", flush(okFlush + `,"days":["2026-10-25"]`), key("days")},
 	} {
 		logcheck.Rejects(t, logcheck.Standard("api"), importLogKeys, forbid, m.name, m.line, m.want)
 	}

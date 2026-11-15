@@ -15,42 +15,35 @@ import (
 	"github.com/timkrebs/ryft/internal/metrics"
 )
 
+// /readyz checks the database and the service's own checks; there is no broker to
+// report since the transport is REST (D218): a publish that fails stays in the outbox.
 func TestReadyzShape(t *testing.T) {
 	authOK := func(context.Context) error { return nil }
-	amqpDown := errors.New("amqp not connected for 3m0s")
 	for _, tc := range []struct {
-		name           string
-		brokerRequired bool
-		auth           func(context.Context) error
-		broker, db     error
-		code           int
-		body           string
+		name string
+		auth func(context.Context) error
+		db   error
+		code int
+		body string
 	}{
 		{name: "all ok", auth: authOK, code: 200,
-			body: `{"status":"ready","checks":{"auth":"ok","broker":"ok","db":"ok"}}`},
+			body: `{"status":"ready","checks":{"auth":"ok","db":"ok"}}`},
 		{name: "a required check is down", auth: func(context.Context) error { return errors.New("no JWKS keys loaded") }, code: 503,
-			body: `{"status":"unready","error":"auth: no JWKS keys loaded","checks":{"auth":"down: no JWKS keys loaded","broker":"ok","db":"ok"}}`},
-		{name: "the broker is shown, not required (api, ingest)", auth: authOK, broker: amqpDown, code: 200,
-			body: `{"status":"ready","checks":{"auth":"ok","broker":"down: amqp not connected for 3m0s","db":"ok"}}`},
-		{name: "the broker is required (scoring, notify)", brokerRequired: true, auth: authOK, broker: amqpDown, code: 503,
-			body: `{"status":"unready","error":"broker: amqp not connected for 3m0s","checks":{"auth":"ok","broker":"down: amqp not connected for 3m0s","db":"ok"}}`},
-		{name: "the first failing required check is named", brokerRequired: true, auth: authOK, broker: amqpDown, db: errors.New("closed pool"), code: 503,
-			body: `{"status":"unready","error":"db: closed pool","checks":{"auth":"ok","broker":"down: amqp not connected for 3m0s","db":"down: closed pool"}}`},
+			body: `{"status":"unready","error":"auth: no JWKS keys loaded","checks":{"auth":"down: no JWKS keys loaded","db":"ok"}}`},
+		{name: "the first failing required check is named", auth: func(context.Context) error { return errors.New("no JWKS keys loaded") }, db: errors.New("closed pool"), code: 503,
+			body: `{"status":"unready","error":"db: closed pool","checks":{"auth":"down: no JWKS keys loaded","db":"down: closed pool"}}`},
 		{name: "a check slower than the deadline", auth: func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }, code: 503,
-			body: `{"status":"unready","error":"auth: timed out after 100ms","checks":{"auth":"down: timed out after 100ms","broker":"ok","db":"ok"}}`},
+			body: `{"status":"unready","error":"auth: timed out after 100ms","checks":{"auth":"down: timed out after 100ms","db":"ok"}}`},
 		{name: "a stale dependency still serves", auth: func(context.Context) error { return Stale(3 * time.Minute) }, code: 200,
-			body: `{"status":"ready","checks":{"auth":"stale 3m","broker":"ok","db":"ok"}}`},
+			body: `{"status":"ready","checks":{"auth":"stale 3m","db":"ok"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newRig()
 			g.e.readyTimeout = 100 * time.Millisecond
-			g.bus.ready = func(context.Context) error { return tc.broker }
 			g.e.ping = func(context.Context, *pgxpool.Pool) error { return tc.db }
 			g.parts.Checks = []Check{{Name: "auth", Required: true, Fn: tc.auth}}
-			s := g.spec()
-			s.BrokerRequired = tc.brokerRequired
 			ctx, cancel := context.WithCancel(context.Background())
-			done := g.serve(t, ctx, s)
+			done := g.serve(t, ctx, g.spec())
 			code, body := g.get(t, "/readyz")
 			if code != tc.code || body != tc.body {
 				t.Errorf("/readyz = %d %s\nwant     %d %s", code, body, tc.code, tc.body)
@@ -74,7 +67,7 @@ func TestReadyzOnTheEdge(t *testing.T) {
 		s.Edge = edge
 		ctx, cancel := context.WithCancel(context.Background())
 		done := g.serve(t, ctx, s)
-		_, header, body := g.do(t, "/readyz")
+		_, header, body := g.do(t, http.MethodGet, "/readyz", "")
 		var got struct {
 			Status    string `json:"status"`
 			RequestID string `json:"request_id"`
@@ -131,7 +124,7 @@ func TestDrainKeepsServing(t *testing.T) {
 		t.Fatalf("/readyz before the signal = %d", code)
 	}
 	cancel()
-	want := `{"status":"draining","error":"draining","checks":{"broker":"ok","db":"ok"}}`
+	want := `{"status":"draining","error":"draining","checks":{"db":"ok"}}`
 	eventually(t, func() bool {
 		code, body := g.get(t, "/readyz")
 		return code == 503 && body == want
@@ -174,7 +167,7 @@ func TestOptionalCheckIsCapped(t *testing.T) {
 	done := g.serve(t, ctx, g.spec())
 	begun := time.Now()
 	code, body := g.get(t, "/readyz")
-	want := `{"status":"ready","checks":{"auth":"down: timed out after 500ms","broker":"ok","db":"ok"}}`
+	want := `{"status":"ready","checks":{"auth":"down: timed out after 500ms","db":"ok"}}`
 	if code != 200 || body != want || time.Since(begun) > time.Second {
 		t.Errorf("/readyz = %d %s after %v\nwant     200 %s within 1 s", code, body, time.Since(begun), want)
 	}

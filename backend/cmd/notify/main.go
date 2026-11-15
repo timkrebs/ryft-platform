@@ -10,13 +10,13 @@ import (
 
 func main() { app.Main(spec()) }
 
-// spec is what notify asks app for: no Outbox (it publishes nothing), and the broker
-// gates /readyz because the queue it consumes is its work.
+// spec is what notify asks app for: its wait box as the outbox (it publishes no events;
+// the box holds its deferrals until they are due, D219), swept by the tick.
 func spec() app.Spec {
 	var push pushSettings
 	return app.Spec{
-		Name:           "notify",
-		BrokerRequired: true,
+		Name:   "notify",
+		Outbox: app.WaitOutbox,
 		// The APNs key is read before anything connects (D78); without one the service
 		// runs and counts what it would have sent.
 		Load: func(*slog.Logger) (err error) {

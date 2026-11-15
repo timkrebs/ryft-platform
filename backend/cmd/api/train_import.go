@@ -465,8 +465,9 @@ func (f *importStored) sortedDays() []string {
 	return days
 }
 
-// queueImport queues the days with the request's one event in one transaction, wakes the
-// outbox and drops the user's cached insights.
+// queueImport queues the days with the request's one event in one transaction, flushes
+// the outbox (before the answer: nothing runs after it, D219) and drops the user's
+// cached insights.
 func (h *handler) queueImport(ctx context.Context, r *http.Request, run *importRun, days []string) error {
 	m, err := events.Ingested(model.IngestedEvent{UserID: run.user, Days: days, Reason: model.ReasonImport, RequestID: requestID(r)}, "")
 	if err != nil {
@@ -476,7 +477,7 @@ func (h *handler) queueImport(ctx context.Context, r *http.Request, run *importR
 		return err
 	}
 	if len(days) > 0 && h.outbox != nil {
-		h.outbox.Kick()
+		h.outbox.Flush(ctx)
 	}
 	h.cache.forget(run.user)
 	return nil

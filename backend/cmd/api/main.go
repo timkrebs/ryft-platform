@@ -50,7 +50,7 @@ func main() {
 	}
 	log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
 	// Also before any connection: a malformed ADMIN_WEB_ORIGINS must fail at once, not behind the
-	// database and broker waits (a test pins that this stays above db.Open).
+	// database wait (a test pins that this stays above db.Open).
 	adminCfg, err := config.LoadAdmin()
 	if err != nil {
 		log.Error("admin config", "err", err)
@@ -67,17 +67,15 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
-	go db.Watch(ctx, pool, "api", log)
 	// The import's comparisons are internal/train's pure rules (D131).
 	st := store.New(pool).WithImportRules(importRules())
 
-	// RabbitMQ (D97), retried at start-up.
+	// Pub/Sub (D218): opening it dials nothing; its push verifier checks the tick's token.
 	bus, err := eventbus.Open(ctx, cfg, "api", log)
 	if err != nil {
 		log.Error("events", "err", err)
 		os.Exit(1)
 	}
-	defer bus.Close()
 
 	verifier, err := auth.FromConfig(ctx, authCfg)
 	if err != nil {
@@ -91,18 +89,18 @@ func main() {
 		log.Error("account deletion", "err", err)
 		os.Exit(1)
 	}
-	go acct.reconcileEvery(ctx, reconcileEvery)
 
-	// Every event the api publishes goes through the outbox (D101): durable while the
-	// broker is down, and a session's completion commits with its event.
+	// Every event the api publishes goes through the outbox (D101): a session's
+	// completion commits with its event, and the handler that wrote a row flushes it
+	// before it answers (D219); the tick's sweep sends what a flush could not.
 	ob := outbox.New(pool, "api", bus, log)
-	go ob.Run(ctx)
 
 	h := &handler{st: st, bus: events.Publisher{Sender: ob}, outbox: ob, log: log, cache: newInsightCache(), accounts: acct,
 		engine: scoring.NewEngine(st, log), beta: beta,
 		emails: acct, webURL: adminCfg.PublicWebURL}
-	// Email-bound invites need the Supabase project to confirm emails (D159): read its public setting now
-	// and hourly. Until it is known to be on, bound codes are neither made nor redeemed.
+	// Email-bound invites need the Supabase project to confirm emails (D159). Nothing reads its setting at
+	// start: the tick does, and the first request that needs it (binding.go). Until it is known to be on,
+	// bound codes are neither made nor redeemed.
 	var settings autoconfirmSource
 	if acct.admin != nil {
 		settings = acct.admin
@@ -112,18 +110,60 @@ func main() {
 	if settings == nil {
 		log.Warn("email-bound invites are unavailable: the api has no Supabase admin client (SUPABASE_SERVICE_ROLE_KEY unset, or apikey mode)")
 	}
-	guard.Refresh(ctx)
-	go guard.Run(ctx, time.Hour)
-	go purgeInviteEmailsEvery(ctx, st, log, time.Hour)
+	purgeSeries()
+	tick, err := bus.Tick(tickBudget, nil, tickSteps{ // nil: no final step yet (A2: the metrics push)
+		ping:      func(ctx context.Context) error { return db.Ping(ctx, pool, "api") },
+		sweep:     ob.Sweep,
+		reconcile: acct.reconcile,
+		settings:  guard.Refresh,
+		purge:     func(ctx context.Context) error { return purgeInviteEmails(ctx, st, log) },
+	}.ticks()...)
+	if err != nil {
+		log.Error("build", "err", err)
+		os.Exit(1)
+	}
 
-	mux := http.NewServeMux()
 	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
-	httpx.Health(mux, func(ctx context.Context) error {
-		if err := st.Ready(ctx); err != nil {
-			return err
-		}
-		return verifier.Ready(ctx)
+	mux := newMux(h, muxOptions{
+		log:      log,
+		verifier: verifier,
+		ready: func(ctx context.Context) error {
+			if err := st.Ready(ctx); err != nil {
+				return err
+			}
+			return verifier.Ready(ctx)
+		},
+		tick:     tick,
+		gate:     beta.Gate,
+		admin:    adminCfg,
+		authMode: authCfg.Mode,
 	})
+	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, httpx.Recover(httpx.SecurityHeaders(mux)))); err != nil {
+		log.Error("serve", "err", err)
+		os.Exit(1)
+	}
+}
+
+// muxOptions is what the api's routes are built from besides the handler.
+type muxOptions struct {
+	log      *slog.Logger
+	verifier auth.Verifier
+	ready    func(context.Context) error // /readyz
+	tick     http.Handler                // POST /internal/tick (the transport's: its token is checked there)
+	gate     config.Mode                 // BETA_GATE
+	admin    config.Admin
+	authMode string
+}
+
+// newMux is the api's routes: health, the tick, /v1 behind the auth middleware and the
+// per-user limit, the admin routes and a JSON 404 for the rest. The tick sits beside
+// /v1, outside both (D218): its token is the push service account's, which the
+// transport's verifier checks, and Cloud Scheduler is no user to limit.
+func newMux(h *handler, o muxOptions) *http.ServeMux {
+	log, verifier, adminCfg := o.log, o.verifier, o.admin
+	mux := http.NewServeMux()
+	httpx.Health(mux, o.ready)
+	mux.Handle(http.MethodPost+" "+eventbus.PathTick, o.tick)
 
 	api := http.NewServeMux()
 	api.HandleFunc("GET /v1/config", h.remoteConfig)
@@ -187,15 +227,15 @@ func main() {
 	del := http.NewServeMux()
 	del.HandleFunc("DELETE /v1/me", h.deleteMe)
 	mux.Handle("DELETE /v1/me", auth.Middleware(authOpts, httpx.WithRoutes(del)))
-	authOpts.OnAuth = auth.LoadUser(ensureUser(st))
-	mux.Handle("/v1/", auth.Middleware(authOpts, betaGate(beta.Gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))
+	authOpts.OnAuth = auth.LoadUser(ensureUser(h.st))
+	mux.Handle("/v1/", auth.Middleware(authOpts, betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))
 	// The training import gets 50 s instead of readTimeout, like a sync (D129).
-	mux.Handle("POST /v1/train/import", importRoute(authOpts, beta.Gate, h.trainImport))
+	mux.Handle("POST /v1/train/import", importRoute(authOpts, o.gate, h.trainImport))
 	// The operator's routes: ADMIN_API_KEY, or an allow-listed operator's Supabase token (only with
 	// Supabase auth: a local apikey stack admits the key alone); absent without a key.
 	if adminCfg.Key != "" {
 		opts := adminOptions{Key: adminCfg.Key, Origins: adminCfg.WebOrigins, Timeout: readTimeout}
-		if authCfg.Mode == config.AuthSupabase {
+		if o.authMode == config.AuthSupabase {
 			opts.Verifier = verifier
 		}
 		mux.Handle("/v1/admin/", adminRoutes(h, opts))
@@ -204,11 +244,7 @@ func main() {
 		mux.HandleFunc("/v1/admin/", httpx.NotFound)
 	}
 	mux.HandleFunc("/", httpx.NotFound)
-
-	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, httpx.Recover(httpx.SecurityHeaders(mux)))); err != nil {
-		log.Error("serve", "err", err)
-		os.Exit(1)
-	}
+	return mux
 }
 
 // readTimeout bounds the work of one API request (reads are a few queries).
