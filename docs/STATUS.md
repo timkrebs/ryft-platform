@@ -118,6 +118,17 @@ Open:
   step 7 failed on Supabase's `extra_float_digits 0`. Migration 0035 sets 1 on the four service roles. Step 7 now
   reports the owner's 0 and passes, and step 9's login as `ryft_api` checks the role's setting and an exact float8
   (D228, amends D221). Step 7 runs again after this merge, then step 8.
+- **pgx 5.9.2** (#175, branch `deps/pgx-5.9`, 2026-11-15): step 8's run 43756793439 stopped at the Trivy gate on
+  CVE-2026-33815 and CVE-2026-33816 in pgx 5.7.5; nothing was pushed. The PR moves pgx to 5.9.2 (also GO-2026-5004),
+  golang.org/x/text to 0.41.0 (GO-2026-6629, GO-2026-5970) and the build image from Go 1.25 to 1.27. In go1.25.14,
+  govulncheck reaches 11 standard-library vulnerabilities, two HTTP/2 server crashes among them, and 1.25 gets no
+  more fixes. It also adds CI's `vulns` job (govulncheck in the build image plus the gate's Trivy rule on go.mod,
+  required by `ci-ok`), Dependabot for `backend/go.mod`, a token for tflint's `--init`, and a cut cause that takes the
+  timing out of the h2c in-flight test (D229). pgx 5.9 offers SCRAM channel binding over TLS, which CI doesn't test
+  against Supavisor. So after the merge, run step 7's `make pooler-check` once more (read-only, pgx over TLS on 6543)
+  before step 8. The fallback is `channel_binding=disable` in the URLs (D229). Then step 8 again. A push run of `deploy.yml` always smokes, and before apply 2 the smoke goes
+  red. So set `GCP_DEPLOY` off before the merge, and once main's `ci-ok` is green, set it on and dispatch with
+  `-f smoke=false` (OPERATIONS → Deploy, roll back, rotate).
 
 ## Rebuild (2026-11-13)
 

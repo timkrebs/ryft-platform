@@ -67,6 +67,12 @@ const (
 	tickAnswer = 15 * time.Second
 )
 
+// errCut is the cause (context.Cause) of the handlers' contexts when the http step's
+// Shutdown ran out and stopHTTP cut them. It wraps context.Canceled, so errors.Is(err,
+// context.Canceled) holds for the cause as for Err. The tests tell this cut from Close's
+// by it: Close also ends a request's context, with no cause of its own.
+var errCut = fmt.Errorf("app: the http step's Shutdown ran out and cut the handlers: %w", context.Canceled)
+
 // bounds are the shutdown steps' own bounds, all in one place; the tests shorten them.
 type bounds struct {
 	afterClose time.Duration // waiting for Serve to return after Shutdown or Close; the /metrics stop
@@ -287,8 +293,9 @@ type service struct {
 	life       context.Context // ends after the http step (or a signal during start): Build and the transport run on it
 	endLife    context.CancelFunc
 	cancelWait context.CancelFunc // wakes Run: the first failing task calls it
-	// handlers is every request's base context; cut ends it when the http step's Shutdown
-	// runs out, so the handlers still running stop their database calls (finding 6).
+	// handlers is every request's base context; cut ends it (cause errCut) when the http
+	// step's Shutdown runs out, so the handlers still running stop their database calls
+	// (finding 6).
 	handlers context.Context
 	cut      context.CancelFunc
 	draining atomic.Bool
@@ -319,9 +326,9 @@ func run(ctx context.Context, s Spec, e seams) error {
 	}
 	r := &service{s: s, e: e, log: e.logger(s.Name)}
 	r.life, r.endLife = context.WithCancel(context.WithoutCancel(ctx))
-	var stop context.Context
-	stop, r.cut = context.WithCancel(context.Background())
-	defer r.cut()
+	stop, end := context.WithCancelCause(context.Background())
+	defer end(nil) // Run is over: a plain context.Canceled, unless the cut came first
+	r.cut = func() { end(errCut) }
 	r.handlers = httpx.WithStop(stop)
 	var waitCtx context.Context
 	waitCtx, r.cancelWait = context.WithCancel(ctx)

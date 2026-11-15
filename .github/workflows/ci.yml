@@ -451,6 +451,52 @@ jobs:
       - name: No session state in the services' SQL (transaction pooler)
         run: bash scripts/check_session_state.sh
 
+  # Known vulnerabilities in the services' Go, before the merge (D229). Until now only the deploy gate (deploy.yml's
+  # Trivy on the built images, after the merge) looked: pgx 5.7.5's CVE-2026-33815 and CVE-2026-33816 got that far.
+  # Two rules, both of which must pass:
+  #   govulncheck (the Go vulnerability database): every finding the code can reach fails, whatever its severity,
+  #     in the modules and in the standard library; one it cannot reach is listed and passes. It runs in
+  #     backend/Dockerfile's build image, by the digest pinned there, so the standard library it judges is the one
+  #     the images are built with (Dependabot moves that digest). Its version must build with that Go (v1.9.0 needs
+  #     1.26): a new Go line in the Dockerfile may move it.
+  #   Trivy, the deploy gate's own rule (the image and flags of deploy.yml) on the modules of backend/go.mod: a
+  #     critical with a fix fails, reachable or not. govulncheck alone would not stop what that gate stops:
+  #     it finds those two CVEs in a package we import but not in a function we call.
+  vulns:
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: govulncheck in the build image (backend/Dockerfile)
+        env:
+          GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.9.0
+        run: |
+          image=$(awk '$1 == "FROM" && $NF == "build" { for (i = 2; i < NF; i++) if ($i ~ /^golang:/) print $i }' backend/Dockerfile)
+          case "$image" in
+            golang:*@sha256:*) echo "build image: $image" ;;
+            golang:*)
+              # A new Go line (a hand PR): name the digest to pin, then fail. The pull's own "Digest:" is the index's.
+              docker pull "$image" || true
+              echo "::error title=govulncheck::backend/Dockerfile's build stage $image is not pinned by digest: pin the Digest above"
+              exit 1 ;;
+            *) echo "::error title=govulncheck::backend/Dockerfile has no golang build stage (found '$image')"; exit 1 ;;
+          esac
+          # -show verbose: the standard library's version it judged, and the findings the code does not reach.
+          docker run --rm -v "$PWD/backend:/src:ro" -w /src "$image" go run "$GOVULNCHECK" -show verbose ./...
+      # Also after a red govulncheck: both verdicts in one run.
+      - name: Trivy on backend/go.mod (the deploy gate's rule, fail on critical)
+        if: ${{ !cancelled() }}
+        run: |
+          docker run --rm -v "$PWD/backend:/src:ro" \
+            aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222 \
+            fs --scanners vuln --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress /src
+
   # The Pub/Sub topology's drift check: infra/gcp/pubsub.auto.tfvars.json (Terraform creates the topics and
   # subscriptions from it) and deploy/pubsub-emulator/init.sh (compose's) must be byte for byte what
   # backend/internal/events/pubsub/topology.go generates (`make topology-check`; `go run ./cmd/pubsub-topology`
@@ -658,7 +704,13 @@ jobs:
       # -backend=false: never touch the HCP Terraform workspace from CI (D56).
       - run: terraform init -backend=false -input=false
       - run: terraform validate
-      - run: tflint --init && tflint --format compact
+      # --init fetches the plugins from GitHub's releases. Anonymous, that API allows 60 requests an hour per
+      # address, and a shared runner's address is often over it (a 403, three times by 2026-11-15). The job's
+      # token (contents: read, the workflow's default) lifts the limit; only this step gets it, not the lint run.
+      - run: tflint --init
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - run: tflint --format compact
       - run: terraform test
       # The release's lifecycle conditions (a set or a second values document must be refused): edits a copy.
       - if: matrix.root == 'infra/aws/kubernetes'
@@ -965,7 +1017,7 @@ jobs:
     # always(), not !cancelled(): a cancelled run must still report (red), because a skipped
     # required check counts as passing for branch protection.
     if: always()
-    needs: [changes, bytes, test, pooler, lint, topology, smoke, manifests, terraform, argocd-luatest, monitoring, admission, web-checks, web-e2e, secrets, golden-guard]
+    needs: [changes, bytes, test, pooler, lint, vulns, topology, smoke, manifests, terraform, argocd-luatest, monitoring, admission, web-checks, web-e2e, secrets, golden-guard]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

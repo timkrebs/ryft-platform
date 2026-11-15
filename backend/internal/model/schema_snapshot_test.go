@@ -227,24 +227,31 @@ func TestSchemaSnapshots(t *testing.T) {
 // TestContractTypesComplete keeps contractTypes honest: every exported struct
 // declared in this package must be in it.
 func TestContractTypesComplete(t *testing.T) {
+	// Every non-test .go file of the directory, build tags or not: what parser.ParseDir
+	// (deprecated since Go 1.25) read here before.
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+	names, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	declared := map[string]bool{}
-	for _, p := range pkgs {
-		for _, f := range p.Files {
-			for _, d := range f.Decls {
-				gd, ok := d.(*ast.GenDecl)
-				if !ok || gd.Tok != token.TYPE {
-					continue
-				}
-				for _, s := range gd.Specs {
-					ts := s.(*ast.TypeSpec)
-					if _, isStruct := ts.Type.(*ast.StructType); isStruct && ts.Name.IsExported() {
-						declared[ts.Name.Name] = true
-					}
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, s := range gd.Specs {
+				ts := s.(*ast.TypeSpec)
+				if _, isStruct := ts.Type.(*ast.StructType); isStruct && ts.Name.IsExported() {
+					declared[ts.Name.Name] = true
 				}
 			}
 		}

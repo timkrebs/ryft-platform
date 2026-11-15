@@ -3746,6 +3746,29 @@ siblings) is accepted by raising `MAX_DROP` in the PR's own `ci.yml` for that PR
 description; there is no other override. A warning "main's coverage is unknown" is not a failure: the gate passed
 without a baseline (artifact outage or expired); re-run once the artifact is back. Locally: `make coverage`.
 
+## The vulns job went red
+
+`vulns` (D229, required by `ci-ok`) has two steps, and both run even when the first is red.
+- **govulncheck** names each vulnerability the code reaches, with a trace from our code ("Example traces found") and
+  "Fixed in". For a module, bump that module alone (`go -C backend get <module>@<fixed version>`, then
+  `go -C backend mod tidy`). The PR names the GO- (and CVE-) IDs. For the standard library, the fix is the Go of
+  `backend/Dockerfile`'s build stage: a new digest of the same tag (Dependabot's docker PR), or a new Go line once
+  the old one gets no more fixes (Go fixes the two newest; 1.25 → 1.27 in D229). For a new line, put the tag
+  alone in the Dockerfile and push. The job pulls it, prints its `Digest:`, and fails. Pin `tag@digest`, and set
+  go.mod's `toolchain` line to the Go version the next run's govulncheck names ("the goX.Y.Z standard library").
+  govulncheck's version must build with that Go (`ci.yml`; v1.9.0 needs 1.26).
+- **Trivy** is the deploy gate's own rule (critical, with a fix) on `backend/go.mod`: a module that would stop
+  `deploy.yml` after the merge stops the PR now. Fix it the same way, whether govulncheck reaches it or not.
+- **"go.mod requires go >= …"**: a module bump (Dependabot's gomod group, say) raised go.mod's floor above the
+  image's Go. The fix is a newer Go line in the image, as above, never `GOTOOLCHAIN` in the job.
+
+The job also runs on every push to main. A vulnerability published after a merge turns the next push's `ci-ok`
+red, so `deploy.yml` deploys nothing until the fix is merged. Never skip the job or loosen either step to get a deploy
+through. Locally, as CI runs it (the image from the Dockerfile's build stage):
+`docker run --rm -v "$PWD/backend:/src:ro" -w /src <golang:…@sha256:…> go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...`
+(Podman: the same with `podman run`). `go -C backend run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...` judges
+your own Go's standard library instead.
+
 ## When a tester's scores do not appear
 
 What the app sees is `GET /v1/me/sync` (D91): which gate it is behind, the last sync and
