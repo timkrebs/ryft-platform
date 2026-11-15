@@ -65,6 +65,8 @@ func TestCloudRunDatabaseURL(t *testing.T) {
 	}{
 		{name: "the service URL", env: "K_SERVICE", url: runURL(svcUser, "6543", serviceQuery)},
 		{name: "the service URL with application_name", env: "K_SERVICE", url: runURL(svcUser, "6543", serviceQuery+"&application_name=api")},
+		// D229's fallback if Supavisor refuses pgx 5.9's SCRAM channel binding: a client setting, no startup parameter.
+		{name: "the service URL with channel_binding=disable", env: "K_SERVICE", url: runURL(svcUser, "6543", serviceQuery+"&channel_binding=disable")},
 		{name: "a password in the userinfo", env: "K_SERVICE", url: runURL(svcUser+":"+pw, "6543", serviceQuery),
 			want: []string{"carries a password"}},
 		{name: "a password parameter", env: "K_SERVICE", url: runURL(svcUser, "6543", serviceQuery+"&password="+pw),
@@ -97,6 +99,7 @@ func TestCloudRunDatabaseURL(t *testing.T) {
 				"the port must be 6543", "default_query_exec_mode must be exec"}},
 
 		{name: "the migrate URL", env: "CLOUD_RUN_JOB", url: runURL(jobUser, "5432", tlsQuery)},
+		{name: "the migrate URL with channel_binding=disable", env: "CLOUD_RUN_JOB", url: runURL(jobUser, "5432", tlsQuery+"&channel_binding=disable")},
 		{name: "a job keeps session-mode settings", env: "CLOUD_RUN_JOB", url: runURL(jobUser, "5432", tlsQuery+"&search_path=public")},
 		{name: "a password in the job's URL", env: "CLOUD_RUN_JOB", url: runURL(jobUser+":"+pw, "5432", tlsQuery),
 			want: []string{"(CLOUD_RUN_JOB is set)", "carries a password"}},
