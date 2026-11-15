@@ -8,12 +8,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
 	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -228,15 +226,20 @@ var clientRequestID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 // (X-Request-ID on the response, request_id in every log line and error
 // body), logs one access line and records the HTTP metrics. The route label is
 // the ServeMux pattern ("GET /v1/days/{day}", never the raw path), so
-// cardinality stays bounded.
+// cardinality stays bounded. A valid trace header becomes the lines' trace
+// (Cloud Logging's format only), and a request with X-Forwarded-For is sampled
+// for the "client address" line (clientAddressLog: which entry was picked, no address).
 func Instrument(log *slog.Logger, next http.Handler) http.Handler {
+	sample := &clientAddressLog{log: log, now: time.Now}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, f := logx.NewContext(r.Context())
 		f.RequestID = newRequestID()
 		if c := r.Header.Get(RequestIDHeader); clientRequestID.MatchString(c) {
 			f.ClientRequestID = c
 		}
+		f.Trace = traceID(r.Header)
 		w.Header().Set(RequestIDHeader, f.RequestID)
+		sample.maybe(r)
 		r = r.WithContext(ctx)
 
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
@@ -328,26 +331,9 @@ func Timeout(d time.Duration, next http.Handler) http.Handler {
 	})
 }
 
-// Health mounts /healthz (process up) and /readyz (dependencies reachable) for
-// the probes. Neither requires auth; the Ingress only routes /v1.
-func Health(mux *http.ServeMux, ready func(context.Context) error) {
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		WriteJSON(w, 200, map[string]string{"status": "ok"})
-	})
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		if err := ready(ctx); err != nil {
-			WriteError(w, http.StatusServiceUnavailable, err.Error())
-			return
-		}
-		WriteJSON(w, 200, map[string]string{"status": "ready"})
-	})
-}
-
-// MetricsServer is the Prometheus /metrics server for its own port. Kept apart
-// from the API port so that a collector on the node's network can be let in to
-// metrics without being let in to the API (deploy/k8s NetworkPolicy).
+// MetricsServer is the Prometheus /metrics server for its own port (METRICS_PORT), off
+// Cloud Run only: there the metrics are pushed (OTLP, design §6) and nothing listens
+// beside $PORT.
 func MetricsServer(log *slog.Logger, addr string) *http.Server {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", metrics.Handler())
@@ -356,11 +342,21 @@ func MetricsServer(log *slog.Logger, addr string) *http.Server {
 }
 
 // Server is the service's HTTP server with its timeouts: read header 10 s, read
-// and write 60 s, idle 120 s, 64 KiB of headers.
+// and write 60 s, idle 120 s, 64 KiB of headers. It serves HTTP/1.1 and h2c with
+// prior knowledge on the same port (D220): Cloud Run's front end speaks HTTP/2 to
+// the container (--use-http2), so a 32 MiB sync is not cut by its 32 MiB limit on
+// HTTP/1 requests (design §3). net/http's HTTP/2 defaults carry such a body: flow
+// control opens the window as the handler reads, the frame size bounds frames, not
+// bodies, and 250 streams per connection is more than Cloud Run's concurrency. On
+// HTTP/2, ReadTimeout and WriteTimeout apply per stream.
 func Server(log *slog.Logger, addr string, h http.Handler) *http.Server {
+	var p http.Protocols
+	p.SetHTTP1(true)
+	p.SetUnencryptedHTTP2(true)
 	return &http.Server{
 		Addr:              addr,
 		Handler:           h,
+		Protocols:         &p,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -370,46 +366,24 @@ func Server(log *slog.Logger, addr string, h http.Handler) *http.Server {
 	}
 }
 
-// ServeMetrics serves MetricsServer in the background.
-func ServeMetrics(log *slog.Logger, addr string) {
-	srv := MetricsServer(log, addr)
-	go func() {
-		log.Info("metrics listening", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("metrics server", "err", err)
-		}
-	}()
-}
+// CloudRunService reports whether the process is a Cloud Run service (K_SERVICE is
+// set): its ready paths answer generically (Health, CloudReady) and app starts no
+// /metrics listener.
+func CloudRunService() bool { return os.Getenv("K_SERVICE") != "" }
 
-// Serve runs the server until SIGINT/SIGTERM, then drains for up to 10s.
-func Serve(log *slog.Logger, addr string, h http.Handler) error {
-	srv := Server(log, addr, h)
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	errCh := make(chan error, 1)
-	go func() {
-		log.Info("listening", "addr", addr)
-		errCh <- srv.ListenAndServe()
-	}()
-	select {
-	case err := <-errCh:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return err
-	case <-ctx.Done():
-		log.Info("shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutdownCtx)
-	}
-}
+// onCloudRun reports whether the process is a Cloud Run service or job (K_SERVICE or
+// CLOUD_RUN_JOB set): its logs are in Cloud Logging's format.
+func onCloudRun() bool { return CloudRunService() || os.Getenv("CLOUD_RUN_JOB") != "" }
 
 // Logger returns the service's JSON logger at LOG_LEVEL and makes it the
-// default, so library logs (e.g. JWKS refresh errors) are structured too.
+// default, so library logs (e.g. JWKS refresh errors) are structured too. On Cloud
+// Run it writes Cloud Logging's format, with GCP_PROJECT's traces (logx.NewCloud).
 func Logger(service string) *slog.Logger {
-	log := logx.New(service, logx.ParseLevel(os.Getenv("LOG_LEVEL")))
+	level := logx.ParseLevel(os.Getenv("LOG_LEVEL"))
+	log := logx.New(service, level)
+	if onCloudRun() {
+		log = logx.NewCloud(os.Stdout, service, level, strings.TrimSpace(os.Getenv("GCP_PROJECT")))
+	}
 	slog.SetDefault(log)
 	return log
 }

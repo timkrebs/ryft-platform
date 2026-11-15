@@ -703,8 +703,10 @@ func (s *Store) SetWorkoutLoad(ctx context.Context, userID, id uuid.UUID, strain
 	if err != nil {
 		return err
 	}
+	// string(z), not z: in pgx's exec mode (the transaction pooler, D221) a []byte goes as bytea,
+	// which a jsonb column refuses.
 	_, err = s.pool.Exec(ctx, `UPDATE workouts SET strain=$3, trimp=$4, zone_minutes=$5, model_version=$6 WHERE user_id=$1 AND id=$2`,
-		userID, id, strain, math.Round(trimp*10)/10, z, version)
+		userID, id, strain, math.Round(trimp*10)/10, string(z), version)
 	return err
 }
 
@@ -902,11 +904,16 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 	if err != nil {
 		return w, err
 	}
-	var zones []byte
+	// The jsonb parameters go as strings: in pgx's exec mode (the transaction pooler, D221) a
+	// []byte goes as bytea, which a jsonb column refuses; a nil *string is NULL.
+	var zones *string
 	if l.ZoneMinutes != nil {
-		if zones, err = json.Marshal(roundZones(l.ZoneMinutes)); err != nil {
+		z, err := json.Marshal(roundZones(l.ZoneMinutes))
+		if err != nil {
 			return w, err
 		}
+		zs := string(z)
+		zones = &zs
 	}
 	err = s.pool.QueryRow(ctx, `WITH old AS (SELECT recovery, `+historyColumns+`
 		  FROM daily_scores WHERE user_id=$1 AND day=$2::date)
@@ -941,7 +948,7 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		RETURNING (SELECT recovery FROM old) IS NULL AND recovery IS NOT NULL,
 		 NOT EXISTS (SELECT 1 FROM old o WHERE (`+oldHistoryInputs+`) IS NOT DISTINCT FROM (`+newHistoryInputs+`))`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
-		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, details, d.Readiness, d.State,
+		d.HRVms, d.RHR, d.RespRate, d.SpO2, d.Calibrating, string(details), d.Readiness, d.State,
 		n.Start, n.End, n.InBedMin, n.DeepMin, n.LightMin, n.REMMin, n.AwakeMin, n.HasStages,
 		zones, l.TRIMP, l.HRMin, d.HRVBaselineMS, d.RHRBaseline, d.BaselineDays, d.Steps, d.ActiveKcal,
 		l.MuscularTRIMP, d.StrengthMin, d.VolumeKG, d.NapMin, d.SleepQuality, d.SleepConsistency,

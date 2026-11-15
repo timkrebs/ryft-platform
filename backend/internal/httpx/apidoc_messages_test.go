@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // docs/API.md → Errors says "branch on the status code, not the text", so most messages are
@@ -155,6 +156,15 @@ func TestAPIDocQuotedMessagesMatchCode(t *testing.T) {
 	}
 	got = append(got, msg{"diagnostics number (ReadJSON)", st, text})
 
+	// a ready path's 503 on Cloud Run (Endpoints → Health), without Retry-After
+	quiet := slog.New(slog.DiscardHandler)
+	st, text, h = answer(t, CloudReady(quiet, time.Second, func(context.Context) error { return errors.New("db down") }),
+		httptest.NewRequest(http.MethodGet, PathReady, nil))
+	if st != 503 || h.Get("Retry-After") != "" {
+		t.Fatalf("CloudReady(down) = %d, Retry-After %q; API.md says 503 without Retry-After", st, h.Get("Retry-After"))
+	}
+	got = append(got, msg{"not ready (CloudReady)", st, text})
+
 	// 1. each message is in API.md, character for character
 	for _, m := range got {
 		if !strings.Contains(doc, jsonQuoted(t, m.text)) {
@@ -187,6 +197,8 @@ func TestAPIDocQuotedMessagesMatchCode(t *testing.T) {
 		"human-readable message",         // the shape example
 		"…",                              // elided, e.g. /readyz
 		"consent to the privacy policy ", // the gate's, pinned by internal/gate's test
+		"starting",                       // the start gate's (internal/app: TestAPIDocQuotesTheStartGate)
+		"temporarily unavailable, send the request again", // the same
 	}
 	pairs := regexp.MustCompile(`"error":\s*("(?:[^"\\]|\\.)*")`).FindAllStringSubmatch(doc, -1)
 	if len(pairs) < 6 {

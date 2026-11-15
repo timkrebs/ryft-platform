@@ -220,16 +220,43 @@ and `SELECT has_table_privilege('anon', 'public.samples', 'SELECT');` (→ `fals
 
 ## Connections
 
-Supavisor session mode holds one server connection per client connection. Each pod
-keeps a small pool (`DB_MAX_CONNS`, default 4 for api/ingest, 2 for scoring), recycled
-every 30 minutes: at the HPA maximum (4 api + 4 ingest + 1 scoring) that is 34
-connections, plus 2 while the migrate job runs. Check the project's pool size (Database → Connection pooling) if you raise
-replicas or `DB_MAX_CONNS`.
+**On Cloud Run (D221)** the services use Supavisor's **transaction pooler (port 6543)** and the
+`migrate` job the **session pooler (5432)**, both on the shared pooler host (IPv4; the direct host
+is IPv6-only). `deploy/run/config.env` holds the ref and the host, and `scripts/cloudrun_render.py`
+builds the URLs (`ticket-b.md` → Plain env):
 
-`sslmode=require` encrypts but does not verify the server certificate. For
-`verify-full`, download Supabase's CA certificate (Database settings → SSL), mount it
-into the pods and add `sslrootcert=/path/to/prod-ca-2021.crt&sslmode=verify-full` to
-`DATABASE_URL` (the backup job's `pg_dump` understands the same parameters).
+```text
+services: postgresql://ryft_<svc>.<ref>@<pooler host>:6543/postgres?sslmode=verify-full&sslrootcert=/etc/ryft/supabase-ca.crt&default_query_exec_mode=exec
+migrate:  postgresql://postgres.<ref>@<pooler host>:5432/postgres?sslmode=verify-full&sslrootcert=/etc/ryft/supabase-ca.crt
+```
+
+- **No password in the URL.** It comes as `PGPASSWORD` from the role's secret (`db-password-<svc>`,
+  `db-password-owner` for migrate), and pgx reads it. `migrate` sets every role's password from
+  `DB_PASSWORD_<SVC>` on each run; rotate with `scripts/rotate_db_password.sh` (OPERATIONS → GCP).
+- **`verify-full`:** the Supabase Root 2021 CA (public, valid until 2031-04-26) is baked into every
+  image as `/etc/ryft/supabase-ca.crt` from `backend/certs/supabase-ca.crt`; `internal/db`'s
+  `ca_test.go` pins its sha256 and fails 90 days before the expiry. It verifies
+  `*.pooler.supabase.com` on both ports. The Dashboard's download (Database → Settings → SSL
+  Configuration, `prod-ca-2021.crt`) is the same certificate.
+- **Transaction mode** gives a client a server connection only for a transaction, so the services
+  hold no session state: no session `SET`, `LISTEN`, temp tables, session advisory locks, `PREPARE`
+  or `WITH HOLD` cursors (`make session-state-check`, part of `make lint`). The outbox's locks are
+  `pg_advisory_xact_lock`. Supavisor doesn't support prepared statements in transaction mode, so pgx
+  runs `exec` mode: unnamed statements, one round trip, parameter types from the Go types. A
+  `[]byte` therefore goes as `bytea`: pass JSON for a `jsonb` column as a `string`. CI's `pooler`
+  job runs the store's tests through PgBouncer in transaction mode with `exec`.
+- **`db.Open` refuses on Cloud Run** a password in the URL, any `sslmode` but `verify-full`, a
+  missing `sslrootcert`, and for a service a port other than 6543, another exec mode, or a startup
+  parameter other than `application_name`. It doesn't retry a refused login or `ECIRCUITBREAKER`:
+  failed logins trip Supavisor's breaker for the whole role. Wait it out; never retry in a loop.
+- **Clients at the maximum:** api 3 × 4 + ingest 2 × 4 + scoring 1 × 2 + notify 1 × 2 + migrate = 26
+  (design §4). In transaction mode the pool size (Database → Settings → Connection pooling, default
+  15) counts only open transactions. `max-instances` keeps the count bounded.
+- **Before the first deploy** (runbook step 7): `make pooler-check` runs `TestPooler`'s read-only
+  queries through 6543 as the owner, in a rolled-back transaction, one connection, one attempt.
+
+On EKS (until D3) each pod used session mode (5432) with `sslmode=require`, which encrypts but
+doesn't verify the server certificate.
 
 ## Postgres version
 

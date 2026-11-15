@@ -7,16 +7,15 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
 	"sort"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/timkrebs/ryft/internal/app"
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
@@ -35,74 +34,61 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "fold-workouts" {
 		os.Exit(foldWorkouts(os.Args[2:]))
 	}
-	log := httpx.Logger("ingest")
-	cfg, err := config.Load("ingest")
-	if err != nil {
-		log.Error("config", "err", err)
-		os.Exit(1)
-	}
-	authCfg, err := config.LoadAuth()
-	if err != nil {
-		log.Error("auth config", "err", err)
-		os.Exit(1)
-	}
-	// Before any connection: without the policy version ingest cannot check consent
-	// (D78), so it exits at once instead of behind the DB retries.
-	beta, err := config.LoadBeta()
-	if err == nil {
-		err = beta.RequirePolicy()
-	}
-	if err != nil {
-		log.Error("beta config", "err", err)
-		os.Exit(1)
-	}
-	log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	app.Main(spec())
+}
 
-	// Retries until the role can log in and the migrate job has applied the
-	// schema; this service's role cannot change it.
-	pool, err := db.Open(ctx, cfg.DatabaseURL, cfg.DBMaxConns, log)
-	if err != nil {
-		log.Error("db", "err", err)
-		os.Exit(1)
+// spec is ingest on app's lifecycle (A2), as the other three services run: the settings
+// before anything connects, the port behind the start gate before the pool, the metrics
+// push on every tick and at SIGTERM, and Cloud Run's 10 s shutdown budget. Ingest keeps
+// its own mux (health with today's bodies, the tick, /v1/sync), so it hands app the whole
+// of it (Parts.Handler).
+func spec() app.Spec {
+	var (
+		authCfg config.Auth
+		beta    config.Beta
+	)
+	return app.Spec{
+		Name:       "ingest",
+		Edge:       true,
+		Outbox:     app.EventOutbox, // a sync's days and the event announcing them commit together (D101)
+		TickBudget: tickBudget,
+		// Before any connection: without the policy version ingest cannot check consent
+		// (D78), so it exits at once instead of behind the DB retries.
+		Load: func(log *slog.Logger) (err error) {
+			if authCfg, err = config.LoadAuth(); err != nil {
+				return app.ConfigError{Msg: "auth config", Err: err}
+			}
+			if beta, err = config.LoadBeta(); err == nil {
+				err = beta.RequirePolicy()
+			}
+			if err != nil {
+				return app.ConfigError{Msg: "beta config", Err: err}
+			}
+			log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
+			return nil
+		},
+		Build: func(ctx context.Context, d app.Deps) (app.Parts, error) { return build(ctx, d, authCfg, beta) },
 	}
-	defer pool.Close()
-	st := store.New(pool)
+}
 
-	// Pub/Sub (D218): opening it dials nothing; its push verifier checks the tick's token.
-	bus, err := eventbus.Open(ctx, cfg, "ingest", log)
-	if err != nil {
-		log.Error("events", "err", err)
-		os.Exit(1)
-	}
-
+// build makes ingest's mux on the opened pool and transport. ctx is Build's: the JWKS
+// refresher runs on it.
+func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Beta) (app.Parts, error) {
 	verifier, err := auth.FromConfig(ctx, authCfg)
 	if err != nil {
-		log.Error("auth", "err", err)
-		os.Exit(1)
+		return app.Parts{}, app.ConfigError{Msg: "auth", Err: err}
 	}
-	log.Info("auth", "mode", authCfg.Mode)
-
-	// The outbox (D101): a sync's days and the event announcing them commit together,
-	// and the sync flushes it before it answers (D219); the tick's sweep sends what a
+	d.Log.Info("auth", "mode", authCfg.Mode)
+	// The sync flushes the outbox before it answers (D219); the tick's sweep sends what a
 	// flush could not (and what fold-workouts wrote).
-	ob := outbox.New(pool, "ingest", bus, log)
-
-	h := &handler{st: st, outbox: ob, log: log, beta: beta}
-	tick, err := bus.Tick(tickBudget, nil, ingestTicks( // nil: no final step yet (A2: the metrics push)
-		func(ctx context.Context) error { return db.Ping(ctx, pool, "ingest") }, ob.Sweep)...)
+	h := &handler{st: store.New(d.Pool), outbox: d.Outbox, log: d.Log, beta: beta}
+	pool := d.Pool
+	tick, err := d.Tick(ingestTicks( // the metrics push is the tick's final step (app)
+		func(ctx context.Context) error { return db.Ping(ctx, pool, "ingest") }, d.Outbox.Sweep)...)
 	if err != nil {
-		log.Error("build", "err", err)
-		os.Exit(1)
+		return app.Parts{}, err
 	}
-
-	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
-	mux := newMux(h, log, verifier, tick)
-	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, httpx.Recover(httpx.SecurityHeaders(mux)))); err != nil {
-		log.Error("serve", "err", err)
-		os.Exit(1)
-	}
+	return app.Parts{Handler: newMux(h, d.Log, verifier, tick)}, nil
 }
 
 // tickBudget is ingest's POST /internal/tick, both steps together (D219).

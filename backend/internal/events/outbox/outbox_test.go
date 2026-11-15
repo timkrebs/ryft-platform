@@ -22,6 +22,7 @@ import (
 
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/events"
+	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/testsupport"
@@ -305,6 +306,34 @@ func TestDetach(t *testing.T) {
 	}
 	if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > 2*time.Second {
 		t.Fatalf("the budget bounds it: %v %v", dl, ok)
+	}
+}
+
+// The server's hard stop (the shutdown's http step running out, httpx.WithStop) ends a flush and
+// its mark within their budgets, so neither holds a pool connection into the pool step; the
+// client's hang-up still does not.
+func TestDetachEndsAtTheHardStop(t *testing.T) {
+	stop, hardStop := context.WithCancel(context.Background())
+	defer hardStop()
+	req, hangUp := context.WithCancel(context.WithValue(httpx.WithStop(stop), ctxKey{}, "req-1"))
+	hangUp()
+	flush, cancel := detach(req, time.Minute)
+	defer cancel()
+	mark, cancelMark := detach(flush, markGrace) // as drain derives its mark from the flush's context
+	defer cancelMark()
+	if flush.Err() != nil || mark.Err() != nil {
+		t.Fatal("a client that hung up ends neither")
+	}
+	hardStop()
+	for name, ctx := range map[string]context.Context{"the flush": flush, "the mark": mark} {
+		select {
+		case <-ctx.Done():
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s outlived the server's hard stop", name)
+		}
+		if ctx.Value(ctxKey{}) != "req-1" {
+			t.Errorf("%s lost the request's values", name)
+		}
 	}
 }
 

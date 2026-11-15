@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -234,47 +235,30 @@ func TestAdminRoutesAreOnlyRegisteredThroughTheTable(t *testing.T) {
 	}
 }
 
-// A malformed ADMIN_WEB_ORIGINS must stop the api before it waits for any dependency: LoadAdmin is called
-// in main before db.Open, eventbus.Open and auth.FromConfig.
-func TestMainLoadsAdminConfigBeforeDependencies(t *testing.T) {
-	src, err := os.ReadFile("main.go")
-	if err != nil {
-		t.Fatal(err)
+// A malformed ADMIN_WEB_ORIGINS must stop the api before it waits for any dependency or opens its port:
+// the database is a closed port, so a check behind db.Open would be outlasted by the start-up retries
+// (and the child would answer on PORT). The child gets only this environment.
+func TestMainRefusesBadAdminOriginsBeforeConnecting(t *testing.T) {
+	if os.Getenv("RYFT_TEST_MAIN") == "1" {
+		main()
+		return
 	}
-	file, err := parser.ParseFile(token.NewFileSet(), "main.go", src, 0)
-	if err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMainRefusesBadAdminOriginsBeforeConnecting$")
+	cmd.Env = []string{"RYFT_TEST_MAIN=1", "DATABASE_URL=postgres://api@127.0.0.1:1/ryft", "PORT=1", "METRICS_PORT=1",
+		"AUTH_MODE=apikey", "API_KEY=" + strings.Repeat("0123456789abcdef", 2), "ALLOW_INSECURE_APIKEY_AUTH=true",
+		"PRIVACY_POLICY_VERSION=2026-10-26", "ADMIN_WEB_ORIGINS=https://ryftapp.de/admin",
+		"PUBSUB_EMULATOR_HOST=127.0.0.1:1", "ALLOW_INSECURE_PUSH=true"} // compose's local Pub/Sub, never reached
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(out), `"msg":"admin config"`) ||
+		!strings.Contains(string(out), "ADMIN_WEB_ORIGINS") {
+		t.Fatalf("want exit 1 with the admin config error, got %v:\n%s", err, out)
 	}
-	pos := map[string]token.Pos{}
-	ast.Inspect(file, func(n ast.Node) bool {
-		if fn, ok := n.(*ast.FuncDecl); ok && fn.Name.Name != "main" {
-			return false
-		}
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-			if id, ok := sel.X.(*ast.Ident); ok {
-				name := id.Name + "." + sel.Sel.Name
-				if _, seen := pos[name]; !seen {
-					pos[name] = call.Pos()
-				}
-			}
-		}
-		return true
-	})
-	admin, ok := pos["config.LoadAdmin"]
-	if !ok {
-		t.Fatal("main does not call config.LoadAdmin")
-	}
-	for _, later := range []string{"db.Open", "eventbus.Open", "auth.FromConfig"} {
-		p, ok := pos[later]
-		if !ok {
-			t.Fatalf("main does not call %s: the check is stale", later)
-		}
-		if admin > p {
-			t.Errorf("config.LoadAdmin must come before %s in main, so a malformed value fails before any dependency wait", later)
+	for _, later := range []string{`"msg":"listening"`, `"msg":"db"`, `"msg":"events"`} {
+		if strings.Contains(string(out), later) {
+			t.Errorf("the api got as far as %s before refusing ADMIN_WEB_ORIGINS:\n%s", later, out)
 		}
 	}
 }

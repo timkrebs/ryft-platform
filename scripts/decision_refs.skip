@@ -28,3 +28,4 @@ D205 the EKS endpoint narrowed after HCP is gone (ticket PR 6c); not built
 
 # A procedure of the owner's, with no code that follows from it.
 D203 the key-share custody (amended by D208): a human procedure (OPERATIONS -> Vault -> Unseal keys), no code follows from it
+D227 the removal order and the superseded list: the user's procedure (OPERATIONS -> GCP, steps 12-14), carried out by D1, D2, D3

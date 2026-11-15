@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/timkrebs/ryft/internal/auth"
+	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 )
 
@@ -176,6 +177,50 @@ func TestTickCanceledRequest(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusNoContent || s.order() != "" || failed() != 1 || finallyErr != nil {
 		t.Errorf("status %d, steps %q, error %v, finally's ctx %v", w.Code, s.order(), failed(), finallyErr)
+	}
+}
+
+// The final step outlives the caller's cancel but not the server's hard stop (httpx.WithStop, the
+// shutdown's http step running out): a push still running then lets go, so the shutdown's own push
+// and the pool step keep their bounds.
+func TestTickFinallyEndsAtTheHardStop(t *testing.T) {
+	stop, hardStop := context.WithCancel(context.Background())
+	defer hardStop()
+	entered := make(chan struct{})
+	var ended atomic.Value
+	h := newTick(t, TickOptions{Service: "tick-hard-stop", Finally: func(ctx context.Context) error {
+		close(entered)
+		<-ctx.Done()
+		ended.Store(ctx.Err())
+		return ctx.Err()
+	}})
+	req, hangUp := context.WithCancel(httpx.WithStop(stop))
+	defer hangUp()
+	r := httptest.NewRequestWithContext(req, http.MethodPost, PathTick, strings.NewReader(tickBody(nil)))
+	answered := make(chan int, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		answered <- w.Code
+	}()
+	<-entered
+	hangUp() // the caller's cancel: the push goes on
+	select {
+	case code := <-answered:
+		t.Fatalf("the tick answered %d when the caller hung up: the push was cut", code)
+	case <-time.After(50 * time.Millisecond):
+	}
+	hardStop()
+	select {
+	case code := <-answered:
+		if code != http.StatusNoContent {
+			t.Errorf("status %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the final step outlived the server's hard stop (its budget is 10 s)")
+	}
+	if err, _ := ended.Load().(error); !errors.Is(err, context.Canceled) {
+		t.Errorf("the final step's context ended with %v, want the hard stop's cancel", err)
 	}
 }
 

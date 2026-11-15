@@ -131,8 +131,9 @@ func (h *handler) trainImport(w http.ResponseWriter, r *http.Request) {
 	defer stop()
 	stopped := h.importItems(itemsCtx, run, req)
 	// Once, also after a failure or when the client has gone: what is stored gets its days
-	// queued with its one event, then its records (D128).
-	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finish)
+	// queued with its one event, then its records (D128). Not past the shutdown's hard
+	// stop (httpx.Detach): the pool closes after the http step.
+	fctx, cancel := httpx.Detach(ctx, finish)
 	defer cancel()
 	end := h.importEnd(fctx, itemsCtx, r, run, stopped, free)
 	c.result = end.result

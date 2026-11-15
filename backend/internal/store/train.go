@@ -1120,7 +1120,7 @@ func writePlan(ctx context.Context, tx pgx.Tx, userID uuid.UUID, p model.Plan, i
 		  days_per_week=EXCLUDED.days_per_week, description=EXCLUDED.description, progression=EXCLUDED.progression,
 		  archived=EXCLUDED.archived, updated_at=now(), imported_at=CASE WHEN $10 THEN now() ELSE plans.imported_at END
 		WHERE plans.user_id = EXCLUDED.user_id`,
-		p.ID, userID, p.Name, p.Goal, p.Weeks, p.DaysPerWeek, p.Description, prog, p.Archived, imported)
+		p.ID, userID, p.Name, p.Goal, p.Weeks, p.DaysPerWeek, p.Description, string(prog), p.Archived, imported) // a string: exec mode sends []byte as bytea (D221)
 	var dayIDs, peIDs []uuid.UUID
 	for _, d := range p.Days {
 		dayIDs = append(dayIDs, d.ID)

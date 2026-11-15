@@ -45,7 +45,7 @@ func (s *Store) UpdateNotificationPrefs(ctx context.Context, id uuid.UUID, p mod
 		notify_categories = notify_categories || $2::jsonb,
 		quiet_from = CASE WHEN $3 THEN $4::time ELSE quiet_from END,
 		quiet_to   = CASE WHEN $3 THEN $5::time ELSE quiet_to END
-		WHERE id=$1 RETURNING `+userColumns, id, raw, p.QuietHours.Set, from, to))
+		WHERE id=$1 RETURNING `+userColumns, id, string(raw), p.QuietHours.Set, from, to)) // a string: exec mode sends []byte as bytea (D221)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return u, ErrNotFound
 	}

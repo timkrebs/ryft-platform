@@ -31,9 +31,9 @@ type Transport struct {
 // client (the metadata server's token, or the emulator without one) and the push
 // verifier (Google OIDC for cfg.Push, or auth.InsecurePush under ALLOW_INSECURE_PUSH,
 // which warns). The verifier's JWKS refresher runs until ctx ends, so ctx is the
-// service's life, not a start-up timeout. It dials nothing: the first JWKS fetch is the
-// only network call, and its failure does not fail Open (pushes answer 503 until keys
-// arrive).
+// service's life, not a start-up timeout. Its one network call is the first JWKS fetch,
+// which Open waits for (at most 10 s); its failure does not fail Open (pushes answer 503
+// until keys arrive). Pub/Sub's client dials nothing until it publishes.
 func Open(ctx context.Context, cfg config.Config, service string, log *slog.Logger) (*Transport, error) {
 	client, err := pubsub.NewClient(pubsub.Options{
 		Project: cfg.PubSub.Project, Endpoint: cfg.PubSub.Endpoint, EmulatorHost: cfg.PubSub.EmulatorHost,

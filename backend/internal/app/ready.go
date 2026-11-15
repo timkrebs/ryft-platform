@@ -60,14 +60,16 @@ type readiness struct {
 	RequestID string            `json:"request_id,omitempty"`
 }
 
-// readyz answers 200 when every required check passes and 503 otherwise, and 503
-// while draining. The status code is what probes read; the body is for people.
-func readyz(log *slog.Logger, checks []Check, draining *atomic.Bool, timeout time.Duration) http.HandlerFunc {
+// readyz is GET /readyz and /health/ready: 200 when every required check passes, 503
+// otherwise and while draining. Off Cloud Run the body names each check (for people; the
+// status code is what probes read); on Cloud Run it is httpx.CloudReady's, with the first
+// failing check's reason only in the log and the answer reused for 5 s.
+func readyz(log *slog.Logger, checks []Check, draining *atomic.Bool, timeout time.Duration, cloud bool) http.Handler {
 	quiet := &panicLog{log: log, last: map[string]time.Time{}}
-	return func(w http.ResponseWriter, r *http.Request) {
-		body := readiness{Status: "ready", Checks: make(map[string]string, len(checks)), RequestID: w.Header().Get(httpx.RequestIDHeader)}
-		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	evaluate := func(ctx context.Context) readiness {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
+		body := readiness{Status: "ready", Checks: make(map[string]string, len(checks))}
 		for i, err := range runChecks(ctx, quiet, checks, timeout) {
 			c := checks[i]
 			var stale staleError
@@ -87,12 +89,25 @@ func readyz(log *slog.Logger, checks []Check, draining *atomic.Bool, timeout tim
 		if draining.Load() {
 			body.Status, body.Error = "draining", "draining"
 		}
+		return body
+	}
+	if cloud {
+		return httpx.CloudReady(log, timeout, func(ctx context.Context) error {
+			if body := evaluate(ctx); body.Status != "ready" {
+				return errors.New(body.Error)
+			}
+			return nil
+		})
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := evaluate(r.Context())
+		body.RequestID = w.Header().Get(httpx.RequestIDHeader)
 		code := http.StatusOK
 		if body.Status != "ready" {
 			code = http.StatusServiceUnavailable
 		}
 		httpx.WriteJSON(w, code, body)
-	}
+	})
 }
 
 // runChecks runs every check at once and returns their errors in order. A check

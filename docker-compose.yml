@@ -10,7 +10,8 @@ x-pubsub-env: &pubsub-env
 
 services:
   postgres:
-    image: postgres:17-alpine
+    # By digest (the index, read off CI's pull on 2026-11-15), as the emulator and curl below.
+    image: postgres:17-alpine@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7
     environment:
       POSTGRES_USER: ryft
       POSTGRES_PASSWORD: ryft
@@ -26,11 +27,9 @@ services:
   # IAM, no OIDC, nothing kept across a restart (make down; make up rebuilds the topology).
   # On 127.0.0.1 only: it checks no credentials. scripts/dlq.sh reads its hold subscriptions with
   # PUBSUB_EMULATOR_HOST=localhost:8085 and --project ryft-local.
-  # TODO(pin): not pinned by digest yet (no registry access when this was written). Pin it like the
-  # other images: docker buildx imagetools inspect gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
-  # gives the index digest; write it as :emulators@sha256:<digest>, and the same in ci.yml's test job.
+  # Pinned by the index digest (2026-11-15), the same as ci.yml's test job; a move changes both.
   pubsub:
-    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators@sha256:3989a42372d3b984bade6db02213d456d94a0ba3765e8b744b95c4188b6fcc89
     command: ["gcloud", "beta", "emulators", "pubsub", "start", "--host-port=0.0.0.0:8085", "--project=ryft-local"]
     ports: ["127.0.0.1:8085:8085"]
     # A port check: the emulator listens once it serves.
@@ -42,10 +41,10 @@ services:
   # The topology on the emulator, then it exits: deploy/pubsub-emulator/init.sh, which
   # cmd/pubsub-topology generates from internal/events/pubsub/topology.go (topics, the push
   # subscriptions to http://<service>:8080<path> with Terraform's retry and dead-letter policy, the
-  # DLQ hold subscriptions). Idempotent. The services start once it has run.
-  # TODO(pin): the curl image by digest as well (docker buildx imagetools inspect docker.io/curlimages/curl:8.15.0).
+  # DLQ hold subscriptions). Idempotent. The services start once it has run. The curl image is pinned
+  # by its index digest (2026-11-15).
   pubsub-init:
-    image: &curl-image docker.io/curlimages/curl:8.15.0
+    image: &curl-image docker.io/curlimages/curl:8.15.0@sha256:4026b29997dc7c823b51c164b71e2b51e0fd95cce4601f78202c513d97da2922
     entrypoint: ["/bin/sh", "/init.sh"]
     environment:
       PUBSUB_EMULATOR_HOST: pubsub:8085

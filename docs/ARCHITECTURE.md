@@ -50,22 +50,29 @@ service), applies each migration in a transaction under a transaction-level advi
 lock (safe behind Supabase's pooler), and sets the services' role passwords. The
 services connect as least-privilege roles (below) and wait at start-up until the schema
 has every migration they were built with.
-Each serves `/healthz`, `/readyz` and Prometheus `/metrics` on 8080 — metric
-catalogue and dashboard in [`OBSERVABILITY.md`](OBSERVABILITY.md).
+Each serves `/health/live` and `/health/ready` (and `/healthz`, `/readyz` for compose) on
+one port, HTTP/1.1 and h2c (D220). On Cloud Run the app metrics are pushed by OTLP at each
+tick and at SIGTERM (D224); locally `/metrics` stays on 9090 — metric catalogue and
+dashboard in [`OBSERVABILITY.md`](OBSERVABILITY.md).
 
-**Lifecycle.** scoring and notify start and stop through `internal/app` (api and ingest
-follow): their `main` hands `app.Main` a `Spec` (settings, and a `Build` that returns the
-consumers and timers), and app does the rest in one order. The settings are read before
-anything connects (D78); then the pool, the broker, `/metrics`, `Build`, the outbox relay,
-the timers, the consumers and, last, the HTTP port, so the start-up probe still covers the
-database wait. One signal handler: on the first signal, or when any task fails or panics,
-`/readyz` answers `draining`, the timers stop, the consumers stop, HTTP drains, then the
-relay, the broker and the pool close, each step bounded and logged (`shutdown step`), all
-inside the kubelet's 30 s. A task that panics is recovered, counted
-(`ryft_goroutine_panics_total`) and ends the service with exit 2; an HTTP port that will not
-bind ends it with exit 1. Timers and consumers log and swallow a transient error and return
-only one they cannot go on after, because a returned error stops the service.
-OPERATIONS → A deploy: what the old pod logs.
+**Lifecycle.** All four services start and stop through `internal/app`: their `main` hands
+`app.Main` a `Spec` (settings, and a `Build` that returns the routes, push handlers and tick
+steps), and app does the rest in one order. The settings (OTLP's included) are read before
+anything connects (D78); then the transport (its one network call is the first fetch of
+Google's JWKS, at most 10 s), then **the HTTP port, before the pool** (D220): `/health/live`
+answers at once, which is Cloud Run's startup and liveness probe, the ready paths answer 503
+until the start is done, other requests wait up to 5 s for it, and a tick that comes before
+the pool is open sets `ryft_db_up` 0 and pushes the metrics. Then the pool (it retries until
+the role logs in and the schema is current; on Cloud Run a refused login holds the instance
+up instead, and a tick retries the login at most every 5 minutes, D221), the outbox and
+`Build`, and the start gate opens. One signal handler: on SIGTERM, or when any task fails or
+panics, the ready paths answer `draining`, HTTP drains (3 s for api and ingest, 2 s for
+scoring and notify, then the handlers' contexts are cancelled so their connections come
+back), the metrics push (2 s), and the pool closes (1 s), each step bounded and logged
+(`shutdown step`), all inside Cloud Run's 10 s (the watchdog fires at 9 s). A task that panics
+is recovered, counted (`ryft_goroutine_panics_total`) and ends the service with exit 2; an
+HTTP port that will not bind ends it with exit 1. Tick steps log and swallow a transient
+error. OPERATIONS → A deploy: what the old pod logs.
 
 **Auth and users.** Multi-user, with Supabase as identity provider and database
 ([`SUPABASE.md`](SUPABASE.md)). The app signs in with Apple through Supabase and sends
@@ -170,30 +177,30 @@ import rules between packages are `backend/internal/arch_test.go`.
 
 | Package | Owns | Depends on | Tested by |
 | --- | --- | --- | --- |
-| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, ratelimit, scoring, sealed, store, train | 34 files (Postgres) |
-| `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | auth, config, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 8 files (Postgres) |
+| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, ratelimit, scoring, sealed, store, train | 35 files (Postgres) |
+| `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | app, auth, config, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 8 files (Postgres) |
 | `cmd/migrate` | migrate applies the migrations as the schema owner, loads the built-in exercises and plans, and sets the service roles' passwords where they changed. | db, httpx, smoke | none |
 | `cmd/notify` | notify wires internal/notify to its push routes and the 15-minute tick. | apns, app, config, eventbus, events, logx, notify, store | 1 file |
 | `cmd/pubsub-topology` | pubsub-topology writes the Pub/Sub topology (internal/events/pubsub) as Terraform's variables and as the emulator's init script. | events/pubsub | 1 file |
 | `cmd/scoring` | scoring scores the pushed ingest events and runs the 15-minute tick that keeps today and yesterday fresh. | app, config, db, eventbus, events, httpx, logx, metrics, model, scoring, store | 3 files (Postgres) |
 | `internal/apns` | sends one APNs request per device token with token-based authentication: an ES256 JWT from the team's .p8 key over HTTP/2 (net/http negotiates it). | apple | 1 file |
-| `internal/app` | owns a long-running service's lifecycle: it opens the pool and the transport, serves the push, tick and health routes, and stops in reverse. | config, db, eventbus, events, events/outbox, httpx, metrics | 4 files |
+| `internal/app` | owns a service's lifecycle: it opens the pool and the transport, serves the push, tick and health routes, pushes the metrics, and stops in reverse. | auth, config, db, eventbus, events, events/outbox, httpx, metrics | 6 files |
 | `internal/apple` | talks to Sign in with Apple's REST API: it exchanges the authorization code for a refresh token and revokes that token on deletion. | logx | 2 files |
 | `internal/auth` | owns bearer checks (Supabase JWT or a dev key on /v1, Google OIDC on pushes and ticks), the per-user limit hook and the Supabase admin client. | config, httpx, logx, metrics, model | 6 files |
 | `internal/behavior` | owns the journal's arithmetic: the fixed ids of the built-in behaviors, what an entry may hold, and how a behavior changes the morning after. | model, train | 1 file |
-| `internal/config` | owns the services' environment configuration: what each variable means, its default and which combinations are refused. | none | 1 file |
-| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 11 files (Postgres) |
+| `internal/config` | owns the services' environment configuration: what each variable means, its default and which combinations are refused. | none | 2 files |
+| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 14 files (Postgres) |
 | `internal/eventbus` | owns building a service's Pub/Sub transport from its configuration: the Bus, the push verifier, the push and tick handlers and the wait sender. | auth, config, events, events/pubsub | 1 file |
 | `internal/events` | owns the five trigger events the services exchange, their encoding, and what a handler's error means. | logx, metrics, model | 1 file |
-| `internal/events/outbox` | owns the outbox table's rows and the relay that moves them to the broker, so an event is never lost between a database write and a publish. | events, metrics | 1 file (Postgres) |
-| `internal/events/pubsub` | owns events.Bus on Pub/Sub over REST, the push and tick handlers, and the topology that Terraform's and the emulator's files are written from. | auth, config, events, metrics | 5 files (Pub/Sub emulator) |
+| `internal/events/outbox` | owns the outbox table's rows and the relay that moves them to the broker, so an event is never lost between a database write and a publish. | events, httpx, metrics | 1 file (Postgres) |
+| `internal/events/pubsub` | owns events.Bus on Pub/Sub over REST, the push and tick handlers, and the topology that Terraform's and the emulator's files are written from. | auth, config, events, httpx, metrics | 5 files (Pub/Sub emulator) |
 | `internal/flags` | evaluates remote-config feature flags for one user (GET /v1/config): flags and a user id in, booleans out. | model | 1 file |
 | `internal/gate` | owns the decision and the answer of the beta invite gate and the consent gate, for a user the caller has already loaded. | config, httpx, metrics, model | 2 files |
-| `internal/httpx` | owns the HTTP plumbing every service shares: error shape, JSON I/O with size and NUL rules, the middleware chain, health and shutdown. | logx, metrics | 6 files |
+| `internal/httpx` | owns the HTTP plumbing every service shares: error shape, JSON I/O with size and NUL rules, the middleware chain, the server, health, the logger. | logx, metrics | 8 files |
 | `internal/insights` | turns recent scored days into the short cards on the Insights screen, one rule at a time. | model | 1 file |
 | `internal/logx` | owns the services' JSON logging: one logger per service, with the request's identity added to every line. | none | 2 files |
 | `internal/logx/logcheck` | owns the test-side half of "no health values in logs": it checks captured log lines against the keys each message may carry. | none | 1 file |
-| `internal/metrics` | owns every Prometheus metric the services export, declared in one place, and serves them on /metrics. | none | via cmd/api, cmd/ingest, app, auth, db, eventbus, events/outbox, events/pubsub, gate, httpx, notify, scoring, store |
+| `internal/metrics` | owns every Prometheus metric the services export, declared in one place, and serves them on /metrics or pushes them by OTLP. | none | 1 file |
 | `internal/model` | owns the wire types of docs/API.md, the event payloads the services exchange, and the error code constants. | none | 5 files |
 | `internal/notify` | decides what RYFT pushes, to whom and when. | apns, events, logx, metrics, model, store | 4 files |
 | `internal/ratelimit` | owns the in-memory token bucket per user and the platform's per-request-class limits. | none | 1 file |
@@ -202,7 +209,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/scoring/workoutdup` | owns the two rules that make one activity one workout: the same-source fold and the cross-source duplicate mark. | model | 1 file |
 | `internal/sealed` | encrypts the few secrets the platform stores (Apple refresh tokens) with AES-256-GCM. | none | 1 file |
 | `internal/smoke` | owns the production smoke after a deploy, run from inside the cluster. | model | 1 file |
-| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, events, events/outbox, logx, metrics, model, scoring/workoutdup, train | 22 files (Postgres) |
+| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, events, events/outbox, logx, metrics, model, scoring/workoutdup, train | 23 files (Postgres) |
 | `internal/testsupport` | holds the helpers the Postgres-backed tests of several packages share. | none | via cmd/api, cmd/ingest, db, events/outbox, store |
 | `internal/train` | holds the pure rules of the Train feature that are not scoring. | model | 2 files |
 

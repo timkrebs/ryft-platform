@@ -8,7 +8,7 @@ GOLANGCI_LINT_VERSION := v2.15.0
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: k8s-context k8s-context-local test check-api-doc test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod cloudrun-check alerts-check alerts-apply alerts-retire-eks synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest admission-e2e monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check topology-check
+.PHONY: k8s-context k8s-context-local test check-api-doc test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod pooler-check session-state-check cloudrun-check alerts-check alerts-apply alerts-retire-eks synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate admission-celtest argocd-luatest admission-e2e monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check topology-check
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -41,18 +41,50 @@ logs:
 smoke:
 	./scripts/smoke.sh
 
-# The same against a stack running AUTH_MODE=supabase (e.g. EKS through
-# port-forwards): signs in a test user with the GoTrue password grant. Skips
-# unless SUPABASE_URL, SUPABASE_ANON_KEY, SMOKE_EMAIL and SMOKE_PASSWORD are set.
-# It writes synthetic days into that user, so use a dedicated test account.
+# The same against a stack running AUTH_MODE=supabase: signs in a test user with
+# the GoTrue password grant. Skips unless SUPABASE_URL, SUPABASE_ANON_KEY,
+# SMOKE_EMAIL and SMOKE_PASSWORD are set. It writes synthetic days into that user,
+# so use the dedicated smoke account. API_URL and INGEST_URL name the stack: Cloud
+# Run's hosts (runbook step 9: https://api.ryftlab.de, https://ingest.ryftlab.de,
+# which proves pgx's exec mode through Supavisor on 6543, design §4) or a local one
+# (the default, compose's ports). Plain http is refused for anything but localhost:
+# the user's access token would cross the network in clear.
 smoke-supabase:
 	@if [ -z "$$SUPABASE_URL" ] || [ -z "$$SUPABASE_ANON_KEY" ] || [ -z "$$SMOKE_EMAIL" ] || [ -z "$$SMOKE_PASSWORD" ]; then \
 	  echo "smoke-supabase: skipped (set SUPABASE_URL, SUPABASE_ANON_KEY, SMOKE_EMAIL, SMOKE_PASSWORD; API_URL/INGEST_URL point at the stack)"; \
 	  exit 0; \
 	fi; \
+	for u in "$${API_URL:-http://localhost:8082}" "$${INGEST_URL:-http://localhost:8081}" "$$SUPABASE_URL"; do \
+	  case "$$u" in https://?*|http://localhost:*|http://127.0.0.1:*) ;; \
+	    *) echo "smoke-supabase: $$u is neither https:// nor local" >&2; exit 2 ;; esac; \
+	done; \
+	echo "smoke-supabase: api $${API_URL:-http://localhost:8082}, ingest $${INGEST_URL:-http://localhost:8081}"; \
 	AUTH_MODE=supabase ./scripts/smoke.sh; \
 	if [ -n "$$SUPABASE_SECRET_KEY" ]; then ./scripts/check_accounts.py; \
 	else echo "accounts: skipped (set SUPABASE_SECRET_KEY to test sign-up, isolation and deletion with throwaway users)"; fi
+
+# Runbook step 7 (docs/OPERATIONS.md → GCP), before anything is deployed: pgx's exec mode (unnamed
+# statements, as in the services' DATABASE_URL) through Supavisor's transaction pooler on 6543, read-only.
+# TestPooler (backend/internal/store/pooler_test.go) logs in once as postgres.<ref> with verify-full
+# against backend/certs/supabase-ca.crt, on one connection, and runs the store's parameter types, a
+# batch, SET LOCAL and pg_advisory_xact_lock in a READ ONLY transaction that it rolls back. The ref and
+# the host come from deploy/run/config.env, the owner's password only from PGPASSWORD in the environment.
+# One attempt: a failed login feeds Supavisor's circuit breaker for the whole role, so never rerun it in
+# a loop. CI's pooler job runs the same test against PgBouncer.
+pooler-check:
+	@[ -n "$$PGPASSWORD" ] || { echo "pooler-check: export PGPASSWORD first, the owner's (db-password-owner; docs/OPERATIONS.md → GCP, step 7)" >&2; exit 2; }
+	@ref=$$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env); host=$$(sed -n 's/^SUPABASE_POOLER_HOST=//p' deploy/run/config.env); \
+	printf '%s\n' "$$ref" | grep -Eqx '[a-z]{20}' || { echo "pooler-check: SUPABASE_PROJECT_REF in deploy/run/config.env is not one value of 20 lower-case letters" >&2; exit 2; }; \
+	printf '%s\n' "$$host" | grep -Eqx 'aws-[0-9]+-eu-central-1\.pooler\.supabase\.com' || { echo "pooler-check: SUPABASE_POOLER_HOST in deploy/run/config.env is not one aws-<n>-eu-central-1.pooler.supabase.com" >&2; exit 2; }; \
+	echo "pooler-check: postgres.$$ref at $$host:6543, one connection, read-only"; \
+	cd backend && RYFT_POOLER_URL="postgresql://postgres.$$ref@$$host:6543/postgres?sslmode=verify-full&sslrootcert=$(CURDIR)/backend/certs/supabase-ca.crt&default_query_exec_mode=exec" \
+	  go test -count=1 -run '^TestPooler$$' -v ./internal/store/
+
+# No session state in the services' Go and SQL (scripts/check_session_state.sh: SET without LOCAL,
+# LISTEN, temporary tables, session advisory locks, named prepared statements, WITH HOLD cursors),
+# which Supavisor's transaction pooler would leave on another client's server connection. CI's lint job.
+session-state-check:
+	bash scripts/check_session_state.sh
 
 # Argo CD's PostSync smoke (internal/smoke, `/app smoke` in the migrate image) against the
 # compose stack, as CI runs it after `make smoke`.
@@ -264,9 +296,9 @@ coverage:
 load:
 	CONTAINER="$(CONTAINER)" COMPOSE="$(COMPOSE)" ./scripts/load.sh
 
-# What CI's `lint` job runs: golangci-lint with the repo config (.golangci.yml) from backend/, then the package
-# map check. Then the decision references (D165), which CI runs in its `bytes` job (warnings only: scripts/decision_refs.sh
-# exits 0 unless it cannot work).
+# What CI's `lint` job runs: golangci-lint with the repo config (.golangci.yml) from backend/, the package
+# map check and the session-state check. Then the decision references (D165), which CI runs in its `bytes` job
+# (warnings only: scripts/decision_refs.sh exits 0 unless it cannot work).
 # The linter is not installed by the Makefile: CI pins GOLANGCI_LINT_VERSION, and another version can report
 # different findings, so a mismatch is said out loud before the run.
 lint:
@@ -277,6 +309,7 @@ lint:
 	fi
 	cd backend && golangci-lint run
 	./scripts/pkgmap.sh --check
+	bash scripts/check_session_state.sh
 	./scripts/decision_refs.sh
 
 # After editing docs/API.md (D167): the tests that read it (examples, Errors tables, quoted messages).

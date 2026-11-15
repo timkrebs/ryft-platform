@@ -17,6 +17,16 @@
 //     (D93).
 //   - A table's grants for each service role belong in the migration that adds
 //     the table; TestServiceRoleGrants pins the resulting grant matrix.
+//   - On Cloud Run (K_SERVICE or CLOUD_RUN_JOB) DATABASE_URL has no password (pgx
+//     reads PGPASSWORD), sslmode=verify-full and an sslrootcert; a service's also
+//     has port 6543 (Supavisor's transaction mode) and default_query_exec_mode=exec.
+//     PoolConfig refuses anything else without repeating the URL (cloudrun.go), and
+//     Open retries no refused login there (Supavisor's circuit breaker).
+//   - The pool leaves no session state on a server connection: no startup parameter,
+//     no statement from a hook; AfterConnect maps types on the client only
+//     (registerTypes, which also gives []uuid.UUID a type in exec mode). Services' SQL
+//     uses SET LOCAL and transaction-level advisory locks
+//     (scripts/check_session_state.sh).
 //
-// See docs/ARCHITECTURE.md → Database roles; docs/SUPABASE.md; D28, D42, D47, D93.
+// See docs/ARCHITECTURE.md → Database roles; docs/SUPABASE.md; D28, D42, D47, D93, D221.
 package db

@@ -9,7 +9,10 @@
 //     checking it (JWKS unreachable, a key we cannot fetch yet, the database
 //     behind OnAuth) is a 503 with Retry-After. The app refreshes its token once
 //     on a 401 and signs the user out if that fails, so an outage must never look
-//     like a bad token (D29).
+//     like a bad token (D29). Both verifiers, with no keys loaded, fetch them on
+//     a token first (at most every 10 s, held to the request's deadline and at
+//     most 5 s, not cut by a client that hangs up), so a cold instance whose first
+//     fetch failed does not answer 503 until its next refresh.
 //   - The limit runs after verification and before OnAuth, so a throttled
 //     request costs no database query (D36).
 //   - apikey mode lets a caller act as any user (D32), so config.LoadAuth refuses

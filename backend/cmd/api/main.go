@@ -7,12 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"os/signal"
 	"strconv"
-	"syscall"
 	"time"
 
+	"github.com/timkrebs/ryft/internal/app"
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
@@ -26,75 +24,68 @@ import (
 	"github.com/timkrebs/ryft/internal/store"
 )
 
-func main() {
-	log := httpx.Logger("api")
-	cfg, err := config.Load("api")
-	if err != nil {
-		log.Error("config", "err", err)
-		os.Exit(1)
-	}
-	authCfg, err := config.LoadAuth()
-	if err != nil {
-		log.Error("auth config", "err", err)
-		os.Exit(1)
-	}
-	// Before any connection: without the policy version the api cannot record or
-	// check consent (D78), so it exits at once instead of behind the DB retries.
-	beta, err := config.LoadBeta()
-	if err == nil {
-		err = beta.RequirePolicy()
-	}
-	if err != nil {
-		log.Error("beta config", "err", err)
-		os.Exit(1)
-	}
-	log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
-	// Also before any connection: a malformed ADMIN_WEB_ORIGINS must fail at once, not behind the
-	// database wait (a test pins that this stays above db.Open).
-	adminCfg, err := config.LoadAdmin()
-	if err != nil {
-		log.Error("admin config", "err", err)
-		os.Exit(1)
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+func main() { app.Main(spec()) }
 
-	// Retries until the role can log in and the migrate job has applied the
-	// schema; this service's role cannot change it.
-	pool, err := db.Open(ctx, cfg.DatabaseURL, cfg.DBMaxConns, log)
-	if err != nil {
-		log.Error("db", "err", err)
-		os.Exit(1)
+// spec is the api on app's lifecycle (A2), as the other three services run: the settings
+// before anything connects, the port behind the start gate before the pool, the metrics
+// push on every tick and at SIGTERM, and Cloud Run's 10 s shutdown budget. The api keeps
+// its own mux (health with today's bodies, the tick, /v1, /v1/admin), so it hands app the
+// whole of it (Parts.Handler).
+func spec() app.Spec {
+	var (
+		authCfg  config.Auth
+		beta     config.Beta
+		adminCfg config.Admin
+	)
+	return app.Spec{
+		Name:       "api",
+		Edge:       true,
+		Outbox:     app.EventOutbox, // every event the api publishes goes through the outbox (D101)
+		TickBudget: tickBudget,
+		// Before any connection (D78): without the policy version the api cannot record or
+		// check consent, and a malformed ADMIN_WEB_ORIGINS must fail at once, not behind
+		// the database wait (TestMainRefusesBadAdminOriginsBeforeConnecting).
+		Load: func(log *slog.Logger) (err error) {
+			if authCfg, err = config.LoadAuth(); err != nil {
+				return app.ConfigError{Msg: "auth config", Err: err}
+			}
+			if beta, err = config.LoadBeta(); err == nil {
+				err = beta.RequirePolicy()
+			}
+			if err != nil {
+				return app.ConfigError{Msg: "beta config", Err: err}
+			}
+			log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
+			if adminCfg, err = config.LoadAdmin(); err != nil {
+				return app.ConfigError{Msg: "admin config", Err: err}
+			}
+			return nil
+		},
+		Build: func(ctx context.Context, d app.Deps) (app.Parts, error) {
+			return build(ctx, d, authCfg, beta, adminCfg)
+		},
 	}
-	defer pool.Close()
+}
+
+// build makes the api's mux on the opened pool and transport. ctx is Build's: the JWKS
+// refresher runs on it.
+func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Beta, adminCfg config.Admin) (app.Parts, error) {
+	log := d.Log
 	// The import's comparisons are internal/train's pure rules (D131).
-	st := store.New(pool).WithImportRules(importRules())
-
-	// Pub/Sub (D218): opening it dials nothing; its push verifier checks the tick's token.
-	bus, err := eventbus.Open(ctx, cfg, "api", log)
-	if err != nil {
-		log.Error("events", "err", err)
-		os.Exit(1)
-	}
-
+	st := store.New(d.Pool).WithImportRules(importRules())
 	verifier, err := auth.FromConfig(ctx, authCfg)
 	if err != nil {
-		log.Error("auth", "err", err)
-		os.Exit(1)
+		return app.Parts{}, app.ConfigError{Msg: "auth", Err: err}
 	}
 	log.Info("auth", "mode", authCfg.Mode)
-
 	acct, err := newAccounts(st, log, authCfg)
 	if err != nil {
-		log.Error("account deletion", "err", err)
-		os.Exit(1)
+		return app.Parts{}, app.ConfigError{Msg: "account deletion", Err: err}
 	}
 
-	// Every event the api publishes goes through the outbox (D101): a session's
-	// completion commits with its event, and the handler that wrote a row flushes it
-	// before it answers (D219); the tick's sweep sends what a flush could not.
-	ob := outbox.New(pool, "api", bus, log)
-
+	// A session's completion commits with its event, and the handler that wrote a row
+	// flushes it before it answers (D219); the tick's sweep sends what a flush could not.
+	ob := d.Outbox
 	h := &handler{st: st, bus: events.Publisher{Sender: ob}, outbox: ob, log: log, cache: newInsightCache(), accounts: acct,
 		engine: scoring.NewEngine(st, log), beta: beta,
 		emails: acct, webURL: adminCfg.PublicWebURL}
@@ -111,7 +102,8 @@ func main() {
 		log.Warn("email-bound invites are unavailable: the api has no Supabase admin client (SUPABASE_SERVICE_ROLE_KEY unset, or apikey mode)")
 	}
 	purgeSeries()
-	tick, err := bus.Tick(tickBudget, nil, tickSteps{ // nil: no final step yet (A2: the metrics push)
+	pool := d.Pool
+	tick, err := d.Tick(tickSteps{ // the metrics push is the tick's final step (app)
 		ping:      func(ctx context.Context) error { return db.Ping(ctx, pool, "api") },
 		sweep:     ob.Sweep,
 		reconcile: acct.reconcile,
@@ -119,12 +111,9 @@ func main() {
 		purge:     func(ctx context.Context) error { return purgeInviteEmails(ctx, st, log) },
 	}.ticks()...)
 	if err != nil {
-		log.Error("build", "err", err)
-		os.Exit(1)
+		return app.Parts{}, err
 	}
-
-	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
-	mux := newMux(h, muxOptions{
+	return app.Parts{Handler: newMux(h, muxOptions{
 		log:      log,
 		verifier: verifier,
 		ready: func(ctx context.Context) error {
@@ -137,11 +126,7 @@ func main() {
 		gate:     beta.Gate,
 		admin:    adminCfg,
 		authMode: authCfg.Mode,
-	})
-	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, httpx.Recover(httpx.SecurityHeaders(mux)))); err != nil {
-		log.Error("serve", "err", err)
-		os.Exit(1)
-	}
+	})}, nil
 }
 
 // muxOptions is what the api's routes are built from besides the handler.
