@@ -457,8 +457,8 @@ jobs:
   #   govulncheck (the Go vulnerability database): every finding the code can reach fails, whatever its severity,
   #     in the modules and in the standard library; one it cannot reach is listed and passes. It runs in
   #     backend/Dockerfile's build image, by the digest pinned there, so the standard library it judges is the one
-  #     the images are built with (Dependabot moves that digest). v1.7.0 is the last release that builds with Go 1.25
-  #     (v1.8.0 needs 1.26): it moves with the build image's Go.
+  #     the images are built with (Dependabot moves that digest). Its version must build with that Go (v1.9.0 needs
+  #     1.26): a new Go line in the Dockerfile may move it.
   #   Trivy, the deploy gate's own rule (the image and flags of deploy.yml) on the modules of backend/go.mod: a
   #     critical with a fix fails, reachable or not. govulncheck alone would not stop what that gate stops:
   #     it finds those two CVEs in a package we import but not in a function we call.
@@ -475,7 +475,7 @@ jobs:
           persist-credentials: false
       - name: govulncheck in the build image (backend/Dockerfile)
         env:
-          GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.9.0
         run: |
           image=$(awk '$1 == "FROM" && $NF == "build" { for (i = 2; i < NF; i++) if ($i ~ /^golang:/) print $i }' backend/Dockerfile)
           case "$image" in
