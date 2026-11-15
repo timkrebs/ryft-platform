@@ -47,10 +47,11 @@ var lifecycleLogKeys = func() logcheck.Lines {
 
 		// The start gate and the ready paths on Cloud Run (httpx.CloudReady): the cause is
 		// a check's error or the start's, never a request's.
-		"not ready":                      {"err": logcheck.Text(203)},
-		"tick before the start was done": {"waited": took},
-		"push rejected":                  {"path": logcheck.Enum(eventbus.PathTick), "reason": logcheck.Text(40), "err": errText},
-		"push token cannot be checked":   {"path": logcheck.Enum(eventbus.PathTick), "reason": logcheck.Text(40), "err": errText},
+		"not ready":                       {"err": logcheck.Text(203)},
+		"tick before the start was done":  {"waited": took},
+		"db: the login passed on a retry": {}, // the hold on a refused login is over (holdLogin)
+		"push rejected":                   {"path": logcheck.Enum(eventbus.PathTick), "reason": logcheck.Text(40), "err": errText},
+		"push token cannot be checked":    {"path": logcheck.Enum(eventbus.PathTick), "reason": logcheck.Text(40), "err": errText},
 
 		// The transport (eventbus.Open, auth.InsecurePush) and the tick (pubsub.NewTick).
 		"push and tick tokens are NOT checked (ALLOW_INSECURE_PUSH=true): local development only": {},
@@ -184,6 +185,25 @@ func TestLifecycleLogsKeepToTheirKeys(t *testing.T) {
 		}
 		record(g)
 	})
+	t.Run("a refused login on Cloud Run, then a retry that passes", func(t *testing.T) {
+		g := newRig()
+		asScoring(g)
+		g.cloud = true
+		g.refusals = 1
+		g.e.retryEvery = time.Millisecond
+		ctx, cancel := context.WithCancel(context.Background())
+		done := g.waitForPort(t, ctx, g.spec())
+		eventually(t, func() bool { return len(g.logs.find("db")) == 1 }, "the refused login's line")
+		g.get(t, "/health/ready")
+		time.Sleep(5 * time.Millisecond)
+		g.tick(t)
+		<-g.started
+		cancel()
+		if err := result(t, done); err != nil {
+			t.Fatal(err)
+		}
+		record(g)
+	})
 	for name, set := range map[string]func(g *rig){
 		"the database":            func(g *rig) { g.poolErr = boom },
 		"the transport":           func(g *rig) { g.busErr = boom },
@@ -223,7 +243,7 @@ func TestLifecycleLogsKeepToTheirKeys(t *testing.T) {
 	for _, msg := range []string{"shutting down", "shutdown step", "shut down", "shutdown overdue", "panic", "listening",
 		"metrics listening", "serve", "db", "events", "build", "tick", "tick: step failed", "tick: the budget is spent, step skipped",
 		"push and tick tokens are NOT checked (ALLOW_INSECURE_PUSH=true): local development only",
-		"not ready", "tick before the start was done", "otlp config"} {
+		"not ready", "tick before the start was done", "otlp config", "db: the login passed on a retry"} {
 		if len(lines[msg]) == 0 {
 			t.Errorf("no %q line in any run", msg)
 		}

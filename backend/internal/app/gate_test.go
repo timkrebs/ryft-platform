@@ -204,6 +204,102 @@ func TestCloudRunReadyAndNoMetricsPort(t *testing.T) {
 	}
 }
 
+// On Cloud Run a refused login holds the start instead of ending it: an exit is another
+// instance's login, which feeds Supavisor's circuit breaker for the whole role. Requests
+// get the 503 at once, the ready path's logged cause says why, a tick reports
+// ryft_db_up 0, and a tick that is due (retryEvery after the last login) gets one login
+// retry. When a retry passes, the gate opens and that tick is served as any tick.
+func TestARefusedLoginHoldsAndATickRetries(t *testing.T) {
+	g := newRig()
+	g.cloud = true
+	g.parts.Routes = pingRoute
+	g.e.retryEvery = 300 * time.Millisecond
+	g.refusals = 2 // the start's login and the first retry's
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := g.waitForPort(t, ctx, g.spec())
+	eventually(t, func() bool { return len(g.logs.find("db")) == 1 }, "the refused login's line")
+	logins := func() int {
+		n := 0
+		for _, r := range g.rec.list() {
+			if r == "pool" {
+				n++
+			}
+		}
+		return n
+	}
+
+	began := time.Now()
+	if code, header, body := g.do(t, http.MethodGet, "/v1/ping", ""); code != 503 || body != unavailableBody || header.Get("Retry-After") != "5" {
+		t.Errorf("a request while the start holds = %d %v %s", code, header, body)
+	}
+	if took := time.Since(began); took > time.Second {
+		t.Errorf("a request waited %v for a start that holds", took)
+	}
+	if code, body := g.get(t, "/health/ready"); code != 503 || body != `{"error":"not ready"}` {
+		t.Errorf("/health/ready while the start holds = %d %s", code, body)
+	}
+	if m := g.logs.find("not ready"); len(m) != 1 || !strings.Contains(m[0]["err"].(string), "refused the login") {
+		t.Errorf("not ready lines: %v", m)
+	}
+
+	// Before retryEvery has passed: no login, the database reported down.
+	metrics.DBUp.WithLabelValues("svc").Set(1)
+	if code := g.tick(t); code != http.StatusServiceUnavailable {
+		t.Errorf("a tick while the start holds = %d", code)
+	}
+	if v := testutil.ToFloat64(metrics.DBUp.WithLabelValues("svc")); v != 0 {
+		t.Errorf("ryft_db_up after a held tick = %v, want 0", v)
+	}
+	if n := logins(); n != 1 {
+		t.Errorf("%d logins before a retry was due, want 1", n)
+	}
+
+	time.Sleep(g.e.retryEvery)
+	if code := g.tick(t); code != http.StatusServiceUnavailable { // the retry is refused too
+		t.Errorf("a tick whose retry was refused = %d", code)
+	}
+	if code := g.tick(t); code != http.StatusServiceUnavailable { // and the next is not due
+		t.Errorf("a tick right after a retry = %d", code)
+	}
+	if n := logins(); n != 2 {
+		t.Errorf("%d logins after one due tick and one not due, want 2", n)
+	}
+
+	time.Sleep(g.e.retryEvery)
+	if code := g.tick(t); code != http.StatusNoContent {
+		t.Errorf("the tick whose retry passed = %d, want the tick's 204", code)
+	}
+	<-g.started
+	if code, body := g.get(t, "/v1/ping"); code != 200 || body != "pong" {
+		t.Errorf("/v1/ping after the retry = %d %s", code, body)
+	}
+	if n, m := logins(), g.logs.find("db: the login passed on a retry"); n != 3 || len(m) != 1 || len(g.logs.find("db")) != 2 {
+		t.Errorf("%d logins, %d passed lines, %d refused lines; want 3, 1, 2", n, len(m), len(g.logs.find("db")))
+	}
+	cancel()
+	if err := result(t, done); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A signal while the start holds is a clean stop, as a signal during any wait of the start.
+func TestASignalWhileTheStartHolds(t *testing.T) {
+	g := newRig()
+	g.cloud = true
+	g.refusals = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	done := g.waitForPort(t, ctx, g.spec())
+	eventually(t, func() bool { return len(g.logs.find("db")) == 1 }, "the refused login's line")
+	cancel()
+	if err := result(t, done); err != nil {
+		t.Fatalf("Run = %v, want nil for a signal", err)
+	}
+	if m := g.logs.find("start interrupted by the signal"); len(m) != 1 || m[0]["step"] != "db" {
+		t.Errorf("interrupted lines: %v", m)
+	}
+}
+
 // The push and the tick's final step are the metrics push: without an OTLP endpoint there
 // is none, and the shutdown has no push step.
 func TestNoPushWithoutAnEndpoint(t *testing.T) {

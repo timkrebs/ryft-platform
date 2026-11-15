@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/timkrebs/ryft/internal/auth"
+	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 )
 
@@ -28,8 +29,9 @@ type TickOptions struct {
 	Budget   time.Duration     // for all steps together (api, ingest, notify 45 s; scoring 240 s)
 	Log      *slog.Logger
 	// Finally runs after the tick is counted and before it is answered, whatever the
-	// steps did, bounded by FinallyBudget: the hook for the metrics push (A2), so the push
-	// carries this tick's ryft_ticks_total. Its error is logged. nil: nothing.
+	// steps did, bounded by FinallyBudget and the server's hard stop (httpx.Detach), not
+	// by the caller's cancel: the hook for the metrics push (A2), so the push carries
+	// this tick's ryft_ticks_total. Its error is logged. nil: nothing.
 	Finally       func(ctx context.Context) error
 	FinallyBudget time.Duration // default 10 s
 }
@@ -100,7 +102,10 @@ func (h *tickHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.o.Log.InfoContext(r.Context(), "tick", "result", result, "message_id", env.Message.MessageID,
 		"took", time.Since(start).Round(time.Millisecond).String())
 	if h.o.Finally != nil {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.o.FinallyBudget)
+		// Past the caller's cancel (the push carries this tick's count either way), not past
+		// the server's hard stop: a push still running when the shutdown's http step runs out
+		// must let go of the pusher before the shutdown's own push (httpx.Detach).
+		ctx, cancel := httpx.Detach(r.Context(), h.o.FinallyBudget)
 		if err := h.step(ctx, Tick{Name: "finally", Run: h.o.Finally}); err != nil {
 			h.o.Log.ErrorContext(ctx, "tick: the final step failed", "err", err)
 		}

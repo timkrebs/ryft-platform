@@ -10,33 +10,39 @@ import (
 	"time"
 )
 
-// ClientIP is the address to key a per-address limit by: walking X-Forwarded-For from the
-// right, the first entry that is a public address and not one of Google's front ends';
-// otherwise the host of RemoteAddr. IPv6 addresses are masked to their /64, an IPv4-mapped
-// one is read as IPv4.
+// ClientIP is the address to key a per-address limit by: the rightmost X-Forwarded-For
+// entry as it is, skipping only Google's front ends (googleFrontEnds); an entry that does
+// not parse, or no entry left, gives the host of RemoteAddr. IPv6 addresses are masked to
+// their /64, an IPv4-mapped one is read as IPv4.
 //
-// Why from the right: a client can write any X-Forwarded-For it likes, and each proxy in
-// front of us appends the address it saw. So the entries a proxy of ours appended are the
-// rightmost ones, and everything left of them is the client's claim. On Cloud Run, Google's
+// Why the rightmost: a client can write any X-Forwarded-For it likes, and each proxy in
+// front of us appends the address it saw. So the entry our own proxy appended is the
+// rightmost one, and everything left of it is the client's claim. On Cloud Run, Google's
 // front end appends the address it observed (design §5.1; runbook step 9 checks it with a
-// forged header and the "client address" line). Behind Traefik (EKS) the rightmost entry is
-// the one Traefik appended, as before. What the walk skips can only be a hop of the
-// infrastructure (Google's load-balancer and health-check ranges, private, shared,
-// link-local, loopback), never a client on the internet; an entry that does not parse ends
-// the walk at RemoteAddr. Never use the leftmost entry or X-Real-Ip.
+// forged header and the "client address" line); behind Traefik (EKS) it is the one Traefik
+// appended, as before. A private, shared (CGNAT), link-local or loopback entry is taken as
+// it is: a client that reaches Cloud Run from a VPC (Private Google Access, Direct VPC
+// egress) arrives as 10.x or a ULA (fc00::/7), and skipping it would make the forged entry
+// to its left the key. Only Google's own load-balancer and health-check ranges are a hop to skip.
+// Never use the leftmost entry or X-Real-Ip.
 //
-// The value is a map key in memory and is never a metric label. The only line that logs it
-// is the sampled "client address" line (Instrument; at most one a minute per instance). The
-// admin limiter that keys by it caps its map (cmd/api, D155).
+// The value is a map key in memory and is never a metric label or logged, not even in
+// part (D222: no IP address in any log line; the privacy text promises logs without
+// them). The sampled "client address" line says only which entry was picked. The admin
+// limiter that keys by it caps its map (cmd/api, D155).
 func ClientIP(r *http.Request) string {
-	if a, ok := forwardedClient(r.Header.Values("X-Forwarded-For")); ok {
+	if a, _, ok := forwardedClient(r.Header.Values("X-Forwarded-For")); ok {
 		return normalizeIP(a)
 	}
 	return remoteHost(r.RemoteAddr)
 }
 
-// forwardedClient walks the entries from the right and returns the first client address.
-func forwardedClient(lines []string) (netip.Addr, bool) {
+// forwardedClient walks the entries from the right and returns the first that is not a
+// Google front end, with its position counted from the right (1: the rightmost); an
+// entry that does not parse ends the walk (false: RemoteAddr). Empty entries are not
+// counted, as forwardedEntries does not count them.
+func forwardedClient(lines []string) (netip.Addr, int, bool) {
+	pos := 0
 	for i := len(lines) - 1; i >= 0; i-- {
 		parts := strings.Split(lines[i], ",")
 		for j := len(parts) - 1; j >= 0; j-- {
@@ -44,17 +50,31 @@ func forwardedClient(lines []string) (netip.Addr, bool) {
 			if p == "" {
 				continue
 			}
+			pos++
 			a, err := netip.ParseAddr(p)
 			if err != nil {
-				return netip.Addr{}, false
+				return netip.Addr{}, 0, false
 			}
-			if a = a.Unmap(); infrastructure(a) {
+			if a = a.Unmap(); googleFrontEnd(a) {
 				continue
 			}
-			return a, true
+			return a, pos, true
 		}
 	}
-	return netip.Addr{}, false
+	return netip.Addr{}, 0, false
+}
+
+// forwardedEntries is how many non-empty entries the X-Forwarded-For lines hold.
+func forwardedEntries(lines []string) int {
+	n := 0
+	for _, l := range lines {
+		for _, p := range strings.Split(l, ",") {
+			if strings.TrimSpace(p) != "" {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // googleFrontEnds are the ranges Google's load balancers and health checks connect from
@@ -66,16 +86,8 @@ var googleFrontEnds = []netip.Prefix{
 	netip.MustParsePrefix("2600:2d00:1:1::/64"),
 }
 
-// sharedAddressSpace is 100.64.0.0/10 (RFC 6598, carrier-grade NAT): not routable on the internet.
-var sharedAddressSpace = netip.MustParsePrefix("100.64.0.0/10")
-
-// infrastructure reports whether a is an address no client on the internet has: not global
-// unicast (loopback, link-local, multicast, unspecified), private, shared, or Google's front
-// end.
-func infrastructure(a netip.Addr) bool {
-	if !a.IsGlobalUnicast() || a.IsPrivate() || sharedAddressSpace.Contains(a) {
-		return true
-	}
+// googleFrontEnd reports whether a is in one of Google's front-end ranges.
+func googleFrontEnd(a netip.Addr) bool {
 	for _, p := range googleFrontEnds {
 		if p.Contains(a) {
 			return true
@@ -107,16 +119,24 @@ func normalizeIP(a netip.Addr) string {
 // clientAddressEvery is how often an instance logs the "client address" line at most.
 const clientAddressEvery = time.Minute
 
-// maxForwardedEntries caps the entry count the line reports.
+// maxForwardedEntries caps the entry count and the index the line reports.
 const maxForwardedEntries = 64
 
 // clientAddressLog writes the "client address" line for a request that carries
-// X-Forwarded-For, at most once per clientAddressEvery per Instrument (one per instance):
-// how many entries the header had, the address ClientIP picked and RemoteAddr's host. It is
-// how runbook step 9 shows that a forged header does not move the limit's key (the picked
-// address must be the caller's, not the forged one and not Google's). It is logged without
-// the request's context, so it carries no request id, user or route, and never the header
-// itself: the forged entries are the client's claim.
+// X-Forwarded-For, at most once per clientAddressEvery per Instrument (one per instance),
+// at info. It holds no address, whole or in part (D222), only which entry ClientIP took:
+//
+//   - picked: "xff" (an X-Forwarded-For entry) or "remote" (none would do: RemoteAddr);
+//   - xff_index: with "xff", the picked entry's position from the left, counting from 0,
+//     which is how many entries left of it ClientIP ignored (the client's own claim);
+//   - xff_entries: how many entries the header had.
+//
+// It is how runbook step 9 shows that a forged header does not move the limit's key: with
+// three forged entries, Google's appended one must be picked, at index 3. An index past
+// the forged ones means Google appends a hop of its own that ClientIP doesn't skip; three
+// entries and index 2 means Google appended nothing and the forged entry won. It is logged
+// without the request's context, so it carries no request id, user or route, and never
+// the header itself.
 type clientAddressLog struct {
 	log *slog.Logger
 	now func() time.Time
@@ -140,13 +160,11 @@ func (c *clientAddressLog) maybe(r *http.Request) {
 	if !due {
 		return
 	}
-	n := 0
-	for _, l := range lines {
-		for _, p := range strings.Split(l, ",") {
-			if strings.TrimSpace(p) != "" {
-				n++
-			}
-		}
+	n := forwardedEntries(lines)
+	if _, pos, ok := forwardedClient(lines); ok {
+		c.log.Info("client address", "picked", "xff", "xff_index", min(n-pos, maxForwardedEntries),
+			"xff_entries", min(n, maxForwardedEntries))
+		return
 	}
-	c.log.Info("client address", "xff_entries", min(n, maxForwardedEntries), "client_ip", ClientIP(r), "remote_host", remoteHost(r.RemoteAddr))
+	c.log.Info("client address", "picked", "remote", "xff_entries", min(n, maxForwardedEntries))
 }

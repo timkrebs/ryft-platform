@@ -240,8 +240,17 @@ func initAdminSeries() {
 // limit is the per-address limit in front of the bearer check, so a flood of bad credentials costs no
 // token verification and no database call. The address (httpx.ClientIP) is only a map key here: the limit
 // never logs it and it is never a metric label. The map has a cap (addrLimit, maxAdminAddrs; D155).
+//
+// A request that presents ADMIN_API_KEY passes untouched, before the limiter: one IPv6 /48 holds 65,536
+// /64 keys, enough to fill the cap and keep the shared overflow bucket empty, and the operator's
+// break-glass key must still get through then. The comparison is the constant-time one require makes. Any
+// other bearer, a wrong key included, takes a token as before; the Supabase token path keeps its limits.
 func (a adminAuth) limit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if token, ok := auth.Bearer(r); ok && a.isKey(token) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if ok, wait := a.limiter.Allow(httpx.ClientIP(r)); !ok {
 			metrics.RateLimited.WithLabelValues("admin_ip").Inc()
 			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
@@ -263,9 +272,8 @@ func (a adminAuth) require(next http.Handler) http.Handler {
 			a.reject(w, r, "missing")
 			return
 		}
-		// The key first, whatever the bearer looks like. Hashing both sides gives ConstantTimeCompare
-		// equal lengths, so the key's length is not a side channel either.
-		if sum := sha256.Sum256([]byte(token)); subtle.ConstantTimeCompare(sum[:], a.keySum[:]) == 1 {
+		// The key first, whatever the bearer looks like.
+		if a.isKey(token) {
 			a.pass(w, r, next, adminActor{fingerprint: a.fingerprint})
 			return
 		}
@@ -316,6 +324,13 @@ func (a adminAuth) require(next http.Handler) http.Handler {
 		}
 		a.pass(w, r, next, adminActor{user: p.UserID})
 	})
+}
+
+// isKey reports whether token is ADMIN_API_KEY. Hashing both sides gives ConstantTimeCompare equal lengths,
+// so the key's length is not a side channel either.
+func (a adminAuth) isKey(token string) bool {
+	sum := sha256.Sum256([]byte(token))
+	return subtle.ConstantTimeCompare(sum[:], a.keySum[:]) == 1
 }
 
 // auditMFA records the refusal of a real operator for want of a fresh second factor: who, which route,
@@ -435,8 +450,8 @@ func (a admin) routes() []adminRoute {
 }
 
 // adminRoutes is /v1/admin/: CORS outermost (so a refusal is readable by the page, and a preflight never
-// reaches anything below), the per-address limit, the bearer check, the audit around every authorized
-// call, the timeout and the routes.
+// reaches anything below), the per-address limit (which the key passes untouched), the bearer check, the
+// audit around every authorized call, the timeout and the routes.
 func adminRoutes(h *handler, o adminOptions) http.Handler {
 	a, adm := admin{h: h}, http.NewServeMux()
 	for _, r := range a.routes() {

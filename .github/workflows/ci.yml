@@ -242,10 +242,11 @@ jobs:
       # Only to list and download main's coverage artifact (coverage-gate); no write.
       actions: read
     # A throwaway server for the opt-in migration and store tests (account
-    # deletion races); they create and drop their own databases.
+    # deletion races); they create and drop their own databases. By digest (the index; read off
+    # the pooler job's pull on 2026-11-15), as in docker-compose.yml and the pooler job.
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:17-alpine@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7
         env: { POSTGRES_PASSWORD: pw }
         ports: ["5432:5432"]
         options: >-
@@ -337,7 +338,7 @@ jobs:
       contents: read
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:17-alpine@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7
         env: { POSTGRES_PASSWORD: pw }
         ports: ["5432:5432"]
         options: >-

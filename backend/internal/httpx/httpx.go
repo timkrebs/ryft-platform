@@ -228,7 +228,7 @@ var clientRequestID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 // the ServeMux pattern ("GET /v1/days/{day}", never the raw path), so
 // cardinality stays bounded. A valid trace header becomes the lines' trace
 // (Cloud Logging's format only), and a request with X-Forwarded-For is sampled
-// for the "client address" line (clientAddressLog).
+// for the "client address" line (clientAddressLog: which entry was picked, no address).
 func Instrument(log *slog.Logger, next http.Handler) http.Handler {
 	sample := &clientAddressLog{log: log, now: time.Now}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

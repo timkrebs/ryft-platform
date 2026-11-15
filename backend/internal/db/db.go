@@ -120,9 +120,11 @@ const MigrateWait = 10 * time.Minute
 // passwords), then waits until the schema is current, all within MigrateWait.
 //
 // A DATABASE_URL that PoolConfig refuses is a setting, not a state: it fails at
-// once. On Cloud Run a refused login fails at once as well (stopRetrying): each
-// failed login feeds Supavisor's circuit breaker, which then blocks the whole role
-// (design §4), and Cloud Run's next cold start is the retry.
+// once. On Cloud Run a refused login fails at once as well (stopRetrying), with an
+// error LoginRefused recognises: each failed login feeds Supavisor's circuit breaker,
+// which then blocks the whole role (design §4), so the caller must not open again in
+// a loop (internal/app holds the instance up and tries again on a tick, at most every
+// 5 minutes).
 func Open(ctx context.Context, url string, maxConns int, log *slog.Logger) (*pgxpool.Pool, error) {
 	cfg, err := PoolConfig(url, maxConns)
 	if err != nil {
@@ -144,8 +146,7 @@ func Open(ctx context.Context, url string, maxConns int, log *slog.Logger) (*pgx
 		return err
 	})
 	if final != nil {
-		return nil, fmt.Errorf("database: %w (not retried on Cloud Run, %s is set: every failed login feeds "+
-			"Supavisor's circuit breaker for the whole role)", final, env)
+		return nil, &refusedLogin{env: env, err: final}
 	}
 	if err != nil {
 		return nil, err

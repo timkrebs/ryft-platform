@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/timkrebs/ryft/internal/events"
+	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 )
 
@@ -129,8 +130,8 @@ func (o *Outbox) SendAt(ctx context.Context, m events.Message, at time.Time) err
 // Cloud Run nothing runs after the response (D219). Call it after the commit that
 // inserted rows. It takes at most FlushBudget (plus markGrace to record what it sent)
 // on a context detached from ctx's cancel, so a client that hangs up after the commit
-// does not skip the relay. It logs a failure and returns nothing: the rows stay for the
-// next Flush or the tick's Sweep.
+// does not skip the relay; the server's hard stop still ends it (detach). It logs a
+// failure and returns nothing: the rows stay for the next Flush or the tick's Sweep.
 func (o *Outbox) Flush(ctx context.Context) {
 	ctx, cancel := detach(ctx, o.FlushBudget)
 	defer cancel()
@@ -140,9 +141,12 @@ func (o *Outbox) Flush(ctx context.Context) {
 }
 
 // detach is ctx without its cancel and deadline, its values (the request's log fields)
-// kept, ending after budget.
+// kept, ending after budget or at the server's hard stop, whichever comes first
+// (httpx.Detach): a flush or a mark still running when the shutdown's http step runs out
+// gives its connection back before the pool closes (review-a1 finding 6). Off a request
+// (a sweep from a test or a tool) there is no hard stop and only budget ends it.
 func detach(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), budget)
+	return httpx.Detach(ctx, budget)
 }
 
 // Sweep relays every due row, batch after batch, until none is left, a send fails or
@@ -272,7 +276,11 @@ func (o *Outbox) drain(ctx context.Context, by mode) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	defer func() {
+		rb, cancel := detach(ctx, markGrace) // a no-op after Commit
+		_ = tx.Rollback(rb)
+		cancel()
+	}()
 	if dl, ok := ctx.Deadline(); ok {
 		if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`, lockTimeout(time.Until(dl))); err != nil {
 			return 0, err
@@ -321,7 +329,7 @@ func (o *Outbox) drain(ctx context.Context, by mode) (int, error) {
 		metrics.OutboxRelayed.WithLabelValues(o.publisher, "ok").Inc()
 		sent = append(sent, r.id)
 	}
-	fin, cancel := context.WithTimeout(context.WithoutCancel(ctx), markGrace)
+	fin, cancel := detach(ctx, markGrace)
 	defer cancel()
 	if len(sent) > 0 {
 		if _, err := tx.Exec(fin, `UPDATE outbox SET published_at = now(), last_error = NULL WHERE id = ANY($1)`, sent); err != nil {

@@ -212,6 +212,7 @@ type seams struct {
 	loadConfig   func(service string) (config.Config, error)
 	newPush      func(service string, log *slog.Logger) (func(context.Context) error, error) // the metrics push; nil func: none
 	openPool     func(ctx context.Context, cfg config.Config, log *slog.Logger) (*pgxpool.Pool, error)
+	loginRefused func(err error) bool                                                // openPool's refused login on Cloud Run (db.LoginRefused): the start holds (holdLogin)
 	ping         func(ctx context.Context, pool *pgxpool.Pool) error                 // the ready paths' db check
 	dbPing       func(ctx context.Context, pool *pgxpool.Pool, service string) error // the tick's first step (ryft_db_up)
 	sweep        func(ctx context.Context, ob *outbox.Outbox) error                  // the tick's outbox step
@@ -227,6 +228,7 @@ type seams struct {
 	bounded      func(step string, d time.Duration) // a test hook: every bound a step waits
 	readyTimeout time.Duration
 	startWait    time.Duration
+	retryEvery   time.Duration // the least time between two logins while the start holds (defaultLoginRetryEvery)
 	bounds       bounds
 }
 
@@ -238,7 +240,8 @@ func defaultSeams() seams {
 		openPool: func(ctx context.Context, cfg config.Config, log *slog.Logger) (*pgxpool.Pool, error) {
 			return db.Open(ctx, cfg.DatabaseURL, cfg.DBMaxConns, log)
 		},
-		ping: func(ctx context.Context, pool *pgxpool.Pool) error { return pool.Ping(ctx) },
+		loginRefused: db.LoginRefused,
+		ping:         func(ctx context.Context, pool *pgxpool.Pool) error { return pool.Ping(ctx) },
 		dbPing: func(ctx context.Context, pool *pgxpool.Pool, service string) error {
 			return db.Ping(ctx, pool, service)
 		},
@@ -253,6 +256,7 @@ func defaultSeams() seams {
 		exit:         os.Exit,
 		readyTimeout: defaultReadyTimeout,
 		startWait:    defaultStartWait,
+		retryEvery:   defaultLoginRetryEvery,
 		bounds:       defaultBounds(),
 	}
 }
@@ -436,9 +440,12 @@ func (r *service) start(ctx context.Context) (err error) {
 		r.logSetup(ctx, "otlp config", err)
 		return err
 	}
-	// Opening the transport dials nothing (D218): its push verifier checks the ticks that
-	// arrive during the start, and its key refresher lives on the service's life, which
-	// ends after the http step.
+	// Opening the transport makes one network call, the first fetch of Google's JWKS
+	// (at most 10 s; a failure doesn't fail it, the pushes answer 503 until keys arrive),
+	// so the listener may open up to 10 s late, within the startup probe's 20 s (D218,
+	// D220). It comes first because its push verifier checks the ticks that arrive during
+	// the start; its key refresher lives on the service's life, which ends after the http
+	// step.
 	if r.bus, err = r.e.openBus(r.life, r.cfg, r.s.Name, r.log); err != nil {
 		r.bus = nil
 		r.logSetup(ctx, "events", err)
@@ -452,8 +459,13 @@ func (r *service) start(ctx context.Context) (err error) {
 		r.startMetrics(ctx)
 	}
 	// db.Open retries until the role can log in and the migrate job has applied the
-	// schema; a signal ends the wait.
-	if r.pool, err = r.e.openPool(ctx, r.cfg, r.log); err != nil {
+	// schema; a signal ends the wait. On Cloud Run a refused login ends it at once, and
+	// the start holds instead of failing (holdLogin).
+	r.pool, err = r.e.openPool(ctx, r.cfg, r.log)
+	if err != nil && r.e.loginRefused != nil && r.e.loginRefused(err) {
+		r.pool, err = r.holdLogin(ctx, err)
+	}
+	if err != nil {
 		r.pool = nil
 		r.logSetup(ctx, "db", err)
 		return err
@@ -475,6 +487,45 @@ func (r *service) start(ctx context.Context) (err error) {
 	}
 	r.logSetup(ctx, "build", err)
 	return err
+}
+
+// holdLogin keeps a Cloud Run instance up after a refused login (db.LoginRefused: SQLSTATE
+// class 28 or Supavisor's ECIRCUITBREAKER) instead of ending the start. An exit would make
+// Cloud Run start another instance at once, whose login feeds the breaker again (a crash
+// loop that keeps the whole role blocked, design §4), and no tick would ever report
+// ryft_db_up 0. So the gate holds: every request but the health paths gets the 503 at
+// once, a tick reports the database down, and a tick with a valid token that is due
+// (gate.every since the last login) hands this loop one login retry, bounded by that
+// tick (it is when the instance has CPU). It returns the pool once a retry passes, or the
+// signal's error.
+func (r *service) holdLogin(ctx context.Context, refused error) (*pgxpool.Pool, error) {
+	r.log.Error("db", "err", refused)
+	r.gate.hold(r.gate.now())
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case req := <-r.gate.retries:
+			// Ended by the signal or the tick's end. The pool keeps open's context once it
+			// is made, so a passed open does not cancel it (pgxpool uses it only to make
+			// MinConns, 0 here).
+			open, cancel := context.WithCancel(ctx)
+			stop := context.AfterFunc(req.ctx, cancel)
+			pool, err := r.e.openPool(open, r.cfg, r.log)
+			if !stop() || err != nil {
+				cancel()
+			}
+			req.result <- err == nil
+			if err == nil {
+				r.log.Info("db: the login passed on a retry")
+				return pool, nil
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			r.log.Error("db", "err", err)
+		}
+	}
 }
 
 // openOutbox is Spec.Outbox's outbox: the events' relays into the transport by key,
@@ -548,6 +599,7 @@ func (r *service) handler(parts Parts, ob *outbox.Outbox) (http.Handler, error) 
 // start is done.
 func (r *service) listen(ctx context.Context) error {
 	r.gate = newGate(r.s.Name, r.log, r.bus.Verifier(), r.push, r.e.cloudRun(), r.e.startWait)
+	r.gate.every = orDefault(r.e.retryEvery, defaultLoginRetryEvery)
 	handler := httpx.Recover(r.gate)
 	if r.s.Edge {
 		handler = httpx.Instrument(r.log, httpx.Recover(httpx.SecurityHeaders(r.gate)))

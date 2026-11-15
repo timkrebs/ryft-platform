@@ -28,8 +28,12 @@ var adminRejectReasons = []string{"missing", "not_a_token", "expired", "signatur
 
 // adminLogKeys is every line the admin chain writes, with the keys it may carry besides logx's and the
 // request's (docs/OPERATIONS.md → Data protection (logs)): the actor as a pseudonymous short id, a reason from
-// a closed set, counts. Never a token, an email, an address, a note or a code.
+// a closed set, counts. Never a token, an email, an address (whole or in part), a note or a code.
 var adminLogKeys = logcheck.Lines{
+	// Instrument's sampled line (runbook step 9): which X-Forwarded-For entry ClientIP took and how many
+	// there were, non-personal counts and a closed set, never the address (D222).
+	"client address": {"picked": logcheck.Enum("xff", "remote"), "xff_index": logcheck.CountMax(64),
+		"xff_entries": logcheck.CountMax(64)},
 	"http":                logcheck.HTTP(append([]string{"mfa_required", "key_only", "jwks_unavailable", "jwks_refresh_limited", "account_check"}, adminRejectReasons...)...),
 	"admin auth rejected": {"reason": logcheck.Enum(adminRejectReasons...)},
 	"admin second factor required": {"reason": logcheck.Enum("mfa_missing", "mfa_stale"),
@@ -51,7 +55,8 @@ var adminLogKeys = logcheck.Lines{
 }
 
 // Every admin log line names its actor by a short pseudonymous id and holds no token, no email, no address
-// and no body (design §4.4, §15). The key's lines keep admin_key for the queries that predate the token path.
+// (not even its network) and no body (design §4.4, §15; D222). The key's lines keep admin_key for the
+// queries that predate the token path.
 func TestAdminLogsHoldNoTokensEmailsOrAddresses(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := logx.NewWriter(buf, "api", slog.LevelDebug)
@@ -106,11 +111,24 @@ func TestAdminLogsHoldNoTokensEmailsOrAddresses(t *testing.T) {
 		t.Fatalf("flood: %d", a.status)
 	}
 
+	// The addresses and their networks: the caller's, its forged entry and the peer (httptest's RemoteAddr).
 	forbid := logcheck.Forbidden{Texts: []string{tokOp, tokNoRow, tokAAL1, tokStale, tokApp, tokExpired, "garbage", testAdminKey,
-		ip, "198.51.100.1", mail, "RYFT-2222-2222", "RYFT2222", "operator@example.test", "from the page", "Authorization", "Bearer"}}
+		ip, "203.0.113.", "198.51.100.", "192.0.2.", mail, "RYFT-2222-2222", "RYFT2222", "operator@example.test", "from the page",
+		"Authorization", "Bearer"}}
 	out, problems := logcheck.Check(buf.String(), logcheck.Standard("api"), adminLogKeys, forbid)
 	for _, p := range problems {
 		t.Error(p)
+	}
+	// Each Instrument (the chain's, the outage's) samples one "client address" line a minute: the
+	// rightmost entry picked, the observed one (right of the forged one, on the chain's).
+	if n := len(out["client address"]); n < 2 {
+		t.Errorf("client address lines: %d, want one per Instrument", n)
+	}
+	for _, l := range out["client address"] {
+		n, _ := l["xff_entries"].(float64)
+		if l["picked"] != "xff" || n < 1 || l["xff_index"] != n-1 || l["level"] != "INFO" {
+			t.Errorf("client address line: %v", l)
+		}
 	}
 
 	// The lines say what happened, with the actor where there is one.

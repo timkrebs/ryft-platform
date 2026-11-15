@@ -20,10 +20,13 @@
 //   - CORS is for the operator's page only: api wraps /v1/admin/ in it and nothing
 //     else, with exact origins from ADMIN_WEB_ORIGINS and no credentials. It
 //     answers a preflight itself, before any auth. ClientIP keys a per-address
-//     limit by the rightmost X-Forwarded-For entry a proxy of ours appended
-//     (Traefik's, Google's front end's), skipping infrastructure hops; only the
-//     sampled "client address" line logs it (one a minute per instance, no
-//     request id or user, for runbook step 9).
+//     limit by the rightmost X-Forwarded-For entry, the one a proxy of ours
+//     appended (Traefik's, Google's front end's), as it is: only Google's
+//     front-end ranges are skipped, so a client inside a VPC keys by its own
+//     private address. No address is logged, not even in part (D222): the
+//     sampled "client address" line (one a minute per instance, no request id
+//     or user, for runbook step 9) says only which entry was picked (picked,
+//     xff_index) and how many there were (xff_entries).
 //   - Detach is the one way to run past the client's cancel: it ends at the
 //     server's hard stop (WithStop), so the pool can close after the HTTP step.
 //   - The request id is the server's (a client's X-Request-ID is logged as

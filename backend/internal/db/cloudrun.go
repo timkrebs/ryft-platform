@@ -122,6 +122,31 @@ func parseReason(err error) string {
 	return "the reason is not shown, as pgx's message repeats the URL"
 }
 
+// refusedLogin is Open's error when it stopped on Cloud Run after a refused login or
+// an open circuit breaker (stopRetrying).
+type refusedLogin struct {
+	env string // the variable that made it Cloud Run: K_SERVICE or CLOUD_RUN_JOB
+	err error  // the last attempt's
+}
+
+func (e *refusedLogin) Error() string {
+	return fmt.Sprintf("database: %v (not retried in a loop on Cloud Run, %s is set: every failed login feeds "+
+		"Supavisor's circuit breaker for the whole role)", e.err, e.env)
+}
+
+func (e *refusedLogin) Unwrap() error { return e.err }
+
+// LoginRefused reports whether err is (or wraps) Open's verdict on Cloud Run that the
+// login was refused (SQLSTATE class 28) or Supavisor's circuit breaker is open
+// (ECIRCUITBREAKER): a state that another try right away only makes worse, as every
+// failed login feeds the breaker for the whole role. Off Cloud Run Open retries those
+// like anything else, so it is never true there; nor for a refused DATABASE_URL, a
+// network error or a context's end.
+func LoginRefused(err error) bool {
+	var e *refusedLogin
+	return errors.As(err, &e)
+}
+
 // stopRetrying says whether Open stops after err on Cloud Run: the circuit breaker is
 // open (ECIRCUITBREAKER), or the login was refused (SQLSTATE class 28). One refusal
 // whose hint says the password was recently changed is retried: Supavisor still had the

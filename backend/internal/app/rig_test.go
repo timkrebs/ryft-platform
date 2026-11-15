@@ -177,6 +177,7 @@ type rig struct {
 	httpFail                                    chan struct{}                   // closed: the HTTP listener's Accept fails
 	httpBoom                                    chan struct{}                   // closed: the HTTP listener's Accept panics
 	pingErr, sweepErr                           error                           // the tick's db ping and sweep
+	refusals                                    int                             // the next opens that refuse the login (errRefusedLogin); under mu
 
 	exits    []int                      // the codes the watchdog asked for
 	bounds   map[string][]time.Duration // every bound the shutdown waited, by step
@@ -189,6 +190,9 @@ type rig struct {
 
 // errListener is what Accept returns once httpFail is closed.
 var errListener = errors.New("accept tcp: use of a broken listener")
+
+// errRefusedLogin is the rig's db.LoginRefused: a login refused on Cloud Run.
+var errRefusedLogin = errors.New(`database: FATAL: password authentication failed for user "ryft_svc" (SQLSTATE 28P01)`)
 
 func newRig() *rig {
 	g := &rig{rec: &rec{}, logs: &syncBuf{}, addrs: map[string]string{}, bounds: map[string][]time.Duration{},
@@ -231,9 +235,19 @@ func newRig() *rig {
 			if g.poolErr != nil {
 				return nil, g.poolErr
 			}
+			g.mu.Lock()
+			refused := g.refusals > 0
+			if refused {
+				g.refusals--
+			}
+			g.mu.Unlock()
+			if refused {
+				return nil, errRefusedLogin
+			}
 			return pgxpool.New(ctx, "postgres://u:p@127.0.0.1:1/x") // does not dial until used
 		},
-		ping: func(context.Context, *pgxpool.Pool) error { return nil },
+		loginRefused: func(err error) bool { return errors.Is(err, errRefusedLogin) },
+		ping:         func(context.Context, *pgxpool.Pool) error { return nil },
 		dbPing: func(_ context.Context, p *pgxpool.Pool, service string) error {
 			if p == nil || service != "svc" {
 				return fmt.Errorf("the tick pinged %v as %q", p, service)
