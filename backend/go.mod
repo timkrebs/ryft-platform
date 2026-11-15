@@ -2,6 +2,8 @@ module github.com/timkrebs/ryft
 
 go 1.25.0
 
+toolchain go1.27.4
+
 require (
 	github.com/MicahParks/jwkset v0.11.0
 	github.com/MicahParks/keyfunc/v3 v3.7.0

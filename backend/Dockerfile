@@ -1,9 +1,10 @@
 # One Dockerfile for every binary; pick it with --build-arg SERVICE=ingest|scoring|api|notify|migrate
 # The build stage runs on the build machine and cross-compiles for the target
 # platform, so multi-arch builds (CI: linux/amd64 + linux/arm64) need no emulation.
-# Both base images are pinned by digest (the index, every platform), read off main's CI build log on
-# 2026-11-15; the tag stays for Dependabot, the digest decides.
-FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
+# Both base images are pinned by digest (the index, every platform), read off CI's logs on 2026-11-15
+# (golang: Go 1.27 since D229, the `vulns` job's pull and the smoke build of PR #175); the tag stays
+# for Dependabot, the digest decides. go.mod's `toolchain` line names this image's Go.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:eb61c3873c97416fff0116553fff65d67a3549f72e11d9758849a689cdd8b523 AS build
 ARG SERVICE
 ARG TARGETOS
 ARG TARGETARCH
