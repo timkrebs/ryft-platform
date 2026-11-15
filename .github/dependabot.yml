@@ -1,8 +1,20 @@
 # Dependency updates, weekly. Titles read "deps: bump …" (the pr-title rule). The site's
-# npm and Docker base images live in web/, the services' base images in backend/; the Go
-# modules are not covered yet.
+# npm and Docker base images live in web/; the services' Go modules and base images in
+# backend/.
 version: 2
 updates:
+  # The services' Go modules (backend/go.mod), since D229: pgx 5.7.5 went unwatched until the
+  # deploy gate's Trivy stopped it. Minor and patch versions in one PR; a new major is a new
+  # module path, a hand PR. The cooldown delays version updates only (see the npm block).
+  - package-ecosystem: gomod
+    directory: /backend
+    schedule: { interval: weekly, day: monday }
+    commit-message: { prefix: deps }
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    cooldown: { default-days: 7 }
   - package-ecosystem: npm
     directory: /web
     schedule: { interval: weekly, day: monday }
