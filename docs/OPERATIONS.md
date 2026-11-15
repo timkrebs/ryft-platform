@@ -472,8 +472,10 @@ stop. A failure in `TestPooler` after a good login (an error naming a prepared s
 parameter type) means `exec` mode doesn't work through Supavisor: the fallback is
 `default_query_exec_mode=simple_protocol` (design §4), a PR in `deploy/run` and `internal/db`,
 before step 8. An error that the owner `lacks CREATEROLE or ADMIN OPTION` means step 8's
-migrate would fail on 0035: the fallback is `cache_describe` (D228), a PR that drops 0035,
-before step 8.
+migrate would fail with 42501, on 0035 and on any role password that changed. Dropping 0035
+wouldn't help. First get the grant: only Supabase can give it (`supabase_admin` runs `GRANT
+<role> TO postgres WITH ADMIN OPTION` for each role named; ask Supabase support). Then run step 7
+again, and only then step 8.
 
 ### 7a. The config PR (before step 8)
 

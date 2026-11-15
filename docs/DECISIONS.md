@@ -4930,8 +4930,9 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
 - **Alternatives:**
   - `default_query_exec_mode=cache_describe`: binary results and unnamed statements, one round trip once cached.
     A cached description goes stale when a migration changes a column's type, until the connection is recycled
-    (30 minutes), and the first use of a statement costs a second round trip. It's the fallback if step 7 shows the
-    owner can't set the roles' setting, or step 9 shows the setting doesn't hold through Supavisor.
+    (30 minutes), and the first use of a statement costs a second round trip. It's the fallback if step 9 shows
+    the setting doesn't hold through Supavisor. If step 7 shows the owner lacks ADMIN OPTION, it's no fallback,
+    because migrate's password writes need the same right. Supabase must grant it first (OPERATIONS → step 7).
   - `ALTER DATABASE postgres SET`: it ranks below a role and would also change every Supabase role's sessions.
   - A startup parameter: `serviceFindings` refuses it, and PgBouncer and Supavisor refuse unknown ones.
   - `SET LOCAL` in every transaction: one more statement each time.
