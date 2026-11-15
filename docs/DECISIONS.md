@@ -4696,3 +4696,181 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     so notify's waiting rows stay unsent until the images come back.
   - `Grace` stays 30 s in A1. D169's 10 s comes with A2.
   - Details: `MESSAGING_DESIGN.md` → The tick, The outbox.
+
+## D220 — The Cloud Run HTTP runtime: h2c, listen before the pool, `/health/*`, Grace 10 s (amends D169; PR A2)
+
+- **Decision:**
+  - **HTTP/2 end to end.** `httpx.Server` serves HTTP/1.1 and h2c with prior knowledge on one port
+    (`http.Server.Protocols`, stdlib). Cloud Run runs `--use-http2` (the port is named `h2c` in `deploy/run`), so a
+    32 MiB `POST /v1/sync` isn't cut by the front end's HTTP/1 limit. `httpx.MaxBodySync` is unchanged
+    (`TestH2CCarriesAFullSync`). Runbook step 9 sends 33 MiB through the mapping and must get our JSON 413.
+  - **All four services on `internal/app`.** api and ingest hand app their whole mux (`Parts.Handler`), so one start
+    and one shutdown cover every service.
+  - **The port opens before the pool.** Order: settings (OTLP's too), the transport (it dials nothing), the listener,
+    then the pool, the outbox and `Build`, and the start gate opens (`app/gate.go`). Until then:
+    - `/health/live` and `/healthz` answer `200 {"status":"ok"}`: Cloud Run's startup (1 s × 20) and liveness probe.
+    - The ready paths answer 503 (`{"error":"starting"}` locally, `{"error":"not ready"}` on Cloud Run).
+    - Any other request waits up to 5 s (and its own context), then gets `503 {"error":"temporarily unavailable,
+      send the request again"}` with `Retry-After: 5`.
+    - A tick that waits in vain checks its token, sets `ryft_db_up{service}` 0, counts a failed tick, pushes the
+      metrics and gets that 503, so `DatabaseDown` fires during a Supabase outage instead of no instance and no signal.
+  - **Health paths.** `GET /health/live` and `GET /health/ready` have `/healthz`'s and `/readyz`'s handlers; the old
+    paths stay for compose. With `K_SERVICE` set, both ready paths answer `503 {"error":"not ready"}` without
+    `Retry-After`, log the cause at warn, and reuse their answer, ok or not, for 5 s.
+  - **Grace 10 s.** Cloud Run's SIGTERM-to-SIGKILL. The watchdog fires at 9 s. The budget:
+
+    | step | api, ingest | scoring, notify |
+    |---|---|---|
+    | http (Shutdown + wait) | 3 + 1 s | 2 + 1 s |
+    | metrics push | 2 s | 2 s |
+    | pool | 1 s | 1 s |
+    | `/metrics` (local only) | 1 s | 1 s |
+    | worst case | 8 s | 7 s |
+
+    When Shutdown runs out, every handler's context is cancelled, so a push or tick in flight gives its pool
+    connection back before the pool closes (review-a1 finding 6, `TestAnInFlightRequestGivesItsConnectionBack`).
+    There is no drain delay: Cloud Run stops routing to an instance before SIGTERM.
+- **Why:**
+  - Cloud Run's quotas: 32 MiB for an HTTP/1 request, no limit over HTTP/2 (design §3).
+  - Cloud Run's known issues: avoid paths ending in `z` (users report Google's own 404 on `/healthz`).
+  - A startup probe on `/health/ready` would let no cold instance start during a Supabase outage, so no tick would ever
+    report `ryft_db_up 0` (ticket B's review).
+  - A public `/readyz` showed `err.Error()` to the internet, and every hit costs a pooler round trip.
+- **Alternatives:** a 31 MiB cap (a contract change, the fallback if step 9's 413 isn't ours); a load balancer
+  (paid); keeping the listener last (the startup probe would cover the database wait, see Why).
+- **Consequences:** `docs/API.md` 2026-11-15: two health paths and the start's 503, additive. The early tick's 503
+  is a nack; the tick subscription keeps a message 10 minutes, so a failed tick is dropped (D219).
+
+## D221 — The transaction pooler, `exec` mode and `verify-full`; migrate on session mode (PR A2)
+
+- **Decision:**
+  - **Services on Supavisor's transaction pooler (6543)** with `default_query_exec_mode=exec`; `migrate` on session
+    mode (5432). The URLs are `ticket-b.md`'s, rendered from `deploy/run/config.env`.
+  - **TLS verified:** `sslmode=verify-full&sslrootcert=/etc/ryft/supabase-ca.crt`. The Supabase Root 2021 CA is
+    public and baked into every image (`backend/certs/supabase-ca.crt`, sha256 `70072358…2c3b7`, valid until
+    2031-04-26). `internal/db`'s `ca_test.go` pins the hash and fails 90 days before the expiry.
+  - **`DATABASE_URL` has no password**; it comes as `PGPASSWORD` from the role's secret (pgx reads it).
+  - **`db.Open` refuses on Cloud Run** (`K_SERVICE` or `CLOUD_RUN_JOB`): a password in the URL, any `sslmode` but
+    `verify-full`, no `sslrootcert`. A service (`K_SERVICE`) also needs port 6543, `exec` mode and no startup parameter
+    except `application_name` (PgBouncer and Supavisor refuse unknown ones). The error names the setting, never the
+    userinfo. A refused URL fails at once.
+  - **A refused login or `ECIRCUITBREAKER` is not retried;** one retry for Supavisor's "recently changed". Failed
+    logins trip the breaker for the whole role (design §4).
+  - **`exec` mode sends Go types as their own OIDs:** a `[]byte` goes as `bytea`, which a `jsonb` column refuses. The
+    store's five jsonb parameters are strings now, and `[]uuid.UUID` is registered in `db`.
+  - **Session state is checked:** `scripts/check_session_state.sh` (in `make lint`) fails on a session `SET`,
+    `set_config(…, false)`, `LISTEN`, temp tables, session advisory locks, `PREPARE` and `WITH HOLD` cursors outside
+    migrations, tests and `testsupport`. Today's code is clean; the outbox's locks are transaction-level (D219).
+  - **CI's `pooler` job** runs the store's integration tests through PgBouncer (Ubuntu's package) in transaction mode
+    with `exec`, plus `TestPooler`'s representative queries. It is in `ci-ok`, so it gates `images`.
+  - **Step 7's check:** `make pooler-check` runs `TestPooler` once against Supavisor on 6543 as the owner, read-only,
+    in a rolled-back transaction, one connection. The services can't run there before step 8's migrate.
+- **Why:** Cloud Run's churn makes many short-lived clients, and transaction mode holds a server connection only per
+  transaction. Supabase's shared pooler doesn't support prepared statements in transaction mode. The link crosses
+  the internet from Google to AWS with health data and the SCRAM login, so `require` (unverified) isn't enough.
+- **Alternatives:** `simple_protocol` (client-side parameters; the fallback if `exec` fails on Supavisor); session
+  mode for the services (a server connection per client: 26 clients at the maximum would fit, but scale-out churns);
+  the IPv4 add-on for direct connections (paid).
+- **Consequences:** a store change that passes a `[]byte` to `jsonb` fails CI's `pooler` job, not production. The CA
+  file is renewed by a PR before 2031-01-26.
+
+## D222 — Secret Manager, one SA per service, pins by number; P5 in the code; `ClientIP` behind Google (amends D155; PR A2)
+
+- **Decision:**
+  - **Secrets:** Secret Manager, one runtime SA per service with `secretAccessor` on each secret it reads, never at
+    project level. Versions are pinned by number in `deploy/run`, never `latest`. Values are added by the user
+    (`gcloud secrets versions add`) and never pass through Terraform state, a terminal or argv. The data key's path is
+    design §5.3. A role password moves in one commit with `scripts/rotate_db_password.sh` (design §4).
+  - **P5 in the code:** with `K_SERVICE` or `CLOUD_RUN_JOB` set, `config.LoadAuth` refuses `AUTH_MODE=apikey`,
+    `ALLOW_INSECURE_APIKEY_AUTH`, `API_KEY` and `USER_ID` (`TestLoadAuthRefusesAPIKeyOnCloudRun`); `config.Load`
+    refuses `ALLOW_INSECURE_PUSH` and the emulator (D218). `scripts/check_cloudrun.py` rejects the names in
+    `deploy/run`.
+  - **Push and tick tokens are checked in the app on all four services** (D218).
+  - **Jobs:** with `CLOUD_RUN_JOB` (and no `K_SERVICE`) the push identity and `GCP_PROJECT` are optional, but checked
+    when set. A `scoring rescore` job needs `DATABASE_URL`, `PGPASSWORD`, `CONSENT_ENFORCE`, `LOG_LEVEL`. There is no
+    such job in `deploy/run` yet.
+  - **`httpx.ClientIP`:** walk `X-Forwarded-For` from the right, skip private, CGNAT and Google front-end ranges, take
+    the first public address, else `RemoteAddr`; never the leftmost entry. IPv6 is cut to /64.
+  - **The `client address` log line:** info, at most once a minute per instance, with the entry count, the picked
+    address and the remote host, and nothing else (no request ID, user, route or header). Runbook step 9 reads it to
+    see that a forged header doesn't win. Cloud Run's request log already holds the same address for 14 days.
+  - **The admin limiter is capped** at 4,096 addresses; new ones beyond that share one bucket (`adminlimit_test.go`).
+- **Why:** design §5.1: Vault, admission and Traefik are gone, so their guarantees move to IAM, the code and CI.
+  Domain mappings give IPv6 clients, and one /48 is about 65k /64 keys.
+- **Alternatives:** Binary Authorization (price unchecked); a per-instance limit keyed by the leftmost entry (forgeable).
+- **Consequences:** limits are per instance and reset at a cold start; the aggregate is bounded by max-instances.
+  Under a flood of new addresses the admin route's newcomers share one bucket, so they may wait; the known ones keep
+  theirs.
+
+## D223 — CI owns the revisions and jobs; Terraform owns the rest (supersedes D94–D96; PR B, PR A2)
+
+- **Decision:**
+  - `deploy/run/<svc>.yaml` and `migrate.yaml` are rendered by `scripts/cloudrun_render.py` from
+    `deploy/run/config.env` (values in git, no repository variables) and applied by `deploy.yml` on push to main after
+    `ci-ok`: WIF auth, build and scan, push by digest, `migrate` (stop on failure), then scoring, notify, ingest, api,
+    then `make smoke-prod`. Rollback: `gcloud run services update-traffic`.
+  - Terraform (`infra/gcp`, workspace `ryft-gcp`, applied by the user) owns IAM, secrets' containers, the topology, the
+    Scheduler job, Artifact Registry, the WIF pool, the mappings, DNS, the log bucket and the Grafana-managed rules.
+    Not in Terraform: the budget (D226), HCP Terraform's own WIF pool and SAs, the Grafana SA's key.
+  - HCP Terraform signs in with dynamic credentials: a pool pinned to `ryft-lab`'s org ID and `ryft-gcp`'s workspace
+    ID, a plan SA and an apply SA, each usable only in its run phase.
+  - B's design fixes (`ticket-b.md` → Design fixes) are part of this decision: the deployer's project-wide
+    `run.developer` only while `serve = false`; a WIF condition on IDs that admits `push` and `workflow_dispatch` on
+    main from GitHub-hosted runners; `migrate` with `maxRetries: 0`; ticks without a DLQ; subscriptions that never
+    expire; Artifact Registry keeping 30 days and the 5 newest; `deploy.yml` deploying only main's head after
+    `ci.yml`'s own run.
+  - The bootstrap's values (project number, `PUSH_SA_ID`, the Supabase ref and pooler host, the Apple key IDs) are in
+    `config.env` since A2 (2026-11-15). Apple's one key serves both Sign in with Apple and APNs, so `APPLE_KEY_ID` and
+    `APNS_KEY_ID` are equal.
+- **Why:** one owner per object (D94's rule kept); a reviewed commit is the only way to change a running revision.
+- **Consequences:** `GCP_DEPLOY=on` turns the deploy on (runbook step 8). The EKS `images`/`promote` jobs keep running
+  until C1 removes them.
+
+## D224 — Logs stay in Google; Grafana reads Cloud Monitoring and gets the app metrics by OTLP (supersedes D52; PR A2)
+
+- **Decision:**
+  - **Logs:** stdout JSON to Cloud Logging, a regional bucket `ryft-logs` (europe-west1, 14 days), the `_Default`
+    sink off. With `K_SERVICE` or `CLOUD_RUN_JOB` set, `level` is `severity` (DEBUG, INFO, WARNING, ERROR), `msg` is
+    `message`, and request lines carry `logging.googleapis.com/trace` from `traceparent` or `X-Cloud-Trace-Context`.
+    Locally the keys stay `level` and `msg`: `scripts/trace.sh`, `logcheck` and the runbooks read them.
+  - **Platform metrics:** Grafana Cloud reads Cloud Monitoring through `grafana-reader` (`monitoring.viewer`, the one
+    SA key, accepted by the user).
+  - **App metrics:** OTLP/HTTP JSON from the Prometheus registry's `Gather()`, stdlib only, pushed at the end of each
+    tick and once on SIGTERM. Resource `service.namespace=ryft`, `service.name`, `service.instance.id` (random per
+    process), so Mimir's `job` is `ryft/<svc>`. Names as registered, no unit, no scope, so `ryft_ticks_total` arrives
+    as such with or without Mimir's suffixes. One gzipped request, no retry, no redirect.
+  - **Config:** `OTLP_ENDPOINT` and `OTLP_USER` both empty means no push; one without the other is refused. The
+    endpoint must be exactly `https://otlp-gateway-<zone>.grafana.net/otlp`, because the token goes with every push and
+    other `grafana.net` names belong to whoever creates a stack. `OTLP_TOKEN` (secret `otlp-token`) is required then.
+  - On Cloud Run there is no `:9090` listener; locally `/metrics` stays.
+- **Why:** with request-based CPU nothing can be scraped between requests; logs at Google keep the privacy text's
+  "Grafana: metrics without personal data" true.
+- **Unchecked** (runbook step 11 checks them after the first push): that the gateway takes JSON, whether it promotes
+  resource attributes to labels, and whether it writes a zero at a series' start (then `increase()` would count a
+  fresh instance's first sample).
+- **Consequences:** `OBSERVABILITY.md` → The metrics push, Health paths.
+
+## D226 — One budget, made by hand; the €20 stop line is a runbook action (**the user's decision**, 2026-11-14)
+
+- **Decision:** one budget, "RYFT 50 EUR", on the billing account, made by hand and not in Terraform, with rules at
+  10, 50, 90 and 100 % that mail the user. At €20 the user runs the stop line (invokers off, the tick paused;
+  `OPERATIONS.md` → GCP → The €20 stop line). `max-instances` is the hard cap.
+- **Why:** a budget needs billing-account rights that the Terraform SAs shouldn't hold, and an alert doesn't stop
+  spending.
+- **Consequences:** retention (the invite email purge, deletion retries) pauses with the tick (review-a1 finding 13).
+
+## D227 — The removal order and what GCP supersedes (PR A2 writes it; D1, E, D2, D3 carry it out)
+
+- **Decision:** the order is the user's: the data key first (into 1Password, then Secret Manager), then Cloud DNS and
+  the NS switch, Route 53 (≥ 48 h later), the AWS keys, bucket and budget, and last the old workspaces in
+  `tim-krebs-org` (design §10, §11).
+- **Superseded** once GCP serves production: D16, D17 (amended by D218), D24, D27, D43, D45, D46, D51, D52 (by D224),
+  D55 (by D226; the site on Hosting without billing), D57, D64, D94–D96 (by D223), D97, D98, D99 (amended: Pub/Sub
+  IAM), D102–D105, D107 (amended: Firebase Hosting, D225), D120, D121, D151, D155 (amended by D222), D169 (amended by
+  D220: 10 s), D175 (amended: the hold in `deploy.yml`), D180, D182, D183, D185, D186–D205, D207–D210, D211 (amended:
+  design §5.3), D215 (superseded by D225).
+- **Kept:** D100 and D101 (amended by D219), D213 (no `argocd.` and `rabbitmq.` hosts, plus `ingest.`), D214 (the
+  records in Cloud DNS; CAA adds `pki.goog`).
+- **Why:** nothing is removed before its replacement serves, and a step that can't be undone (the KMS keys) comes
+  after the data key is safe.
+- **Consequences:** D3 deletes the code and manifests of the superseded decisions; until then they stay as history.

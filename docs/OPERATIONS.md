@@ -74,12 +74,12 @@ on Pub/Sub and Cloud Run.
 | --- | --- | --- |
 | 0 | Old org: the data key into 1Password | now |
 | 1–6 | The project, bootstrap, budget rule, apply 1, secret values, the DNS move | B merged |
-| 7 | Supabase | B merged. `make smoke-supabase` on 6543 waits for A |
-| 7a | The config PR | B merged |
-| 8 | First deploy | waits for A |
-| 9 | Apply 2: invokers and mappings | waits for A |
-| 10 | The site and the app | waits for A and C1 |
-| 11 | Observability | B merged for a–e. f (the OTLP half) waits for A and step 9. g–j (synthetics, the app rules, the EKS groups, the routing proof) wait for step 10 (C1) as well |
+| 7 | Supabase, with `make pooler-check` on 6543 | A merged (the check and the CA are in A2) |
+| 7a | The config PR | done in A2: the values are in git |
+| 8 | First deploy | A merged, steps 5 and 7 done |
+| 9 | Apply 2: invokers and mappings, then `make smoke-supabase` | step 8 |
+| 10 | The site and the app | waits for C1 |
+| 11 | Observability | B merged for a–e. f (the OTLP half) after step 9. g–j (synthetics, the app rules, the EKS groups, the routing proof) wait for step 10 (C1) as well |
 | 12–14 | Old org: retire Route 53, AWS and the old workspaces | after step 10, with D1, D2, D3 |
 | 15 | Testers | step 10 done, C2 in force |
 
@@ -319,20 +319,28 @@ openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add db-password-a
 openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add db-password-ingest --project=ryftlab-prod --data-file=-
 openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add db-password-scoring --project=ryftlab-prod --data-file=-
 openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add db-password-notify --project=ryftlab-prod --data-file=-
-# The owner: Supabase's database password from 1Password, copied there:
-pbpaste | gcloud secrets versions add db-password-owner --project=ryftlab-prod --data-file=-
-# Supabase -> Project Settings -> API Keys -> the secret key, copied:
-pbpaste | gcloud secrets versions add supabase-secret-key --project=ryftlab-prod --data-file=-
-# ADMIN_API_KEY: a new value from 1Password's generator (item "RYFT ADMIN_API_KEY"), copied:
-pbpaste | gcloud secrets versions add admin-api-key --project=ryftlab-prod --data-file=-
+# A hidden prompt for a pasted value: nothing on screen, in the history or on argv. (pbpaste stored
+# whatever was on the clipboard, the command text itself included.) zsh's read syntax:
+put() { read -rs "?Value for $1: " V; echo; printf '%s' "$V" | gcloud secrets versions add "$1" --project=ryftlab-prod --data-file=-; unset V; }
+# The owner: Supabase's database password from 1Password, pasted at the prompt:
+put db-password-owner
+# Supabase -> Project Settings -> API Keys -> the secret key:
+put supabase-secret-key
+# ADMIN_API_KEY: a new value from 1Password's generator (item "RYFT ADMIN_API_KEY"):
+put admin-api-key
 # The two .p8 keys, saved from 1Password (their names carry the key IDs that step 7a needs):
 gcloud secrets versions add apple-key-p8 --project=ryftlab-prod --data-file="$HOME/Downloads/AuthKey_<APPLE_KEY_ID>.p8"
 gcloud secrets versions add apns-key-p8 --project=ryftlab-prod --data-file="$HOME/Downloads/AuthKey_<APNS_KEY_ID>.p8"
 rm "$HOME/Downloads/AuthKey_<APPLE_KEY_ID>.p8" "$HOME/Downloads/AuthKey_<APNS_KEY_ID>.p8"
-# The OTLP token: Grafana Cloud -> Access policies -> a policy on the stack with metrics:write only -> Add token, copied:
-pbpaste | gcloud secrets versions add otlp-token --project=ryftlab-prod --data-file=-
-pbcopy < /dev/null
+# The OTLP token: Grafana Cloud -> Access policies -> a policy on the stack with metrics:write only -> Add token:
+put otlp-token
+pbcopy < /dev/null                                   # clear the clipboard you pasted from
 ```
+
+A value stored wrongly (the version already exists) is fixed by a new version and a pin
+move, not by `destroy`: add the right value with `put <secret>`, note the new number, and move
+the pin in `deploy/run` (step 5's first paragraph). Then disable the wrong version:
+`gcloud secrets versions disable <N> --secret=<secret> --project=ryftlab-prod`.
 
 - `db-password-owner`: if 1Password lacks the value, reset it in Supabase → Database →
   Settings. Nothing else uses it while EKS is down.
@@ -349,8 +357,8 @@ gcloud secrets versions access 1 --secret=data-key --project=ryftlab-prod | base
 rm "$HOME/.config/ryft/data-key-api"
 ```
 
-If step 0's file is gone, pipe the 1Password item through `pbpaste … --data-file=-`
-instead, then clear the clipboard. The two checks stay the same. `rm` overwrites nothing on
+If step 0's file is gone, paste the 1Password item at `put data-key` instead, then clear the
+clipboard. The two checks stay the same. `rm` overwrites nothing on
 APFS: FileVault protects the freed blocks (D211).
 
 ```bash
@@ -412,52 +420,69 @@ In the dashboard:
 - Project Settings → Data API: still off.
 - Authentication → URL Configuration: the Site URL `https://ryftlab.de`, and redirect URLs only
   on `ryftlab.de`.
-- Database → Settings → SSL Configuration → Download certificate: `prod-ca-2021.crt` (public).
+- Database → Settings → SSL Configuration: the CA is the Supabase Root 2021 CA, which PR A2
+  committed as `backend/certs/supabase-ca.crt` (sha256 `700723581420dd1a…2c3b7`). The commands
+  below use that file; a downloaded `prod-ca-2021.crt` is the same certificate.
 
-One `verify-full` login as the owner on each port. It proves the CA and the host name on both
-ports, and step 5's owner value:
+Run these from the repository root on an up-to-date main (`git pull`): the ref and the pooler
+host come from `deploy/run/config.env` (A2 put them in git), so nothing is typed or pasted. One
+`verify-full` login as the owner on each port. It proves the CA and the host name on both ports,
+and step 5's owner value. `-w` never prompts for a password, and `connect_timeout=10` ends a
+hung connect:
 
 ```bash
-read -r REF; read -r POOLER                         # the project ref and the pooler host (not secret)
+REF=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env)
+POOLER=$(sed -n 's/^SUPABASE_POOLER_HOST=//p' deploy/run/config.env)
+echo "$REF $POOLER"                                  # ydgbemufggwnegbnjhkm aws-1-eu-central-1.pooler.supabase.com
 PGPASSWORD=$(gcloud secrets versions access 1 --secret=db-password-owner --project=ryftlab-prod) && export PGPASSWORD
 for port in 5432 6543; do
-  psql "host=$POOLER port=$port dbname=postgres user=postgres.$REF sslmode=verify-full sslrootcert=$HOME/Downloads/prod-ca-2021.crt" \
+  psql -w "host=$POOLER port=$port dbname=postgres user=postgres.$REF sslmode=verify-full sslrootcert=backend/certs/supabase-ca.crt connect_timeout=10" \
     -tAc 'select current_user' || break               # postgres, twice; after a failure, no second try
 done
+```
+
+Then, only if both printed `postgres`, pgx's unnamed statements through Supavisor's transaction
+mode (design §4, D221). The services can't run against Supabase before step 8's migrate (the
+schema lacks 0034), so this is `TestPooler`'s read-only queries instead of a smoke: one
+connection as the owner on 6543 with `default_query_exec_mode=exec`, everything in a
+`READ ONLY` transaction that is rolled back, one attempt, 30 s at most. It needs Go
+(`backend/go.mod`'s version):
+
+```bash
+make pooler-check                                    # "--- PASS: TestPooler", then "ok"
 unset PGPASSWORD
 ```
 
-The design's login as `ryft_api.<ref>` on 6543 moves to the start of step 9. Postgres learns
-that role's password from step 8's migrate. A failed login trips Supavisor's breaker for the
-whole role (`SUPABASE.md`).
+The login as `ryft_api.<ref>` on 6543 is at the start of step 9: Postgres learns that role's
+password from step 8's migrate. A failed login trips Supavisor's breaker for the whole role
+(`SUPABASE.md`). `make smoke-supabase` runs at step 9, against the deployed hosts.
 
-*Waits for A:* `make smoke-supabase` against port 6543, as PR A documents it (design §4: pgx's
-unnamed statements through Supavisor). If it signs in as a service role, it also comes after
-step 8's migrate.
-
-**Stop if** a login fails or `ECIRCUITBREAKER` appears. Stop and wait it out. Don't retry in a
-loop.
+**Stop if** a login fails, `ECIRCUITBREAKER` appears (wait it out; don't retry in a loop), or
+`pooler-check` fails. A failure in `TestPooler` after a good login (an error naming a
+prepared statement or a parameter type) means `exec` mode doesn't work through Supavisor: the
+fallback is `default_query_exec_mode=simple_protocol` (design §4), a PR in `deploy/run` and
+`internal/db`, before step 8.
 
 ### 7a. The config PR (before step 8)
 
-Some values are known only after apply 1 and step 7. They replace the `FILL_ME_IN`
-placeholders in `deploy/run/config.env`. None of them is secret.
+**Done in PR A2 (2026-11-15):** the values are in git, in `deploy/run/config.env`, as you
+confirmed them. None of them is secret, and no `FILL_ME_IN` is left:
 
-```bash
-terraform -chdir=infra/gcp output -raw project_number; echo      # GCP_PROJECT_NUMBER
-terraform -chdir=infra/gcp output -raw push_sa_unique_id; echo   # PUSH_SA_ID
-```
+| Key | Value | Source |
+|---|---|---|
+| `GCP_PROJECT_NUMBER` | `49741851924` | `terraform -chdir=infra/gcp output -raw project_number` |
+| `PUSH_SA_ID` | `100999984647275261823` | `terraform -chdir=infra/gcp output -raw push_sa_unique_id` |
+| `SUPABASE_PROJECT_REF` | `ydgbemufggwnegbnjhkm` | step 7 |
+| `SUPABASE_POOLER_HOST` | `aws-1-eu-central-1.pooler.supabase.com` | step 7 |
+| `APPLE_KEY_ID`, `APNS_KEY_ID` | `3GY48KHYHL` (one key with both services) | Apple Developer → Keys |
 
-- `SUPABASE_PROJECT_REF` and `SUPABASE_POOLER_HOST` come from step 7.
-- `APPLE_KEY_ID` and `APNS_KEY_ID` come from Apple Developer → Keys: the 10 characters in
-  `AuthKey_<id>.p8`.
+To check them against the sources, or after a change (a new key, another pooler host), edit
+the file in a PR, run `make cloudrun-check`, and merge it before the next deploy. `deploy.yml`
+refuses to run while a placeholder is left.
 
-Run `make cloudrun-check`, then open the PR. Merge it before step 8: `deploy.yml` refuses to
-run while a placeholder is left.
+**Stop if** an output differs from the table, or `make cloudrun-check` fails.
 
-**Stop if** `make cloudrun-check` fails.
-
-### 8. First deploy *(waits for A)*
+### 8. First deploy
 
 Set `GCP_DEPLOY=on`, then run `deploy.yml` by hand with the `smoke` input off. The commands are
 in **Deploy, roll back, rotate** below. **Stop if** `migrate`'s log lacks a `migration applied`
@@ -465,14 +490,16 @@ line for each new file, or doesn't end with `schema current`; or a revision isn'
 proves the revisions start. It doesn't prove they reach the database (the startup probe is
 `/health/live`): step 9's role login and smoke do.
 
-### 9. Apply 2: invokers and mappings *(waits for A)*
+### 9. Apply 2: invokers and mappings
 
 First, the role login moved here from step 7. Do it once. Step 8's migrate set the password.
+From the repository root, as in step 7:
 
 ```bash
-read -r REF; read -r POOLER                         # as in step 7 (a new shell lacks them)
+REF=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env)
+POOLER=$(sed -n 's/^SUPABASE_POOLER_HOST=//p' deploy/run/config.env)
 PGPASSWORD=$(gcloud secrets versions access 1 --secret=db-password-api --project=ryftlab-prod) && export PGPASSWORD
-psql "host=$POOLER port=6543 dbname=postgres user=ryft_api.$REF sslmode=verify-full sslrootcert=$HOME/Downloads/prod-ca-2021.crt" \
+psql -w "host=$POOLER port=6543 dbname=postgres user=ryft_api.$REF sslmode=verify-full sslrootcert=backend/certs/supabase-ca.crt connect_timeout=10" \
   -tAc 'select current_user'                        # ryft_api
 unset PGPASSWORD
 ```
@@ -576,9 +603,32 @@ for h in api ingest; do
 done
 ```
 
-*Waits for A:* test 2 needs a log line that shows the address `httpx.ClientIP` picked for that
-request, or another test that shows it (design §5.1). The address must be yours, not
-`203.0.113.7` and not a Google one.
+Then the address `httpx.ClientIP` picked: api and ingest log a `client address` line for a
+request with `X-Forwarded-For`, at most once a minute per instance (D222). If a host shows no
+line, wait a minute and send its request again.
+
+```bash
+gcloud logging read 'resource.type="cloud_run_revision" AND jsonPayload.message="client address"' \
+  --project=ryftlab-prod --freshness=10m --limit=4 \
+  --format='value(resource.labels.service_name,jsonPayload.client_ip,jsonPayload.xff_entries,jsonPayload.remote_host)'
+```
+
+`client_ip` must be your address from `dig`, not `203.0.113.7` and not a Google one, on both
+services (`xff_entries` is 2 or more: your forged entry and Google's). If it's a Google address,
+Google appends a hop that `ClientIP` doesn't skip yet: every client would share one bucket.
+That's a stop for testers, not for the deploy: a PR adds the range to `ClientIP`'s skip list.
+
+3. `make smoke-supabase` against the two hosts, as the smoke user (step 9's `REF` is still set):
+   a sign-in, `/v1/me`, a sync of synthetic days into that user, and the score read back,
+   through the services on the transaction pooler. Leave `SUPABASE_SECRET_KEY` unset (that would
+   add the throwaway-account tests).
+
+```bash
+read -r SMOKE_EMAIL; read -rs SMOKE_PASSWORD; echo; export SMOKE_EMAIL SMOKE_PASSWORD
+SUPABASE_URL=https://$REF.supabase.co SUPABASE_ANON_KEY='<the publishable key>' \
+  API_URL=https://api.ryftlab.de INGEST_URL=https://ingest.ryftlab.de make smoke-supabase
+unset SMOKE_PASSWORD
+```
 
 Undo apply 2 with a PR that sets `serve = false`, the hold set before its merge (as above). Its
 apply: 1 to add (the deployer's project-wide `run.developer` again), 1 to change (the tick
@@ -652,7 +702,7 @@ after 24 hours; or any check above fails.
 The parts run in this order, each once what it waits for is done:
 - **a–e need only B merged.** The reader key, the data source, the Grafana variables, the
   Grafana-managed rules (quiet until the services serve: no data counts as OK) and the key list.
-- **f waits for A and step 9.** The OTLP half: the services push their metrics at each tick.
+- **f comes after step 9.** The OTLP half: the services push their metrics at each tick.
 - **g–j wait for step 10 (C1) as well.** g, the synthetics: the four site checks in
   `deploy/grafana/synthetics/ryftlab.json` are enabled, and fail until the site serves. h, the app
   rules: loaded any earlier, TickMissing would page until f's ticks arrive, and SyntheticsMissing
@@ -716,9 +766,12 @@ for sa in $(gcloud iam service-accounts list --project=ryftlab-prod --format='va
 done                                                 # grafana-reader 1, every other account 0
 ```
 
-**f. The OTLP half** *(waits for A and step 9)*. Open a config PR that sets `OTLP_ENDPOINT` and
+**f. The OTLP half** *(after step 9)*. Open a config PR that sets `OTLP_ENDPOINT` and
 `OTLP_USER` in `deploy/run/config.env`, both at once (Grafana Cloud → the stack → OpenTelemetry:
-the endpoint and the instance ID). The token is step 5's `otlp-token`. The merge deploys. Within
+the endpoint and the instance ID). The endpoint must be exactly
+`https://otlp-gateway-<zone>.grafana.net/otlp`, without `/v1/metrics`, and the user is digits;
+anything else ends the start (`otlp config`, D224), so the deploy's revision doesn't get ready.
+The token is step 5's `otlp-token` (at least 16 characters). The merge deploys. Within
 30 minutes, Explore (the Prometheus data source) shows `count by (job) (ryft_db_up)` and
 `count by (job) (ryft_ticks_total)` with the same four series each: `ryft/api`, `ryft/ingest`,
 `ryft/scoring`, `ryft/notify`.
@@ -1351,9 +1404,10 @@ UPDATE outbox SET attempts = 0 WHERE published_at IS NULL AND attempts >= 50 AND
 ```
 
 A row is published inline after the commit that wrote it. What that misses (a Pub/Sub error, an
-instance gone) goes with the next tick's sweep, every 15 minutes. A backlog is `OutboxBacklog`. A stuck
-row (50 failed sends) is `OutboxStuck`, usually a key without its topic: a topology change that isn't
-applied yet (`infra/gcp`).
+instance gone) goes with the next tick's sweep, every 15 minutes. A backlog is `OutboxBacklog`. A row
+set aside (refused by Pub/Sub at once, or after 50 failed tick sweeps; `last_error` says which) is
+`OutboxStuck`, usually a key without its topic: a topology change that isn't applied yet
+(`infra/gcp`).
 
 An account deletion deletes the user's outbox rows, but `outbox` has no foreign key to `users`, so
 a row written just after the deletion stays. One is a deferral of notify's (an event it held for
