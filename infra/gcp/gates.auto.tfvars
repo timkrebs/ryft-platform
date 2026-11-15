@@ -4,7 +4,7 @@
 
 # false: apply 1 (runbook step 4). true: apply 2 (step 9): ryft-push may invoke the four services,
 # api.ryftlab.de and ingest.ryftlab.de are mapped and in DNS, and the tick runs.
-serve = false
+serve = true
 
 # The 20 EUR stop line (OPERATIONS -> GCP -> The €20 stop line): false keeps api and ingest
 # without allUsers and the tick paused, as the stop line's gcloud commands leave them.
