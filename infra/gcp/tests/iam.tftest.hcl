@@ -153,7 +153,7 @@ run "data_access_audit_logs" {
   assert {
     condition = (
       toset(keys(google_project_iam_audit_config.data_read)) == toset([
-        "secretmanager.googleapis.com", "sts.googleapis.com", "iamcredentials.googleapis.com",
+        "secretmanager.googleapis.com", "sts.googleapis.com", "iam.googleapis.com",
       ]) &&
       alltrue([
         for k, a in google_project_iam_audit_config.data_read :
