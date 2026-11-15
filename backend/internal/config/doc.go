@@ -8,7 +8,11 @@
 //   - A bad or half-set configuration fails the start instead of running
 //     half-configured: a Supabase project reference that is none, apikey mode
 //     without ALLOW_INSECURE_APIKEY_AUTH, some but not all of a credential set
-//     (APNs, Sign in with Apple), a leftover EVENTS_BACKEND other than amqp (D102).
+//     (APNs, Sign in with Apple), a push identity (PUSH_AUDIENCE, PUSH_SA_EMAIL,
+//     PUSH_SA_ID) missing or not of its form.
+//   - Nothing insecure or emulated starts on Cloud Run: ALLOW_INSECURE_PUSH=true
+//     and PUBSUB_EMULATOR_HOST are refused while K_SERVICE or CLOUD_RUN_JOB is set
+//     (D218).
 //   - The gate defaults are what production runs unless the config says
 //     otherwise: consent on, the invite gate off (D87). api and ingest refuse to
 //     start without PRIVACY_POLICY_VERSION (D78).
@@ -17,8 +21,5 @@
 // variables, httpx.Logger reads LOG_LEVEL, and the Postgres test helpers read
 // RYFT_TEST_POSTGRES_URL.
 //
-// The AMQP settings carry the service's own TLS identity (CA, client certificate
-// and key), because the broker verifies client certificates (D98).
-//
-// See docs/ARCHITECTURE.md → Services (Auth and users); D78, D87, D98, D102.
+// See docs/ARCHITECTURE.md → Services (Auth and users); D78, D87, D218.
 package config

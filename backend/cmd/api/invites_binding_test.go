@@ -32,10 +32,13 @@ type stubSettings struct {
 	calls int
 }
 
-func (s *stubSettings) EmailAutoconfirm(context.Context) (bool, error) {
+func (s *stubSettings) EmailAutoconfirm(ctx context.Context) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls++
+	if err := ctx.Err(); err != nil { // as the HTTP client does
+		return false, err
+	}
 	return s.auto, s.err
 }
 
@@ -92,36 +95,131 @@ func TestConfirmGuardStates(t *testing.T) {
 		t.Fatalf("no admin client: %s", n.State())
 	}
 	// A handler without a gate cannot bind.
-	if (&handler{}).bindingState() == bindOK {
+	if (&handler{}).bindingState(ctx) == bindOK {
 		t.Fatal("a handler without a gate must fail closed")
 	}
 }
 
-func TestConfirmGuardRunReadsAgain(t *testing.T) {
+// The api asks Supabase nothing at start (an instance starts on a request, D219): the guard is built without
+// a read, and the first request that needs the answer reads it once. A tick's read spares the next requests
+// one, and a request reads again only when this instance has not tried for lazyReadAfter, since a tick
+// reaches one instance only. Until the read says Confirm email is on, bound codes are refused (D159).
+func TestConfirmGuardReadsLazily(t *testing.T) {
+	src := &stubSettings{}
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	g := newConfirmGuard(src, quietHandler().log)
+	g.now = func() time.Time { return now }
+	h := &handler{binding: g}
+	calls := func() int { src.mu.Lock(); defer src.mu.Unlock(); return src.calls }
+	ctx := context.Background()
+
+	if calls() != 0 || g.State() != bindUnknown {
+		t.Fatalf("at start: %d reads, state %s: nothing is read, and unknown refuses bound codes", calls(), g.State())
+	}
+	if got := h.bindingState(ctx); got != bindOK || calls() != 1 {
+		t.Fatalf("the first request that needs it: %s after %d reads, want ok after one", got, calls())
+	}
+	now = now.Add(lazyReadAfter - time.Second)
+	if got := h.bindingState(ctx); got != bindOK || calls() != 1 {
+		t.Fatalf("a request within %s: %s after %d reads, want no second read", lazyReadAfter, got, calls())
+	}
+	g.Refresh(ctx) // the tick's "invite settings"
+	if calls() != 2 {
+		t.Fatalf("the tick reads: %d", calls())
+	}
+	now = now.Add(lazyReadAfter - time.Second)
+	if h.bindingState(ctx); calls() != 2 {
+		t.Fatalf("the tick's read counts as this instance's try: %d reads", calls())
+	}
+	now = now.Add(2 * time.Second)
+	src.set(true, nil)
+	if got := h.bindingState(ctx); got != bindAutoconfirm || calls() != 3 {
+		t.Fatalf("a request after %s without a try: %s after %d reads, want the new answer", lazyReadAfter, got, calls())
+	}
+
+	// A failed lazy read is unknown (fail closed) and is not repeated by the next request.
+	f := &stubSettings{err: errors.New("supabase settings: dial tcp: i/o timeout")}
+	fg := newConfirmGuard(f, quietHandler().log)
+	fg.now = func() time.Time { return now }
+	fh := &handler{binding: fg}
+	if got := fh.bindingState(ctx); got != bindUnknown {
+		t.Fatalf("unreadable: %s", got)
+	}
+	fh.bindingState(ctx)
+	if f.calls != 1 {
+		t.Fatalf("a failed read is retried after %s, not by every request: %d reads", lazyReadAfter, f.calls)
+	}
+
+	// A request whose client hung up still reads to the end: the read is the instance's, not the request's.
+	c := &stubSettings{}
+	cg := newConfirmGuard(c, quietHandler().log)
+	gone, cancel := context.WithCancel(ctx)
+	cancel()
+	if got := (&handler{binding: cg}).bindingState(gone); got != bindOK {
+		t.Fatalf("a cancelled request's read: %s", got)
+	}
+
+	// Without an admin client nothing is ever read.
+	n := &handler{binding: newConfirmGuard(nil, quietHandler().log)}
+	if got := n.bindingState(ctx); got != bindNoAdmin {
+		t.Fatalf("no admin client: %s", got)
+	}
+}
+
+// A tick's read that its budget cut short records nothing (as db.Ping): not unknown, not a try. Otherwise the
+// instance would refuse bound codes and, the try being recent, not read again on a request for 15 minutes.
+func TestConfirmGuardRefreshCutByTheBudget(t *testing.T) {
+	src := &stubSettings{}
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	g := newConfirmGuard(src, quietHandler().log)
+	g.now = func() time.Time { return now }
+	h := &handler{binding: g}
+	calls := func() int { src.mu.Lock(); defer src.mu.Unlock(); return src.calls }
+	failed := testutil.ToFloat64(metrics.InviteSettingsChecks.WithLabelValues("error"))
+	spent, cancel := context.WithTimeout(context.Background(), time.Hour)
+	cancel() // the tick's budget, gone while the step runs
+
+	g.Refresh(spent)
+	if calls() != 1 || g.State() != bindUnknown || !g.tried.IsZero() {
+		t.Fatalf("a cut first read: %d reads, state %s, tried %v: want one read, unknown, no try recorded", calls(), g.State(), g.tried)
+	}
+	if got := h.bindingState(context.Background()); got != bindOK || calls() != 2 {
+		t.Fatalf("the next request: %s after %d reads, want ok after its own read", got, calls())
+	}
+	now = now.Add(time.Minute)
+	g.Refresh(spent)
+	if g.State() != bindOK || !g.tried.Equal(now.Add(-time.Minute)) {
+		t.Fatalf("a cut later read: state %s, tried %v: the good answer and its try stay", g.State(), g.tried)
+	}
+	if n := testutil.ToFloat64(metrics.InviteSettingsChecks.WithLabelValues("error")) - failed; n != 0 {
+		t.Fatalf("cut reads counted as %v errors, want 0", n)
+	}
+	// A read that fails on its own, with the tick's budget left, is still unknown.
+	src.set(false, errors.New("supabase settings: 502 Bad Gateway: no error_code"))
+	g.Refresh(context.Background())
+	if g.State() != bindUnknown {
+		t.Fatalf("a failed read: %s", g.State())
+	}
+}
+
+// Requests that need the answer at once share the one lazy read.
+func TestConfirmGuardLazyReadIsShared(t *testing.T) {
 	src := &stubSettings{}
 	g := newConfirmGuard(src, quietHandler().log)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { g.Run(ctx, 10*time.Millisecond); close(done) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for g.State() != bindOK {
-		if time.Now().After(deadline) {
-			t.Fatal("the loop never read the settings")
-		}
-		time.Sleep(5 * time.Millisecond)
+	h := &handler{binding: g}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if got := h.bindingState(context.Background()); got != bindOK {
+				t.Errorf("state %s", got)
+			}
+		}()
 	}
-	src.set(true, nil)
-	for g.State() != bindAutoconfirm {
-		if time.Now().After(deadline) {
-			t.Fatal("the loop never saw Confirm email turned off")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not stop with its context")
+	wg.Wait()
+	if src.calls != 1 {
+		t.Fatalf("%d reads for 8 requests at once, want 1", src.calls)
 	}
 }
 
@@ -259,42 +357,47 @@ func TestRevokeAccessLineHoldsNoCode(t *testing.T) {
 	}
 }
 
-// The purge job counts its passes, and both series exist at 0 from its start.
+// The purge step counts its passes; a failed one is counted, logged under the runbook's line and returned
+// for the tick. Both series exist at 0 from the start (purgeSeries), so increase() sees an instance's first pass.
 func TestPurgeInviteEmailsCountsItsPasses(t *testing.T) {
-	r := newRedeemer(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	okBefore := testutil.ToFloat64(metrics.InviteEmailPurges.WithLabelValues("ok"))
-	go func() { purgeInviteEmailsEvery(ctx, r.st, quietHandler().log, 10*time.Millisecond); close(done) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for testutil.ToFloat64(metrics.InviteEmailPurges.WithLabelValues("ok")) < okBefore+2 {
-		if time.Now().After(deadline) {
-			t.Fatal("no passes counted")
-		}
-		time.Sleep(5 * time.Millisecond)
+	purgeSeries()
+	if n := testutil.CollectAndCount(metrics.InviteEmailPurges); n < 2 {
+		t.Fatalf("%d series after purgeSeries, want ok and error", n)
 	}
-	cancel()
-	<-done
+	r := newRedeemer(t)
+	ctx := context.Background()
+	okBefore := testutil.ToFloat64(metrics.InviteEmailPurges.WithLabelValues("ok"))
+	for range 2 {
+		if err := purgeInviteEmails(ctx, r.st, quietHandler().log); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := testutil.ToFloat64(metrics.InviteEmailPurges.WithLabelValues("ok")) - okBefore; got != 2 {
+		t.Fatalf("ok rose by %v, want 2", got)
+	}
 	// A failing pass (the pool is closed) counts as an error.
 	errBefore := testutil.ToFloat64(metrics.InviteEmailPurges.WithLabelValues("error"))
 	r.pool.Close()
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel2()
-	purgeInviteEmailsEvery(ctx2, r.st, quietHandler().log, 10*time.Millisecond)
-	if testutil.ToFloat64(metrics.InviteEmailPurges.WithLabelValues("error")) <= errBefore {
-		t.Error("a failed pass is counted as an error")
+	var logs bytes.Buffer
+	err := purgeInviteEmails(ctx, r.st, slog.New(slog.NewJSONHandler(&logs, nil)))
+	if err == nil || testutil.ToFloat64(metrics.InviteEmailPurges.WithLabelValues("error")) != errBefore+1 {
+		t.Errorf("a failed pass = %v, counted %v: it is returned and counted as an error", err,
+			testutil.ToFloat64(metrics.InviteEmailPurges.WithLabelValues("error"))-errBefore)
+	}
+	if !strings.Contains(logs.String(), `"msg":"invite email purge failed"`) {
+		t.Errorf("the runbook's line: %s", logs.String())
 	}
 }
 
-// The wired retention is the 30 days the privacy text will name (D161), end to end through the ticker: a code
-// that stopped being redeemable 29 days 23 hours ago keeps its address, one that stopped 30 days 1 hour ago does not.
+// The wired retention is the 30 days the privacy text will name (D161), end to end through the tick's step: a
+// code that stopped being redeemable 29 days 23 hours ago keeps its address, one that stopped 30 days 1 hour ago
+// does not.
 func TestPurgeInviteEmailsWiredToThirtyDays(t *testing.T) {
 	if purgeInviteEmailsAfter != 30*24*time.Hour {
 		t.Fatalf("purgeInviteEmailsAfter = %v, the retention is 30 days (D161, the privacy text)", purgeInviteEmailsAfter)
 	}
 	r := newRedeemer(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 	inside, outside := r.bound("inside@example.com"), r.bound("outside@example.com")
 	for code, ago := range map[string]time.Duration{inside: 30*24*time.Hour - time.Hour, outside: 30*24*time.Hour + time.Hour} {
 		if _, err := r.pool.Exec(ctx, `UPDATE beta_invite_codes SET revoked_at = now() - $2::interval, expires_at = now() - $2::interval WHERE code = $1`,
@@ -302,18 +405,9 @@ func TestPurgeInviteEmailsWiredToThirtyDays(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	okBefore := testutil.ToFloat64(metrics.InviteEmailPurges.WithLabelValues("ok"))
-	done := make(chan struct{})
-	go func() { purgeInviteEmailsEvery(ctx, r.st, quietHandler().log, time.Hour); close(done) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for testutil.ToFloat64(metrics.InviteEmailPurges.WithLabelValues("ok")) < okBefore+1 {
-		if time.Now().After(deadline) {
-			t.Fatal("the first pass did not run")
-		}
-		time.Sleep(5 * time.Millisecond)
+	if err := purgeInviteEmails(ctx, r.st, quietHandler().log); err != nil {
+		t.Fatal(err)
 	}
-	cancel()
-	<-done
 	has := func(code string) bool {
 		var e *string
 		if err := r.pool.QueryRow(context.Background(), `SELECT email FROM beta_invite_codes WHERE code = $1`, store.NormalizeInvite(code)).Scan(&e); err != nil {

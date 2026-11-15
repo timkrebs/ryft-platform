@@ -68,16 +68,14 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
-	go db.Watch(ctx, pool, "ingest", log)
 	st := store.New(pool)
 
-	// RabbitMQ (D97), retried at start-up.
+	// Pub/Sub (D218): opening it dials nothing; its push verifier checks the tick's token.
 	bus, err := eventbus.Open(ctx, cfg, "ingest", log)
 	if err != nil {
 		log.Error("events", "err", err)
 		os.Exit(1)
 	}
-	defer bus.Close()
 
 	verifier, err := auth.FromConfig(ctx, authCfg)
 	if err != nil {
@@ -86,23 +84,52 @@ func main() {
 	}
 	log.Info("auth", "mode", authCfg.Mode)
 
-	// The outbox (D101): a sync's days and the event announcing them commit together;
-	// the relay sends it to the broker.
+	// The outbox (D101): a sync's days and the event announcing them commit together,
+	// and the sync flushes it before it answers (D219); the tick's sweep sends what a
+	// flush could not (and what fold-workouts wrote).
 	ob := outbox.New(pool, "ingest", bus, log)
-	go ob.Run(ctx)
 
-	h := &handler{st: st, bus: bus, outbox: ob, log: log, beta: beta}
+	h := &handler{st: st, outbox: ob, log: log, beta: beta}
+	tick, err := bus.Tick(tickBudget, nil, ingestTicks( // nil: no final step yet (A2: the metrics push)
+		func(ctx context.Context) error { return db.Ping(ctx, pool, "ingest") }, ob.Sweep)...)
+	if err != nil {
+		log.Error("build", "err", err)
+		os.Exit(1)
+	}
 
-	mux := http.NewServeMux()
 	httpx.ServeMetrics(log, ":"+cfg.MetricsPort)
+	mux := newMux(h, log, verifier, tick)
+	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, httpx.Recover(httpx.SecurityHeaders(mux)))); err != nil {
+		log.Error("serve", "err", err)
+		os.Exit(1)
+	}
+}
+
+// tickBudget is ingest's POST /internal/tick, both steps together (D219).
+const tickBudget = 45 * time.Second
+
+// ingestTicks are ingest's tick steps: the db ping (ryft_db_up) and the outbox sweep, the
+// work of the db watch and the relay goroutine before Cloud Run (D219).
+func ingestTicks(ping, sweep func(context.Context) error) []eventbus.Tick {
+	return []eventbus.Tick{{Name: "db ping", Run: ping}, {Name: "outbox sweep", Run: sweep}}
+}
+
+// newMux is ingest's routes: health, the tick, POST /v1/sync behind the auth middleware
+// and the per-user limit, and a JSON 404 for the rest. The tick sits beside /v1, outside
+// both (D218): its token is the push service account's, which the transport's verifier
+// checks.
+func newMux(h *handler, log *slog.Logger, verifier auth.Verifier, tick http.Handler) *http.ServeMux {
+	st := h.st
+	mux := http.NewServeMux()
 	httpx.Health(mux, func(ctx context.Context) error {
 		if err := st.Ready(ctx); err != nil {
 			return err
 		}
-		// Not the broker: a sync's event waits in the outbox while it is away (D101),
-		// so ingest keeps taking syncs, like the api (AMQPDisconnected, OutboxBacklog).
+		// Not Pub/Sub: a sync's event waits in the outbox when a flush cannot send it
+		// (D101), so ingest keeps taking syncs, like the api (OutboxBacklog).
 		return verifier.Ready(ctx)
 	})
+	mux.Handle(http.MethodPost+" "+eventbus.PathTick, tick)
 	api := http.NewServeMux()
 	api.HandleFunc("POST /v1/sync", h.sync)
 	api.HandleFunc("/v1/", httpx.NotFound)
@@ -122,11 +149,7 @@ func main() {
 		}),
 	}, httpx.Timeout(syncTimeout, httpx.WithRoutes(api))))
 	mux.HandleFunc("/", httpx.NotFound)
-
-	if err := httpx.Serve(log, ":"+cfg.Port, httpx.Instrument(log, httpx.Recover(httpx.SecurityHeaders(mux)))); err != nil {
-		log.Error("serve", "err", err)
-		os.Exit(1)
-	}
+	return mux
 }
 
 // syncTimeout bounds one upload's database work; it stays inside the server's
@@ -143,8 +166,7 @@ func requestID(r *http.Request) string {
 
 type handler struct {
 	st     *store.Store
-	bus    events.Bus
-	outbox *outbox.Outbox
+	outbox *outbox.Outbox // what POST /v1/sync writes in its transaction and flushes before it answers
 	log    *slog.Logger
 	beta   config.Beta
 
@@ -241,7 +263,7 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 		h.log.WarnContext(ctx, "workout fold skipped, too many workouts in scope", "workouts", len(req.Workouts), "limit", store.FoldMaxRows)
 	}
 	if len(applied.Days) > 0 {
-		h.outbox.Kick()
+		h.outbox.Flush(ctx) // before the answer: nothing runs after it (D219)
 	}
 	days := applied.Days
 	if days == nil {

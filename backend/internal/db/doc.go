@@ -5,7 +5,8 @@
 // migration: a change is a new numbered file in migrations/. Only cmd/migrate
 // runs Migrate, Seed and the role functions, as the schema owner; the services
 // use their own least-privilege roles, which cannot run DDL, and wait for the
-// schema with Open and WaitMigrated instead (D42, D47).
+// schema with Open and WaitMigrated instead (D42, D47). Each service's tick
+// pings the database with Ping, which sets ryft_db_up (D219).
 //
 // Invariants:
 //   - Each migration runs in its own transaction under one advisory lock, with

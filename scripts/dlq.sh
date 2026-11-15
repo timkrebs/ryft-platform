@@ -1,51 +1,65 @@
 #!/usr/bin/env bash
-# RabbitMQ's dead letters (dlq.scoring, dlq.notify; D99, docs/OPERATIONS.md → RabbitMQ)
-# through the management API:
+# The dead letters on Pub/Sub (design 2.2, D218; docs/OPERATIONS.md → GCP → Dead letters and the outbox):
+# the hold subscriptions dlq-scoring-hold and dlq-notify-hold keep for 14 days what ryft-dlq-scoring and
+# ryft-dlq-notify receive. Through gcloud, as you, in the project you name (there is no default):
 #
-#   scripts/dlq.sh list                    count per queue, then one line per letter (left in place)
-#   scripts/dlq.sh show <queue> [n|all]    the first n letters in full (default 10; left in place)
-#   scripts/dlq.sh replay <queue> [n|all]  take letters off and publish each to ryft.events with its
-#                                          original key, so its consumer handles it again, as a
-#                                          redelivery (x-ryft-replayed) with all its attempts
-#   scripts/dlq.sh purge <queue>           delete every letter (asks first)
-#   scripts/dlq.sh put-back <dir>          the letters a failed replay left in <dir>, back into
-#                                          their dead-letter queue
+#   scripts/dlq.sh --project <id> list                     per hold subscription the letters pulled, one
+#                                                          line each (nothing acked)
+#   scripts/dlq.sh --project <id> show <consumer> [n|all]  the first n letters in full, the data decoded
+#                                                          (default 10; nothing acked)
+#   scripts/dlq.sh --project <id> replay <consumer> [n|all] [--force]
+#                                                          each letter back to its topic as a redelivery
+#                                                          (ryft-replayed=true, its own attributes), then
+#                                                          acked
+#   scripts/dlq.sh --project <id> purge <consumer>         every letter of the consumer's hold subscription
+#                                                          published until now (asks first)
 #
-# <queue> is dlq.scoring or dlq.notify (or scoring / notify); n is 1 to 1000, all is 1000.
-# notify's letters are not replayed without --force: a push hours late is wrong (list and
-# purge them; D84). A replay republishes only the keys its queue's consumer is bound for
-# (scoring: ingested, session.completed; notify: scored, session.scored, refresh), and only
-# a letter whose type is its key; any other goes back into its dead-letter queue as it was,
-# and is named. A letter the broker dead-lettered itself (an x-death entry for the consumer's
-# queue) is read by that entry alone: its key is the entry's routing key, if the exchange was
-# ryft.events, and any Ryft-* header on it is ignored; a doubtful one is named "check by hand".
-# A letter taken off is never dropped: one that is neither replayed nor put back is put back on
-# the way out, or else kept in a directory the script names, with the cluster or broker it came
-# from (put-back refuses another); put-back removes the directory once it is empty.
+# <consumer> is scoring or notify (or dlq-scoring-hold / dlq-notify-hold); n is 1 to 1000, all is 1000.
+# list and show pull without --auto-ack and hand the letters back at once; one pass returns at most 1000
+# and may return fewer than a subscription holds (Monitoring's num_undelivered_messages is the count).
 #
-# The cluster is named, never kubectl's current context (scripts/lib/kube.sh):
-#   KUBE_CONTEXT=<context> scripts/dlq.sh list        (or: scripts/dlq.sh --context <context> list)
-# It port-forwards to the management API (svc/rabbitmq, 15671), verifies the broker's
-# certificate against the internal CA (Secret rabbitmq-tls) and uses the operator's default
-# user (Secret rabbitmq-default-user). Elsewhere (compose) no cluster is used:
-#   RABBITMQ_MGMT_URL=http://localhost:15672 RABBITMQ_USER=admin RABBITMQ_PASSWORD=… scripts/dlq.sh list
+# A replay republishes only the keys the consumer handles (scoring: ingested, session.completed; notify:
+# scored, session.scored, refresh), read from infra/gcp/pubsub.auto.tfvars.json, which cmd/pubsub-topology
+# writes from topology.go. The key is read where a publisher cannot write it (D150):
+#   - a letter Pub/Sub dead-lettered (attribute CloudPubSubDeadLetterSourceSubscription) is filed under its
+#     source subscription's key (scoring-ingested: ingested); its ryft-key must be absent or that key; from
+#     notify-wait the key is its ryft-key, one of notify's. It goes back to that subscription's topic.
+#   - a letter the consumer filed itself (ryft-error, no source subscription) is filed under its ryft-key,
+#     which the consumer set from the push path, and goes to that key's topic.
+# Anything else is refused, named, and left in the hold subscription; the script then exits 1. notify's
+# letters are not replayed without --force: a push hours late is wrong (D84); list and purge them.
+# A replay keeps the letter's attributes but Pub/Sub's CloudPubSubDeadLetter* and ryft-error, sets
+# ryft-key and ryft-replayed=true, and on an ordered topic the ordering key (the event's user_id). A letter
+# is acked only after its publish succeeded: what is not replayed stays (handed back at the end, and Pub/Sub
+# redelivers it after its lease anyway). A publish or an ack that fails stops the run.
+#
+# Every argument is checked before gcloud runs. The project is always named (--project on every call, never
+# gcloud's configured one), and calls go to the regional endpoint europe-west1-pubsub.googleapis.com
+# (ordering keys hold per region). With PUBSUB_EMULATOR_HOST set (compose's: localhost:8085, project
+# ryft-local) they go to the emulator, without credentials. A letter's data is its event's JSON: the user id,
+# the day or days, and where the event has them a session id, the reason and the request id (scored: user_id,
+# day and request_id only); no scores or other health values. Its ryft-message-id names the user and day too
+# (scored:<user_id>:<day>). So a replay hands gcloud the data, the attributes and the ordering key in a flags
+# file (--flags-file, mode 600 in the script's private temporary directory, deleted after each call): `ps`
+# shows the topic and the file's name, not the letter. gcloud's own file log, which records the arguments, is off.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-# shellcheck source=lib/kube.sh
-. "$HERE/lib/kube.sh"
+TOPOLOGY=$HERE/../infra/gcp/pubsub.auto.tfvars.json
 MAX=1000
+BATCH=100       # letters per pull for list, show and purge
+REPLAY_BATCH=50 # letters per pull for a replay: each held 600 s, two gcloud calls each
+LEASE=600       # seconds a replay holds the letters it is working on (Pub/Sub's maximum)
 
 help() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
 usage() { help >&2; exit 2; }
 refuse() { echo "✗ dlq.sh: $*" >&2; exit 2; }
 
-# Every argument is checked before anything reaches a cluster or a broker.
-force='' ctx='' pos=()
+force='' project='' pos=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --force) force=1 ;;
-    --context) [ $# -ge 2 ] && [ -n "$2" ] || refuse "--context needs a context name"; ctx=$2; shift ;;
-    --context=?*) ctx=${1#--context=} ;;
+    --project) [ $# -ge 2 ] && [ -n "$2" ] || refuse "--project needs a project id"; project=$2; shift ;;
+    --project=?*) project=${1#--project=} ;;
     -h|--help) help; exit 0 ;;
     -*) echo "✗ dlq.sh: unknown option $1" >&2; usage ;;
     *) pos+=("$1") ;;
@@ -54,11 +68,11 @@ while [ $# -gt 0 ]; do
 done
 [ "${#pos[@]}" -gt 0 ] || usage
 cmd=${pos[0]}
-queue_of() {
+consumer_of() {
   case "$1" in
-    dlq.scoring|scoring) echo dlq.scoring ;;
-    dlq.notify|notify) echo dlq.notify ;;
-    *) refuse "the queue is dlq.scoring or dlq.notify, not $1" ;;
+    scoring|dlq-scoring-hold) echo scoring ;;
+    notify|dlq-notify-hold) echo notify ;;
+    *) refuse "the consumer is scoring or notify (dlq-scoring-hold, dlq-notify-hold), not $1" ;;
   esac
 }
 count_of() { # n|all → 1..MAX
@@ -66,113 +80,155 @@ count_of() { # n|all → 1..MAX
   [[ "$1" =~ ^[1-9][0-9]{0,3}$ ]] && [ "$1" -le $MAX ] || refuse "n is 1 to $MAX or all, not $1"
   echo "$1"
 }
-q='' n='' dir=''
+consumer='' n=''
 case "$cmd" in
   list)
     [ "${#pos[@]}" = 1 ] || usage ;;
   show|replay)
     [ "${#pos[@]}" -ge 2 ] && [ "${#pos[@]}" -le 3 ] || usage
-    q=$(queue_of "${pos[1]}")
+    consumer=$(consumer_of "${pos[1]}")
     if [ "${#pos[@]}" = 3 ]; then n=$(count_of "${pos[2]}"); elif [ "$cmd" = show ]; then n=10; else n=$MAX; fi ;;
   purge)
     [ "${#pos[@]}" = 2 ] || usage
-    q=$(queue_of "${pos[1]}") ;;
-  put-back)
-    [ "${#pos[@]}" = 2 ] || usage
-    dir=${pos[1]}
-    [ -d "$dir" ] || refuse "no directory $dir"
-    dir=$(cd "$dir" && pwd -P)
-    compgen -G "$dir/*.back.json" >/dev/null || refuse "no letters (*.back.json) in $dir"
-    python3 - "$dir" <<'PY' || refuse "$dir holds something that is not a dead letter dlq.sh kept"
-import glob, json, os, sys
-for f in glob.glob(os.path.join(sys.argv[1], "*.back.json")):
-    b = json.load(open(f))
-    if b.get("routing_key") not in ("scoring", "notify") or not isinstance(b.get("properties"), dict):
-        sys.exit(f)
-PY
-    ;;
+    consumer=$(consumer_of "${pos[1]}") ;;
   *) usage ;;
 esac
 if [ -n "$force" ] && [ "$cmd" != replay ]; then refuse "--force is for a replay of notify's letters"; fi
-if [ "$cmd" = replay ] && [ "$q" = dlq.notify ] && [ -z "$force" ]; then
+if [ "$cmd" = replay ] && [ "$consumer" = notify ] && [ -z "$force" ]; then
   refuse "notify's dead letters are not replayed (a push hours late is wrong); purge them, or --force"
 fi
-VHOST=${RABBITMQ_VHOST:-ryft}
-[[ "$VHOST" =~ ^[A-Za-z0-9._-]+$ ]] || refuse "RABBITMQ_VHOST $VHOST is not a vhost name"
-if [ -n "${RABBITMQ_MGMT_URL:-}" ]; then
-  [ -z "$ctx" ] || refuse "--context and RABBITMQ_MGMT_URL exclude each other"
-  : "${RABBITMQ_USER:?with RABBITMQ_MGMT_URL set RABBITMQ_USER and RABBITMQ_PASSWORD}" "${RABBITMQ_PASSWORD:?}"
-  # Where the letters live, for a kept directory (source.txt): the URL without a login in it (everything up to
-  # the authority's last @ goes; RABBITMQ_USER and RABBITMQ_PASSWORD are the way to give a login).
-  source_id="url $(printf '%s' "$RABBITMQ_MGMT_URL" | sed 's|^\([A-Za-z][A-Za-z0-9+.-]*://\)[^/]*@|\1|')"
+[ -n "$project" ] || refuse "name the project: --project <id> (there is no default; production is ryftlab-prod)"
+[[ "$project" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || refuse "--project $project is not a project id"
+if [ -n "${PUBSUB_EMULATOR_HOST:-}" ]; then
+  [[ "$PUBSUB_EMULATOR_HOST" =~ ^[A-Za-z0-9.-]+:[0-9]{1,5}$ ]] || refuse "PUBSUB_EMULATOR_HOST $PUBSUB_EMULATOR_HOST is not host:port"
+  endpoint="http://$PUBSUB_EMULATOR_HOST/"
+  export CLOUDSDK_AUTH_DISABLE_CREDENTIALS=true
 else
-  kube_context "$ctx" || exit 2
-  source_id="context $KUBE_CONTEXT"
+  endpoint=https://europe-west1-pubsub.googleapis.com/
+  unset CLOUDSDK_AUTH_DISABLE_CREDENTIALS
 fi
-# put-back goes only where the letters came from: a directory kept by a replay against one
-# cluster (or broker) is not put into another's dead-letter queue.
-if [ "$cmd" = put-back ]; then
-  [ -f "$dir/source.txt" ] || refuse "$dir has no source.txt: it is not a directory dlq.sh kept"
-  [ "$(cat "$dir/source.txt")" = "$source_id" ] \
-    || refuse "$dir holds letters from $(cat "$dir/source.txt"), not from $source_id: name that one"
-fi
+export CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB=$endpoint CLOUDSDK_CORE_DISABLE_PROMPTS=1 CLOUDSDK_CORE_DISABLE_FILE_LOGGING=true
+command -v gcloud >/dev/null 2>&1 || refuse "gcloud is not installed"
+command -v jq >/dev/null 2>&1 || refuse "jq is not installed"
+[ -r "$TOPOLOGY" ] || refuse "no $TOPOLOGY (cmd/pubsub-topology writes it)"
 
-# The keys each dead-letter queue's consumer is bound for (amqpbus consumerKeys; a Go test
-# compares them): a replay republishes nothing else.
-replay_keys() {
-  case "$1" in
-    dlq.scoring) echo "ingested session.completed" ;;
-    dlq.notify) echo "scored session.scored refresh" ;;
-  esac
+# The topology and the verdict on one letter (a received message: ackId, message), in jq. $topo[0] is
+# pubsub.auto.tfvars.json, $c the consumer, $project the project.
+JQ_DEFS='
+def push: $topo[0].pubsub_push_subscriptions;
+def mine: push | to_entries | map(select(.value.service == $c and .value.dead_letter_topic != ""));
+def handled: [mine[] | .value.path | select(startswith("/push/") and . != "/push/wait") | ltrimstr("/push/")];
+def handles($k): ($k | type) == "string" and any(handled[]; . == $k);
+def topic_of($k): [mine[] | select(.value.path == "/push/" + $k) | .value.topic][0];
+def ordered($t): any(push[]; .topic == $t and .ordered);
+def hold: ([mine[] | .value.dead_letter_topic] | unique) as $t
+  | if ($t | length) != 1 then empty
+    else [$topo[0].pubsub_hold_subscriptions | to_entries[] | select(.value.topic == $t[0]) | .key]
+      | if length == 1 then .[0] else empty end end;
+def standard: gsub("-"; "+") | gsub("_"; "/") | . as $s | $s + ("===" | .[0:((4 - ($s | length) % 4) % 4)]);
+def decide:
+  (.message // {}) as $m
+  | ($m.attributes // {}) as $a
+  | $a["ryft-key"] as $rk
+  | (($a.CloudPubSubDeadLetterSourceSubscription // "") | sub("^projects/[^/]+/subscriptions/"; "")) as $src
+  | (($m.data // "") | standard) as $b64
+  | (try ($b64 | @base64d) catch null) as $raw
+  # The data passes as a JSON string in the flags file, which gcloud reads as text: refused unless it decodes
+  # to text and back, holds no NUL and does not end in a line break (no event does; such a letter is checked
+  # by hand).
+  | (if $raw != null and ($raw | @base64) == $b64 and ($raw | explode | any(. == 0) | not) and ($raw | endswith("\n") | not)
+     then $raw else null end) as $text
+  | (if $src != "" then "pubsub" elif $a | has("ryft-error") then "consumer" else "unknown" end) as $by
+  | (if $by == "pubsub" then
+       ([mine[] | select(.key == $src) | .value][0]) as $sub
+       | if $sub == null then {why: "dead-lettered from \($src | tojson), which is not one of \($c)'"'"'s subscriptions"}
+         elif ($a | has("CloudPubSubDeadLetterSourceSubscriptionProject")) and $a.CloudPubSubDeadLetterSourceSubscriptionProject != $project
+           then {why: "dead-lettered in project \($a.CloudPubSubDeadLetterSourceSubscriptionProject | tojson), not \($project)"}
+         elif $sub.path == "/push/wait" then
+           if $rk == null then {why: "from \($src) without a ryft-key"}
+           elif handles($rk) | not then {why: "its ryft-key \($rk | tojson) is not a key \($c) handles"}
+           else {key: $rk, topic: $sub.topic} end
+         else ($sub.path | ltrimstr("/push/")) as $k
+           | if handles($k) | not then {why: "its subscription'"'"'s key \($k | tojson) is not one \($c) handles"}
+             elif $rk != null and $rk != $k then {why: "its ryft-key \($rk | tojson) is not the key of \($src) (\($k))"}
+             else {key: $k, topic: $sub.topic} end
+         end
+     elif $by == "consumer" then
+       if $rk == null then {why: "filed by \($c) without a ryft-key"}
+       elif handles($rk) | not then {why: "its ryft-key \($rk | tojson) is not a key \($c) handles"}
+       else {key: $rk, topic: topic_of($rk)} end
+     else {why: "neither dead-lettered by Pub/Sub (no CloudPubSubDeadLetterSourceSubscription) nor filed by \($c) (no ryft-error): check by hand"}
+     end) as $d
+  | (if $d.why then $d
+     elif $text == null then {why: "its data is not text gcloud can pass on: check by hand"}
+     elif $text == "" then {why: "it has no data"}
+     elif ordered($d.topic) then
+       (try ($text | fromjson | .user_id) catch null) as $u
+       | if ($u | type) == "string" and ($u | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))
+         then $d + {ordering_key: $u}
+         else {why: "\($d.topic) is ordered by the event'"'"'s user_id, and its data has none"} end
+     else $d end) as $d
+  | (if $d.why then {}
+     else ($a | with_entries(select((.key | startswith("CloudPubSubDeadLetter") | not) and .key != "ryft-error")))
+       + {"ryft-key": $d.key, "ryft-replayed": "true"} end) as $pub
+  # gcloud reads --attribute as k=v pairs split at a delimiter: one that no key or value holds.
+  | ([("|", ";", "~", "#", "!", "%", "+", "@") as $x | select(all($pub | to_entries[]; (.key + .value) | contains($x) | not)) | $x][0]) as $delim
+  | (if $d.why or $delim != null then $d else {why: "its attributes hold every delimiter gcloud takes: check by hand"} end) as $d
+  | {
+      letter_id: ($m.messageId // ""), message_id: ($a["ryft-message-id"] // ""), ack_id: (.ackId // ""),
+      key: ($d.key // $rk), by: $by, source: (if $src == "" then null else $src end),
+      attempts: ($a.CloudPubSubDeadLetterSourceDeliveryCount // null),
+      error: (if $by == "consumer" then $a["ryft-error"] else null end),
+      replayed_before: ($a["ryft-replayed"] == "true"), published: ($m.publishTime // null),
+      verdict: (if $d.why then "refused" else "replay" end), why: ($d.why // null),
+      topic: (if $d.why then null else $d.topic end), ordering_key: (if $d.why then null else $d.ordering_key end),
+      attribute: (if $d.why then null else "^" + $delim + "^" + ($pub | to_entries | sort_by(.key) | map(.key + "=" + .value) | join($delim)) end),
+      data: (if $d.why then null else $text end),
+      attributes: $a, text: $text, base64: (if $text == null then $b64 else null end)
+    };
+def what: "message_id \(.message_id | tojson) (letter \(.letter_id)), key \(.key | tojson), "
+  + (if .source then "dead-lettered by Pub/Sub from \(.source)" elif .by == "consumer" then "filed by the consumer" else "of unknown origin" end);
+'
+tq() { # CONSUMER PROGRAM [jq options and files...]: jq with the topology and the definitions above
+  local c=$1 prog=$2; shift 2
+  jq --slurpfile topo "$TOPOLOGY" --arg c "$c" --arg project "$project" "$JQ_DEFS $prog" "$@"
 }
+hold_of() { # CONSUMER → its hold subscription, from the topology
+  local h
+  h=$(tq "$1" 'hold' -rn) && [ -n "$h" ] || refuse "$TOPOLOGY names no single hold subscription for $1's dead-letter topic"
+  echo "$h"
+}
+hold=''
+[ -z "$consumer" ] || hold=$(hold_of "$consumer")
+echo "→ project $project, $endpoint" >&2
 
-# Credentials, request bodies and taken letters live in $tmp (mode 700, files 600), never in
-# argv or the environment of a child.
+# Letters pulled and not acked are handed back on the way out (ack deadline 0), with their newest ack id.
 umask 077
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/dlq.XXXXXX")
-chmod 700 "$tmp"
-pf='' keep=''
-put_back_dir() { # DIR: each *.back.json in it back into its dead-letter queue (until one fails); 1 if any is left
-  local f back_n=0 left=0
-  for f in "$1"/*.back.json; do
-    [ -e "$f" ] || continue
-    publish ryft.dlx "$f" || break
-    rm -f "$f" "${f%.back.json}.replay.json"
-    back_n=$((back_n + 1))
-  done
-  for f in "$1"/*.back.json; do [ ! -e "$f" ] || left=$((left + 1)); done
-  [ "$back_n" = 0 ] || echo "put back $back_n letters into their dead-letter queue" >&2
-  [ "$left" = 0 ] || { echo "✗ dlq.sh: $left letters are in no queue, only in $1: put them back with scripts/dlq.sh put-back $1" >&2; return 1; }
-}
-tidy() { # DIR: the files dlq.sh wrote into a kept directory, then DIR itself when that leaves it empty
-  [ -f "$1/source.txt" ] || return 0
-  rm -f "$1/source.txt" "$1/manifest.tsv" "$1/ca.crt" "$1/get.json"
-  rmdir "$1" 2>/dev/null || true
+: > "$tmp/leased.tsv"; : > "$tmp/acked.txt"; : > "$tmp/seen.txt"
+gc() { gcloud "$@" "--project=$project" --quiet; }
+release() { # HOLD ACK-ID... (at most 100): ack deadline 0, so they can be pulled again at once
+  local h=$1 ids; shift
+  ids=$(IFS=,; echo "$*")
+  gc pubsub subscriptions modify-message-ack-deadline "$h" "--ack-ids=$ids" --ack-deadline=0 >/dev/null 2>&1 \
+    || echo "! dlq.sh: $# letters of $h were not handed back: they return when their lease ends (at most $LEASE s)" >&2
 }
 cleanup() {
-  local status=$?; trap '' INT TERM HUP  # $? first, then nothing interrupts the way out
-  # (a second Ctrl-C, the session dropping), and a failing write to a closed terminal does
-  # not end it either.
+  local status=$? h batch=() id
+  trap '' INT TERM HUP
   set +e
-  # Letters taken off and neither replayed nor put back: put back now, or keep them. The
-  # directory is named first, so it is known even if this stops half-way.
-  if [ -d "$tmp/pending" ] && compgen -G "$tmp/pending/*.back.json" >/dev/null; then
-    [ "$status" != 0 ] || status=1
-    echo "! dlq.sh: putting back the letters left in $tmp/pending" >&2
-    put_back_dir "$tmp/pending" || keep=1
-  fi
-  # Only now: the put-back above goes through the port-forward.
-  if [ -n "$pf" ]; then
-    pkill -P "$pf" 2>/dev/null
-    kill "$pf" 2>/dev/null
-  fi
-  if [ -n "$keep" ]; then
-    rm -f "$tmp/curl.conf" "$tmp/user.json" "$tmp/ca.b64"
-    chmod 700 "$tmp"
-    echo "✗ dlq.sh: kept $tmp (mode 700) with what is left: $(cd "$tmp" && find . -type f ! -name ca.crt | sed 's|^\./||' | sort | tr '\n' ' ')" >&2
-  else
-    rm -rf "$tmp"
-  fi
+  awk -F'\t' -v a="$tmp/acked.txt" 'BEGIN { while ((getline l < a) > 0) acked[l] = 1 }
+    !($2 in acked) { last[$1 "\t" $2] = $3 } END { for (k in last) { split(k, p, "\t"); print p[1] "\t" last[k] } }' \
+    "$tmp/leased.tsv" | LC_ALL=C sort > "$tmp/release.tsv"
+  for h in $(cut -f1 "$tmp/release.tsv" | sort -u); do
+    batch=()
+    while IFS= read -r id; do
+      batch+=("$id")
+      if [ "${#batch[@]}" -ge 100 ]; then release "$h" "${batch[@]}"; batch=(); fi
+    done < <(awk -F'\t' -v h="$h" '$1 == h { print $2 }' "$tmp/release.tsv")
+    [ "${#batch[@]}" = 0 ] || release "$h" "${batch[@]}"
+  done
+  rm -rf "$tmp"
   exit "$status"
 }
 trap cleanup EXIT
@@ -180,212 +236,102 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# The management API's user as a curl config (curl -K), from the environment or the Secret.
-write_curl_conf() { # env | secrets
-  python3 - "$1" "$tmp" <<'PY'
-import base64, json, os, sys
-mode, d = sys.argv[1], sys.argv[2]
-if mode == "secrets":
-    data = json.load(open(os.path.join(d, "user.json")))["data"]
-    user, pw = (base64.b64decode(data[k]).decode() for k in ("username", "password"))
-    with open(os.path.join(d, "ca.crt"), "wb") as f:
-        f.write(base64.b64decode(open(os.path.join(d, "ca.b64")).read()))
-else:
-    user, pw = os.environ["RABBITMQ_USER"], os.environ["RABBITMQ_PASSWORD"]
-def quoted(s):
-    for a, b in (("\\", "\\\\"), ('"', '\\"'), ("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t")):
-        s = s.replace(a, b)
-    return '"' + s + '"'
-with open(os.path.join(d, "curl.conf"), "w") as f:
-    f.write("user = %s\nconnect-timeout = 10\n" % quoted(user + ":" + pw))
-PY
+pull() { # HOLD LIMIT OUT: one pull, no ack; every lease recorded for the way out
+  if ! gc pubsub subscriptions pull "$1" "--limit=$2" --format=json > "$3" 2>"$tmp/err"; then
+    echo "✗ dlq.sh: the pull from $1 failed: $(head -c 300 "$tmp/err")" >&2; return 1
+  fi
+  [ -s "$3" ] || echo '[]' > "$3"
+  if ! jq -e 'type == "array" and all(.[]; type == "object" and (.ackId | type) == "string" and (.message.messageId | type) == "string")' "$3" >/dev/null 2>&1; then
+    echo "✗ dlq.sh: the pull from $1 did not answer a list of messages" >&2; return 1
+  fi
+  jq -r --arg h "$1" '.[] | [$h, .message.messageId, .ackId] | @tsv' "$3" >> "$tmp/leased.tsv"
 }
-if [ -n "${RABBITMQ_MGMT_URL:-}" ]; then
-  mgmt=$RABBITMQ_MGMT_URL
-  write_curl_conf env
-  unset RABBITMQ_USER RABBITMQ_PASSWORD
-  CURL_EXTRA=()
-else
-  ns=ryft-rabbitmq
-  k -n $ns get secret rabbitmq-tls -o jsonpath='{.data.ca\.crt}' > "$tmp/ca.b64"
-  k -n $ns get secret rabbitmq-default-user -o json > "$tmp/user.json"
-  write_curl_conf secrets
-  rm -f "$tmp/user.json" "$tmp/ca.b64"
-  port=$((20000 + RANDOM % 20000))
-  k -n $ns port-forward svc/rabbitmq "$port:15671" >/dev/null 2>&1 &
-  pf=$!
-  disown "$pf"
-  for _ in $(seq 1 30); do (echo > "/dev/tcp/127.0.0.1/$port") 2>/dev/null && break; sleep 0.3; done
-  # The certificate names the Service, so connect to that name through the forward.
-  mgmt=https://rabbitmq.$ns.svc:$port
-  CURL_EXTRA=(--cacert "$tmp/ca.crt" --resolve "rabbitmq.$ns.svc:$port:127.0.0.1")
-fi
-api() { # METHOD PATH [BODY FILE] [MAX SECONDS, default 120] → the answer
-  # -q first: a ~/.curlrc is not read (it could undo --cacert or add a header that leaks the login).
-  curl -q -fsS -K "$tmp/curl.conf" --max-time "${4:-120}" ${CURL_EXTRA[@]+"${CURL_EXTRA[@]}"} \
-    -H 'content-type: application/json' -X "$1" ${3:+--data-binary "@$3"} "$mgmt$2"
+pull_all() { # HOLD MAX OUT: up to MAX letters, each once (while one is leased a pull does not return it)
+  local got=0 lim total
+  echo '[]' > "$3"
+  while [ "$got" -lt "$2" ]; do
+    lim=$(( $2 - got < BATCH ? $2 - got : BATCH ))
+    pull "$1" "$lim" "$tmp/batch.json" || return 1
+    jq -s '(.[0] | map(.message.messageId)) as $have | .[0] + [.[1][] | select(.message.messageId as $id | any($have[]; . == $id) | not)]' \
+      "$3" "$tmp/batch.json" > "$tmp/all.json"
+    total=$(jq length "$tmp/all.json")
+    mv "$tmp/all.json" "$3"
+    [ "$total" -gt "$got" ] || break
+    got=$total
+  done
 }
-publish() { # EXCHANGE BODY-FILE: true only when the broker routed it
-  local out
-  out=$(api POST "/api/exchanges/$VHOST/$1/publish" "$2" 2>/dev/null) && [[ "$out" == *'"routed":true'* ]]
-}
-get() { # QUEUE COUNT ACKMODE → the letters, a JSON array
-  python3 -c 'import json, sys; json.dump({"count": int(sys.argv[1]), "ackmode": sys.argv[2], "encoding": "auto",
-    "truncate": 50000}, open(sys.argv[3], "w"))' "$2" "$3" "$tmp/get.json"
-  # A take (ack_requeue_false) is removed from the queue before the answer arrives: cutting
-  # that answer short would lose the letters, so it may take half an hour, not two minutes.
-  local max=120
-  [ "$3" != ack_requeue_false ] || max=1800
-  api POST "/api/queues/$VHOST/$1/get" "$tmp/get.json" "$max"
+extend() { # HOLD FILE: the leases of FILE's letters to LEASE seconds
+  local ids
+  ids=$(jq -r '[.[].ackId] | join(",")' "$2")
+  [ -n "$ids" ] || return 0
+  gc pubsub subscriptions modify-message-ack-deadline "$1" "--ack-ids=$ids" "--ack-deadline=$LEASE" >/dev/null 2>"$tmp/err" \
+    || { echo "✗ dlq.sh: the leases in $1 could not be extended: $(head -c 300 "$tmp/err")" >&2; return 1; }
 }
 
 case "$cmd" in
   list)
-    for lq in dlq.scoring dlq.notify; do
-      get "$lq" $MAX ack_requeue_true > "$tmp/$lq.json"
-      python3 - "$lq" "$tmp/$lq.json" <<'PY'
-import json, sys
-letters = json.load(open(sys.argv[2]))
-print("%s: %d" % (sys.argv[1], len(letters)))
-for m in letters:
-    p = m.get("properties") or {}; h = p.get("headers") or {}
-    xd = h.get("x-death") if isinstance(h.get("x-death"), list) else []
-    # An x-death entry for the consumer's own queue: the broker dead-lettered it (a replay reads
-    # its key from that entry, not from Ryft-*); entries for retry tiers do not count.
-    broker = any(isinstance(e, dict) and e.get("queue") == sys.argv[1].split(".", 1)[1] for e in xd)
-    print(json.dumps({"subject": h.get("Ryft-Subject"), "attempts": h.get("Ryft-Deliveries"),
-        "error": h.get("Ryft-Error"), "message_id": p.get("message_id"), "dead_lettered_by_broker": broker,
-        "replayed_before": h.get("x-ryft-replayed") is True}))
-PY
+    for c in scoring notify; do
+      h=$(hold_of "$c")
+      pull_all "$h" $MAX "$tmp/$c.json"
+      echo "$h: $(jq length "$tmp/$c.json")"
+      tq "$c" '.[] | decide | {letter_id, message_id, key, by, source, attempts, error, replayed_before, published, verdict, why}' -c "$tmp/$c.json"
     done ;;
   show)
-    get "$q" "$n" ack_requeue_true | python3 -m json.tool ;;
-  replay)
-    # Before the take: whatever directory is kept from here on says where its letters came from.
-    printf '%s\n' "$source_id" > "$tmp/source.txt"
-    get "$q" "$n" ack_requeue_false > "$tmp/taken.json" || {
-      keep=1; echo "✗ dlq.sh: the take from $q failed: letters it took may be only in $tmp/taken.json" >&2; exit 1; }
-    # Per letter, written at once (pending/ appears only when all are): the publish to
-    # ryft.events with its key, the one back into its dead-letter queue, and the verdict.
-    DLQ_SOURCE=$source_id python3 - "$tmp/taken.json" "${q#dlq.}" "$(replay_keys "$q")" "$tmp/pending" <<'PY' || {
-import json, os, sys
-taken, consumer, keys, out = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3].split(), sys.argv[4]
-if not isinstance(taken, list):
-    sys.exit("the take did not answer a list")
-death = ("x-death", "x-ryft-attempt", "x-first-death-exchange", "x-first-death-queue", "x-first-death-reason",
-         "x-last-death-exchange", "x-last-death-queue", "x-last-death-reason", "x-delivery-count", "x-acquired-count")
-# amqpbus.HeaderReplayed: the consumer takes the letter as a redelivery (events.Redelivered), so
-# scoring finishes a re-score its failed attempts left half-done (D112). Only the boolean true
-# counts. Without x-ryft-attempt the letter has all its attempts again.
-REPLAYED = "x-ryft-replayed"
-
-def broker_deaths(h):
-    """The x-death entries for the consumer's own queue: the broker dead-lettered the letter itself
-    (its delivery limit, or a publish of ours into ryft.dlx that failed), so nothing of ours wrote
-    its Ryft-* headers. Retry tiers leave entries for their own queues, which do not count."""
-    xd = h.get("x-death")
-    return [e for e in xd if isinstance(e, dict) and e.get("queue") == consumer] if isinstance(xd, list) else []
-
-def broker_key(entries, typ):
-    """(key, why): the key a broker-dead-lettered letter is replayed under, or "" and what is wrong.
-    From the x-death entries for the consumer's own queue, which must agree:
-      - exchange ryft.events: the entry's routing key (the publisher's, limited by topic permissions);
-      - exchange ryft.requeue with routing keys == [consumer]: a retry's copy, whose routing key is the
-        queue's name; its key is its type, which the consumer wrote and checked against the routing
-        key on the first delivery (only consumers may publish into the retry tiers), if that is a key
-        the consumer is bound for.
-    Anything else is refused."""
-    seen = set()
-    for e in entries:
-        rk = e.get("routing-keys")
-        seen.add((e.get("exchange"), tuple(rk) if isinstance(rk, list) and all(isinstance(k, str) for k in rk) else None))
-    if len(seen) != 1:
-        return "", "its x-death entries for %s's queue disagree about the exchange or routing keys" % consumer
-    exchange, rks = seen.pop()
-    if exchange == "ryft.events":
-        if not rks or not rks[0]:
-            return "", "its x-death entry names no routing key"
-        return rks[0], ""
-    if exchange == "ryft.requeue" and rks == (consumer,):
-        if isinstance(typ, str) and typ in keys:
-            return typ, ""
-        return "", "a retry's copy (ryft.requeue) whose type %s is not a key %s's consumer is bound for" % (json.dumps(typ), consumer)
-    return "", "its x-death entry says exchange %s, routing keys %s: not ryft.events, nor a retry's copy" % (json.dumps(exchange), json.dumps(rks))
-
-new = out + ".new"
-os.mkdir(new)
-with open(os.path.join(new, "source.txt"), "w") as f:
-    f.write(os.environ["DLQ_SOURCE"] + "\n")
-manifest = []
-for i, m in enumerate(taken, 1):
-    p = m.get("properties") or {}
-    h = dict(p.get("headers") or {})
-    deaths = broker_deaths(h)
-    if deaths:
-        # Ignore every Ryft-* header: whoever wrote them, it was not the consumer.
-        key, why = broker_key(deaths, p.get("type"))
-    else:
-        why = ""
-        key = h.get("Ryft-Subject") or p.get("type") or ""
-    typ = p.get("type") or key
-    def body(k, headers):
-        return {"properties": {"content_type": p.get("content_type", "application/json"), "delivery_mode": 2,
-                "message_id": p.get("message_id", ""), "type": p.get("type", key), "headers": headers},
-                "routing_key": k, "payload": m["payload"], "payload_encoding": m.get("payload_encoding", "string")}
-    name = "%04d" % i
-    with open(os.path.join(new, name + ".back.json"), "w") as f:
-        json.dump(body(consumer, h), f)
-    what = "message_id %s, key %s" % (json.dumps(p.get("message_id", "")), json.dumps(key))
-    hand = "; dead-lettered by the broker: check by hand" if deaths else ""
-    if not key:
-        verdict, what = "refused", what + ": " + (why or "it has no key") + hand
-    elif key not in keys:
-        verdict, what = "refused", what + ": not a key %s's consumer is bound for" % consumer + hand
-    elif typ != key:
-        verdict, what = "refused", what + ": its type %s is not its key" % json.dumps(typ) + hand
-    else:
-        verdict = "replay"
-        clean = {k: v for k, v in h.items() if not k.startswith("Ryft-") and k not in death}
-        clean[REPLAYED] = True
-        with open(os.path.join(new, name + ".replay.json"), "w") as f:
-            json.dump(body(key, clean), f)
-    manifest.append("\t".join((name, verdict, what)))
-with open(os.path.join(new, "manifest.tsv"), "w") as f:
-    f.write("".join(l + "\n" for l in manifest))
-os.rename(new, out)
-PY
-      keep=1; echo "✗ dlq.sh: the letters taken from $q could not be read: they are only in $tmp/taken.json" >&2; exit 1; }
-    rm -f "$tmp/taken.json"
-    [ -s "$tmp/pending/manifest.tsv" ] || { echo "$q is empty"; exit 0; }
-    ok=0 back=0 failed=
-    while IFS=$'\t' read -r name verdict what <&3; do
-      if [ "$verdict" = replay ] && publish ryft.events "$tmp/pending/$name.replay.json"; then
-        rm -f "$tmp/pending/$name.back.json" "$tmp/pending/$name.replay.json"
-        ok=$((ok + 1))
-      elif publish ryft.dlx "$tmp/pending/$name.back.json"; then
-        rm -f "$tmp/pending/$name.back.json" "$tmp/pending/$name.replay.json"
-        back=$((back + 1))
-        if [ "$verdict" = replay ]; then echo "! not routed, put back: $what" >&2; else echo "! not replayed, put back: $what" >&2; fi
-      else
-        echo "✗ dlq.sh: neither replayed nor put back: $what" >&2
-        failed=1
-        break
-      fi
-    done 3< "$tmp/pending/manifest.tsv"
-    echo "replayed $ok, put back $back"
-    [ -z "$failed" ] && [ "$back" = 0 ] ;;
+    pull_all "$hold" "$n" "$tmp/show.json"
+    tq "$consumer" '[.[] | decide | {letter_id, message_id, published, key, by, source, attempts, error, replayed_before, verdict, why,
+      attributes, data: (if .text == null then {base64} else (try (.text | fromjson) catch .text) end)}]' "$tmp/show.json" ;;
   purge)
-    n=$(get "$q" $MAX ack_requeue_true | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
-    read -r -p "delete all $n letters in $q? type PURGE: " answer
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    pull_all "$hold" $MAX "$tmp/purge.json"
+    count=$(jq length "$tmp/purge.json")
+    answer=''
+    read -r -p "delete every letter in $hold published before $now ($count pulled now)? type PURGE: " answer || true
     [ "$answer" = PURGE ] || { echo "nothing deleted"; exit 1; }
-    api DELETE "/api/queues/$VHOST/$q/contents" && echo "$q purged" ;;
-  put-back)
-    put_back_dir "$dir" || exit 1
-    # Nothing left in it: take away what dlq.sh itself wrote there (only in a directory that carries
-    # its source.txt) and the directory if that empties it, then the same for the temp directory a
-    # replay kept it in. rmdir, never rm -rf: a taken.json (the raw answer of a failed take), the
-    # current directory or anything of yours stays.
-    tidy "$dir"
-    parent=$(dirname "$dir")
-    case $(basename "$parent") in dlq.??????) tidy "$parent" ;; esac ;;
+    gc pubsub subscriptions seek "$hold" "--time=$now" >/dev/null 2>"$tmp/err" \
+      || { echo "✗ dlq.sh: the seek of $hold failed, nothing deleted: $(head -c 300 "$tmp/err")" >&2; exit 1; }
+    jq -r '.[].message.messageId' "$tmp/purge.json" >> "$tmp/acked.txt"
+    echo "$hold purged: every letter published before $now" ;;
+  replay)
+    ok=0 refused=0 handled=0 stopped='' rounds=0
+    while [ "$handled" -lt "$n" ] && [ -z "$stopped" ] && [ "$rounds" -lt 200 ]; do
+      rounds=$((rounds + 1))
+      lim=$(( n - handled < REPLAY_BATCH ? n - handled : REPLAY_BATCH ))
+      pull "$hold" "$lim" "$tmp/batch.json" || { stopped=1; break; }
+      [ "$(jq length "$tmp/batch.json")" -gt 0 ] || break
+      # The whole batch for LEASE seconds: refused letters stay out of the next pulls until the end.
+      extend "$hold" "$tmp/batch.json" || { stopped=1; break; }
+      tq "$consumer" '.[] | select(.message.messageId as $id | any($seen | split("\n")[]; . == $id) | not) | decide' \
+        -c --rawfile seen "$tmp/seen.txt" "$tmp/batch.json" > "$tmp/new.jsonl"
+      while IFS= read -r dec <&3; do
+        jq -r .letter_id <<<"$dec" >> "$tmp/seen.txt"
+        handled=$((handled + 1))
+        what=$(tq "$consumer" 'what' -r <<<"$dec")
+        if [ "$(jq -r .verdict <<<"$dec")" != replay ]; then
+          echo "! not replayed, left in $hold: $what: $(jq -r .why <<<"$dec")" >&2
+          refused=$((refused + 1))
+          continue
+        fi
+        topic=$(jq -r .topic <<<"$dec")
+        # The letter (data, attributes, ordering key) goes in a flags file, never on gcloud's command line.
+        jq '{"--message": .data, "--attribute": .attribute} + (if .ordering_key then {"--ordering-key": .ordering_key} else {} end)' \
+          <<<"$dec" > "$tmp/publish.json"
+        published=1
+        out=$(gc pubsub topics publish "$topic" "--flags-file=$tmp/publish.json" --format=json 2>"$tmp/err") || published=''
+        rm -f "$tmp/publish.json"
+        if [ -z "$published" ] || ! id=$(jq -er '.messageIds[0] | strings' <<<"$out" 2>/dev/null); then
+          echo "✗ dlq.sh: the publish to $topic failed, the letter stays in $hold: $what: $(head -c 300 "$tmp/err")" >&2
+          stopped=1; break
+        fi
+        if ! gc pubsub subscriptions ack "$hold" "--ack-ids=$(jq -r .ack_id <<<"$dec")" >/dev/null 2>"$tmp/err"; then
+          echo "✗ dlq.sh: replayed to $topic (message $id), but the ack failed: the letter stays in $hold and a later replay sends it again (handlers are idempotent, D100): $what" >&2
+          stopped=1; break
+        fi
+        jq -r .letter_id <<<"$dec" >> "$tmp/acked.txt"
+        echo "replayed: $what → $topic (message $id)" >&2
+        ok=$((ok + 1))
+      done 3< "$tmp/new.jsonl"
+    done
+    if [ "$handled" = 0 ] && [ -z "$stopped" ]; then echo "$hold is empty"; exit 0; fi
+    echo "replayed $ok, refused $refused"
+    [ -z "$stopped" ] && [ "$refused" = 0 ] ;;
 esac

@@ -123,7 +123,8 @@ func TestMainRefusesMissingPolicyBeforeConnecting(t *testing.T) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMainRefusesMissingPolicyBeforeConnecting$")
 	cmd.Env = []string{"RYFT_TEST_MAIN=1", "DATABASE_URL=postgres://ingest@127.0.0.1:1/ryft",
-		"AUTH_MODE=apikey", "API_KEY=0123456789abcdef", "ALLOW_INSECURE_APIKEY_AUTH=true"}
+		"AUTH_MODE=apikey", "API_KEY=0123456789abcdef", "ALLOW_INSECURE_APIKEY_AUTH=true",
+		"PUBSUB_EMULATOR_HOST=127.0.0.1:1", "ALLOW_INSECURE_PUSH=true"} // compose's local Pub/Sub, never reached
 	out, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(out), `"msg":"beta config"`) ||

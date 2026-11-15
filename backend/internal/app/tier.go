@@ -13,11 +13,11 @@ import (
 )
 
 // tier is a set of goroutines that stop together: one context, one errgroup. The
-// service has one per kind of work (timers, consumers, HTTP, relay and watch), so
-// the shutdown can stop them in order instead of all at the signal.
+// service has one per server (HTTP, /metrics), so the shutdown can stop them in order
+// instead of all at the signal. Nothing else runs in the background (D219).
 type tier struct {
 	log    *slog.Logger
-	msg    string // the log message of a failing task: "consume", "serve", ...
+	msg    string // the log message of a failing task: "serve" or "metrics"
 	fail   func(task string, err error)
 	launch func(task string) // a test hook: called as a task starts (nil in production)
 	ctx    context.Context

@@ -261,7 +261,7 @@ func service(now time.Time, prefs model.NotificationPrefs) (*Service, *fakeStore
 }
 
 func morningEvent(day string) events.NotifyMessage {
-	return events.NotifyMessage{Scored: &model.ScoredEvent{UserID: uuid.New(), Day: day, Recovery: 80}}
+	return events.NotifyMessage{Scored: &model.ScoredEvent{UserID: uuid.New(), Day: day}}
 }
 
 func TestMorningSendsOncePerDay(t *testing.T) {

@@ -25,8 +25,8 @@ const optionalTimeout = 500 * time.Millisecond
 
 // Check is one dependency /readyz reports by name.
 type Check struct {
-	Name     string // db | auth | broker: a closed set, the key in the body
-	Required bool   // false: reported, never makes /readyz 503 (the broker in api and ingest, D101)
+	Name     string // db | auth: a closed set, the key in the body
+	Required bool   // false: reported, never makes /readyz 503
 	Fn       func(context.Context) error
 }
 

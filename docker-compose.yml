@@ -1,4 +1,13 @@
 # Local development stack. `make up` then `make smoke`.
+
+# The services reach the Pub/Sub emulator as on Cloud Run they reach Pub/Sub (one runtime, not a
+# second mode): they publish over REST, take pushes on :8080 (/push/*) and the tick on
+# /internal/tick. No push token locally: ALLOW_INSECURE_PUSH, which config refuses on Cloud Run.
+x-pubsub-env: &pubsub-env
+  PUBSUB_EMULATOR_HOST: pubsub:8085
+  GCP_PROJECT: ryft-local
+  ALLOW_INSECURE_PUSH: "true"
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -13,31 +22,66 @@ services:
       interval: 5s
       retries: 10
 
-  # RabbitMQ (D97) as on the cluster: AMQPS with client certificates on 5671 (a dev CA,
-  # rabbitmq-certs), the generated topology and dev users (deploy/rabbitmq/dev).
-  rabbitmq-certs:
-    image: &rabbitmq-image docker.io/library/rabbitmq:4.3.6-management@sha256:54cb013d76cd1fd6c0a0708f34062ad61c452bb6f016b434c6c33f1a765d2b58
-    entrypoint: ["sh", "/dev-amqp-certs.sh"]
-    restart: "no"
-    volumes:
-      - amqpcerts:/certs
-      - ./scripts/dev-amqp-certs.sh:/dev-amqp-certs.sh:ro
-
-  rabbitmq:
-    image: *rabbitmq-image
-    ports: ["5671:5671", "15672:15672"]
-    volumes:
-      - amqpcerts:/certs:ro
-      - ./deploy/rabbitmq/dev/rabbitmq.conf:/etc/rabbitmq/conf.d/90-ryft.conf:ro
-      - ./deploy/rabbitmq/dev/definitions.json:/etc/rabbitmq/definitions.json:ro
-    # A port check, not rabbitmq-diagnostics: the CLI run as root before the server is
-    # up writes the Erlang cookie as root, and the server (user rabbitmq) cannot read it.
+  # The Pub/Sub emulator (design 2.3): push, pull, ordering, retry policies and dead letters, no
+  # IAM, no OIDC, nothing kept across a restart (make down; make up rebuilds the topology).
+  # On 127.0.0.1 only: it checks no credentials. scripts/dlq.sh reads its hold subscriptions with
+  # PUBSUB_EMULATOR_HOST=localhost:8085 and --project ryft-local.
+  # TODO(pin): not pinned by digest yet (no registry access when this was written). Pin it like the
+  # other images: docker buildx imagetools inspect gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+  # gives the index digest; write it as :emulators@sha256:<digest>, and the same in ci.yml's test job.
+  pubsub:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    command: ["gcloud", "beta", "emulators", "pubsub", "start", "--host-port=0.0.0.0:8085", "--project=ryft-local"]
+    ports: ["127.0.0.1:8085:8085"]
+    # A port check: the emulator listens once it serves.
     healthcheck:
-      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/5671"]
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/8085"]
       interval: 5s
       retries: 30
+
+  # The topology on the emulator, then it exits: deploy/pubsub-emulator/init.sh, which
+  # cmd/pubsub-topology generates from internal/events/pubsub/topology.go (topics, the push
+  # subscriptions to http://<service>:8080<path> with Terraform's retry and dead-letter policy, the
+  # DLQ hold subscriptions). Idempotent. The services start once it has run.
+  # TODO(pin): the curl image by digest as well (docker buildx imagetools inspect docker.io/curlimages/curl:8.15.0).
+  pubsub-init:
+    image: &curl-image docker.io/curlimages/curl:8.15.0
+    entrypoint: ["/bin/sh", "/init.sh"]
+    environment:
+      PUBSUB_EMULATOR_HOST: pubsub:8085
+      GCP_PROJECT: ryft-local
+    volumes:
+      - ./deploy/pubsub-emulator/init.sh:/init.sh:ro
+    restart: "no"
     depends_on:
-      rabbitmq-certs: { condition: service_completed_successfully }
+      pubsub: { condition: service_healthy }
+
+  # Cloud Scheduler's part: `{}` with ryft-key=tick to ryft-tick every TICK_EVERY seconds (60 by
+  # default; production ticks every 15 minutes), which the emulator pushes to every service's
+  # /internal/tick (the outbox sweep, scoring's pass, notify's deferrals and stale check).
+  ticker:
+    image: *curl-image
+    environment:
+      PUBSUB_EMULATOR_HOST: pubsub:8085
+      GCP_PROJECT: ryft-local
+      TICK_EVERY: ${TICK_EVERY:-60}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while sleep "$$TICK_EVERY"; do
+          if curl -fsS -o /dev/null -X POST -H 'Content-Type: application/json' \
+            --data '{"messages":[{"data":"e30=","attributes":{"ryft-key":"tick"}}]}' \
+            "http://$$PUBSUB_EMULATOR_HOST/v1/projects/$$GCP_PROJECT/topics/ryft-tick:publish"; then
+            echo tick
+          else
+            echo "ticker: the publish to ryft-tick failed" >&2
+          fi
+        done
+        echo "ticker: TICK_EVERY=$$TICK_EVERY is not a number of seconds" >&2
+        exit 1
+    restart: "no"
+    depends_on:
+      pubsub-init: { condition: service_completed_successfully }
 
   # Applies the migrations as the owner (ryft) and sets the services' role
   # passwords, then exits; the services start after it and connect as their own
@@ -58,6 +102,7 @@ services:
     build: { context: ./backend, args: { SERVICE: ingest } }
     environment:
       <<: &env
+        <<: *pubsub-env
         API_KEY: ${API_KEY:-dev-api-key-change-me}
         # Local development: a shared key instead of Supabase tokens. The bearer
         # "<API_KEY>:<uuid>" acts as that user (scripts/check_api.py uses it).
@@ -68,30 +113,18 @@ services:
         BETA_GATE: ${BETA_GATE:-off}
         CONSENT_ENFORCE: ${CONSENT_ENFORCE:-on}
         PRIVACY_POLICY_VERSION: "2026-10-26"
-        AMQP_URL: amqps://rabbitmq:5671/ryft
       DATABASE_URL: postgres://ryft_ingest:dev-ingest-db-password@postgres:5432/ryft?sslmode=disable
-      AMQP_USER: ingest
-      AMQP_PASSWORD: dev-ingest-amqp-password
-      AMQP_CA_FILE: /certs/ingest/ca.crt
-      AMQP_CERT_FILE: /certs/ingest/tls.crt
-      AMQP_KEY_FILE: /certs/ingest/tls.key
-    volumes: ["amqpcerts:/certs:ro"]
     ports: ["8081:8080"]
     depends_on: &deps
       migrate: { condition: service_completed_successfully }
-      rabbitmq: { condition: service_healthy }
+      pubsub-init: { condition: service_completed_successfully }
 
+  # Pushes from the emulator arrive on :8080 (/push/ingested, /push/session.completed); no host port.
   scoring:
     build: { context: ./backend, args: { SERVICE: scoring } }
     environment:
       <<: *env
       DATABASE_URL: postgres://ryft_scoring:dev-scoring-db-password@postgres:5432/ryft?sslmode=disable
-      AMQP_USER: scoring
-      AMQP_PASSWORD: dev-scoring-amqp-password
-      AMQP_CA_FILE: /certs/scoring/ca.crt
-      AMQP_CERT_FILE: /certs/scoring/tls.crt
-      AMQP_KEY_FILE: /certs/scoring/tls.key
-    volumes: ["amqpcerts:/certs:ro"]
     depends_on: *deps
 
   api:
@@ -99,34 +132,21 @@ services:
     environment:
       <<: *env
       DATABASE_URL: postgres://ryft_api:dev-api-db-password@postgres:5432/ryft?sslmode=disable
-      AMQP_USER: api
-      AMQP_PASSWORD: dev-api-amqp-password
-      AMQP_CA_FILE: /certs/api/ca.crt
-      AMQP_CERT_FILE: /certs/api/tls.crt
-      AMQP_KEY_FILE: /certs/api/tls.key
       # Bearer of /v1/admin (feature flags); scripts/check_api.py uses it.
       ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-key-change-me-0123456789abcdef}
-    volumes: ["amqpcerts:/certs:ro"]
     ports: ["8082:8080"]
     depends_on: *deps
 
-  # No APNs key locally: notify consumes and decides, and counts what it would
-  # have sent (ryft_push_notifications_total{result="unconfigured"} on :9093,
-  # which scripts/check_api.py reads).
+  # No APNs key locally: notify takes the pushes on :8080 (/push/scored, /push/session.scored,
+  # /push/refresh, /push/wait), decides, and counts what it would have sent
+  # (ryft_push_notifications_total{result="unconfigured"} on :9093, which scripts/check_api.py reads).
   notify:
     build: { context: ./backend, args: { SERVICE: notify } }
     environment:
+      <<: *pubsub-env
       DATABASE_URL: postgres://ryft_notify:dev-notify-db-password@postgres:5432/ryft?sslmode=disable
-      AMQP_URL: amqps://rabbitmq:5671/ryft
-      AMQP_USER: notify
-      AMQP_PASSWORD: dev-notify-amqp-password
-      AMQP_CA_FILE: /certs/notify/ca.crt
-      AMQP_CERT_FILE: /certs/notify/tls.crt
-      AMQP_KEY_FILE: /certs/notify/tls.key
-    volumes: ["amqpcerts:/certs:ro"]
     ports: ["9093:9090"]
     depends_on: *deps
 
 volumes:
   pgdata:
-  amqpcerts:

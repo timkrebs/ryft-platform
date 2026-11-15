@@ -24,6 +24,7 @@ func TestSyncLogKindsRejectMutations(t *testing.T) {
 	dev := uuid.NewString()
 	syncOK := `"device":"` + dev + `","samples":3,"sleep":1,"workouts":1,"days":2`
 	httpOK := `"method":"POST","path":"/v1/sync","status":200,"bytes":311,"dur_ms":4`
+	flushOK := `"publisher":"ingest","err":"pubsub: publish ryft-ingested: 503 Service Unavailable"`
 	forbid := logcheck.Forbidden{Texts: syncTexts, Numbers: syncNumbers}
 
 	for _, g := range []string{
@@ -31,6 +32,7 @@ func TestSyncLogKindsRejectMutations(t *testing.T) {
 		line("http", httpOK),
 		line("http", httpOK+`,"code":"invite_required","gate":"invite_required,consent_required"`),
 		line("request failed", `"status":500,"err":"samples: ERROR: invalid byte sequence"`),
+		line("outbox flush: events left for the next flush or tick", flushOK),
 	} {
 		logcheck.Accepts(t, syncStandardKeys, syncLogKeys, forbid, g)
 	}
@@ -65,6 +67,11 @@ func TestSyncLogKindsRejectMutations(t *testing.T) {
 		{"time that is a value", strings.Replace(line("sync", syncOK), `"2026-10-23T07:38:47.3Z"`, `"47.3"`, 1), key("time")},
 		{"msg is a number", `{` + stamp + `,"msg":61.7,` + syncOK + `}`, key("msg")},
 		{"route is a value", strings.Replace(line("sync", syncOK), `"POST /v1/sync"`, `"61.7 ms"`, 1), key("route")},
+		{"a flush under another publisher", line("outbox flush: events left for the next flush or tick",
+			strings.Replace(flushOK, `"publisher":"ingest"`, `"publisher":"Tims iPhone"`, 1)), key("publisher")},
+		{"a flush with the event's days", line("outbox flush: events left for the next flush or tick", flushOK+`,"days":2`), key("days")},
+		{"a request's text in a flush's err", line("outbox flush: events left for the next flush or tick",
+			`"publisher":"ingest","err":"hrv_sdnn 61.7"`), `holds "61.7"`},
 	} {
 		logcheck.Rejects(t, syncStandardKeys, syncLogKeys, forbid, m.name, m.line, m.want)
 	}

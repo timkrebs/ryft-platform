@@ -84,7 +84,7 @@ var denyRules = []denyRule{
 		From: []string{"internal/store"},
 		Deny: []string{
 			"internal/scoring/...", "internal/notify", "internal/httpx", "internal/auth", "internal/gate",
-			"internal/eventbus", "internal/events/amqpbus", "internal/apns", "internal/apple",
+			"internal/eventbus", "internal/events/pubsub", "internal/apns", "internal/apple",
 		},
 		Except: []string{"internal/scoring/workoutdup"},
 	},
@@ -96,14 +96,14 @@ var denyRules = []denyRule{
 		},
 		Deny: []string{
 			"net", "net/...", "os", "os/...", "io/fs", "syscall", "embed", "log", "log/...", "database/...",
-			"github.com/jackc/...", "github.com/rabbitmq/...", "github.com/prometheus/...", "internal/...",
+			"github.com/jackc/...", "github.com/prometheus/...", "internal/...",
 		},
 		Except: []string{"internal/model", "internal/train"},
 	},
 	{
-		ID: "R6", Why: "the outbox sends through events.Sender and knows no transport or table (D100, D101)",
-		From: []string{"internal/events", "internal/events/outbox"},
-		Deny: []string{"internal/events/amqpbus", "internal/eventbus", "internal/store", "internal/db"},
+		ID: "R6", Why: "the outbox sends through events.Sender and knows no transport or table; the transport meets the outbox only through Deferrer and knows no table (D100, D101, D218)",
+		From: []string{"internal/events", "internal/events/outbox", "internal/events/pubsub"},
+		Deny: []string{"internal/events/pubsub", "internal/events/outbox", "internal/eventbus", "internal/store", "internal/db"},
 	},
 	{
 		ID: "R8", Why: "the edge stays storage-free; the user row arrives through OnAuth (docs/ARCHITECTURE.md Request path; internal/httpx/doc.go)",
@@ -127,17 +127,19 @@ var denyRules = []denyRule{
 
 var onlyRules = []onlyRule{
 	{
-		ID: "R5", Why: "services see events.Bus; the transport stays swappable (D97, D102)",
-		Target: []string{"internal/events/amqpbus"},
+		ID: "R5", Why: "services see events.Bus, events.Handler and what eventbus builds; the transport stays swappable (D218)",
+		Target: []string{"internal/events/pubsub"},
 		Importers: []allowed{
 			{Pkg: "internal/eventbus"},
-			{Pkg: "cmd/rabbitmq-topology", Reason: "writes the generated topology (D99)"},
+			{Pkg: "cmd/pubsub-topology", Reason: "writes the generated topology (D218)"},
 		},
 	},
 	{
-		ID: "R5", Why: "only the transport package speaks AMQP (D97, D102)",
-		Target:    []string{"github.com/rabbitmq/amqp091-go"},
-		Importers: []allowed{{Pkg: "internal/events/amqpbus"}},
+		ID: "R5", Why: "tokens are verified in internal/auth only (Supabase, Google OIDC for pushes and ticks), so no second, weaker check grows beside it (D29, D218)",
+		Target: []string{"github.com/MicahParks/keyfunc/v3"},
+		Importers: []allowed{
+			{Pkg: "internal/auth"},
+		},
 	},
 	{
 		ID: "R7", Why: "SQL lives in store, db and the outbox, so pools stay behind them (docs/ARCHITECTURE.md Data model; internal/store/doc.go)",
@@ -216,7 +218,7 @@ func checkImports(g graph, denies []denyRule, onlys []onlyRule) []string {
 }
 
 // staleRules names the patterns of a rule that match nothing any more, so a
-// rename or a major-version bump (internal/events, pgx/v6, amqp091-go/v2) cannot
+// rename or a major-version bump (internal/events, pgx/v6, keyfunc/v4) cannot
 // leave a rule that checks nothing. A pattern into this module or a dependency
 // (anything but the standard library) must match a package of the module or
 // something a package of the module imports.
@@ -469,10 +471,11 @@ func TestArchCheckersCatchMistakes(t *testing.T) {
 		"internal/model":              {Path: "internal/model", Imports: []string{"internal/store", "encoding/json"}},
 		"internal/store":              {Path: "internal/store", Imports: []string{"internal/scoring/workoutdup", "internal/scoring", "internal/httpx"}},
 		"internal/scoring/workoutdup": {Path: "internal/scoring/workoutdup", Imports: []string{"internal/model", "os", "internal/events"}},
-		"internal/events":             {Path: "internal/events", Imports: []string{"internal/events/amqpbus"}},
-		"internal/auth":               {Path: "internal/auth", Imports: []string{"internal/db"}},
+		"internal/events":             {Path: "internal/events", Imports: []string{"internal/events/pubsub"}},
+		"internal/events/pubsub":      {Path: "internal/events/pubsub", Imports: []string{"internal/events/outbox", "github.com/MicahParks/keyfunc/v3"}},
+		"internal/auth":               {Path: "internal/auth", Imports: []string{"internal/db", "github.com/MicahParks/keyfunc/v3"}},
 		"internal/config":             {Path: "internal/config", Imports: []string{"internal/model"}},
-		"internal/notify":             {Path: "internal/notify", Imports: []string{"internal/events/amqpbus", "internal/sealed", "github.com/jackc/pgx/v5/pgxpool", "github.com/jackc/pgx/v5", "internal/app"}},
+		"internal/notify":             {Path: "internal/notify", Imports: []string{"internal/events/pubsub", "internal/sealed", "github.com/jackc/pgx/v5/pgxpool", "github.com/jackc/pgx/v5", "internal/app"}},
 		"cmd/api":                     {Path: "cmd/api", Imports: []string{"internal/sealed", "github.com/jackc/pgx/v5"}},
 		"internal/app":                {Path: "internal/app", Imports: []string{"github.com/jackc/pgx/v5/pgxpool", "github.com/jackc/pgx/v5"}},
 	}
@@ -483,11 +486,13 @@ func TestArchCheckersCatchMistakes(t *testing.T) {
 		"R2: internal/store imports internal/httpx",
 		"R4: internal/scoring/workoutdup imports os.",
 		"R4: internal/scoring/workoutdup imports internal/events.",
-		"R6: internal/events imports internal/events/amqpbus",
-		"R5: internal/events imports internal/events/amqpbus, which only",
+		"R6: internal/events imports internal/events/pubsub",
+		"R5: internal/events imports internal/events/pubsub, which only",
+		"R6: internal/events/pubsub imports internal/events/outbox",
+		"R5: internal/events/pubsub imports github.com/MicahParks/keyfunc/v3, which only internal/auth may import",
 		"R8: internal/auth imports internal/db",
 		"R9: internal/config imports internal/model",
-		"R5: internal/notify imports internal/events/amqpbus, which only internal/eventbus, cmd/rabbitmq-topology may import",
+		"R5: internal/notify imports internal/events/pubsub, which only internal/eventbus, cmd/pubsub-topology may import",
 		"R10: internal/notify imports internal/sealed, which only cmd/api may import",
 		"R7: internal/notify imports github.com/jackc/pgx/v5/pgxpool, which only internal/db, internal/store, internal/events/outbox, internal/app may import",
 		"R7: internal/notify imports github.com/jackc/pgx/v5/pgxpool, which only internal/db, internal/store, internal/events/outbox, internal/testsupport",
@@ -502,7 +507,7 @@ func TestArchCheckersCatchMistakes(t *testing.T) {
 		}
 	}
 	for _, m := range got {
-		for _, bad := range []string{"internal/store imports internal/scoring/workoutdup", "cmd/api imports"} {
+		for _, bad := range []string{"internal/store imports internal/scoring/workoutdup", "cmd/api imports", "internal/auth imports github.com/MicahParks"} {
 			if strings.Contains(m, bad) {
 				t.Errorf("allowed edge reported: %s", m)
 			}
@@ -519,8 +524,13 @@ func TestArchCheckersCatchMistakes(t *testing.T) {
 		t.Error("a rule naming a missing package is not reported")
 	}
 	// A bumped dependency or a renamed subtree leaves a rule that matches nothing.
-	bumped := graph{"internal/store": {Path: "internal/store", Imports: []string{"github.com/jackc/pgx/v6/pgxpool", "github.com/rabbitmq/amqp091-go/v2"}}}
-	for _, r := range []onlyRule{onlyRules[1], onlyRules[2]} {
+	bumped := graph{"internal/store": {Path: "internal/store", Imports: []string{"github.com/jackc/pgx/v6/pgxpool", "github.com/MicahParks/keyfunc/v4"}}}
+	for _, target := range []string{"github.com/MicahParks/keyfunc/v3", "github.com/jackc/pgx/v5/pgxpool"} {
+		i := slices.IndexFunc(onlyRules, func(r onlyRule) bool { return slices.Contains(r.Target, target) })
+		if i < 0 {
+			t.Fatalf("no rule targets %s", target)
+		}
+		r := onlyRules[i]
 		if s := staleRules(bumped, nil, []onlyRule{r}); !slices.ContainsFunc(s, func(m string) bool { return strings.Contains(m, r.Target[0]) }) {
 			t.Errorf("a target that no package imports (%s) is not reported: %v", r.Target[0], s)
 		}
