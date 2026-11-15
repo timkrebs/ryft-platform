@@ -3746,6 +3746,23 @@ siblings) is accepted by raising `MAX_DROP` in the PR's own `ci.yml` for that PR
 description; there is no other override. A warning "main's coverage is unknown" is not a failure: the gate passed
 without a baseline (artifact outage or expired); re-run once the artifact is back. Locally: `make coverage`.
 
+## The vulns job went red
+
+`vulns` (D229, required by `ci-ok`) has two steps, and both run even when the first is red.
+- **govulncheck** names each vulnerability the code reaches, with a trace from our code ("Example traces found") and
+  "Fixed in". For a module, bump that module alone (`go -C backend get <module>@<fixed version>`, then
+  `go -C backend mod tidy`). The PR names the GO- (and CVE-) IDs. For the standard library, the fix is the Go of
+  `backend/Dockerfile`'s build stage: a new digest of the same tag (Dependabot's docker PR), or a new Go minor
+  once the line gets no more fixes. Then move govulncheck's version with it (`ci.yml`; v1.7.0 is the last one that
+  builds with Go 1.25).
+- **Trivy** is the deploy gate's own rule (critical, with a fix) on `backend/go.mod`: a module that would stop
+  `deploy.yml` after the merge stops the PR now. Fix it the same way, whether govulncheck reaches it or not.
+
+The job also runs on every push to main. A vulnerability published after a merge turns the next push's `ci-ok`
+red, so `deploy.yml` deploys nothing until the fix is merged. Never skip the job or loosen either step to get a deploy
+through. Locally, the same as the first step, but with your Go's standard library:
+`go -C backend run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...`.
+
 ## When a tester's scores do not appear
 
 What the app sees is `GET /v1/me/sync` (D91): which gate it is behind, the last sync and
