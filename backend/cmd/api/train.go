@@ -656,7 +656,7 @@ func (h *handler) settle(ctx context.Context, r *http.Request, s model.Session, 
 			return s, err
 		}
 		if also != nil {
-			h.outbox.Kick()
+			h.outbox.Flush(ctx) // before the answer: nothing runs after it (D219)
 		}
 	}
 	ids := exerciseIDs(s)

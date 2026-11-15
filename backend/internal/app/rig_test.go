@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/timkrebs/ryft/internal/config"
+	"github.com/timkrebs/ryft/internal/eventbus"
 	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/events/outbox"
 )
@@ -49,20 +51,8 @@ func (r *rec) waitLen(t *testing.T, n int) {
 	eventually(t, func() bool { return len(r.list()) >= n }, "records, have "+strings.Join(r.list(), ", "))
 }
 
-// shutdown is the recorded entries after the first n (the start), with the
-// relay and the db watch, which stop together, as one entry.
-func (r *rec) shutdown(n int) []string {
-	var out []string
-	for _, s := range r.list()[n:] {
-		if s == "watch stopped" {
-			s = "relay stopped"
-		}
-		if len(out) == 0 || out[len(out)-1] != s {
-			out = append(out, s)
-		}
-	}
-	return out
-}
+// after is the recorded entries after the first n (the start).
+func (r *rec) after(n int) []string { return r.list()[n:] }
 
 func eventually(t *testing.T, ok func() bool, what string) {
 	t.Helper()
@@ -117,34 +107,17 @@ func (s *syncBuf) find(msg string) []map[string]any {
 	return out
 }
 
-// fakeBus is an events.Bus that only knows whether it is ready and that it was closed.
-type fakeBus struct {
-	events.Bus
-	rec   *rec
-	ready func(context.Context) error
-	hold  <-chan struct{} // when set, Close blocks until it is closed
-}
-
-func (b *fakeBus) Ready(ctx context.Context) error {
-	if b.ready != nil {
-		return b.ready(ctx)
-	}
-	return nil
-}
-
-func (b *fakeBus) Close() {
-	b.rec.add("bus closed")
-	if b.hold != nil {
-		<-b.hold
-	}
-}
-
 // recListener records its first Close, which is the server beginning to shut down.
+// Closing fail makes Accept return failErr; closing boom makes it panic.
 type recListener struct {
 	net.Listener
 	rec  *rec
 	tag  string
 	once sync.Once
+
+	fail    <-chan struct{}
+	failErr error
+	boom    <-chan struct{}
 }
 
 func (l *recListener) Close() error {
@@ -152,12 +125,39 @@ func (l *recListener) Close() error {
 	return l.Listener.Close()
 }
 
-// rig is a service with fakes for the pool, the broker and the ports. Set its fields
-// before the run.
+func (l *recListener) Accept() (net.Conn, error) {
+	type result struct {
+		c   net.Conn
+		err error
+	}
+	got := make(chan result, 1)
+	go func() { c, err := l.Listener.Accept(); got <- result{c, err} }()
+	select {
+	case res := <-got:
+		return res.c, res.err
+	case <-l.fail:
+		_ = l.Listener.Close() // ends the Accept above
+		return nil, l.failErr
+	case <-l.boom:
+		_ = l.Listener.Close()
+		panic("kaboom")
+	}
+}
+
+// insecureLocal is a transport that dials nothing and checks no token: the emulator
+// settings with ALLOW_INSECURE_PUSH, as compose runs (an unreachable emulator, as the
+// tests publish nothing).
+var insecureLocal = config.Config{
+	Port: "8080", MetricsPort: "9090",
+	PubSub: config.PubSub{Project: config.EmulatorProject, EmulatorHost: "127.0.0.1:1"},
+	Push:   config.Push{AllowInsecure: true},
+}
+
+// rig is a service with fakes for the pool, the database ping, the outbox's sweep and
+// the ports, on a real transport (insecureLocal). Set its fields before the run.
 type rig struct {
 	rec  *rec
 	logs *syncBuf
-	bus  *fakeBus
 	e    seams
 
 	loadErr, poolErr, busErr, buildErr, httpErr error
@@ -167,24 +167,33 @@ type rig struct {
 	freed                                       sync.Once
 	started                                     chan struct{} // closed when the start is over
 	startedOnce                                 sync.Once
-	noOutbox                                    bool
+	outboxKind                                  OutboxKind
 	parts                                       Parts
 	build                                       func(ctx context.Context) error // sees Build's ctx; its error is Build's
+	httpFail                                    chan struct{}                   // closed: the HTTP listener's Accept fails
+	httpBoom                                    chan struct{}                   // closed: the HTTP listener's Accept panics
+	pingErr, sweepErr                           error                           // the tick's db ping and sweep
 
-	exits  []int                      // the codes the watchdog asked for
-	bounds map[string][]time.Duration // every bound the shutdown waited, by step
+	exits    []int                      // the codes the watchdog asked for
+	bounds   map[string][]time.Duration // every bound the shutdown waited, by step
+	outboxes []string                   // what each outbox app built relays into, and its publisher
+	deps     Deps                       // what Build got
 
 	mu    sync.Mutex
 	addrs map[string]string
 }
 
+// errListener is what Accept returns once httpFail is closed.
+var errListener = errors.New("accept tcp: use of a broken listener")
+
 func newRig() *rig {
-	g := &rig{rec: &rec{}, logs: &syncBuf{}, addrs: map[string]string{}, bounds: map[string][]time.Duration{}, release: make(chan struct{}), started: make(chan struct{})}
-	g.bus = &fakeBus{rec: g.rec}
+	g := &rig{rec: &rec{}, logs: &syncBuf{}, addrs: map[string]string{}, bounds: map[string][]time.Duration{},
+		release: make(chan struct{}), started: make(chan struct{}), outboxKind: EventOutbox,
+		httpFail: make(chan struct{}), httpBoom: make(chan struct{})}
 	log := slog.New(slog.NewJSONHandler(g.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	g.e = seams{
 		logger:     func(string) *slog.Logger { return log },
-		loadConfig: func(string) (config.Config, error) { return config.Config{Port: "8080", MetricsPort: "9090"}, nil },
+		loadConfig: func(string) (config.Config, error) { return insecureLocal, nil },
 		openPool: func(ctx context.Context, _ config.Config, _ *slog.Logger) (*pgxpool.Pool, error) {
 			g.rec.add("pool")
 			if g.poolBlocks {
@@ -196,11 +205,24 @@ func newRig() *rig {
 			}
 			return pgxpool.New(ctx, "postgres://u:p@127.0.0.1:1/x") // does not dial until used
 		},
-		watch: func(ctx context.Context, _ *pgxpool.Pool, _ string, _ *slog.Logger) {
-			g.wait(ctx)
-			g.rec.add("watch stopped")
-		},
 		ping: func(context.Context, *pgxpool.Pool) error { return nil },
+		dbPing: func(_ context.Context, p *pgxpool.Pool, service string) error {
+			if p == nil || service != "svc" {
+				return fmt.Errorf("the tick pinged %v as %q", p, service)
+			}
+			g.rec.add("db ping")
+			return g.pingErr
+		},
+		sweep: func(_ context.Context, ob *outbox.Outbox) error {
+			g.mu.Lock()
+			ok := ob != nil && ob == g.deps.Outbox
+			g.mu.Unlock()
+			if !ok {
+				return errors.New("the tick swept another outbox than Build's")
+			}
+			g.rec.add("outbox sweep")
+			return g.sweepErr
+		},
 		closePool: func(p *pgxpool.Pool) {
 			g.rec.add("pool closed")
 			if g.stuck {
@@ -208,16 +230,18 @@ func newRig() *rig {
 			}
 			p.Close()
 		},
-		openBus: func(context.Context, config.Config, string, *slog.Logger) (events.Bus, error) {
+		openBus: func(ctx context.Context, cfg config.Config, service string, log *slog.Logger) (*eventbus.Transport, error) {
 			g.rec.add("bus")
 			if g.busErr != nil {
 				return nil, g.busErr
 			}
-			return g.bus, nil
+			return eventbus.Open(ctx, cfg, service, log)
 		},
-		relay: func(ctx context.Context, _ *outbox.Outbox) {
-			g.wait(ctx)
-			g.rec.add("relay stopped")
+		newOutbox: func(pool *pgxpool.Pool, publisher string, to events.Sender, log *slog.Logger) *outbox.Outbox {
+			g.mu.Lock()
+			g.outboxes = append(g.outboxes, fmt.Sprintf("%s %T", publisher, to))
+			g.mu.Unlock()
+			return outbox.New(pool, publisher, to, log)
 		},
 		listen: func(_ context.Context, addr string) (net.Listener, error) {
 			name := map[string]string{":8080": "http", ":9090": "metrics"}[addr]
@@ -232,6 +256,9 @@ func newRig() *rig {
 			g.addrs[name] = ln.Addr().String()
 			g.mu.Unlock()
 			l := &recListener{Listener: ln, rec: g.rec, tag: name + " closed"}
+			if name == "http" {
+				l.fail, l.failErr, l.boom = g.httpFail, errListener, g.httpBoom
+			}
 			return l, nil
 		},
 		exit: func(code int) {
@@ -240,7 +267,7 @@ func newRig() *rig {
 			g.mu.Unlock()
 		},
 		readyTimeout: 2 * time.Second,
-		launched:     g.rec.add,
+		launched:     func(task string) { g.rec.add(task) },
 		serverExit: func(string) { // a server whose Serve does not return: http.Server.Close cannot be made to wait for it, so the hook stands in
 			if g.stuck {
 				<-g.release
@@ -259,14 +286,17 @@ func newRig() *rig {
 
 func (g *rig) spec() Spec {
 	return Spec{
-		Name: "svc", Outbox: !g.noOutbox,
+		Name: "svc", Outbox: g.outboxKind,
 		Load: func(*slog.Logger) error {
 			g.rec.add("load")
 			return g.loadErr
 		},
 		Build: func(ctx context.Context, d Deps) (Parts, error) {
 			g.rec.add("build")
-			if (d.Outbox != nil) == g.noOutbox || d.Pool == nil || d.Bus == nil || d.ConsumerDrain <= 0 {
+			g.mu.Lock()
+			g.deps = d
+			g.mu.Unlock()
+			if (d.Outbox == nil) != (g.outboxKind == NoOutbox) || d.Pool == nil || d.Bus == nil || d.Log == nil {
 				return Parts{}, errors.New("Build got the wrong Deps")
 			}
 			if g.build != nil {
@@ -302,15 +332,6 @@ func (g *rig) serve(t *testing.T, ctx context.Context, s Spec) <-chan error {
 	return done
 }
 
-// wait is what the relay and the db watch do: end with ctx, or when stuck, only when freed.
-func (g *rig) wait(ctx context.Context) {
-	if g.stuck {
-		<-g.release
-		return
-	}
-	<-ctx.Done()
-}
-
 // free lets everything that is stuck go.
 func (g *rig) free() { g.freed.Do(func() { close(g.release) }) }
 
@@ -329,20 +350,35 @@ func (g *rig) addr(name string) string {
 // get calls the service's HTTP port.
 func (g *rig) get(t *testing.T, path string) (int, string) {
 	t.Helper()
-	code, _, body := g.do(t, path)
+	code, _, body := g.do(t, http.MethodGet, path, "")
 	return code, body
 }
 
-func (g *rig) do(t *testing.T, path string) (int, http.Header, string) {
+func (g *rig) do(t *testing.T, method, path, body string) (int, http.Header, string) {
 	t.Helper()
 	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 5 * time.Second}
-	resp, err := c.Get("http://" + g.addr("http") + path)
+	req, err := http.NewRequest(method, "http://"+g.addr("http")+path, strings.NewReader(body))
 	if err != nil {
-		t.Fatalf("GET %s: %v", path, err)
+		t.Fatal(err)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, resp.Header, strings.TrimSpace(string(b))
+}
+
+// tickBody is the envelope Pub/Sub pushes from ryft-tick: data {} and ryft-key=tick.
+const tickBody = `{"message":{"data":"e30=","attributes":{"ryft-key":"tick"},"messageId":"4242","publishTime":"2026-11-15T10:00:00Z"},` +
+	`"subscription":"projects/ryft-local/subscriptions/tick-svc","deliveryAttempt":1}`
+
+// tick posts one tick and returns its status.
+func (g *rig) tick(t *testing.T) int {
+	t.Helper()
+	code, _, _ := g.do(t, http.MethodPost, eventbus.PathTick, tickBody)
+	return code
 }
 
 // result waits for Run's answer.
@@ -357,11 +393,20 @@ func result(t *testing.T, done <-chan error) error {
 	}
 }
 
-// until is a task that records tag when its ctx ends.
-func until(r *rec, tag string) func(context.Context) error {
-	return func(ctx context.Context) error {
-		<-ctx.Done()
-		r.add(tag)
-		return nil
-	}
+// step is a tick step that records its name.
+func step(r *rec, name string, err error) eventbus.Tick {
+	return eventbus.Tick{Name: name, Run: func(context.Context) error { r.add(name); return err }}
+}
+
+// pushRoute is a consumer's push route: POST path, answered 204 and recorded.
+type pushRoute struct {
+	rec  *rec
+	path string
+}
+
+func (p pushRoute) Register(mux *http.ServeMux) {
+	mux.HandleFunc(http.MethodPost+" "+p.path, func(w http.ResponseWriter, _ *http.Request) {
+		p.rec.add("push " + p.path)
+		w.WriteHeader(http.StatusNoContent)
+	})
 }

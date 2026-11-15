@@ -71,7 +71,11 @@ func rescore(args []string) int {
 	return 0
 }
 
-// offline opens the database for a one-off subcommand with scoring's own role.
+// offline opens the database for a one-off subcommand with scoring's own role. It reads
+// the service's settings with config.Load, the Pub/Sub and push ones included, though a
+// subcommand publishes nothing (its engine has no OnScored): it runs with the scoring
+// service's own environment, as it ran in its pod, so one loader refuses the same
+// mistakes for both (locally compose's PUBSUB_EMULATOR_HOST and ALLOW_INSECURE_PUSH).
 func offline(log *slog.Logger) (context.Context, *store.Store, *scoring.Engine, func(), error) {
 	cfg, err := config.Load("scoring")
 	if err != nil {

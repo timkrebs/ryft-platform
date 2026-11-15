@@ -21,7 +21,9 @@ import (
 )
 
 const (
-	refreshEvery = 15 * time.Minute
+	// tickBudget is the scoring pass's time on each 15-minute tick, with the db ping and
+	// the sweep before it (D219): the pass stops between two users when it ends.
+	tickBudget = 240 * time.Second
 	// activeWindow: users whose devices synced this recently get the timer pass.
 	activeWindow = 48 * time.Hour
 	// behindPerRun: days the timer pass re-scores behind their history
@@ -42,14 +44,14 @@ func main() {
 	app.Main(spec())
 }
 
-// spec is what scoring asks app for. Outbox is not optional: build refuses a Deps
-// without one, and BrokerRequired keeps /readyz honest about the queue it consumes.
+// spec is what scoring asks app for. The outbox is not optional: build refuses a Deps
+// without one.
 func spec() app.Spec {
 	var beta config.Beta
 	return app.Spec{
-		Name:           "scoring",
-		BrokerRequired: true, // /readyz needs the queue it consumes
-		Outbox:         true, // what scoring tells notify goes through the outbox (D101)
+		Name:       "scoring",
+		Outbox:     app.EventOutbox, // what scoring tells notify goes through the outbox (D101), flushed inline (D219)
+		TickBudget: tickBudget,
 		// Only the consent mode; scoring needs no policy version (any recorded one
 		// counts, D78), so no RequirePolicy here.
 		Load: func(log *slog.Logger) (err error) {
@@ -114,7 +116,7 @@ func scoreEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEv
 func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engine *scoring.Engine, learn *learner, behind *catchUp) {
 	users, err := st.ActiveUsers(ctx, time.Now().Add(-activeWindow))
 	if err != nil {
-		if ctx.Err() == nil { // a query cut by the shutdown is not an error
+		if ctx.Err() == nil { // a query cut by the tick's budget or the shutdown is not an error
 			log.Error("periodic: active users", "err", err)
 		}
 		return
@@ -141,7 +143,7 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 		}
 		if budget > 0 && behind.failed[id] != today {
 			n, err := engine.RescoreBehind(ctx, id, today, budget)
-			if err != nil && ctx.Err() == nil { // cut by the shutdown: not the day's fault, tried again next pass
+			if err != nil && ctx.Err() == nil { // cut by the budget or the shutdown: not the day's fault, tried again next pass
 				log.ErrorContext(ctx, "periodic: days behind their history", "err", err)
 				behind.failed[id] = today
 			}
@@ -154,7 +156,7 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 }
 
 // eachUser calls fn for the users in turn, and stops before the next one once ctx
-// has ended: a pass over every active user must not outlive the shutdown by the
+// has ended: a pass over every active user must not outlive the tick's budget by the
 // users it has left (each would only log a cancelled query).
 func eachUser(ctx context.Context, users []uuid.UUID, fn func(ctx context.Context, i int, id uuid.UUID)) {
 	for i, id := range users {

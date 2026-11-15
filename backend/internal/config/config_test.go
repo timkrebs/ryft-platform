@@ -328,34 +328,145 @@ func TestLoadBetaScoringPathNeedsNoPolicy(t *testing.T) {
 	}
 }
 
-// After the cutover (D102) RabbitMQ is the only broker: the old settings may still
-// say amqp, a leftover nats is refused at start-up, and the user comes in pairs.
-func TestEventsSettings(t *testing.T) {
-	// Everything else Load reads, so the developer's shell cannot change the outcome.
-	for _, k := range []string{"PORT", "METRICS_PORT", "AMQP_URL", "AMQP_CA_FILE", "AMQP_CERT_FILE", "AMQP_KEY_FILE", "DB_MAX_CONNS"} {
-		t.Setenv(k, "")
+// pubsubKeys is every variable loadPubSub reads, and the Cloud Run markers.
+var pubsubKeys = []string{"GCP_PROJECT", "PUBSUB_ENDPOINT", "PUBSUB_EMULATOR_HOST", "PUSH_AUDIENCE", "PUSH_SA_EMAIL",
+	"PUSH_SA_ID", "ALLOW_INSECURE_PUSH", "K_SERVICE", "CLOUD_RUN_JOB"}
+
+// setPubSubEnv sets exactly env (everything else Load reads empty), so the developer's
+// shell cannot change the outcome.
+func setPubSubEnv(t *testing.T, env map[string]string) {
+	t.Helper()
+	for _, k := range append([]string{"PORT", "METRICS_PORT", "DB_MAX_CONNS"}, pubsubKeys...) {
+		t.Setenv(k, env[k])
 	}
 	t.Setenv("DATABASE_URL", "postgres://x")
-	for _, c := range []struct {
-		backend, consume, user, pass string
-		ok                           bool
+}
+
+// cloudRun is production's push configuration (deploy/run): the service's run.app URL,
+// the push service account and its unique ID, built here so no test value looks like a
+// real one.
+func cloudRun() map[string]string {
+	return map[string]string{
+		"GCP_PROJECT":   "ryftlab-prod",
+		"PUSH_AUDIENCE": "https://scoring-" + strings.Repeat("1", 12) + ".europe-west1.run.app",
+		"PUSH_SA_EMAIL": "ryft-push@ryftlab-prod.iam.gserviceaccount.com",
+		"PUSH_SA_ID":    strings.Repeat("1", 21),
+		"K_SERVICE":     "scoring",
+	}
+}
+
+func with(base map[string]string, kv ...string) map[string]string {
+	out := map[string]string{}
+	for k, v := range base {
+		out[k] = v
+	}
+	for i := 0; i+1 < len(kv); i += 2 {
+		out[kv[i]] = kv[i+1]
+	}
+	return out
+}
+
+func TestLoadPubSubCloudRun(t *testing.T) {
+	setPubSubEnv(t, cloudRun())
+	cfg, err := Load("scoring")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := cloudRun()
+	if cfg.PubSub != (PubSub{Project: "ryftlab-prod", Endpoint: DefaultPubSubEndpoint}) ||
+		cfg.Push != (Push{Audience: want["PUSH_AUDIENCE"], SAEmail: want["PUSH_SA_EMAIL"], SAID: want["PUSH_SA_ID"]}) {
+		t.Fatalf("%+v %+v", cfg.PubSub, cfg.Push)
+	}
+	setPubSubEnv(t, with(cloudRun(), "PUBSUB_ENDPOINT", "https://pubsub.googleapis.com", "ALLOW_INSECURE_PUSH", "false"))
+	if cfg, err = Load("api"); err != nil || cfg.PubSub.Endpoint != "https://pubsub.googleapis.com" || cfg.Push.AllowInsecure {
+		t.Fatalf("explicit endpoint, insecure false: %+v %v", cfg.PubSub, err)
+	}
+	setPubSubEnv(t, with(cloudRun(), "PUBSUB_ENDPOINT", "https://europe-west1-pubsub.googleapis.com"))
+	if cfg, err = Load("api"); err != nil || cfg.PubSub.Endpoint != DefaultPubSubEndpoint {
+		t.Fatalf("the regional endpoint, as deploy/run sets it: %+v %v", cfg.PubSub, err)
+	}
+}
+
+// Local development (compose): the emulator and no token check, with the project
+// defaulting to the emulator's.
+func TestLoadPubSubLocal(t *testing.T) {
+	setPubSubEnv(t, map[string]string{"PUBSUB_EMULATOR_HOST": "pubsub:8085", "ALLOW_INSECURE_PUSH": "true"})
+	cfg, err := Load("notify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PubSub.Project != EmulatorProject || cfg.PubSub.EmulatorHost != "pubsub:8085" || !cfg.Push.AllowInsecure {
+		t.Fatalf("%+v %+v", cfg.PubSub, cfg.Push)
+	}
+	setPubSubEnv(t, map[string]string{"PUBSUB_EMULATOR_HOST": "[::1]:8085", "GCP_PROJECT": "ryft-test", "ALLOW_INSECURE_PUSH": "true"})
+	if cfg, err = Load("notify"); err != nil || cfg.PubSub.Project != "ryft-test" {
+		t.Fatalf("an explicit project with the emulator: %+v %v", cfg.PubSub, err)
+	}
+	// The emulator with the push check on is allowed: the tokens are then checked as on Cloud Run.
+	setPubSubEnv(t, with(cloudRun(), "K_SERVICE", "", "PUBSUB_EMULATOR_HOST", "localhost:8085"))
+	if _, err = Load("notify"); err != nil {
+		t.Fatalf("the emulator with a push identity: %v", err)
+	}
+}
+
+// Every refusal names its variable, before any connection (Load is pure).
+func TestLoadPubSubRefuses(t *testing.T) {
+	local := map[string]string{"PUBSUB_EMULATOR_HOST": "pubsub:8085", "ALLOW_INSECURE_PUSH": "true"}
+	for name, c := range map[string]struct {
+		env  map[string]string
+		want string
 	}{
-		{"", "", "", "", true},
-		{"amqp", "amqp", "ingest", "pw", true},
-		{"nats", "", "", "", false},
-		{"", "nats,amqp", "", "", false},
-		{"amqp", "", "ingest", "", false},
+		"insecure on a Cloud Run service":  {with(cloudRun(), "ALLOW_INSECURE_PUSH", "true"), "ALLOW_INSECURE_PUSH=true is refused on Cloud Run (K_SERVICE"},
+		"insecure in a Cloud Run job":      {with(local, "CLOUD_RUN_JOB", "migrate", "PUBSUB_EMULATOR_HOST", ""), "ALLOW_INSECURE_PUSH=true is refused on Cloud Run (CLOUD_RUN_JOB"},
+		"the emulator on Cloud Run":        {with(cloudRun(), "PUBSUB_EMULATOR_HOST", "pubsub:8085"), "PUBSUB_EMULATOR_HOST is refused on Cloud Run"},
+		"the emulator and insecure on Run": {with(local, "K_SERVICE", "api"), "refused on Cloud Run"},
+		"insecure is not a boolean":        {with(local, "ALLOW_INSECURE_PUSH", "1"), "ALLOW_INSECURE_PUSH must be true or false"},
+		"no project":                       {with(cloudRun(), "GCP_PROJECT", ""), "GCP_PROJECT"},
+		"a placeholder project":            {with(cloudRun(), "GCP_PROJECT", "REPLACE_ME"), "GCP_PROJECT"},
+		"no project, insecure":             {map[string]string{"ALLOW_INSECURE_PUSH": "true"}, "GCP_PROJECT"},
+		"emulator without a port":          {with(local, "PUBSUB_EMULATOR_HOST", "pubsub"), "PUBSUB_EMULATOR_HOST must be host:port"},
+		"emulator as a URL":                {with(local, "PUBSUB_EMULATOR_HOST", "http://pubsub:8085"), "PUBSUB_EMULATOR_HOST must be host:port"},
+		"emulator port out of range":       {with(local, "PUBSUB_EMULATOR_HOST", "pubsub:99999"), "PUBSUB_EMULATOR_HOST must be host:port"},
+		"endpoint over http":               {with(cloudRun(), "PUBSUB_ENDPOINT", "http://europe-west1-pubsub.googleapis.com"), "PUBSUB_ENDPOINT"},
+		"endpoint with a path":             {with(cloudRun(), "PUBSUB_ENDPOINT", "https://pubsub.googleapis.com/v1"), "PUBSUB_ENDPOINT"},
+		// The access token goes with every publish: only Google's API hosts.
+		"endpoint on another host":       {with(cloudRun(), "PUBSUB_ENDPOINT", "https://pubsub.example.com"), "must be a Google API host"},
+		"endpoint under another domain":  {with(cloudRun(), "PUBSUB_ENDPOINT", "https://pubsub.googleapis.com.example.com"), "must be a Google API host"},
+		"endpoint ending like Google's":  {with(cloudRun(), "PUBSUB_ENDPOINT", "https://evilgoogleapis.com"), "must be a Google API host"},
+		"endpoint googleapis.com itself": {with(cloudRun(), "PUBSUB_ENDPOINT", "https://googleapis.com"), "must be a Google API host"},
+		"endpoint with a port":           {with(cloudRun(), "PUBSUB_ENDPOINT", "https://pubsub.googleapis.com:8443"), "must be a Google API host"},
+		"endpoint with userinfo":         {with(cloudRun(), "PUBSUB_ENDPOINT", "https://u@pubsub.googleapis.com"), "PUBSUB_ENDPOINT"},
+		"endpoint with a fragment":       {with(cloudRun(), "PUBSUB_ENDPOINT", "https://example.com#.googleapis.com"), "PUBSUB_ENDPOINT"},
+		"endpoint on localhost":          {with(cloudRun(), "PUBSUB_ENDPOINT", "https://127.0.0.1"), "must be a Google API host"},
+		"no audience":                    {with(cloudRun(), "PUSH_AUDIENCE", ""), "PUSH_AUDIENCE"},
+		"audience over http":             {with(cloudRun(), "PUSH_AUDIENCE", "http://scoring.run.app"), "PUSH_AUDIENCE"},
+		"audience with a trailing slash": {with(cloudRun(), "PUSH_AUDIENCE", "https://scoring.run.app/"), "PUSH_AUDIENCE"},
+		"audience with a path":           {with(cloudRun(), "PUSH_AUDIENCE", "https://scoring.run.app/push/ingested"), "PUSH_AUDIENCE"},
+		"audience with a query":          {with(cloudRun(), "PUSH_AUDIENCE", "https://scoring.run.app?x=1"), "PUSH_AUDIENCE"},
+		"audience with userinfo":         {with(cloudRun(), "PUSH_AUDIENCE", "https://u@scoring.run.app"), "PUSH_AUDIENCE"},
+		"audience in upper case":         {with(cloudRun(), "PUSH_AUDIENCE", "https://Scoring.run.app"), "PUSH_AUDIENCE"},
+		"audience without a host":        {with(cloudRun(), "PUSH_AUDIENCE", "https://"), "PUSH_AUDIENCE"},
+		"no SA email":                    {with(cloudRun(), "PUSH_SA_EMAIL", ""), "PUSH_SA_EMAIL"},
+		"a user's email":                 {with(cloudRun(), "PUSH_SA_EMAIL", "someone@example.com"), "PUSH_SA_EMAIL"},
+		"no SA ID":                       {with(cloudRun(), "PUSH_SA_ID", ""), "PUSH_SA_ID"},
+		"a placeholder SA ID":            {with(cloudRun(), "PUSH_SA_ID", "<push_sa_unique_id>"), "PUSH_SA_ID"},
+		"the SA's email as its ID":       {with(cloudRun(), "PUSH_SA_ID", "ryft-push@ryftlab-prod.iam.gserviceaccount.com"), "PUSH_SA_ID"},
+		"no push identity, no flag":      {map[string]string{"GCP_PROJECT": "ryftlab-prod"}, "PUSH_AUDIENCE"},
+		"emulator, no identity, no flag": {map[string]string{"PUBSUB_EMULATOR_HOST": "pubsub:8085"}, "PUSH_AUDIENCE"},
 	} {
-		t.Setenv("EVENTS_BACKEND", c.backend)
-		t.Setenv("EVENTS_CONSUME", c.consume)
-		t.Setenv("AMQP_USER", c.user)
-		t.Setenv("AMQP_PASSWORD", c.pass)
-		cfg, err := Load("scoring")
-		if (err == nil) != c.ok {
-			t.Errorf("EVENTS_BACKEND=%q EVENTS_CONSUME=%q AMQP_USER=%q: %v", c.backend, c.consume, c.user, err)
-		}
-		if err == nil && cfg.AMQP.URL != "amqps://rabbitmq.ryft-rabbitmq.svc.cluster.local:5671/ryft" {
-			t.Errorf("the cluster URL by default: %q", cfg.AMQP.URL)
-		}
+		t.Run(name, func(t *testing.T) {
+			setPubSubEnv(t, c.env)
+			if _, err := Load("scoring"); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("got %v, want an error containing %q", err, c.want)
+			}
+		})
+	}
+}
+
+func TestLoadNeedsADatabase(t *testing.T) {
+	setPubSubEnv(t, cloudRun())
+	t.Setenv("DATABASE_URL", "")
+	if _, err := Load("api"); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Fatalf("got %v", err)
 	}
 }

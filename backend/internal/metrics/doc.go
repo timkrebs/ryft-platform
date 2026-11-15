@@ -10,9 +10,13 @@
 // set; the few plain counters and histograms (journal saves, pruned push tokens,
 // sync-to-score, the Train totals) are exported at zero by every service. The
 // ryft_http_* metrics are recorded by httpx.Instrument, which only api and ingest
-// wrap around their mux, so scoring and notify emit none. The RabbitMQ connection
-// metrics are registered by UseAMQP, which amqpbus.New calls before it dials, so a
-// binary that never creates a bus (migrate) exposes none.
+// wrap around their mux, so scoring and notify emit none (their push and tick
+// routes count in ryft_events_handled_total and ryft_ticks_total). There are no
+// transport connection metrics: publishing to Pub/Sub is one REST call per event,
+// with no connection to watch (D218).
+//
+// The services still serve /metrics on their own port (METRICS_PORT); gauges a
+// tick sets (ryft_db_up, the outbox gauges) show the last tick's values (D219).
 //
 // See docs/OBSERVABILITY.md (every metric, with the dashboard queries); D14.
 package metrics

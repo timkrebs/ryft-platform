@@ -2,7 +2,9 @@
 //
 // It stores what the app sends and tells scoring which local days changed; it
 // scores nothing. The only event it emits is ingested, and only through the
-// outbox (D101).
+// outbox (D101), flushed before the sync answers (D219). Between requests nothing
+// runs: POST /internal/tick, beside /v1 and outside its auth and limit (D218), pings
+// the database and sweeps the outbox.
 //
 // Invariants:
 //   - Consent and the invite gate run before the body is read, so a refused
@@ -19,5 +21,5 @@
 //   - Unknown sample types and sleep stages, and records too far in the future or
 //     past, are dropped and counted (ignored.*) rather than failing the sync.
 //
-// See docs/API.md → POST /v1/sync; D78, D87, D101, D129, D144, D145.
+// See docs/API.md → POST /v1/sync; D78, D87, D101, D129, D144, D145, D218, D219.
 package main

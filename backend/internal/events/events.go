@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/timkrebs/ryft/internal/logx"
@@ -13,7 +14,7 @@ import (
 	"github.com/timkrebs/ryft/internal/model"
 )
 
-// Event keys: the routing keys on RabbitMQ's ryft.events.
+// Event keys: the ryft-key attribute of a message, one Pub/Sub topic each.
 const (
 	KeyIngested         = "ingested"
 	KeySessionCompleted = "session.completed"
@@ -22,26 +23,17 @@ const (
 	KeyRefresh          = "refresh"
 )
 
-// The two consumers, a RabbitMQ queue each.
+// The two consumers, a dead-letter topic each.
 const (
 	ConsumerScoring = "scoring"
 	ConsumerNotify  = "notify"
 )
 
 // The keys each consumer takes. A new event key must be added to one of them (and
-// to the transports' topology).
+// to the transport's topology).
 var (
 	ScoringKeys = []string{KeyIngested, KeySessionCompleted}
 	NotifyKeys  = []string{KeyScored, KeySessionScored, KeyRefresh}
-)
-
-// Headers on a dead-lettered message (they keep the names the NATS dead letters had,
-// D84, D99, so scripts/dlq.sh and the runbooks read one shape).
-const (
-	HeaderSubject    = "Ryft-Subject"    // the key it was published with
-	HeaderConsumer   = "Ryft-Consumer"   // who gave up on it
-	HeaderDeliveries = "Ryft-Deliveries" // how often it was handled
-	HeaderError      = "Ryft-Error"      // the last error, at most 512 bytes
 )
 
 // ReasonSessionCompleted is the IngestedEvent.Reason a session event becomes.
@@ -50,7 +42,7 @@ const ReasonSessionCompleted = "session_completed"
 // Message is one event on the wire.
 type Message struct {
 	Key    string // event key (above)
-	ID     string // stable for the same trigger: the broker's message_id (nothing dedups on it, D100)
+	ID     string // stable for the same trigger: the ryft-message-id attribute (nothing dedups on it, D100)
 	Body   []byte // JSON
 	Reason string // the label of ryft_events_published_total
 }
@@ -60,8 +52,10 @@ type Sender interface {
 	Send(ctx context.Context, m Message) error
 }
 
-// Bus is what the services use: publish the five events, consume their queue, and
-// whether the transport is connected. amqpbus implements it.
+// Bus is what the services publish with: the five events, and the raw Send the
+// outbox's relay uses. internal/events/pubsub implements it. It has no Ready and no
+// Close: Pub/Sub's REST publish holds no connection, so there is nothing to be
+// connected or to shut down, and consuming is a push handler the transport serves.
 type Bus interface {
 	// Sender is the raw publish the typed ones below are made of; the outbox's relay
 	// sends its rows with it.
@@ -71,20 +65,93 @@ type Bus interface {
 	PublishScored(ctx context.Context, ev model.ScoredEvent) error
 	PublishSessionScored(ctx context.Context, ev model.SessionScoredEvent) error
 	PublishRefresh(ctx context.Context, ev model.RefreshEvent) error
-	// ConsumeIngested blocks, handing scoring every ingested and session.completed
-	// (a session event as an IngestedEvent for its day).
-	ConsumeIngested(ctx context.Context, log *slog.Logger, fn func(context.Context, model.IngestedEvent) error) error
-	// ConsumeNotify blocks, handing notify every scored, session.scored and refresh.
-	ConsumeNotify(ctx context.Context, log *slog.Logger, fn func(context.Context, NotifyMessage) error) error
-	Ready(ctx context.Context) error
-	Close()
+}
+
+// Handler handles one pushed event: key is the event key the transport checked
+// (the push path's, or notify's wait key), data the message's body. The transport
+// settles the message by the error: nil acks it; Permanent drops it; Defer asks for
+// it again later; Bad dead-letters it at once; anything else is a nack, retried and
+// at last dead-lettered by Pub/Sub. ScoringHandler and NotifyHandler build one from a
+// typed function.
+type Handler func(ctx context.Context, key string, data []byte) error
+
+// ScoringHandler decodes scoring's two events (DecodeIngested) and hands fn the
+// IngestedEvent. Data that does not decode is Bad; the metric reason is the event's,
+// when it is one of Reasons.
+func ScoringHandler(fn func(context.Context, model.IngestedEvent) error) Handler {
+	return func(ctx context.Context, key string, data []byte) error {
+		ev, err := DecodeIngested(key, data)
+		if err != nil {
+			return Bad(err)
+		}
+		SetReason(ctx, ev.Reason)
+		return fn(ctx, ev)
+	}
+}
+
+// NotifyHandler decodes notify's three events (DecodeNotify) and hands fn the
+// NotifyMessage. Data that does not decode is Bad; the metric reason is the message's.
+func NotifyHandler(fn func(context.Context, NotifyMessage) error) Handler {
+	return func(ctx context.Context, key string, data []byte) error {
+		m, err := DecodeNotify(key, data)
+		if err != nil {
+			return Bad(err)
+		}
+		SetReason(ctx, m.Reason())
+		return fn(ctx, m)
+	}
+}
+
+// reasonSlot holds the metric reason of the event a handler is handling.
+type reasonSlot struct{ reason string }
+
+type reasonKey struct{}
+
+// ReasonUnknown is the reason of an event that did not decode, or whose reason is none
+// the publishers write.
+const ReasonUnknown = "unknown"
+
+// Reasons are the metric reasons the publishers write: an ingested event's (ingest's
+// sync and fold-workouts, the api's recompute, merge, session edits and training
+// import), session.completed's, and notify's three. The reason label of
+// ryft_events_handled_total is one of them or ReasonUnknown. A new reason in a publisher
+// must be added here, or it is counted as unknown.
+var Reasons = []string{model.ReasonSync, "recompute", "merge", "session", model.ReasonImport,
+	ReasonSessionCompleted, "scored", "session_scored", "refresh"}
+
+// MetricReason is reason when it is one of Reasons, else ReasonUnknown. An ingested
+// event's reason comes from its body, and a label taken from a body unchecked would let
+// a forged event create any number of series.
+func MetricReason(reason string) string {
+	if slices.Contains(Reasons, reason) {
+		return reason
+	}
+	return ReasonUnknown
+}
+
+// WithReason gives ctx a slot for the metric reason of the event about to be
+// handled, and returns the function that reads it (ReasonUnknown until SetReason).
+// The transport calls it before the Handler and labels ryft_events_handled_total
+// with what it reads after.
+func WithReason(ctx context.Context) (context.Context, func() string) {
+	s := &reasonSlot{reason: ReasonUnknown}
+	return context.WithValue(ctx, reasonKey{}, s), func() string { return s.reason }
+}
+
+// SetReason records the metric reason of the event being handled, as MetricReason
+// bounds it; ScoringHandler and NotifyHandler call it once the data decodes. Outside
+// WithReason it does nothing.
+func SetReason(ctx context.Context, reason string) {
+	if s, ok := ctx.Value(reasonKey{}).(*reasonSlot); ok && reason != "" {
+		s.reason = MetricReason(reason)
+	}
 }
 
 // Publisher implements Bus's publishing half on a Sender.
 type Publisher struct{ Sender Sender }
 
 // PublishIngested queues days for scoring. A non-empty dedupID marks repeats of the
-// same trigger (RabbitMQ delivers every copy, and rescoring a day twice changes
+// same trigger (Pub/Sub delivers every copy, and rescoring a day twice changes
 // nothing, D100).
 func (p Publisher) PublishIngested(ctx context.Context, ev model.IngestedEvent, dedupID string) error {
 	return p.send(ctx, func() (Message, error) { return Ingested(ev, dedupID) })
@@ -234,6 +301,8 @@ func DecodeNotify(key string, data []byte) (NotifyMessage, error) {
 
 // Guarded runs a handler and turns a panic into an error, so one bad message is
 // retried and dead-lettered instead of crashing the consumer's service.
+// ryft_event_handler_panics_total counts it under key, which must be a key the
+// transport trusts (never one a publisher wrote).
 func Guarded(log *slog.Logger, key string, fn func() error) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -262,6 +331,43 @@ func IsPermanent(err error) bool {
 	return errors.As(err, &p)
 }
 
+// badError marks an event that cannot be read: its data does not decode, or its key
+// is not one the consumer takes.
+type badError struct{ err error }
+
+func (b badError) Error() string { return b.err.Error() }
+func (b badError) Unwrap() error { return b.err }
+
+// Bad wraps err so the transport dead-letters the message at once, with err as its
+// ryft-error, and acks it: retrying an event that does not decode cannot help.
+// ScoringHandler and NotifyHandler return it for a decode failure; a handler's own
+// failure is not Bad.
+func Bad(err error) error { return badError{err} }
+
+// IsBad reports whether err was wrapped by Bad.
+func IsBad(err error) bool {
+	var b badError
+	return errors.As(err, &b)
+}
+
+// rejectedError marks a send the transport refused for good.
+type rejectedError struct{ err error }
+
+func (r rejectedError) Error() string { return r.err.Error() }
+func (r rejectedError) Unwrap() error { return r.err }
+
+// Rejected wraps a send error that no retry can fix: the key has no topic, the body
+// cannot be a message there, or the broker refused the request itself (Pub/Sub's 400,
+// 403, 404). A transport returns it from Send; the outbox then sets the row aside at once
+// instead of spending its attempts. Any other send error counts as transient.
+func Rejected(err error) error { return rejectedError{err} }
+
+// IsRejected reports whether err was wrapped by Rejected.
+func IsRejected(err error) bool {
+	var r rejectedError
+	return errors.As(err, &r)
+}
+
 // deferError asks for the message again after a delay, without counting it as a
 // failure (notify during quiet hours).
 type deferError struct{ after time.Duration }
@@ -284,9 +390,9 @@ func Deferred(err error) (time.Duration, bool) {
 
 type redeliveryKey struct{}
 
-// WithRedelivery marks ctx as handling a message that came before: a retry
-// tier's copy, one the broker delivered again after a consumer died, or a dead
-// letter replayed with scripts/dlq.sh. The transport sets it.
+// WithRedelivery marks ctx as handling a message that came before: one Pub/Sub
+// delivers again after a nack or a lost ack (deliveryAttempt above 1), or a dead
+// letter replayed with scripts/dlq.sh (ryft-replayed). The transport sets it.
 func WithRedelivery(ctx context.Context) context.Context {
 	return context.WithValue(ctx, redeliveryKey{}, true)
 }

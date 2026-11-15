@@ -64,7 +64,7 @@ report() {
     echo "|---|---:|---:|"
     awk -F'\t' '{ printf "| %s | %s%% | %s |\n", $1, $2, $3 }' "$out/packages.txt"
     echo
-    echo "**internal/ total: $(cat "$out/total.txt")%** (statement-weighted; tests that need Postgres or RabbitMQ count only where those run)"
+    echo "**internal/ total: $(cat "$out/total.txt")%** (statement-weighted; tests that need Postgres or the Pub/Sub emulator count only where those run)"
   } | summary
 }
 

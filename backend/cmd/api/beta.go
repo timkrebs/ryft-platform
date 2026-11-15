@@ -128,7 +128,7 @@ func (h *handler) redeemInvite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if bound {
-			switch h.bindingState() {
+			switch h.bindingState(r.Context()) {
 			case bindOK:
 				if verified, err = h.verifiedEmail(r.Context(), u.ID); err != nil {
 					// The error is the Supabase client's (a status and GoTrue's error_code, or the transport's
@@ -182,35 +182,29 @@ func (h *handler) verifiedEmail(ctx context.Context, id uuid.UUID) (string, erro
 // (D161; docs/API.md → Invites for a person; the privacy text names it once U3 is decided).
 const purgeInviteEmailsAfter = 30 * 24 * time.Hour
 
-// purgeInviteEmailsEvery clears the emails of codes that have not been redeemable for 30 days, once now and
-// then every interval, until ctx ends. Idempotent, so every pod runs it; a failed pass is logged and retried
-// at the next tick. A pass that clears nothing is normal and silent.
-func purgeInviteEmailsEvery(ctx context.Context, st *store.Store, log *slog.Logger, interval time.Duration) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	// Both series exist at 0, so increase() sees the first pass of a pod's life.
+// purgeSeries makes both series of ryft_invite_email_purge_total exist at 0, so increase() sees the first pass
+// of an instance's life.
+func purgeSeries() {
 	metrics.InviteEmailPurges.WithLabelValues("ok")
 	metrics.InviteEmailPurges.WithLabelValues("error")
-	for {
-		n, err := st.PurgeInviteEmails(ctx, purgeInviteEmailsAfter)
-		switch {
-		case ctx.Err() != nil:
-			return
-		case err != nil:
-			metrics.InviteEmailPurges.WithLabelValues("error").Inc()
-			log.WarnContext(ctx, "invite email purge failed", "err", err)
-		default:
-			metrics.InviteEmailPurges.WithLabelValues("ok").Inc()
-			if n > 0 {
-				log.InfoContext(ctx, "invite emails purged", "n", n)
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
+}
+
+// purgeInviteEmails is one pass of the job that clears the emails of codes that have not been redeemable for
+// 30 days: the tick's "invite email purge" step (D219). Idempotent, so whichever instance gets the tick runs
+// it; a failed pass is counted, logged under the line the runbook names and returned for the tick, and the
+// next tick tries again. A pass that clears nothing is normal and silent.
+func purgeInviteEmails(ctx context.Context, st *store.Store, log *slog.Logger) error {
+	n, err := st.PurgeInviteEmails(ctx, purgeInviteEmailsAfter)
+	if err != nil {
+		metrics.InviteEmailPurges.WithLabelValues("error").Inc()
+		log.WarnContext(ctx, "invite email purge failed", "err", err)
+		return err
 	}
+	metrics.InviteEmailPurges.WithLabelValues("ok").Inc()
+	if n > 0 {
+		log.InfoContext(ctx, "invite emails purged", "n", n)
+	}
+	return nil
 }
 
 // ---- admin: invite codes --------------------------------------------------------
@@ -305,7 +299,7 @@ func (a admin) createInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	if msg == "" && email != nil {
 		// A bound code is only made while it can be redeemed safely (D159).
-		if state := a.h.bindingState(); state != bindOK {
+		if state := a.h.bindingState(r.Context()); state != bindOK {
 			msg = bindingMessage(state)
 		}
 	}

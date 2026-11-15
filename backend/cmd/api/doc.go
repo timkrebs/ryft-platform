@@ -6,8 +6,14 @@
 // (a completed session's load, personal records, the estimated max heart rate)
 // uses scoring's own functions. The session load matches what scoring stores
 // for the day; scoring never stores the records or max_hr, so the api is their
-// only writer. Events go out only through the outbox, never to the broker
-// directly (D101).
+// only writer. Events go out only through the outbox, never to Pub/Sub
+// directly (D101), and the request that wrote a row flushes it before it answers
+// (D219).
+//
+// Between requests nothing runs (Cloud Run's CPU, D219): POST /internal/tick, beside
+// /v1 and outside its auth and limit (D218), pings the database, sweeps the outbox,
+// reconciles account deletions, reads the Supabase confirm-email setting and purges
+// old invite emails. Nothing asks Supabase at start.
 //
 // Invariants:
 //   - api is the only service that builds the Supabase admin client and the only
@@ -15,7 +21,7 @@
 //     exist only in its namespace.
 //   - Account deletion erases the rows in one transaction under the user's lock
 //     (D39), then revokes the Sign in with Apple grant, then deletes the Supabase
-//     user. Each later step is retried by the reconciler until it succeeds.
+//     user. Each later step is retried by the tick's reconcile until it succeeds.
 //     DELETE /v1/me skips the user lookup and the invite gate, so a retry reaches
 //     the handler.
 //   - The invite gate lets through only the routes docs/API.md names (D87).
@@ -25,5 +31,5 @@
 //     has its own budget and runs one per user at a time (D129).
 //
 // See docs/ARCHITECTURE.md → Services (Account deletion, Request path); docs/API.md; D31,
-// D39, D78, D87, D88, D101, D129.
+// D39, D78, D87, D88, D101, D129, D218, D219.
 package main

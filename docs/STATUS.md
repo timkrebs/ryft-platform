@@ -75,16 +75,25 @@ deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 ## GCP serverless (2026-11-14)
 
 The design (`docs/work/2026-11-14-gcp/design.md`, #163) replaces the EKS rebuild: an SCP now denies `eks:CreateCluster`
-in the AWS account. **Ticket B** (`infra, deploy: GCP and the deploy workflow`) is built, and none of it is applied or
-deployed. Its plan, the interfaces ticket A builds to, and the design fixes are in `docs/work/2026-11-14-gcp/ticket-b.md`;
+in the AWS account. **Ticket B** (`infra, deploy: GCP and the deploy workflow`) is merged (#164), and none of it is applied
+or deployed. Its plan, the interfaces ticket A builds to, and the design fixes are in `docs/work/2026-11-14-gcp/ticket-b.md`;
 the review is in `review-b.md`. The ticket contains:
 - `infra/gcp` (workspace `ryft-gcp` in `ryft-lab`), in two applies, gated by `infra/gcp/gates.auto.tfvars`;
 - `deploy/run` and `deploy.yml`, which stays off until `GCP_DEPLOY=on`;
 - `PRIVACY_POLICY_VERSION`'s new home, `deploy/run/config.env`;
 - the GCP alert set, `scripts/dns_compare.sh`, and the runbook in **OPERATIONS → GCP**.
 
+**Ticket A** is split in two PRs. **A1** (`backend: Pub/Sub messaging and the tick`, branch `backend/pubsub`) is built:
+Pub/Sub push with OIDC on all four services, `POST /internal/tick` instead of every timer and `db.Watch`, the inline outbox
+with a tick sweep and `available_at` (migration 0034), `cmd/pubsub-topology` with a CI drift check, compose on the Pub/Sub
+emulator, `scripts/dlq.sh` on gcloud, RabbitMQ and `amqpbus` gone from code, compose, the Makefile and CI (`deploy/rabbitmq`
+stays until D3), `MESSAGING_DESIGN.md`, DECISIONS D216–D219, and API.md's two hosts. Plan `plan-a1.md`, handover
+`a1-interfaces.md`, review `review-a1.md`. It deploys nothing.
+
 Open:
-- **A**, the backend: Pub/Sub, h2c, the health paths, OTLP, `cmd/pubsub-topology` and DECISIONS D216–D227.
+- **A2**, the runtime: h2c and the 32 MiB limit, the DSN/pooler/`PGPASSWORD`, the session-state grep, `/health/live` and
+  `/health/ready`, OTLP and slog, the XFF log line, the Supabase CA and base images by digest, Grace 10 s, DECISIONS
+  D220–D227; the leftovers in `review-a1.md` → "For A2".
 - **C1**: Firebase Hosting, stacked on B.
 - **C2**: the privacy draft.
 - **D1–D3**: the AWS retirement.

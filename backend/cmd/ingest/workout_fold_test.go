@@ -515,6 +515,9 @@ func (f *foldEnv) fold(databaseURL string, args ...string) (string, int) {
 			cmd.Env = append(cmd.Env, kv)
 		}
 	}
+	// The subcommand reads ingest's settings with config.Load, Pub/Sub's included: compose's local ones (it
+	// publishes nothing; its rows wait for ingest's tick).
+	cmd.Env = append(cmd.Env, "PUBSUB_EMULATOR_HOST=127.0.0.1:1", "ALLOW_INSECURE_PUSH=true")
 	switch databaseURL {
 	case "":
 		cmd.Env = append(cmd.Env, "DATABASE_URL="+f.ingestURL)

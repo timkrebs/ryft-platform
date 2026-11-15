@@ -1195,7 +1195,13 @@ gcloud scheduler jobs pause ryft-tick --location=europe-west1 --project=ryftlab-
 ```
 
 api and ingest then answer 403 to everyone: the app fails, and ApiDown fires. scoring and notify
-still drain what Pub/Sub holds. The tick stops.
+still drain what Pub/Sub holds. The tick stops, and with it everything that only a tick runs:
+each service's outbox sweep (rows an inline flush missed wait, and published rows are no longer
+deleted after 7 days), scoring's pass, notify's stale check and its deferred pushes, and api's
+two retention jobs. Those are the purge of a code's bound email 30 days after the code stopped
+being redeemable (D161), and the retries of account deletions whose Apple revoke or Supabase
+deletion failed. That Supabase user, email included, stays until a retry succeeds. So while the
+tick is paused you run it by hand (**While the tick is paused**, below).
 
 Then open a PR that sets `public_invokers = false` in `infra/gcp/gates.auto.tfvars`. Otherwise
 the next apply would add `allUsers` back: the invoker bindings are authoritative. Set the hold
@@ -1226,8 +1232,134 @@ ingest's bindings and resumes the tick: 0 to add, 3 to change (2 bindings + the 
 destroy. Then delete the hold and run `deploy.yml` by hand with the smoke on (step 9's
 commands).
 
+**While the tick is paused**, run one by hand at least once a day, so no email outlives its 30
+days and no failed deletion waits more than a day. Publish one tick message. Each service's tick
+subscription pushes it with `ryft-push`'s token, which keeps `run.invoker` on api and ingest under
+the stop line:
+
+```bash
+CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB=https://europe-west1-pubsub.googleapis.com/ \
+  gcloud pubsub topics publish ryft-tick --project=ryftlab-prod --message='{}' --attribute=ryft-key=tick
+```
+
+That is one tick of all four services, scoring's pass included (at most 240 s). api's log names
+a failed step: `invite email purge failed` or `reconcile deletions`. Don't resume the Scheduler
+job on its own: the pause follows `public_invokers`, so the next apply pauses it again. The tick
+resumes with the undo above.
+
 An email of its own at €20 is optional. It is one more rule on the same budget:
 `gcloud billing budgets update "$BUDGET" --add-threshold-rule=percent=0.40` (step 3's `$BUDGET`).
+
+### Dead letters and the outbox
+
+**Dead letters** (D218, design §2.2). An event that fails its 20 delivery attempts is forwarded by
+Pub/Sub from its push subscription to the consumer's dead-letter topic, `ryft-dlq-scoring` or
+`ryft-dlq-notify`, with the `CloudPubSubDeadLetterSource*` attributes added. An event the consumer can
+never handle (its data doesn't decode, or its `ryft-key` isn't the push path's) is filed there by the
+consumer itself, with `ryft-error`, and acked. The hold subscriptions `dlq-scoring-hold` and
+`dlq-notify-hold` keep each letter **14 days**; then Pub/Sub drops it. `DeadLetters` fires while one
+holds a letter. The cause is in the consumer's log (`handle event failed`, its `err`), around the
+letter's time.
+
+`scripts/dlq.sh` runs `gcloud` as you, in the project you name: `--project` has no default, and no call
+uses gcloud's configured project. Its calls go through the regional endpoint. It never uses kubectl.
+
+```bash
+scripts/dlq.sh --project ryftlab-prod list               # per hold subscription, one line per letter: key, by, source, attempts, error, verdict
+scripts/dlq.sh --project ryftlab-prod show scoring 5     # in full, the data decoded (n: 1 to 1000, or all)
+scripts/dlq.sh --project ryftlab-prod replay scoring 1   # after fixing the cause: back to its topic as a redelivery, then acked
+scripts/dlq.sh --project ryftlab-prod purge notify       # notify's: a push hours late is wrong (replay refuses without --force)
+```
+
+`list` and `show` pull without acking and hand the letters back at once, so nothing moves. One pass
+returns at most 1000 letters, and may return fewer than the subscription holds. The count is the hold
+subscription's `num_undelivered_messages` in Monitoring (the `DeadLetters` value). Against compose's
+emulator: `PUBSUB_EMULATOR_HOST=localhost:8085 scripts/dlq.sh --project ryft-local list`.
+
+**Before a replay**, all of these:
+
+1. The cause is fixed and deployed: the `deploy.yml` run of the fix is green, and no hold is set.
+2. `PushBacklog` is quiet for the consumer, so the replay doesn't queue behind a backlog.
+3. `list` shows the letters you expect (count, keys, one cause in the log). `show` a few.
+4. Start with `replay scoring 1`, watch it (below), then the rest.
+
+**What a replay does.** For each letter it decides the key and the topic (below). It publishes the
+letter's data there with the letter's attributes, minus Pub/Sub's `CloudPubSubDeadLetter*` and
+`ryft-error`, plus `ryft-key` and `ryft-replayed=true`. On `ryft-ingested` and `ryft-session-completed`
+it also sets the ordering key, the event's `user_id`. Only then does it ack the letter. The consumer
+handles it as a redelivery (`events.Redelivered`, logged as `handling a replayed dead letter`): a
+scoring letter re-scores the days after its days and finishes what its failed attempts left half-done
+(D112). It gets its 20 attempts again. If it fails them, it is back in the hold subscription and `list`
+shows `"replayed_before": true`. That takes about 10 minutes under push backoff, longer under the retry
+policy (design §2.2). Call it done when `list` is empty 30 minutes later and
+`ryft_events_handled_total{result="retry"}` is flat.
+
+**Which letters are replayed** (D150). Only the keys the consumer handles: scoring `ingested`,
+`session.completed`; notify `scored`, `session.scored`, `refresh`. The script reads them from
+`infra/gcp/pubsub.auto.tfvars.json`. The key is read where a publisher can't write it:
+
+- **Pub/Sub forwarded it** (`CloudPubSubDeadLetterSourceSubscription` is set; `list` says
+  `"by": "pubsub"`). The key is its source subscription's (`scoring-ingested` → `ingested`), and its
+  `ryft-key` must be absent or equal to that key. From `notify-wait` the key is its `ryft-key`, which must
+  be one of notify's. It goes back to the source subscription's topic (`notify-wait`'s to
+  `ryft-notify-wait`). The source must be one of this consumer's subscriptions, in this project.
+- **The consumer filed it** (`ryft-error`, no source; `"by": "consumer"`). The key is its `ryft-key`,
+  which the consumer set from the push path, and it goes to that key's topic.
+
+Only the consumer and Pub/Sub's service agent may publish to a dead-letter topic, and the consumer
+copies no `CloudPubSub*` attribute, so a publisher can't forge either reading. Anything else is refused,
+named on stderr and left in the hold subscription, and the script exits 1. That covers a source of
+another consumer or project, a key the consumer doesn't handle, a `ryft-key` that contradicts its
+source, no key, data that isn't text, an ordered topic's event without a `user_id`, and a letter that is
+neither Pub/Sub's nor the consumer's.
+
+**A refused letter that must go through** (`show` it first, and be sure of its key): publish it by hand
+with the original data and the key's attributes. The original stays in the hold subscription until its
+14 days end (`purge` removes every letter of the consumer). `--ordering-key` only on `ryft-ingested` and
+`ryft-session-completed`:
+
+```bash
+CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB=https://europe-west1-pubsub.googleapis.com/ \
+  gcloud pubsub topics publish ryft-ingested --project=ryftlab-prod --ordering-key='<user_id>' \
+  --message='<the data as show prints it, compact>' \
+  --attribute='ryft-key=ingested,ryft-replayed=true,ryft-message-id=<its ryft-message-id>'
+```
+
+**Nothing is lost.** A letter is acked only after its publish succeeded. A failed publish or ack stops
+the run, and what it didn't replay is handed back at once (Pub/Sub would redeliver it after its lease,
+at most 10 minutes, anyway). An ack that fails after its publish leaves the letter in place, so the next
+replay sends it again; handlers are idempotent (D100). Every argument is checked before `gcloud` runs. A
+letter names a user and a day or days (and a session id, the reason, the request id). No scores or
+other health values: `scored` carries only `user_id`, `day` and `request_id`. Its `ryft-message-id`
+names the user and day too. So the script hands `gcloud` the data, the attributes and the ordering key
+in a flags file (mode 600, in its own temporary directory, deleted after each call). `ps` shows only
+the topic, and `gcloud`'s file log is off.
+
+notify's letters are listed and purged, not replayed (D84). `--force` replays them anyway. scoring's
+letters only name a user and days, so `POST /v1/recompute` repairs the same if a letter is gone.
+
+**The outbox** (D101, D219): events not yet published are rows of `outbox` in Supabase (SQL editor, as
+the owner). Every row is due when it is written, except notify's deferrals. Those wait for their
+`available_at` (the end of quiet hours) and are not a backlog:
+
+```sql
+SELECT publisher, count(*), min(created_at) FROM outbox WHERE published_at IS NULL AND available_at <= now() GROUP BY 1;   -- the backlog
+SELECT count(*), min(available_at) FROM outbox WHERE publisher = 'notify' AND published_at IS NULL AND available_at > now();  -- deferrals, not due yet
+SELECT id, publisher, routing_key, attempts, last_error FROM outbox WHERE published_at IS NULL AND attempts >= 50;
+UPDATE outbox SET attempts = 0 WHERE id = 1234;   -- a stuck row, once its cause is fixed: the next tick's sweep sends it again
+UPDATE outbox SET attempts = 0 WHERE published_at IS NULL AND attempts >= 50 AND last_error LIKE 'rejected, set aside:%';   -- every row Pub/Sub refused (a missing topic or binding after a deploy), once the cause is fixed
+```
+
+A row is published inline after the commit that wrote it. What that misses (a Pub/Sub error, an
+instance gone) goes with the next tick's sweep, every 15 minutes. A backlog is `OutboxBacklog`. A stuck
+row (50 failed sends) is `OutboxStuck`, usually a key without its topic: a topology change that isn't
+applied yet (`infra/gcp`).
+
+An account deletion deletes the user's outbox rows, but `outbox` has no foreign key to `users`, so
+a row written just after the deletion stays. One is a deferral of notify's (an event it held for
+quiet hours while the account went), another a row of scoring's. Its body is the user's id and a
+day (and a session id). When it is due it is published, and its consumer drops it because the user
+is gone. The tick's clean deletes it 7 days after it was published.
 
 ## EKS (api.ryftlab.de)
 
@@ -2645,6 +2777,17 @@ topology object, transient ones included (the sync's retry and the `ArgoAppDegra
 them). `make argocd-luatest`
 evaluates every script in Argo CD's own library set; add cases there with every new check.
 
+**Since A1, `scripts/dlq.sh` is the Pub/Sub one** (GCP → Dead letters and the outbox). The RabbitMQ
+script described here lives on in the commit before A1's merge. While EKS still serves, run it from a
+worktree of that commit (its `scripts/lib/kube.sh` comes with it), and remove the worktree afterwards:
+
+```bash
+git fetch origin
+git worktree add ../plattform-rabbitmq "$(git rev-list -1 origin/main -- scripts/dev-amqp-certs.sh)^"   # the parent of the commit that deleted it
+KUBE_CONTEXT=ryft-prod-euc1 ../plattform-rabbitmq/scripts/dlq.sh list
+git worktree remove ../plattform-rabbitmq
+```
+
 **Dead letters** (`dlq.scoring`, `dlq.notify`, 14 days): an event that did not decode, or
 failed six attempts (5 s, 30 s, 5 min apart). `scripts/dlq.sh` port-forwards to the
 management API itself, on the cluster you name (`KUBE_CONTEXT=<context>` or `--context
@@ -2774,7 +2917,7 @@ letter is gone; notify's are listed and purged, never re-sent late.
 (SQL editor, as the owner):
 
 ```sql
-SELECT publisher, count(*), min(created_at) FROM outbox WHERE published_at IS NULL GROUP BY 1;
+SELECT publisher, count(*), min(created_at) FROM outbox WHERE published_at IS NULL AND available_at <= now() GROUP BY 1;   -- due rows (migration 0034): notify's deferrals are no backlog
 SELECT id, publisher, routing_key, attempts, last_error FROM outbox WHERE published_at IS NULL AND attempts >= 50;
 UPDATE outbox SET attempts = 0 WHERE id = 1234;   -- a stuck row, once its cause is fixed: the relay sends it again
 ```

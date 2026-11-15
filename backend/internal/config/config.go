@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -24,23 +25,157 @@ const (
 	AuthAPIKey   = "apikey"   // shared key, local development only
 )
 
-// Config is what every service reads: its name, ports, database URL and pool size, and how
-// it reaches the broker. The auth, beta, admin, APNs and Apple settings have their own
-// loaders, because only some services need them.
+// Config is what every service reads: its name, ports, database URL and pool size, how it
+// publishes to Pub/Sub and whose tokens its push and tick routes accept. The auth, beta,
+// admin, APNs and Apple settings have their own loaders, because only some services need
+// them.
 type Config struct {
 	ServiceName string
 	Port        string
 	MetricsPort string // METRICS_PORT, default 9090: /metrics only
 	DatabaseURL string
-	AMQP        AMQP
 	DBMaxConns  int // pool size; small because Supavisor session mode holds a server connection per client connection (D34)
+	PubSub      PubSub
+	Push        Push
 }
 
-// AMQP is how a service reaches RabbitMQ: its URL, its own user, and its TLS identity
-// (the broker verifies client certificates, D98).
-type AMQP struct {
-	URL, User, Password       string
-	CAFile, CertFile, KeyFile string
+// DefaultPubSubEndpoint is Pub/Sub's regional endpoint in the services' region:
+// ordering needs every message of a key published in the same region (D218).
+const DefaultPubSubEndpoint = "https://europe-west1-pubsub.googleapis.com"
+
+// EmulatorProject is the project the emulator's topology lives in when GCP_PROJECT is
+// unset (deploy/pubsub-emulator/init.sh has the same default).
+const EmulatorProject = "ryft-local"
+
+// PubSub is how a service publishes: REST to Endpoint with an access token from the
+// metadata server, or plain HTTP to the emulator without one.
+type PubSub struct {
+	Project      string // GCP_PROJECT; EmulatorProject by default with the emulator
+	Endpoint     string // PUBSUB_ENDPOINT, an https origin; DefaultPubSubEndpoint by default
+	EmulatorHost string // PUBSUB_EMULATOR_HOST, host:port; set: no token, Endpoint unused
+}
+
+// Push is whose OIDC tokens a service's /push/* and /internal/* routes accept: Pub/Sub
+// push and the tick carry a token of the push service account (D218).
+type Push struct {
+	Audience      string // PUSH_AUDIENCE: the service's own run.app URL, exactly as the subscriptions set it
+	SAEmail       string // PUSH_SA_EMAIL: the push service account (the token's email)
+	SAID          string // PUSH_SA_ID: its unique ID (the token's sub)
+	AllowInsecure bool   // ALLOW_INSECURE_PUSH=true: no token checked (local development only)
+}
+
+// cloudRunEnv are the variables Cloud Run sets in a service (K_SERVICE) and a job
+// (CLOUD_RUN_JOB): with either, nothing insecure or emulated may start.
+var cloudRunEnv = []string{"K_SERVICE", "CLOUD_RUN_JOB"}
+
+var (
+	// pushSAEmail is a service account's address (name@project.iam.gserviceaccount.com).
+	pushSAEmail = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$`)
+	// pushSAID is a service account's unique ID: digits only.
+	pushSAID = regexp.MustCompile(`^[0-9]{6,32}$`)
+	// gcpProject is a project ID: 6 to 30 lower-case letters, digits and hyphens.
+	gcpProject = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
+)
+
+// loadPubSub reads the Pub/Sub and push settings and refuses what must not run: the
+// insecure flag or the emulator on Cloud Run, a push identity half set or set to a
+// placeholder, an endpoint that is not a bare https origin on googleapis.com, an
+// audience that is not a bare https origin.
+func loadPubSub() (PubSub, Push, error) {
+	ps := PubSub{
+		Project:      strings.TrimSpace(os.Getenv("GCP_PROJECT")),
+		Endpoint:     strings.TrimSpace(getenv("PUBSUB_ENDPOINT", DefaultPubSubEndpoint)),
+		EmulatorHost: strings.TrimSpace(os.Getenv("PUBSUB_EMULATOR_HOST")),
+	}
+	p := Push{
+		Audience: strings.TrimSpace(os.Getenv("PUSH_AUDIENCE")),
+		SAEmail:  strings.TrimSpace(os.Getenv("PUSH_SA_EMAIL")),
+		SAID:     strings.TrimSpace(os.Getenv("PUSH_SA_ID")),
+	}
+	switch v := strings.TrimSpace(os.Getenv("ALLOW_INSECURE_PUSH")); v {
+	case "", "false":
+	case "true":
+		p.AllowInsecure = true
+	default:
+		return ps, p, fmt.Errorf("ALLOW_INSECURE_PUSH must be true or false, got %q", v)
+	}
+	for _, k := range cloudRunEnv {
+		if os.Getenv(k) == "" {
+			continue
+		}
+		if p.AllowInsecure {
+			return ps, p, fmt.Errorf("ALLOW_INSECURE_PUSH=true is refused on Cloud Run (%s is set): push and tick tokens are always checked there (D218)", k)
+		}
+		if ps.EmulatorHost != "" {
+			return ps, p, fmt.Errorf("PUBSUB_EMULATOR_HOST is refused on Cloud Run (%s is set): the emulator is for local development", k)
+		}
+	}
+	if ps.EmulatorHost != "" {
+		host, port, err := net.SplitHostPort(ps.EmulatorHost)
+		if n, perr := strconv.Atoi(port); err != nil || host == "" || perr != nil || n < 1 || n > 65535 {
+			return ps, p, fmt.Errorf("PUBSUB_EMULATOR_HOST must be host:port, got %q", ps.EmulatorHost)
+		}
+		if ps.Project == "" {
+			ps.Project = EmulatorProject
+		}
+	}
+	if !gcpProject.MatchString(ps.Project) {
+		return ps, p, fmt.Errorf("GCP_PROJECT must be the project ID (required unless PUBSUB_EMULATOR_HOST is set), got %q", ps.Project)
+	}
+	if err := googleAPIOrigin(ps.Endpoint); err != nil {
+		return ps, p, fmt.Errorf("PUBSUB_ENDPOINT: %w", err)
+	}
+	if p.AllowInsecure {
+		return ps, p, nil
+	}
+	if err := bareHTTPSOrigin(p.Audience); err != nil {
+		return ps, p, fmt.Errorf("PUSH_AUDIENCE (the service's run.app URL; required unless ALLOW_INSECURE_PUSH=true): %w", err)
+	}
+	if !pushSAEmail.MatchString(p.SAEmail) {
+		return ps, p, fmt.Errorf("PUSH_SA_EMAIL must be the push service account's address (required unless ALLOW_INSECURE_PUSH=true), got %q", p.SAEmail)
+	}
+	if !pushSAID.MatchString(p.SAID) {
+		return ps, p, fmt.Errorf("PUSH_SA_ID must be the push service account's unique ID, digits only (required unless ALLOW_INSECURE_PUSH=true), got %q", p.SAID)
+	}
+	return ps, p, nil
+}
+
+// googleAPIHost is a host under googleapis.com: pubsub.googleapis.com,
+// europe-west1-pubsub.googleapis.com.
+var googleAPIHost = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+googleapis\.com$`)
+
+// googleAPIOrigin accepts https://<host>.googleapis.com and nothing else: no port, path,
+// query, fragment or userinfo. The service account's access token goes with every publish,
+// so the endpoint must be Google's (a typo or an injected variable would hand the token
+// to another host).
+func googleAPIOrigin(s string) error {
+	if err := bareHTTPSOrigin(s); err != nil {
+		return err
+	}
+	if u, _ := url.Parse(s); !googleAPIHost.MatchString(u.Host) {
+		return fmt.Errorf("%q must be a Google API host (https://<name>.googleapis.com, no port): the access token is sent there", s)
+	}
+	return nil
+}
+
+// bareHTTPSOrigin accepts https://host[:port] and nothing else: no path (a trailing
+// slash included), query, fragment or userinfo. The push audience is compared for
+// equality, so a trailing slash would refuse every token.
+func bareHTTPSOrigin(s string) error {
+	u, err := url.Parse(s)
+	switch {
+	case s == "":
+		return errors.New("empty")
+	case err != nil:
+		return fmt.Errorf("%q is not a URL", s)
+	case u.Scheme != "https" || u.Host == "" || u.Hostname() == "":
+		return fmt.Errorf("%q must be https://host", s)
+	case u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery || u.Opaque != "" || strings.HasSuffix(u.Host, ":"):
+		return fmt.Errorf("%q must be an origin only: no path, trailing slash, query, fragment or userinfo", s)
+	case u.Host != strings.ToLower(u.Host):
+		return fmt.Errorf("%q: the host must be lower case", s)
+	}
+	return nil
 }
 
 // Auth configures how ingest and api authenticate requests.
@@ -60,9 +195,9 @@ type Auth struct {
 }
 
 // Load reads the settings common to all services. It refuses what cannot run (no
-// DATABASE_URL, half an AMQP login, a leftover EVENTS_BACKEND other than amqp, D102) so the
-// pod fails at once instead of limping. service picks the pool size: scoring and notify
-// hold fewer connections.
+// DATABASE_URL, a Pub/Sub or push setting loadPubSub refuses) so the service fails at
+// start-up, before it connects to anything, instead of limping. service picks the pool
+// size: scoring and notify hold fewer connections.
 func Load(service string) (Config, error) {
 	c := Config{
 		ServiceName: service,
@@ -70,21 +205,10 @@ func Load(service string) (Config, error) {
 		MetricsPort: getenv("METRICS_PORT", "9090"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		DBMaxConns:  4,
-		AMQP: AMQP{
-			URL:  getenv("AMQP_URL", "amqps://rabbitmq.ryft-rabbitmq.svc.cluster.local:5671/ryft"),
-			User: os.Getenv("AMQP_USER"), Password: os.Getenv("AMQP_PASSWORD"),
-			CAFile: os.Getenv("AMQP_CA_FILE"), CertFile: os.Getenv("AMQP_CERT_FILE"), KeyFile: os.Getenv("AMQP_KEY_FILE"),
-		},
 	}
-	// EVENTS_BACKEND and EVENTS_CONSUME chose the broker during the cutover (D102);
-	// RabbitMQ is the only one now, and a leftover nats is refused, not ignored.
-	for _, k := range []string{"EVENTS_BACKEND", "EVENTS_CONSUME"} {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" && v != "amqp" {
-			return c, fmt.Errorf("%s=%q: RabbitMQ (amqp) is the only broker since NATS was removed (D102)", k, v)
-		}
-	}
-	if (c.AMQP.User == "") != (c.AMQP.Password == "") {
-		return c, fmt.Errorf("set both AMQP_USER and AMQP_PASSWORD, or neither")
+	var err error
+	if c.PubSub, c.Push, err = loadPubSub(); err != nil {
+		return c, err
 	}
 	if service == "scoring" || service == "notify" {
 		c.DBMaxConns = 2

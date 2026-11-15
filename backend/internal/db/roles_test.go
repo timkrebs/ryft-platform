@@ -73,6 +73,7 @@ var grants = map[string]map[string][]string{
 	"ryft_notify": {
 		"push_tokens": {"SELECT", "DELETE"}, "notifications_sent": crud, "personal_records": {"SELECT"},
 		"schema_migrations": {"SELECT"},
+		"outbox":            {"SELECT", "INSERT", "DELETE"}, // 0034: its quiet-hours waits; UPDATE of the relay's columns only (below)
 	},
 	"ryft_api": {
 		"users": {"SELECT", "INSERT", "UPDATE", "DELETE"}, "devices": {"SELECT", "DELETE"},
@@ -158,12 +159,11 @@ func TestServiceRoleGrants(t *testing.T) {
 		}
 	}
 	// scoring may only mark a queued day done (0025).
-	// D101: each publisher's relay may mark its rows, and change nothing else of them.
+	// D101: each publisher's relay may mark its rows, and change nothing else of them (notify is one since 0034;
+	// no relay moves a row's not-before time).
 	for _, role := range []string{"ryft_ingest", "ryft_api", "ryft_scoring", "ryft_notify"} {
-		for col, want := range map[string]bool{"published_at": true, "attempts": true, "last_error": true, "payload": false, "routing_key": false} {
-			if role == "ryft_notify" {
-				want = false
-			}
+		for col, want := range map[string]bool{"published_at": true, "attempts": true, "last_error": true, "payload": false,
+			"routing_key": false, "publisher": false, "available_at": false} {
 			var has bool
 			if err := pool.QueryRow(ctx, `SELECT has_column_privilege($1, 'public.outbox', $2, 'UPDATE')`, role, col).Scan(&has); err != nil {
 				t.Fatal(err)

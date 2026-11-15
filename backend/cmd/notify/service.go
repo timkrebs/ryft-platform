@@ -2,20 +2,18 @@ package main
 
 import (
 	"context"
-	"log/slog"
+	"errors"
 	"time"
 
 	"github.com/timkrebs/ryft/internal/apns"
 	"github.com/timkrebs/ryft/internal/app"
 	"github.com/timkrebs/ryft/internal/config"
+	"github.com/timkrebs/ryft/internal/eventbus"
 	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/logx"
 	"github.com/timkrebs/ryft/internal/notify"
 	"github.com/timkrebs/ryft/internal/store"
 )
-
-// staleEvery is how often the no-data check runs (each user at most once a day).
-const staleEvery = 15 * time.Minute
 
 // pushSettings is the APNs key as Load read it; on is whether one was set.
 type pushSettings struct {
@@ -23,18 +21,51 @@ type pushSettings struct {
 	on  bool
 }
 
-// build makes what notify runs on the opened pool and broker: the push service,
-// the stale check (a job) and the scored-events consumer. It publishes nothing, so
-// it has no outbox.
+// waitBox is where notify's deferrals wait (D219): app's wait box, the outbox of
+// publisher notify that relays into ryft-notify-wait. SendAt writes a row with its
+// not-before time; the tick's sweep publishes it when it is due, and /push/wait hands it
+// back under its own key.
+type waitBox interface {
+	SendAt(ctx context.Context, m events.Message, at time.Time) error
+}
+
+// build makes what notify runs on the opened pool and transport: the push service, its
+// push routes (/push/scored, /push/session.scored, /push/refresh and /push/wait, D218)
+// and the tick's "stale check", the pass a 15-minute timer ran before Cloud Run (D219).
+// It publishes no events: d.Outbox is its wait box, holding the pushes it defers (quiet
+// hours, APNs down) until they are due.
 func build(d app.Deps, push pushSettings) (app.Parts, error) {
+	switch {
+	case d.Outbox == nil: // without the wait box every deferral would be a nack, redelivered within seconds
+		return app.Parts{}, errors.New("notify needs its wait box (Spec.Outbox)")
+	case d.Bus == nil:
+		return app.Parts{}, errors.New("notify needs the transport for its push routes")
+	}
 	svc, err := newService(d, push)
 	if err != nil {
 		return app.Parts{}, err
 	}
+	routes, err := pushRoutes(d.Bus, func(ctx context.Context, m events.NotifyMessage) error {
+		return svc.Handle(logx.WithFields(ctx, fieldsOf(m)), m)
+	}, d.Outbox)
+	if err != nil {
+		return app.Parts{}, err
+	}
+	d.Log.Info("consuming scored events") // the line the runbooks grep for
 	return app.Parts{
-		Jobs:      []app.Task{{Name: "stale check", Run: every(staleEvery, staleCheck(d.Log, svc))}},
-		Consumers: []app.Task{{Name: "scored events", Run: consume(d, svc)}},
+		Push:  []app.PushRoutes{routes},
+		Ticks: []eventbus.Tick{{Name: "stale check", Run: svc.CheckStale}},
 	}, nil
+}
+
+// pushRoutes is notify's push handling with handle as its handler and box as where a
+// Defer goes: the original key, ryft-message-id and body, due at now plus the delay.
+func pushRoutes(tr *eventbus.Transport, handle func(context.Context, events.NotifyMessage) error, box waitBox) (app.PushRoutes, error) {
+	p, err := tr.Push(events.ConsumerNotify, events.NotifyHandler(handle), box)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // newService is the push service: with an APNs key it sends, without one it counts
@@ -55,27 +86,6 @@ func newService(d app.Deps, push pushSettings) (*notify.Service, error) {
 	return svc, nil
 }
 
-// staleCheck is one pass of the no-data check. A failed pass is logged and the
-// next one runs; a pass cut short by the shutdown is not an error.
-func staleCheck(log *slog.Logger, svc *notify.Service) func(ctx context.Context) {
-	return func(ctx context.Context) {
-		if err := svc.CheckStale(ctx); err != nil && ctx.Err() == nil {
-			log.ErrorContext(ctx, "stale check", "err", err)
-		}
-	}
-}
-
-// consume is the scored-events consumer. The bus retries, dead-letters and
-// resubscribes by itself; it returns only when ctx ends or the bus is gone.
-func consume(d app.Deps, svc *notify.Service) func(ctx context.Context) error {
-	return func(ctx context.Context) error {
-		d.Log.Info("consuming scored events")
-		return d.Bus.ConsumeNotify(ctx, d.Log, func(ctx context.Context, m events.NotifyMessage) error {
-			return svc.Handle(logx.WithFields(ctx, fieldsOf(m)), m)
-		})
-	}
-}
-
 // fieldsOf is the user and request an event's log lines carry.
 func fieldsOf(m events.NotifyMessage) *logx.Fields {
 	f := &logx.Fields{}
@@ -88,21 +98,4 @@ func fieldsOf(m events.NotifyMessage) *logx.Fields {
 		f.UserID, f.RequestID = m.SessionScored.UserID.String(), m.SessionScored.RequestID
 	}
 	return f
-}
-
-// every is a Task's Run that calls pass each d until ctx ends. pass must log and
-// swallow its own errors: a Run that returns one stops the service.
-func every(d time.Duration, pass func(ctx context.Context)) func(ctx context.Context) error {
-	return func(ctx context.Context) error {
-		t := time.NewTicker(d)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-t.C:
-				pass(ctx)
-			}
-		}
-	}
 }

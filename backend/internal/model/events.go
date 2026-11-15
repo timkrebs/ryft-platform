@@ -5,16 +5,15 @@ import (
 )
 
 // ScoredEvent is published (routing key scored) when a local day first gets a
-// recovery after a night with sleep (scoring → notify: the morning push).
+// recovery after a night with sleep (scoring → notify: the morning push). It names the
+// day and holds no health value: notify reads the score from daily_scores when it sends,
+// and the event sits in Pub/Sub (and in notify's waiting rows) for days. Events of
+// older images still carry recovery, readiness, state, sleep_performance and sleep_min;
+// decoding ignores them.
 type ScoredEvent struct {
-	UserID           uuid.UUID `json:"user_id"`
-	Day              string    `json:"day"`
-	Recovery         int       `json:"recovery"`
-	Readiness        *int      `json:"readiness"`
-	State            string    `json:"state"`
-	SleepPerformance *int      `json:"sleep_performance"`
-	SleepMin         int       `json:"sleep_min"`
-	RequestID        string    `json:"request_id,omitempty"`
+	UserID    uuid.UUID `json:"user_id"`
+	Day       string    `json:"day"`
+	RequestID string    `json:"request_id,omitempty"`
 }
 
 // RefreshEvent is published (routing key refresh) when scoring has finished the
