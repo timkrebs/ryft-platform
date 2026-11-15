@@ -58,6 +58,10 @@ func testStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	if err := db.Migrate(ctx, pool, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		t.Fatal(err)
 	}
+	// CI's pooler job: the store's queries through PgBouncer in exec mode (pooler_test.go).
+	if pooled := pooledPool(t, name); pooled != nil {
+		return New(pooled), pool
+	}
 	return New(pool), pool
 }
 

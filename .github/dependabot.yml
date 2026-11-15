@@ -1,6 +1,6 @@
 # Dependency updates, weekly. Titles read "deps: bump …" (the pr-title rule). The site's
-# npm and Docker base images live in web/; the Go modules and the backend images are not
-# covered yet.
+# npm and Docker base images live in web/, the services' base images in backend/; the Go
+# modules are not covered yet.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -37,6 +37,17 @@ updates:
         update-types: ['version-update:semver-minor', 'version-update:semver-major']
       - dependency-name: node
         update-types: ['version-update:semver-major']
+  - package-ecosystem: docker
+    directory: /backend
+    schedule: { interval: weekly, day: monday }
+    commit-message: { prefix: deps }
+    # backend/Dockerfile pins golang:1.25-alpine and distroless static-debian12:nonroot by tag
+    # and digest (PR A2): new digests of the same tags arrive here. Go's minor version moves by
+    # hand, the build image with go.mod's floor, so no golang minor or major PRs.
+    cooldown: { default-days: 7 }
+    ignore:
+      - dependency-name: golang
+        update-types: ['version-update:semver-minor', 'version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly, day: monday }

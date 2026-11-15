@@ -266,10 +266,10 @@ jobs:
       # The gcloud Pub/Sub emulator, as compose runs it (docker-compose.yml, service pubsub: the same
       # image). A step, not a service container: a service container cannot take a command. Host
       # networking, so a push reaches a test's server on 127.0.0.1. It holds nothing but what the
-      # tests publish. TODO(pin): by digest, as in docker-compose.yml.
+      # tests publish. Pinned by the index digest, the same as docker-compose.yml's.
       - name: Start the Pub/Sub emulator
         env:
-          IMAGE: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+          IMAGE: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators@sha256:3989a42372d3b984bade6db02213d456d94a0ba3765e8b744b95c4188b6fcc89
         run: |
           docker run -d --name pubsub --network host "$IMAGE" \
             gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=ryft-local
@@ -319,6 +319,96 @@ jobs:
           ../scripts/coverage.sh baseline coverage
           ../scripts/coverage.sh gate coverage/total.txt coverage/main-total.txt
 
+  # The store's integration tests with their queries through PgBouncer in transaction mode and pgx's
+  # exec mode: what the services do on Cloud Run through Supavisor on 6543 (design §4, D221). Ubuntu's
+  # pgbouncer package (no image to pin), its own instance on 127.0.0.1:6543 with a wildcard database
+  # onto the job's Postgres; max_prepared_statements = 0, so it keeps no named statement for us (as
+  # Supavisor does not), and no ignore_startup_parameters, so an unknown startup parameter fails. The
+  # store's tests migrate and seed on the direct URL and hand the store a pool through the bouncer
+  # (RYFT_TEST_POOLER_URL, internal/store/pooler_test.go); TestPooler (RYFT_POOLER_URL) is the read-only
+  # check that runbook step 7 runs against Supavisor (make pooler-check). ubuntu-24.04: PgBouncer 1.22
+  # (max_prepared_statements needs 1.21).
+  pooler:
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env: { POSTGRES_PASSWORD: pw }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s
+          --health-timeout 5s --health-retries 15
+    env:
+      RYFT_TEST_POSTGRES_URL: postgres://postgres:pw@localhost:5432/postgres
+      RYFT_TEST_POOLER_URL: postgres://postgres:pw@127.0.0.1:6543/postgres?sslmode=disable&default_query_exec_mode=exec
+      RYFT_POOLER_URL: postgres://postgres:pw@127.0.0.1:6543/postgres?sslmode=disable&default_query_exec_mode=exec
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: PgBouncer in transaction mode on 127.0.0.1:6543
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update -qq
+          sudo apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends pgbouncer
+          sudo systemctl stop pgbouncer || true   # the package's own instance (6432); ours runs as the runner user
+          pgbouncer -V
+          d=$RUNNER_TEMP/pgbouncer; mkdir -p "$d"
+          printf '"postgres" "pw"\n' > "$d/userlist.txt"
+          cat > "$d/pgbouncer.ini" <<EOF
+          [databases]
+          * = host=127.0.0.1 port=5432
+
+          [pgbouncer]
+          listen_addr = 127.0.0.1
+          listen_port = 6543
+          unix_socket_dir =
+          auth_type = scram-sha-256
+          auth_file = $d/userlist.txt
+          pool_mode = transaction
+          max_prepared_statements = 0
+          max_client_conn = 200
+          default_pool_size = 5
+          logfile = $d/pgbouncer.log
+          pidfile = $d/pgbouncer.pid
+          EOF
+          pgbouncer -d "$d/pgbouncer.ini"
+          for _ in $(seq 1 30); do
+            if (exec 3<>/dev/tcp/127.0.0.1/6543) 2>/dev/null; then exit 0; fi
+            sleep 1
+          done
+          tail -50 "$d/pgbouncer.log" || true
+          echo "::error title=pgbouncer::not listening on 127.0.0.1:6543 after 30 s"
+          exit 1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      # First the read-only check on its own, so that a skip cannot pass for a pass.
+      - name: TestPooler through PgBouncer (exec mode, read-only, rolled back)
+        run: |
+          go test -count=1 -run '^TestPooler$' -v ./internal/store/ | tee "$RUNNER_TEMP/pooler.log"
+          grep -q -- '--- PASS: TestPooler' "$RUNNER_TEMP/pooler.log"
+      - name: The store's tests, the store's queries through PgBouncer
+        run: go test -count=1 ./internal/store/...
+      # The bouncer logs each client connection with its database (log_connections, on by default): the
+      # tests' own databases there mean the store's queries did go through it.
+      - name: The store's tests went through PgBouncer
+        run: |
+          n=$(grep -c 'ryft_storetest_' "$RUNNER_TEMP/pgbouncer/pgbouncer.log" || true)
+          echo "PgBouncer log lines naming a test database: $n"
+          [ "${n:-0}" -gt 0 ] || { echo "::error title=pooler::no ryft_storetest_ database in PgBouncer's log"; exit 1; }
+      - name: PgBouncer's log
+        if: failure()
+        run: tail -200 "$RUNNER_TEMP/pgbouncer/pgbouncer.log" || true
+
   lint:
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_go == 'true' || needs.changes.outputs.run_pkgmap == 'true'
@@ -339,6 +429,12 @@ jobs:
       # The package map in docs/ARCHITECTURE.md is generated (go list); fails when it is stale. Here, not in `smoke`:
       # this job has Go and the modules after the line above, and a change of docs/ARCHITECTURE.md alone selects it.
       - run: ./scripts/pkgmap.sh --check
+      # No session state in the services' Go and SQL (design §4, D221): no SET without LOCAL, LISTEN, temporary
+      # table, session advisory lock, named prepared statement or WITH HOLD cursor, which a transaction-mode pooler
+      # would leave on another client's server connection (`make lint` runs it too). bash, find and awk only; its
+      # fixtures run in `smoke` (make test-scripts), which a change of the script alone selects.
+      - name: No session state in the services' SQL (transaction pooler)
+        run: bash scripts/check_session_state.sh
 
   # The Pub/Sub topology's drift check: infra/gcp/pubsub.auto.tfvars.json (Terraform creates the topics and
   # subscriptions from it) and deploy/pubsub-emulator/init.sh (compose's) must be byte for byte what
@@ -854,7 +950,7 @@ jobs:
     # always(), not !cancelled(): a cancelled run must still report (red), because a skipped
     # required check counts as passing for branch protection.
     if: always()
-    needs: [changes, bytes, test, lint, topology, smoke, manifests, terraform, argocd-luatest, monitoring, admission, web-checks, web-e2e, secrets, golden-guard]
+    needs: [changes, bytes, test, pooler, lint, topology, smoke, manifests, terraform, argocd-luatest, monitoring, admission, web-checks, web-e2e, secrets, golden-guard]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -866,7 +962,7 @@ jobs:
 
   images:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.changes.outputs.services == 'true'
-    needs: [changes, bytes, test, lint, topology, manifests, smoke]
+    needs: [changes, bytes, test, pooler, lint, topology, manifests, smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -24,17 +25,47 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// Connect opens a pool and pings it. timestamptz values scan as UTC so every
-// timestamp the API emits is UTC regardless of the container's TZ.
-//
-// maxConns caps the pool (0 keeps pgx's default). Behind Supabase's Supavisor
-// in session mode every pooled connection holds a server connection, so the
-// services keep their pools small (DB_MAX_CONNS). Connections are recycled
-// every 30 minutes so pooler and server restarts are absorbed.
+// Connect opens a pool on PoolConfig(url, maxConns) and pings it.
 func Connect(ctx context.Context, url string, maxConns int) (*pgxpool.Pool, error) {
+	cfg, err := PoolConfig(url, maxConns)
+	if err != nil {
+		return nil, err
+	}
+	return connect(ctx, cfg)
+}
+
+// PoolConfig is the pool every service, the migrate job and the tests open. pgx
+// reads PGPASSWORD when url has none (Cloud Run's DATABASE_URL never has one, D221).
+// On Cloud Run (K_SERVICE or CLOUD_RUN_JOB set) url must also keep the rules of
+// cloudrun.go (urlFindings, serviceFindings), and an error never repeats url.
+//
+// maxConns caps the pool (0 keeps pgx's default). Connections are recycled every
+// 30 minutes so pooler and server restarts are absorbed.
+//
+// The pool keeps no session state on a server connection (design §4: the services
+// reach Supavisor's transaction pooler, which hands each transaction whichever server
+// connection is free): no startup parameter beyond what url names (serviceFindings
+// refuses any but application_name on a service), no hook that sends a statement.
+// AfterConnect only maps types on the client (registerTypes). TestPoolConfigHooks
+// pins this.
+func PoolConfig(url string, maxConns int) (*pgxpool.Config, error) {
+	env, service := cloudRun()
+	var findings []string
+	if env != "" {
+		findings = urlFindings(url)
+	}
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
-		return nil, fmt.Errorf("pgxpool: %w", err)
+		if env == "" {
+			return nil, fmt.Errorf("pgxpool: %w", err) // pgx's text: the URL with the password masked
+		}
+		return nil, refused(env, append(findings, "pgx cannot read it: "+parseReason(err)))
+	}
+	if service {
+		findings = append(findings, serviceFindings(cfg.ConnConfig)...)
+	}
+	if len(findings) > 0 {
+		return nil, refused(env, findings)
 	}
 	if maxConns > 0 {
 		cfg.MaxConns = int32(maxConns)
@@ -43,11 +74,31 @@ func Connect(ctx context.Context, url string, maxConns int) (*pgxpool.Pool, erro
 	cfg.MaxConnIdleTime = 5 * time.Minute
 	cfg.HealthCheckPeriod = time.Minute
 	cfg.AfterConnect = func(_ context.Context, c *pgx.Conn) error {
-		c.TypeMap().RegisterType(&pgtype.Type{Name: "timestamptz", OID: pgtype.TimestamptzOID,
-			Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC}})
+		registerTypes(c.TypeMap())
 		return nil
 	}
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	return cfg, nil
+}
+
+// registerTypes is all that AfterConnect does: mappings in the connection's type map,
+// no statement and no round trip.
+//   - timestamptz values scan as UTC, so every timestamp the API emits is UTC whatever
+//     the container's TZ.
+//   - []uuid.UUID is uuid[] when pgx has no parameter type to go by: with
+//     default_query_exec_mode=exec (the services on Cloud Run) parameters go out as text
+//     typed by their Go type alone, and pgx knows [16]byte but not slices of a named
+//     type, so the store's id slices (ANY($n), unnest($n::uuid[])) would not encode.
+//     In the default mode the server's parameter type decides, so this changes nothing
+//     there (TestExecModeEncoding).
+func registerTypes(m *pgtype.Map) {
+	m.RegisterType(&pgtype.Type{Name: "timestamptz", OID: pgtype.TimestamptzOID,
+		Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC}})
+	m.RegisterDefaultPgType([]uuid.UUID(nil), "_uuid")
+}
+
+// connect opens a pool on a copy of cfg and pings it.
+func connect(ctx context.Context, cfg *pgxpool.Config) (*pgxpool.Pool, error) {
+	pool, err := pgxpool.NewWithConfig(ctx, cfg.Copy())
 	if err != nil {
 		return nil, fmt.Errorf("pgxpool: %w", err)
 	}
@@ -67,15 +118,35 @@ const MigrateWait = 10 * time.Minute
 // Open is how a service connects: it retries with backoff while the database
 // or the service's role is not ready yet (the migrate job sets the role
 // passwords), then waits until the schema is current, all within MigrateWait.
+//
+// A DATABASE_URL that PoolConfig refuses is a setting, not a state: it fails at
+// once. On Cloud Run a refused login fails at once as well (stopRetrying): each
+// failed login feeds Supavisor's circuit breaker, which then blocks the whole role
+// (design §4), and Cloud Run's next cold start is the retry.
 func Open(ctx context.Context, url string, maxConns int, log *slog.Logger) (*pgxpool.Pool, error) {
+	cfg, err := PoolConfig(url, maxConns)
+	if err != nil {
+		return nil, err
+	}
+	env, _ := cloudRun()
 	wait, cancel := context.WithTimeout(ctx, MigrateWait)
 	defer cancel()
 	var pool *pgxpool.Pool
-	err := retry.Until(wait, log, "database", retry.Startup, func(context.Context) error {
-		p, err := Connect(ctx, url, maxConns) // the pool outlives the wait
+	var final error // a login refused on Cloud Run: ends the wait
+	logins := 0
+	err = retry.Until(wait, log, "database", retry.Startup, func(context.Context) error {
+		p, err := connect(ctx, cfg) // the pool outlives the wait
 		pool = p
+		if err != nil && env != "" && stopRetrying(err, &logins) {
+			final = err
+			cancel()
+		}
 		return err
 	})
+	if final != nil {
+		return nil, fmt.Errorf("database: %w (not retried on Cloud Run, %s is set: every failed login feeds "+
+			"Supavisor's circuit breaker for the whole role)", final, env)
+	}
 	if err != nil {
 		return nil, err
 	}
