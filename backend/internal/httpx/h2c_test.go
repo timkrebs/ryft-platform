@@ -32,8 +32,12 @@ func serve(t *testing.T, h http.Handler) (*http.Server, string) {
 func h2cClient() *http.Client {
 	var p http.Protocols
 	p.SetUnencryptedHTTP2(true)
-	return &http.Client{Transport: &http.Transport{Protocols: &p}, Timeout: 30 * time.Second}
+	return &http.Client{Transport: &http.Transport{Protocols: &p}, Timeout: bigBodyTimeout}
 }
+
+// bigBodyTimeout bounds one 32 MiB request in these tests. Under -race with coverage, CI's runners
+// take about 30 s for it (2026-11-15, PR #171), so 30 s was a coin toss; a real hang still fails.
+const bigBodyTimeout = 3 * time.Minute
 
 // syncBody is a JSON document of exactly n bytes: {"pad":"aaa…"}.
 func syncBody(n int) []byte {
