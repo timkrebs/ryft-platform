@@ -699,7 +699,13 @@ jobs:
       # -backend=false: never touch the HCP Terraform workspace from CI (D56).
       - run: terraform init -backend=false -input=false
       - run: terraform validate
-      - run: tflint --init && tflint --format compact
+      # --init fetches the plugins from GitHub's releases. Anonymous, that API allows 60 requests an hour per
+      # address, and a shared runner's address is often over it (a 403, three times by 2026-11-15). The job's
+      # token (contents: read, the workflow's default) lifts the limit; only this step gets it, not the lint run.
+      - run: tflint --init
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - run: tflint --format compact
       - run: terraform test
       # The release's lifecycle conditions (a set or a second values document must be refused): edits a copy.
       - if: matrix.root == 'infra/aws/kubernetes'
