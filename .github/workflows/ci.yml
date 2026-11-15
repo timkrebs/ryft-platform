@@ -480,7 +480,12 @@ jobs:
           image=$(awk '$1 == "FROM" && $NF == "build" { for (i = 2; i < NF; i++) if ($i ~ /^golang:/) print $i }' backend/Dockerfile)
           case "$image" in
             golang:*@sha256:*) echo "build image: $image" ;;
-            *) echo "::error title=govulncheck::backend/Dockerfile has no golang build stage pinned by digest (found '$image')"; exit 1 ;;
+            golang:*)
+              # A new Go line (a hand PR): name the digest to pin, then fail. The pull's own "Digest:" is the index's.
+              docker pull "$image" || true
+              echo "::error title=govulncheck::backend/Dockerfile's build stage $image is not pinned by digest: pin the Digest above"
+              exit 1 ;;
+            *) echo "::error title=govulncheck::backend/Dockerfile has no golang build stage (found '$image')"; exit 1 ;;
           esac
           # -show verbose: the standard library's version it judged, and the findings the code does not reach.
           docker run --rm -v "$PWD/backend:/src:ro" -w /src "$image" go run "$GOVULNCHECK" -show verbose ./...
