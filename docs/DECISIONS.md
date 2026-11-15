@@ -4940,3 +4940,44 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   over `db.ServiceRoles`). A future migration that turns a float into text on the server runs as the owner with
   Supabase's 0, so it must not rely on more than 15 digits. A server connection Supavisor already has open keeps
   the old value until it closes. At the first deploy there are none, because migrate runs before the services.
+
+## D229 — The Go dependencies are checked before the merge: govulncheck as shipped, plus the deploy gate's Trivy rule (pgx 5.9)
+
+- **Context:** runbook step 8 stopped on 2026-11-15. `deploy.yml` run 43756793439's Trivy gate (critical, with a fix)
+  found CVE-2026-33815 and CVE-2026-33816 in the api image's pgx v5.7.5 (fixed in 5.9.0). Nothing was pushed. Three
+  gaps let it get that far: Dependabot didn't watch Go, a pull request's CI never scanned the services (`images` and
+  its Trivy run on main only), and two flakes on main had held the run before (tflint's plugin download, an h2c test).
+- **Decision:**
+  - **pgx v5.9.2**, the latest 5.9.x. It also fixes GO-2026-5004, a SQL injection through dollar-quoted strings in
+    pgx's sanitizer (fixed in 5.9.2), which our code reaches. go.mod's floor moves to Go 1.25.0 (pgx 5.9's), which the
+    build image already has. Nothing in the changelog touches `exec` mode, text results or how a DSN and
+    `PGPASSWORD` are read. New since 5.8 are `min/max_protocol_version` (default 3.0) and `channel_binding` (default
+    `prefer`, as in libpq).
+  - **golang.org/x/text v0.41.0**: govulncheck reaches GO-2026-6629 and GO-2026-5970 through pgx's SCRAM login.
+    golang.org/x/sys stays: its only finding (GO-2026-5024) is in `x/sys/windows`, not called.
+  - **A `vulns` job in ci.yml, required by `ci-ok`**, when the Go changes and on every push to main:
+    - **govulncheck v1.7.0**, in backend/Dockerfile's build image by its digest, so it judges the standard library we
+      ship. Any reachable finding fails, whatever its severity. v1.7.0 is the last release that builds with Go 1.25.
+    - **Trivy**, the deploy gate's image and flags, `fs` on backend/go.mod. A pull request now fails on what would stop
+      `deploy.yml`.
+  - **Dependabot `gomod` on /backend**, grouped minor and patch, like the npm block.
+  - **tflint `--init` gets the job's token** (`contents: read`), for GitHub's API limit.
+  - **The cut has a cause** (`errCut`, wrapping `context.Canceled`). The in-flight test waits for the request's
+    context and checks its cause, so it no longer reads the context at a racing moment.
+- **Why both scanners:** govulncheck puts the two CVEs in a package we import (pgproto3) but in no function we call.
+  Alone, it would not have stopped what the gate stops. Trivy has no reachability, can't see the build image's
+  standard library from a go.mod, and its critical-only rule let GO-2026-5004 through. Together, a pull request fails
+  on what the gate would refuse, and on anything our code reaches.
+- **Alternatives:**
+  - govulncheck with setup-go and `go-version-file`: that installs exactly 1.25.0, whose standard library isn't the one
+    we ship, so it would report findings the image doesn't have.
+  - A `toolchain` line in go.mod: a second Go version to move by hand, which Dependabot's docker updates don't move.
+  - govulncheck `-scan package`: closer to Trivy, but it also fails on any standard-library advisory in a package we
+    import, reachable or not. Trivy's critical-only module rule is the narrower match for the gate.
+  - Building the images on a pull request and scanning them as `deploy.yml` does: the exact gate, but five image
+    builds per Go PR.
+- **Consequences:** a vulnerability published after a merge turns the next push's `ci-ok` red, and `deploy.yml` then
+  deploys nothing until the fix lands (OPERATIONS → The vulns job went red). Go 1.25 gets no more fixes, so a
+  reachable standard-library finding means a new Go minor in the build image. govulncheck's pin moves with it (v1.8.0
+  needs Go 1.26). Trivy on go.mod also sees test-only modules, which the images don't contain, so it is a little
+  stricter than the gate.
