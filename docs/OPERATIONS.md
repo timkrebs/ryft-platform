@@ -269,7 +269,7 @@ rm infra/gcp/apply-1.tfplan
 
 ```text
 # Apply 1: 116 to add, 0 to change, 0 to destroy.
-#   16 APIs + 3 audit configs (Secret Manager, STS, IAM credentials) + 2 service agents      = 21
+#   16 APIs + 3 audit configs (Secret Manager, STS, IAM) + 2 service agents                  = 21
 #    8 accounts + 1 token creator + 1 run.developer + 5 actAs + 1 monitoring.viewer          = 16  (37)
 #    1 GitHub pool + 1 provider + 1 workloadIdentityUser                                     =  3  (40)
 #   11 secrets + 11 accessor bindings                                                        = 22  (62)

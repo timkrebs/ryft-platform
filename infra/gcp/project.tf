@@ -30,9 +30,9 @@ locals {
   # Data Access audit logs (DATA_READ), below.
   #   secretmanager:  every secret read (who, which version; D222);
   #   sts:            every token exchange through a pool (GitHub -> ryft-deployer, HCP Terraform);
-  #   iamcredentials: every token minted for an account through the IAM credentials API (the
-  #                   deployer's access token after the exchange, anyone impersonating an account).
-  data_read_audit = toset(["secretmanager.googleapis.com", "sts.googleapis.com", "iamcredentials.googleapis.com"])
+  #   iam:            every token minted for an account through the IAM credentials API (the
+  #                   deployer's access token after the exchange, impersonation). Configured on IAM: the credentials API has no audit config of its own.
+  data_read_audit = toset(["secretmanager.googleapis.com", "sts.googleapis.com", "iam.googleapis.com"])
 }
 
 resource "google_project_service" "keep" {
