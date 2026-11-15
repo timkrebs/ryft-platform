@@ -580,7 +580,7 @@ is this, and nothing else:
    the red run. Write the missing permission into the hold's issue: narrowing the deployer again
    is a later PR.
 
-Then the two tests (design §3, §5.1):
+Then the three tests (design §3, §5.1, §4):
 
 ```bash
 # 1. 33 MiB through ingest.ryftlab.de must get OUR JSON 413, which proves HTTP/2 end to end.
@@ -596,27 +596,42 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -H @- -H 'Content-Type: 
   --data-binary @"$f" -w '\n%{http_code} %{content_type}\n' https://ingest.ryftlab.de/v1/sync
 rm -f "$f"; unset TOKEN                             # "request body over 33554432 bytes", then 413 application/json
 
-# 2. A forged X-Forwarded-For, from a known address.
-dig +short myip.opendns.com @resolver1.opendns.com  # your address
-for h in api ingest; do
-  curl -sS -o /dev/null -w "%{http_code} $h\n" -H 'X-Forwarded-For: 203.0.113.7' "https://$h.ryftlab.de/health/ready"
+# 2. Three forged X-Forwarded-For entries; once a minute, three times (the line below is
+#    sampled once a minute per instance, and a tick may have taken the minute).
+for i in 1 2 3; do
+  for h in api ingest; do
+    curl -sS -o /dev/null -w "%{http_code} $h\n" \
+      -H 'X-Forwarded-For: 203.0.113.7, 203.0.113.8, 203.0.113.9' "https://$h.ryftlab.de/health/ready"
+  done
+  [ "$i" = 3 ] || sleep 61
 done
 ```
 
-Then the address `httpx.ClientIP` picked: api and ingest log a `client address` line for a
-request with `X-Forwarded-For`, at most once a minute per instance (D222). If a host shows no
-line, wait a minute and send its request again.
+Then which entry `httpx.ClientIP` took. api and ingest log a `client address` line for a request
+with `X-Forwarded-For`, at most once a minute per instance. It holds no address (D222: no IP
+address in any log line), only `picked` (`xff` or `remote`), `xff_index` (the picked entry's
+position from the left, from 0) and `xff_entries`. That `ClientIP` takes the right entry in each
+shape Google could send (the address appended, a hop of its own after it, nothing appended) and
+that `xff_index` points at that entry is proven by `TestStepNineUnderGoogleFrontEnd` in
+`backend/internal/httpx`. This test checks which shape Google really sends.
 
 ```bash
-gcloud logging read 'resource.type="cloud_run_revision" AND jsonPayload.message="client address"' \
-  --project=ryftlab-prod --freshness=10m --limit=4 \
-  --format='value(resource.labels.service_name,jsonPayload.client_ip,jsonPayload.xff_entries,jsonPayload.remote_host)'
+gcloud logging read 'resource.type="cloud_run_revision" AND jsonPayload.message="client address" AND jsonPayload.xff_entries>=3' \
+  --project=ryftlab-prod --freshness=10m --limit=10 \
+  --format='value(resource.labels.service_name,jsonPayload.picked,jsonPayload.xff_index,jsonPayload.xff_entries)'
 ```
 
-`client_ip` must be your address from `dig`, not `203.0.113.7` and not a Google one, on both
-services (`xff_entries` is 2 or more: your forged entry and Google's). If it's a Google address,
-Google appends a hop that `ClientIP` doesn't skip yet: every client would share one bucket.
-That's a stop for testers, not for the deploy: a PR adds the range to `ClientIP`'s skip list.
+Your requests are the lines with `xff_entries` 3 or more (other callers send none of their
+own). On both services:
+- **Pass:** `picked` is `xff` and `xff_index` is `3`: the entry Google appended after your three
+  is the key. `xff_entries` is 4, or more if Google adds a hop from its known front-end ranges,
+  which `ClientIP` skips.
+- **Stop for testers** (not for the deploy): `xff_index` is 4 or more. Google appends a hop that
+  `ClientIP` doesn't skip, so every client would share one bucket. A PR adds the range from
+  Google's published front-end ranges to `googleFrontEnds`, with a test case.
+- **Stop for testers:** `xff_entries` is 3 and `xff_index` is 2. Google appended nothing, so
+  the forged entry wins: the per-address limits can be dodged. Report it before the beta opens.
+- No line with 3 or more entries on a host: send that host's loop again.
 
 3. `make smoke-supabase` against the two hosts, as the smoke user (step 9's `REF` is still set):
    a sign-in, `/v1/me`, a sync of synthetic days into that user, and the score read back,
@@ -3406,10 +3421,12 @@ deletion does not touch it; a deleted account's tombstone refuses the row). Whic
 read the answers: `ADMIN_WEB_ORIGINS` in `deploy/k8s/base/api/config.env` (a comma-separated
 list of exact origins, e.g. `https://ryftlab.de`; empty means no browser page can, scripts are
 unaffected; a malformed value stops the api at start-up, before it waits for the database, and a
-test parses the committed line). Every `/v1/admin/*` request is limited per client address (10 a
-second, bursts of 20, per pod; the address is the rightmost `X-Forwarded-For` entry, Traefik's;
-never logged; the map is bounded only by evicting a bucket idle for 10 minutes and needs a cap
-before IPv6 clients arrive), and every admin log line carries `admin_actor` (`key:3fa1c2d9` or `user:1b2c3d4e`,
+test parses the committed line). Every `/v1/admin/*` request but one bearing `ADMIN_API_KEY` is
+limited per client address (10 a second, bursts of 20, per instance; the address is
+`httpx.ClientIP`'s, the rightmost `X-Forwarded-For` entry that isn't Google's front end; never
+logged; the map holds 4,096 addresses, newer ones share one bucket, D222). The key passes before
+the limiter, so a flood of new addresses can't lock the break-glass key out. Every admin log line
+carries `admin_actor` (`key:3fa1c2d9` or `user:1b2c3d4e`,
 the first 8 hex digits). The audit (`GET /v1/admin/audit`) names the actor: `actor.kind` `user` or `key`.
 
 **Setting up the operator account (once, in this order).** Before step 1 the Supabase project must be set as

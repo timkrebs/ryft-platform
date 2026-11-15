@@ -58,11 +58,13 @@ dashboard in [`OBSERVABILITY.md`](OBSERVABILITY.md).
 **Lifecycle.** All four services start and stop through `internal/app`: their `main` hands
 `app.Main` a `Spec` (settings, and a `Build` that returns the routes, push handlers and tick
 steps), and app does the rest in one order. The settings (OTLP's included) are read before
-anything connects (D78); then the transport (it dials nothing), then **the HTTP port, before
-the pool** (D220): `/health/live` answers at once, which is Cloud Run's startup and liveness
-probe, the ready paths answer 503 until the start is done, other requests wait up to 5 s for
-it, and a tick that comes before the pool is open sets `ryft_db_up` 0 and pushes the metrics.
-Then the pool (it retries until the role logs in and the schema is current), the outbox and
+anything connects (D78); then the transport (its one network call is the first fetch of
+Google's JWKS, at most 10 s), then **the HTTP port, before the pool** (D220): `/health/live`
+answers at once, which is Cloud Run's startup and liveness probe, the ready paths answer 503
+until the start is done, other requests wait up to 5 s for it, and a tick that comes before
+the pool is open sets `ryft_db_up` 0 and pushes the metrics. Then the pool (it retries until
+the role logs in and the schema is current; on Cloud Run a refused login holds the instance
+up instead, and a tick retries the login at most every 5 minutes, D221), the outbox and
 `Build`, and the start gate opens. One signal handler: on SIGTERM, or when any task fails or
 panics, the ready paths answer `draining`, HTTP drains (3 s for api and ingest, 2 s for
 scoring and notify, then the handlers' contexts are cancelled so their connections come
@@ -190,8 +192,8 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 14 files (Postgres) |
 | `internal/eventbus` | owns building a service's Pub/Sub transport from its configuration: the Bus, the push verifier, the push and tick handlers and the wait sender. | auth, config, events, events/pubsub | 1 file |
 | `internal/events` | owns the five trigger events the services exchange, their encoding, and what a handler's error means. | logx, metrics, model | 1 file |
-| `internal/events/outbox` | owns the outbox table's rows and the relay that moves them to the broker, so an event is never lost between a database write and a publish. | events, metrics | 1 file (Postgres) |
-| `internal/events/pubsub` | owns events.Bus on Pub/Sub over REST, the push and tick handlers, and the topology that Terraform's and the emulator's files are written from. | auth, config, events, metrics | 5 files (Pub/Sub emulator) |
+| `internal/events/outbox` | owns the outbox table's rows and the relay that moves them to the broker, so an event is never lost between a database write and a publish. | events, httpx, metrics | 1 file (Postgres) |
+| `internal/events/pubsub` | owns events.Bus on Pub/Sub over REST, the push and tick handlers, and the topology that Terraform's and the emulator's files are written from. | auth, config, events, httpx, metrics | 5 files (Pub/Sub emulator) |
 | `internal/flags` | evaluates remote-config feature flags for one user (GET /v1/config): flags and a user id in, booleans out. | model | 1 file |
 | `internal/gate` | owns the decision and the answer of the beta invite gate and the consent gate, for a user the caller has already loaded. | config, httpx, metrics, model | 2 files |
 | `internal/httpx` | owns the HTTP plumbing every service shares: error shape, JSON I/O with size and NUL rules, the middleware chain, the server, health, the logger. | logx, metrics | 8 files |

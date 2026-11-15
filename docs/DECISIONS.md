@@ -4706,8 +4706,9 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     (`TestH2CCarriesAFullSync`). Runbook step 9 sends 33 MiB through the mapping and must get our JSON 413.
   - **All four services on `internal/app`.** api and ingest hand app their whole mux (`Parts.Handler`), so one start
     and one shutdown cover every service.
-  - **The port opens before the pool.** Order: settings (OTLP's too), the transport (it dials nothing), the listener,
-    then the pool, the outbox and `Build`, and the start gate opens (`app/gate.go`). Until then:
+  - **The port opens before the pool.** Order: settings (OTLP's too), the transport (its one network call is the first
+    fetch of Google's JWKS, at most 10 s, so the port may open that late, within the startup probe's 20 s), the
+    listener, then the pool, the outbox and `Build`, and the start gate opens (`app/gate.go`). Until then:
     - `/health/live` and `/healthz` answer `200 {"status":"ok"}`: Cloud Run's startup (1 s × 20) and liveness probe.
     - The ready paths answer 503 (`{"error":"starting"}` locally, `{"error":"not ready"}` on Cloud Run).
     - Any other request waits up to 5 s (and its own context), then gets `503 {"error":"temporarily unavailable,
@@ -4754,8 +4755,14 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     `verify-full`, no `sslrootcert`. A service (`K_SERVICE`) also needs port 6543, `exec` mode and no startup parameter
     except `application_name` (PgBouncer and Supavisor refuse unknown ones). The error names the setting, never the
     userinfo. A refused URL fails at once.
-  - **A refused login or `ECIRCUITBREAKER` is not retried;** one retry for Supavisor's "recently changed". Failed
-    logins trip the breaker for the whole role (design §4).
+  - **A refused login or `ECIRCUITBREAKER` is not retried in a loop;** one retry for Supavisor's "recently changed".
+    Failed logins trip the breaker for the whole role (design §4).
+  - **On a refusal the instance stays up and holds** (`db.LoginRefused`, `app.holdLogin`). An exit would be a crash
+    loop: each new instance logs in once more and keeps the breaker shut, and no tick would report the outage.
+    While it holds, every request but the health paths gets the start's 503 at once, the ready paths' logged cause
+    says the login was refused, and a tick reports `ryft_db_up 0`. A tick with a valid token gets one login retry at
+    most every 5 minutes (in practice one per 15-minute tick), bounded to 20 s; a tick is when the instance has
+    CPU. A retry that passes opens the gate and that tick is served.
   - **`exec` mode sends Go types as their own OIDs:** a `[]byte` goes as `bytea`, which a `jsonb` column refuses. The
     store's five jsonb parameters are strings now, and `[]uuid.UUID` is registered in `db`.
   - **Session state is checked:** `scripts/check_session_state.sh` (in `make lint`) fails on a session `SET`,
@@ -4789,15 +4796,23 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   - **Jobs:** with `CLOUD_RUN_JOB` (and no `K_SERVICE`) the push identity and `GCP_PROJECT` are optional, but checked
     when set. A `scoring rescore` job needs `DATABASE_URL`, `PGPASSWORD`, `CONSENT_ENFORCE`, `LOG_LEVEL`. There is no
     such job in `deploy/run` yet.
-  - **`httpx.ClientIP`:** walk `X-Forwarded-For` from the right, skip private, CGNAT and Google front-end ranges, take
-    the first public address, else `RemoteAddr`; never the leftmost entry. IPv6 is cut to /64.
-  - **The `client address` log line:** info, at most once a minute per instance, with the entry count, the picked
-    address and the remote host, and nothing else (no request ID, user, route or header). Runbook step 9 reads it to
-    see that a forged header doesn't win. Cloud Run's request log already holds the same address for 14 days.
+  - **`httpx.ClientIP`:** walk `X-Forwarded-For` from the right, skip only Google's front-end ranges (35.191.0.0/16,
+    130.211.0.0/22 and their IPv6 /64s), and take the next entry as it is, else `RemoteAddr`; never the leftmost
+    entry. A private, CGNAT, link-local or loopback entry is a client (one inside a VPC), not a hop: skipping it would
+    let the forged entry to its left be the key (security review of A2). IPv6 is cut to /64.
+    `TestStepNineUnderGoogleFrontEnd` proves the choice for each shape Google could send.
+  - **No IP address in any log line** (head-architect's rule, 2026-11-15): the privacy text in force promises logs
+    without them, so no address is logged, whole or as a /24 or /48. The `client address` line (info, at most once
+    a minute per instance, no request ID, user, route or header) holds `picked` (`xff`|`remote`), `xff_index` (the
+    picked entry's position from the left) and `xff_entries`. Runbook step 9 sends three forged entries and checks
+    `xff_index` is 3. The keys are in the log tests' allowlists (`clientAddressKeys`, `adminLogKeys`).
   - **The admin limiter is capped** at 4,096 addresses; new ones beyond that share one bucket (`adminlimit_test.go`).
+    A request bearing `ADMIN_API_KEY` passes before the limiter (constant-time check), so a flood that fills the
+    cap and the shared bucket can't lock the break-glass key out (`TestAdminKeyPassesTheLimit`).
 - **Why:** design §5.1: Vault, admission and Traefik are gone, so their guarantees move to IAM, the code and CI.
   Domain mappings give IPv6 clients, and one /48 is about 65k /64 keys.
-- **Alternatives:** Binary Authorization (price unchecked); a per-instance limit keyed by the leftmost entry (forgeable).
+- **Alternatives:** Binary Authorization (price unchecked); a per-instance limit keyed by the leftmost entry
+  (forgeable); logging the picked address's /24 or /48 for step 9 (refused: still an address under the rule above).
 - **Consequences:** limits are per instance and reset at a cold start; the aggregate is bounded by max-instances.
   Under a flood of new addresses the admin route's newcomers share one bucket, so they may wait; the known ones keep
   theirs.

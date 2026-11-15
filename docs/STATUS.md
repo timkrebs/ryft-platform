@@ -90,15 +90,17 @@ emulator, `scripts/dlq.sh` on gcloud, RabbitMQ and `amqpbus` gone from code, com
 stays until D3), `MESSAGING_DESIGN.md`, DECISIONS D216–D219, and API.md's two hosts. Plan `plan-a1.md`, handover
 `a1-interfaces.md`, review `review-a1.md`.
 
-**A2** (`backend: the Cloud Run runtime`, branch `backend/cloudrun`, 2026-11-15) leaves main deployable. Plan `plan-a2.md`,
-review `review-a2.md`. It contains:
+**A2** (`backend: the Cloud Run runtime`, #171, branch `backend/cloudrun`, 2026-11-15) leaves main deployable. Plan
+`plan-a2.md`, review `review-a2.md`. It contains:
 - h2c on one port with the 32 MiB sync unchanged; all four services on `internal/app`, which listens before the pool;
   `/health/live` and `/health/ready` (a generic, cached 503 on Cloud Run); Grace 10 s with the handlers' contexts cut at
-  the end (D220);
+  the end, the outbox's and the tick's detached work included (D220);
 - the transaction pooler with `exec` mode and `verify-full`, the Supabase CA in every image, `db.Open`'s refusals on Cloud
-  Run, the store's jsonb parameters as strings, the session-state check, CI's PgBouncer job, `make pooler-check` (D221);
-- P5 in `config.LoadAuth`, `ClientIP` behind Google's front end with the sampled `client address` line, the admin
-  limiter's cap, jobs without the push identity (D222); Supabase's JWKS fetched on the request when no keys are loaded;
+  Run, a refused login that holds the instance up and retries on a tick at most every 5 minutes instead of a crash loop,
+  the store's jsonb parameters as strings, the session-state check, CI's PgBouncer job, `make pooler-check` (D221);
+- P5 in `config.LoadAuth`; `ClientIP` behind Google's front end (only Google's ranges skipped) with a sampled
+  `client address` line that holds no address; the admin limiter's cap, with `ADMIN_API_KEY` passing before it; jobs
+  without the push identity (D222); Supabase's JWKS fetched on the request when no keys are loaded;
 - the OTLP push at each tick and at SIGTERM, Cloud Logging's keys on Cloud Run, no `:9090` there (D224); `OutboxStuck`'s
   text;
 - base images and the emulator and curl images by digest, Dependabot for `backend/`;
