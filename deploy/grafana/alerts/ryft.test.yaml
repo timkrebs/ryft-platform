@@ -177,17 +177,20 @@ tests:
           - exp_labels: { severity: warning, publisher: ingest }
             exp_annotations: { summary: "ingest: outbox events waiting over 30 minutes for Pub/Sub" }
       - { eval_time: 120m, alertname: OutboxBacklog, exp_alerts: [] }
-  - name: OutboxStuck
+  - name: OutboxStuck, from the push after the sweep that set a row aside; a gauge at 0 stays quiet
     interval: 15m
     input_series:
       - { series: 'ryft_outbox_stuck{job="ryft/api",instance="api-1",publisher="api"}', values: '0 0 2 2' }
+      - { series: 'ryft_outbox_stuck{job="ryft/ingest",instance="ingest-1",publisher="ingest"}', values: '0 0 0 0' }
     alert_rule_test:
       - { eval_time: 20m, alertname: OutboxStuck, exp_alerts: [] }
       - eval_time: 35m
         alertname: OutboxStuck
         exp_alerts:
           - exp_labels: { severity: warning, publisher: api }
-            exp_annotations: { summary: "api: outbox events set aside after 50 failed sends" }
+            exp_annotations:
+              summary: "api: outbox events set aside, refused by Pub/Sub or after 50 failed tick sweeps (last_error says which)"
+              runbook: "docs/OPERATIONS.md → Dead letters and the outbox"
   - name: PublishFailing for 15 minutes
     interval: 15m
     input_series:

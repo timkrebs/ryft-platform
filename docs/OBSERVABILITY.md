@@ -1,11 +1,99 @@
 # RYFT — observability
 
-Each service (ingest, scoring, api) serves Prometheus metrics on `GET /metrics` on its
-own port, **9090** (`METRICS_PORT`, no auth), apart from the API and probe port 8080.
-The Ingress only routes `/v1/*`, so `/metrics` is never public. Logs are JSON (`slog`)
-on stdout and shipped to CloudWatch; see **Logs** below.
+On Cloud Run nothing scrapes the services and they have no metrics port: each instance
+**pushes** its Prometheus registry to Grafana Cloud by OTLP at the end of each tick and once on
+SIGTERM (**The OTLP push** below, D224). Without Cloud Run (compose) each service serves
+`GET /metrics` on its own port, **9090** (`METRICS_PORT`, no auth), apart from the API and
+probe port 8080, and pushes nothing. The probes are `/health/live` and `/health/ready`
+(**Health paths** below). Logs are JSON (`slog`) on stdout: Cloud Logging on Cloud Run; see
+**Logs** below.
+
+## The OTLP push (Cloud Run)
+
+**When.** At the end of every `POST /internal/tick` (the Scheduler job `ryft-tick`, every 15
+minutes): the tick's final step, after `ryft_ticks_total` and the steps' gauges are set and
+before the `204`, within 10 s (`FinallyBudget`), so the push carries this tick's counts. And
+once on SIGTERM, after the HTTP step of the shutdown, within its budget. Never in between: with
+request-based billing an instance has no CPU outside a request, so a timer would not run. An
+instance that handles no tick pushes once, when it stops. Each push sends the cumulative values,
+so a failed one loses resolution, not counts: the next tick sends them again.
+
+**What.** One request per push: `POST <OTLP_ENDPOINT>/v1/metrics`, OTLP/HTTP with JSON encoding
+(`Content-Type: application/json`, gzipped), basic auth `OTLP_USER:OTLP_TOKEN`. It carries every
+series of the registry: the `ryft_*` metrics below and Go's `go_*` and `process_*`. Counters are
+cumulative monotonic sums, gauges (and untyped values) gauges, histograms explicit-bucket
+histograms, summaries summaries; cumulative points start at the process start. Names are sent as
+the registry has them, without a unit and without an instrumentation scope, so they arrive in
+Mimir unchanged: `ryft_ticks_total` (one `_total`), `ryft_http_request_duration_seconds_bucket`.
+Why that encoding gives those names, and what is not yet checked against Grafana Cloud:
+`internal/metrics` (package doc, "Names").
+
+**Labels.** The resource is `service.namespace="ryft"`, `service.name="<svc>"` and
+`service.instance.id` (16 random hex digits, new for every process: one per Cloud Run instance).
+Grafana Cloud makes them `job="ryft/<svc>"` and `instance="<id>"` on every series, and one
+`target_info` series per instance. The series' own labels follow unchanged (one with an empty
+value is left out, as Prometheus does). The rules select `job`, never `namespace` (the cluster's
+label, gone with EKS).
+
+**Configuration** (`deploy/run/config.env`, the secret `otlp-token`; `config.LoadOTLP`):
+
+| Variable | Value |
+| --- | --- |
+| `OTLP_ENDPOINT` | `https://otlp-gateway-<zone>.grafana.net/otlp` exactly: the stack's OpenTelemetry page. https, lower case, no port, no userinfo, query or fragment, the path `/otlp` (the push adds `/v1/metrics`). Only Grafana's gateways (`otlp-gateway-*.grafana.net`), not any name under `grafana.net`: a stack's own `<name>.grafana.net` is named by whoever creates it, and the token goes with every push |
+| `OTLP_USER` | the stack's instance ID, digits |
+| `OTLP_TOKEN` | the `otlp-token` secret: an access policy token with `metrics:write` only. Printable ASCII, at least 16 characters; surrounding whitespace (a secret file's newline) is trimmed |
+
+`OTLP_ENDPOINT` and `OTLP_USER` both empty means **no push**, and the token is then ignored
+(Cloud Run injects `otlp-token` into every service either way): the services start without
+metrics, and `TickMissing` fires once the rules are loaded. One without the other, another host
+or path, a user that is not digits, or a missing or malformed token stops the start (exit 1,
+like any configuration error; the error names the variable). No error quotes the values, so a
+token pasted into the wrong variable stays out of the log.
+
+**Failures.** A push is one request and is never retried in a loop. Its error (`otlp push: HTTP
+<status>: <the first line of the answer, at most 200 bytes>`, or the transport's error; the token
+and the basic auth value are replaced by `[token]`) is logged once by the caller: the tick's
+`tick: the final step failed`, or the shutdown's step line. A push the gateway accepts but whose
+answer reports rejected points (OTLP's partial success: out of order, too old, a limit) logs
+`metrics push: points rejected` at warn, with `rejected` and `err`. Two pushes of one instance
+never overlap (the second waits, within its own budget), so a series' samples arrive in order.
+All four services failing at once is `TickMissing` for all four (Alerts below).
+
+**Series.** Every instance is a new set of series (`instance`), and with min instances 0 most
+live minutes. An api instance that served the usual routes holds a few hundred series (the HTTP
+histograms per route dominate), scoring and notify fewer, plus about 50 `go_*`/`process_*` each.
+The free tier's 10k active series leave room for some dozens of instances in a window.
+
+**Check after the first push** (runbook step 11, Explore): `count by (job) (ryft_ticks_total)`
+lists the four `ryft/<svc>` jobs; `{__name__=~".+_total_total"}` and
+`{__name__=~"ryft_.+_(seconds|bytes)_(seconds|bytes).*"}` are empty (no suffix added twice);
+`ryft_http_request_duration_seconds_bucket` has an `le` label. If Grafana Cloud adds labels of its
+own (`service_name`, `otel_scope_name`, …) nothing breaks: the rules aggregate by the labels they
+name. If a name differs, the encoding in `internal/metrics` is what to change, not the rules.
+
+## Health paths
+
+| Path | Same handler as | Answers | Used by |
+| --- | --- | --- | --- |
+| `GET /health/live` | `/healthz` | `200 {"status":"ok"}` while the process runs, from the moment it listens | Cloud Run's **startup probe** (every 1 s, 20 tries) and liveness probe (`deploy/run/<svc>.yaml`) |
+| `GET /health/ready` | `/readyz` | `200 {"status":"ready"}` when the service's checks pass (the database, and where it has one the signing keys); else `503` | the synthetics (`ryft-api-ready`, `ryft-ingest-ready`), the smoke, the runbook |
+
+Cloud Run cannot route some paths that end in `z` (Google answers its own `404` for `/healthz`,
+design §3), hence the pair; `/healthz` and `/readyz` stay for compose. A service listens before
+it opens its database pool, so `/health/live` answers `200` at once and the ready paths `503`
+until the start is done: an instance starts during a database outage, and its tick reports
+`ryft_db_up` 0 (`DatabaseDown`) instead of no instance and no signal.
+
+On Cloud Run (`K_SERVICE` set) both ready paths answer a **generic** `503 {"error":"not ready"}`
+(no `Retry-After`; the path is public on api and ingest, so no dependency's error is shown), log
+the cause once at warn (the line `not ready`, with `err`), and reuse their result, ok or not, for 5 s:
+however often a probe asks, the checks run (and the warning is logged) at most once in 5 s.
+Without `K_SERVICE` the ready paths keep today's body, the failing check named (API.md → Health).
 
 ## Collection: Grafana Cloud
+
+This section is the EKS cluster's collector, until D3 removes the cluster; the services on Cloud
+Run push instead (above), and the scrape annotations below do not exist there.
 
 Metrics go to Grafana Cloud (free tier; D51). The collector is Grafana's
 `k8s-monitoring` chart (`deploy/monitoring/k8s-monitoring.yaml`, `make
@@ -228,7 +316,7 @@ JSON (`make synthetics-apply`), not the page.
 | `ryft_last_sync_timestamp_seconds` | gauge | — | ingest | Unix time of the last successful sync of any user. Resets on restart. (Had a `device` label before multi-user; per-user or per-device series would be unbounded.) |
 | `ryft_rate_limited_total` | counter | `class` | ingest, api | Requests answered `429` by the per-user rate limit: `class="sync"` (`POST /v1/sync`), `session` (`PUT /v1/sessions/{id}`), `invite` (`POST /v1/me/invite`), `import` (`POST /v1/train/import`: bursts of 5, then one every 5 s; the app's batches one after another stay under it) or `default`; or `admin_ip` (`/v1/admin/*`: 10 a second per client address, bursts of 20, per pod; the address is never logged or labelled). The recompute gate (one per minute) is not counted here. |
 | `ryft_http_panics_total` | counter | `route` | all | Handler panics turned into a `500` by the recover middleware. Each also logs `msg="panic"` with the stack. A tick step's panic counts under `route="POST /internal/tick"`; the tick goes on with its next step and answers `204` (D219). |
-| `ryft_goroutine_panics_total` | counter | none | all (once a service starts through `internal/app`) | Panics recovered in a service's own goroutines (consumers, timers, the outbox relay, the servers). The service shuts down in order and exits 2, as an unrecovered panic does; the `msg="panic"` line names the `task` and holds the stack. A panic in a `/readyz` check is counted too (the line names the `check`, logged at most once a minute) and the service keeps running. Any is a bug. In the `Panics` alert; the process exits 2 right after it, so a scrape may never see the increase and `ServiceExited` is the other trace. |
+| `ryft_goroutine_panics_total` | counter | none | all (once a service starts through `internal/app`) | Panics recovered in a service's own goroutines: its servers (HTTP, and `/metrics` where it listens); there are no consumers, timers or relay goroutines any more (D219). The service shuts down in order and exits 2, as an unrecovered panic does; the `msg="panic"` line names the `task` and holds the stack. A panic in a ready check is counted too (the line names the `check`, logged at most once a minute) and the service keeps running. Any is a bug. In the `Panics` alert, but the process exits 2 right after it, before any push, so the push rarely carries the increase: Cloud Logging's `msg="panic"` line and the instance's exit are the other traces. |
 | `ryft_http_text_refused_total` | counter | `route`, `at` | ingest, api | Requests refused for text the database cannot store (a NUL, or bytes that are not UTF-8; API.md → Errors → NUL): `at="body"` (`\u0000` in a JSON string, `422`), `url` (path or query, `400`), `database` (Postgres refused it, SQLSTATE 22021/22P05, `422`). No log line beyond the access line, and never the text. `database` above 0 means a path the checks and the raw-JSON normalisation missed, or a server-side bug producing bad text; the route says where (alert TextRefusedByDatabase). |
 | `ryft_http_nul_stripped_total` | counter | `route` | ingest | Syncs accepted after the NULs were removed from their strings (`POST /v1/sync` does not refuse them: the app would never resend the page). One per request, however many NULs; never the text. A steady rate points at a source or device name the app should clean. |
 | `ryft_auth_failures_total` | counter | `reason` | all | Rejected `/v1` requests (ingest, api), and push and tick tokens refused on `/push/*` and `/internal/*` (all four services, Google OIDC, D218) with the same reasons and no new ones: there `subject` is a token of another account than the push service account (its `sub`, `email` or `email_verified`), and `jwks_unavailable` means Google's signing keys are not loaded and the fetch the token tried failed (while none are loaded, a token fetches them first, at most one every 10 s per instance; the push or tick gets `503`, so `AuthUnavailable` covers it). For Google's tokens an unknown key id after the minute's refresh is `401 unknown_key` (anyone can send one; Pub/Sub retries a 401 too), and `jwks_refresh_limited` (`503`) only while the last fetch failed. 401 reasons: `missing_token`, `malformed`, `expired`, `signature`, `issuer`, `audience`, `unknown_key`, `key_mismatch`, `role`, `anonymous`, `subject`, `api_key`, `deleted` (the account was deleted), `invalid`. 503 reasons: `jwks_unavailable`, `jwks_refresh_limited`, `internal` (user lookup failed, or on `/v1/admin/*` the allow-list check). |
@@ -298,7 +386,7 @@ JSON (`make synthetics-apply`), not the page.
 | `kube_statefulset_replicas`, `kube_statefulset_status_replicas`, `kube_statefulset_status_replicas_ready`, `kube_statefulset_status_replicas_updated` | gauge | `statefulset` | kube-state-metrics (`ryft/vault-state`) | The server StatefulSet: desired, existing, ready (unsealed and serving), at the current template (OnDelete: `VaultUpdatePending`). `replicas_ready` at 0 for 10 minutes is `VaultUnavailable`. |
 | `kube_pod_container_status_running`, `kube_pod_container_status_ready` | gauge | `pod`, `container` | kube-state-metrics (`ryft/vault-state`) | Per server container: running but not ready is `VaultSealed` (one pod) or `VaultSealedQuorum` (two or more). Fleet's own kube-state-metrics pipeline does not keep readiness, hence the scrape of its own. |
 | `kube_pod_labels` | gauge | `pod`, `label_vault_initialized`, `label_vault_sealed`, `label_vault_active` | kube-state-metrics (`ryft/vault-state`; `--metric-labels-allowlist=pods=[vault-initialized,vault-sealed,vault-active]`) | The labels Vault's service registration writes on its own pods. At every process start it resets them to `vault-initialized=false`, `vault-sealed=true` and sets `vault-initialized=true` only when the node unseals, so the label means "unsealed at least once since this process started", not "initialised": a pod restarted and still sealed shows `"false"` (source: the state Vault's server command hands its Kubernetes service registration at start (`command/server.go`: initialized false, sealed true) and the registration's `NotifyInitializedStateChange(true)` on the unseal path (`vault/`), as read in the #153 re-read; not checked against 2.2.1's source here, **to verify in the kind drill**). A server pod with `label_vault_initialized="true"` in the last hour, or a snapshot that has succeeded once, is the alerts' "Vault has been initialised" gate. |
-| `go_*`, `process_*` | | | all | Go runtime and process collectors. |
+| `go_*`, `process_*` | | | all | Go runtime and process collectors; on Cloud Run pushed with the rest (about 50 series per instance). |
 
 ## Grafana dashboard — panel list
 
@@ -431,7 +519,7 @@ in-cluster Postgres of `local-postgres`, `postgres_exporter` with a read-only ro
 
 The rules are code: `deploy/grafana/alerts/ryft.yaml` (Prometheus format, D85), with unit
 tests in `ryft.test.yaml`: the rule set of RYFT on Cloud Run (design §6), on the services' own
-metrics (OTLP push, below) and the synthetics. `make alerts-check` runs
+metrics (**The OTLP push** above; what that means for the rules below) and the synthetics. `make alerts-check` runs
 `scripts/check_rule_groups.sh`, `promtool check rules`, `promtool test rules` (`ryft.test.yaml`
 and `eks-admission.test.yaml`) and `mimirtool rules check` (in containers) over `ryft.yaml`,
 `eks-admission.yaml` and `admission-intended.yaml`; `make alerts-apply` loads **`ryft.yaml`
@@ -511,7 +599,7 @@ pushes once (when it stops), and every instance is a new series. The rules are w
 | TickMissing | critical | a service counted no tick (`ryft_ticks_total`) for 45 min, three runs of `ryft-tick`; a service with no series at all included | Three causes (OPERATIONS → GCP). The ticks: Cloud Scheduler → `ryft-tick` (its last runs), the subscription `tick-<svc>`, the service's request log for `/internal/tick`. No instance starts: the latest revision's conditions and startup log (a process that does not listen while the database refuses it, `DatabaseDown`'s causes; a bad revision). The OTLP push: the ticks are in the request log but nothing arrives (all four fire, `count by (job) (ryft_db_up)` is empty in Explore): `OTLP_ENDPOINT` and `OTLP_USER` in `deploy/run/config.env`, the `otlp-token` pin, the services' logs around the push, Grafana Cloud's ingestion |
 | DeadLetterPublishFailing | critical | not even the dead-letter publish worked (an hour, or a new series) | Cloud Logging has the event; the DLQ topic's publisher binding |
 | OutboxBacklog | warning | a due outbox event has waited over 30 min for Pub/Sub (`ryft_outbox_oldest_seconds`, per `publisher`), held 15 min: the publish after the request and two tick passes failed (D101); nothing is lost, scores wait | the publisher's `outbox relay` log lines, Pub/Sub's status, `TickMissing` (the relay runs on the tick) |
-| OutboxStuck | warning | an outbox row was set aside: 50 failed sweeps, or one send the transport rejected for good | its `last_error` (OPERATIONS → The outbox) |
+| OutboxStuck | warning | an outbox row was set aside: at once when Pub/Sub refused it for good (by a flush or a sweep: a key no topic takes, a missing topic or binding, 400/403/404/413), or after 50 failed sends of the tick's sweep (only a sweep counts one, so about 12 h of an outage) | its `last_error` (`rejected, set aside: …` for a refusal); OPERATIONS → Dead letters and the outbox (the queries, the bulk release once the cause is fixed) |
 | PublishFailing | warning | sends to Pub/Sub failed in 30 min, held 15 min | the topic and the publisher's role; the outbox keeps the events (OutboxBacklog follows) |
 | SyncToScoreSlow | warning | p95 from sync to score over 2 min, over an hour (per `le`: a scoring instance first seen in the hour with all it counted, any other with its increase), held 30 min | scoring's latency and instance count, `PushBacklog`, a large backfill |
 | ScoringErrors | warning | days failed to score in 30 min, held 15 min | scoring's logs |
@@ -827,11 +915,15 @@ scripts); the verdict, threshold, output-directory and drain logic changed after
 ## Logs
 
 One JSON object per line on stdout, written by `internal/logx`. `LOG_LEVEL`
-(`debug`, `info` — default —, `warn`, `error`) sets the level; it is set in `deploy/k8s/base/<service>/config.env` (migrate's, in `deploy/k8s/base/migrate/configmap.yaml`).
+(`debug`, `info` — default —, `warn`, `error`) sets the level; on Cloud Run it is set in `deploy/run/config.env`
+(on EKS, until D3, in `deploy/k8s/base/<service>/config.env`). On Cloud Run (`K_SERVICE` or `CLOUD_RUN_JOB` set)
+the level and the message are written as Cloud Logging's `severity` (`DEBUG`, `INFO`, `WARNING`, `ERROR`) and
+`message`, and a request's lines carry `logging.googleapis.com/trace`, which joins them to Cloud Run's request
+log; every other key is as below, and the messages and keys in this section are the same in both formats.
 
 | Field | On | Meaning |
 | --- | --- | --- |
-| `time`, `level`, `msg`, `service` | every line | `service` is `ingest`, `scoring` or `api`. |
+| `time`, `level`, `msg`, `service` | every line (`severity` and `message` for `level` and `msg` on Cloud Run) | `service` is `ingest`, `scoring`, `api` or `notify`. |
 | `request_id` | every line logged while serving a request; scoring lines for an event | The ID the server gave the request (UUIDv7, also the `X-Request-ID` response header and `request_id` in error bodies). Scoring logs the ID of the sync or recompute request that caused the event, so one ID follows a sync from ingest through scoring. |
 | `client_request_id` | same | A client-sent `X-Request-ID` (if it looks like an ID). Logged only, never used as ours. |
 | `user_id` | once the token is verified; scoring per event and per user in the 15-minute pass | The Supabase user ID (`sub`). |
@@ -850,15 +942,26 @@ logs has the Insights queries.
 
 | Message | Keys | When |
 | --- | --- | --- |
-| `listening`, `metrics listening` | `addr` | the HTTP port is open (last step of the start), the `/metrics` port is open |
-| `consuming ingest events` (scoring), `consuming scored events` (notify) | none | the consumer starts |
+| `listening` | `addr` | the HTTP port is open (the service listens before it opens the pool: Health paths above) |
+| `metrics listening` | `addr` | the `/metrics` port is open; only where there is one (compose), not on Cloud Run |
+| `events` | `transport` (`pubsub`), `project`, `endpoint`, `push_auth` (`google_oidc`, `insecure`) | the transport is set up: where it publishes, how it checks push and tick tokens |
+| `push and tick tokens are NOT checked (ALLOW_INSECURE_PUSH=true): local development only` | none | compose only; refused on Cloud Run |
 | `config`, `beta config`, `apns config`, `apns`, `db`, `events`, `build`, `serve` | `err` | the start failed in that area; the process exits 1. `serve`: the HTTP port would not bind (it used to be logged while the service ran on without probes) |
-| `consume`, `job`, `serve`, `background`, `metrics` | `task`, `err` | a task of that tier returned an error before the shutdown: it stops the service (exit 1). `task` is `ingested events`, `scored events`, `scoring pass`, `stale check`, `http`, `outbox relay`, `db watch`, `metrics` |
-| `panic` | `task` (or `check` for a `/readyz` check), `panic`, `stack` | a task panicked: counted in `ryft_goroutine_panics_total`, the service shuts down in order and exits 2 |
+| `start interrupted by the signal` | `step` (`config`, `db`, `events`, `build`, `serve`) | a SIGTERM before the start was done |
+| `serve` | `task` (`http`), `err` | the HTTP server returned an error before the shutdown: it stops the service (exit 1). The consumer and timer tiers (`consume`, `job`, `background`) are gone: events are pushes and timers are the tick (D218, D219) |
+| `metrics server` | `err` | the `/metrics` port could not be bound or its server failed (compose); the service runs on without it |
+| `panic` | `task` (a server), `check` (a ready check: `db`, `auth`) or `step` (a tick step), `panic`, `stack` | a server's panic: counted in `ryft_goroutine_panics_total`, the service shuts down in order and exits 2. A check's: counted there too, the service runs on. A tick step's: counted in `ryft_http_panics_total` (`route="POST /internal/tick"`), the tick goes on with its next step |
+| `tick` | `result` (`ok`, `error`), `message_id`, `took` | one per tick handled (`ryft_ticks_total`) |
+| `tick: step failed` | `step`, `err`, `took` | a step returned an error or panicked; the tick goes on. `step` is a closed set: `db ping`, `outbox sweep`, `scoring pass`, `stale check`, `account reconcile`, `invite settings`, `invite email purge`, `finally` |
+| `tick: the budget is spent, step skipped` | `step`, `budget` | the tick's budget (45 s; scoring 240 s) ended before that step began |
+| `tick: the final step failed` | `err` | the metrics push at the end of the tick failed: `otlp push: HTTP <status>: …` or the transport's error (The OTLP push above) |
+| `tick: the previous one still runs, skipping this one` | `message_id` | a tick arrived while one runs in this instance (`result="overlap"`) |
+| `tick: not a push envelope`, `tick: not a tick` | `status` (`400`, `413`, `415`); `message_id`, `key` (cut) | a request to `/internal/tick` with a valid token that is not Pub/Sub's tick message: not an envelope, or a `ryft-key` other than `tick` (`400`) |
+| `metrics push: points rejected` | `rejected`, `err` | warn: the gateway accepted a push but refused some of its points (out of order, too old, a limit) |
 | `shutting down` | `reason` (`signal`, `task`, `start`), `task`, `err` | the shutdown began; `err` is one line, cut |
-| `shutdown step` | `step` (`drain`, `consumers`, `http`, `jobs`, `relay`, `broker`, `pool`, `metrics`), `dur_ms`, `err` | one per step, at info; at warn with `err` when it failed or overran its bound |
+| `shutdown step` | `step` (`drain`, `http`, `pool`, `metrics`), `dur_ms`, `err` | one per step, at info; at warn with `err` when it failed or overran its bound. The `consumers`, `jobs`, `relay` and `broker` steps are gone with their tiers (D219) |
 | `shut down` | `dur_ms`, `exit` (0, 1, 2) | the shutdown is over; `exit` is the process's exit code |
-| `shutdown overdue` | `step`, `elapsed_ms` | the watchdog: the shutdown passed 26 s, the process exits at once (1, or 2 after a panic) |
+| `shutdown overdue` | `step` (also `begin`), `elapsed_ms` | the watchdog: the shutdown passed `Grace` less 4 s, the process exits at once (1, or 2 after a panic) |
 | `task ended with error during shutdown` | `task`, `err` | a task returned an error after the shutdown began (warn, not a failure) |
 
 Never logged: health values (scores, samples, sleep, workouts, baselines, the learned

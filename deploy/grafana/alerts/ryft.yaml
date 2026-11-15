@@ -141,11 +141,17 @@ groups:
         labels: { severity: warning }
         annotations: { summary: "{{ $labels.publisher }}: outbox events waiting over 30 minutes for Pub/Sub" }
       - alert: OutboxStuck
-        # An event failed 50 sends and was set aside: no topic takes its key, or it is
-        # malformed. It needs a person (OPERATIONS → The outbox).
+        # An event was set aside (attempts = 50, D101) in one of two ways. Pub/Sub refused it for
+        # good, by a flush or a sweep: at once, last_error "rejected, set aside: …" (a key no topic
+        # takes, a missing topic or publisher binding after a deploy, a body it refuses: 400, 403,
+        # 404, 413). Or 50 of the tick's sweeps failed to send it: only a sweep counts an attempt,
+        # one in 15 minutes, so about 12 hours of an outage (a flush records the error only). It
+        # needs a person (OPERATIONS → Dead letters and the outbox: the queries, the bulk release).
         expr: max by (publisher) (last_over_time(ryft_outbox_stuck[30m])) > 0
         labels: { severity: warning }
-        annotations: { summary: "{{ $labels.publisher }}: outbox events set aside after 50 failed sends" }
+        annotations:
+          summary: "{{ $labels.publisher }}: outbox events set aside, refused by Pub/Sub or after 50 failed tick sweeps (last_error says which)"
+          runbook: "docs/OPERATIONS.md → Dead letters and the outbox"
       - alert: PublishFailing
         # Syncs are stored but scoring does not hear of them (the outbox retries on each tick).
         expr: |
