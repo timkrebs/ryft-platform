@@ -182,8 +182,9 @@ type AccountDeleted struct {
 // signs out afterwards either way.
 func (h *handler) deleteMe(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.FromContext(r.Context())
-	// Finish even if the client gives up: half a deletion helps nobody.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), deleteTimeout)
+	// Finish even if the client gives up: half a deletion helps nobody. Not past the
+	// shutdown's hard stop (httpx.Detach), so the pool can close after the http step.
+	ctx, cancel := httpx.Detach(r.Context(), deleteTimeout)
 	defer cancel()
 	gone, err := h.eraseAccount(ctx, p.UserID)
 	if err != nil {

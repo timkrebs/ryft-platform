@@ -43,6 +43,39 @@ func TestLoadAuthRefusesPlaceholdersAndInsecureModes(t *testing.T) {
 	}
 }
 
+// P5 in the code (D222): on Cloud Run, a service or a job, apikey mode and its variables
+// never start; supabase mode does.
+func TestLoadAuthRefusesAPIKeyOnCloudRun(t *testing.T) {
+	key := strings.Repeat("k", 16) // built at runtime: no key-like literal
+	for _, run := range []string{"K_SERVICE", "CLOUD_RUN_JOB"} {
+		t.Run(run, func(t *testing.T) {
+			t.Setenv("K_SERVICE", "")
+			t.Setenv("CLOUD_RUN_JOB", "")
+			t.Setenv(run, "api")
+			cases := map[string]map[string]string{
+				"apikey mode":   {"AUTH_MODE": "apikey", "API_KEY": key, "ALLOW_INSECURE_APIKEY_AUTH": "true"},
+				"insecure flag": {"SUPABASE_PROJECT_REF": "abcdefghijklmnopqrst", "ALLOW_INSECURE_APIKEY_AUTH": "true"},
+				"API_KEY":       {"SUPABASE_PROJECT_REF": "abcdefghijklmnopqrst", "API_KEY": key},
+				"USER_ID":       {"SUPABASE_PROJECT_REF": "abcdefghijklmnopqrst", "USER_ID": DefaultUserID.String()},
+			}
+			for name, env := range cases {
+				setAuthEnv(t, env)
+				_, err := LoadAuth()
+				if err == nil || !strings.Contains(err.Error(), "P5") {
+					t.Errorf("%s: must be refused under P5, got %v", name, err)
+				}
+				if err != nil && strings.Contains(err.Error(), key) {
+					t.Errorf("%s: the error quotes the key", name)
+				}
+			}
+			setAuthEnv(t, map[string]string{"SUPABASE_PROJECT_REF": "abcdefghijklmnopqrst"})
+			if _, err := LoadAuth(); err != nil {
+				t.Fatalf("supabase mode on Cloud Run: %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadAuthAPIKeyAndOverrides(t *testing.T) {
 	setAuthEnv(t, map[string]string{"AUTH_MODE": "apikey", "API_KEY": "0123456789abcdef", "ALLOW_INSECURE_APIKEY_AUTH": "true"})
 	a, err := LoadAuth()
@@ -453,6 +486,52 @@ func TestLoadPubSubRefuses(t *testing.T) {
 		"the SA's email as its ID":       {with(cloudRun(), "PUSH_SA_ID", "ryft-push@ryftlab-prod.iam.gserviceaccount.com"), "PUSH_SA_ID"},
 		"no push identity, no flag":      {map[string]string{"GCP_PROJECT": "ryftlab-prod"}, "PUSH_AUDIENCE"},
 		"emulator, no identity, no flag": {map[string]string{"PUBSUB_EMULATOR_HOST": "pubsub:8085"}, "PUSH_AUDIENCE"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setPubSubEnv(t, c.env)
+			if _, err := Load("scoring"); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("got %v, want an error containing %q", err, c.want)
+			}
+		})
+	}
+}
+
+// A Cloud Run job (scoring rescore, ingest fold-workouts) publishes nothing and serves no
+// push: it starts without the push identity and the project, and what it is given is
+// still checked as a service's would be.
+func TestLoadPubSubCloudRunJob(t *testing.T) {
+	job := map[string]string{"CLOUD_RUN_JOB": "scoring-rescore"}
+	setPubSubEnv(t, job)
+	cfg, err := Load("scoring")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PubSub != (PubSub{Endpoint: DefaultPubSubEndpoint}) || cfg.Push != (Push{}) {
+		t.Fatalf("a bare job: %+v %+v", cfg.PubSub, cfg.Push)
+	}
+	setPubSubEnv(t, with(job, "GCP_PROJECT", "ryftlab-prod"))
+	if cfg, err = Load("ingest"); err != nil || cfg.PubSub.Project != "ryftlab-prod" {
+		t.Fatalf("a job with its project: %+v %v", cfg.PubSub, err)
+	}
+	// The service's whole environment, as a job copied from it would have it.
+	setPubSubEnv(t, with(cloudRun(), "K_SERVICE", "", "CLOUD_RUN_JOB", "ingest-fold-workouts"))
+	if cfg, err = Load("ingest"); err != nil || cfg.Push.SAID != cloudRun()["PUSH_SA_ID"] {
+		t.Fatalf("a job with the service's push identity: %+v %v", cfg.Push, err)
+	}
+
+	for name, c := range map[string]struct {
+		env  map[string]string
+		want string
+	}{
+		"insecure":                  {with(job, "ALLOW_INSECURE_PUSH", "true"), "ALLOW_INSECURE_PUSH=true is refused on Cloud Run (CLOUD_RUN_JOB"},
+		"the emulator":              {with(job, "PUBSUB_EMULATOR_HOST", "pubsub:8085"), "PUBSUB_EMULATOR_HOST is refused on Cloud Run (CLOUD_RUN_JOB"},
+		"a placeholder project":     {with(job, "GCP_PROJECT", "REPLACE_ME"), "GCP_PROJECT"},
+		"an endpoint off Google":    {with(job, "PUBSUB_ENDPOINT", "https://pubsub.example.com"), "must be a Google API host"},
+		"half a push identity":      {with(job, "PUSH_AUDIENCE", cloudRun()["PUSH_AUDIENCE"]), "PUSH_SA_EMAIL"},
+		"an audience with a path":   {with(cloudRun(), "K_SERVICE", "", "CLOUD_RUN_JOB", "x", "PUSH_AUDIENCE", "https://scoring.run.app/x"), "PUSH_AUDIENCE"},
+		"a placeholder SA ID":       {with(job, "PUSH_SA_ID", "<push_sa_unique_id>"), "PUSH_AUDIENCE"},
+		"a service, not a job":      {with(job, "K_SERVICE", "scoring", "GCP_PROJECT", "ryftlab-prod"), "PUSH_AUDIENCE"},
+		"a service with no project": {with(job, "K_SERVICE", "scoring"), "GCP_PROJECT"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			setPubSubEnv(t, c.env)

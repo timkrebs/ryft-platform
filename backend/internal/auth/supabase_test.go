@@ -11,19 +11,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"golang.org/x/time/rate"
 )
 
 const testIssuer = "https://testref.supabase.co/auth/v1"
 
 // jwksServer serves a mutable JWK Set and can be switched to failing, to a 200
-// whose body is not a key set (garbage), or to answering slowly (delay).
+// whose body is not a key set (garbage), or to answering slowly (delay). hits
+// counts requests.
 type jwksServer struct {
 	*httptest.Server
+	hits    atomic.Int32
 	mu      sync.Mutex
 	keys    map[string]*ecdsa.PrivateKey
 	failing bool
@@ -34,6 +38,7 @@ type jwksServer struct {
 func newJWKSServer(t *testing.T) *jwksServer {
 	s := &jwksServer{keys: map[string]*ecdsa.PrivateKey{}}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.hits.Add(1)
 		s.mu.Lock()
 		delay := s.delay
 		s.mu.Unlock()
@@ -254,6 +259,112 @@ func TestSupabaseUnavailableWithoutKeys(t *testing.T) {
 	_, err := v.Verify(context.Background(), sign(t, key, "k1", claims()))
 	if status, reason := statusOf(t, err); status != 503 || reason != "jwks_unavailable" {
 		t.Fatalf("an outage must be 503 (retry), never 401 (sign-out): got %d %s", status, reason)
+	}
+}
+
+// A cold instance whose first fetch failed must not wait for the 10-minute refresh: while
+// no keys are loaded, a token fetches the set again, at most once per NoKeysEvery for the
+// whole verifier (every other token meanwhile gets its 503 without a fetch). Once the JWKS
+// answers, tokens verify again within that limit. As TestGoogleOIDCFetchesWhileItHasNoKeys.
+func TestSupabaseFetchesWhileItHasNoKeys(t *testing.T) {
+	const every = time.Second
+	srv := newJWKSServer(t)
+	srv.setFailing(true)
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	v := newVerifier(t, srv, SupabaseOptions{NoKeysEvery: every})
+	if n := srv.hits.Load(); n != 1 {
+		t.Fatalf("%d fetches at construction, want 1", n)
+	}
+	token := sign(t, key, "k1", claims())
+	verify := func() (int, string) {
+		_, err := v.Verify(context.Background(), token)
+		if err == nil {
+			return 0, ""
+		}
+		return statusOf(t, err)
+	}
+
+	start := time.Now()
+	if status, reason := verify(); status != 503 || reason != "jwks_unavailable" || srv.hits.Load() != 2 {
+		t.Fatalf("the JWKS still fails: %d %q after %d fetches, want 503 jwks_unavailable after a fetch", status, reason, srv.hits.Load())
+	}
+	if status, _ := verify(); status != 503 || srv.hits.Load() != 2 {
+		t.Fatalf("a second token inside the limit: %d after %d fetches, want 503 and no fetch", status, srv.hits.Load())
+	}
+	srv.set(func(s *jwksServer) { s.keys["k1"] = key; s.failing = false })
+	inside := time.Since(start) < every
+	if status, _ := verify(); inside && (status != 503 || srv.hits.Load() != 2) {
+		t.Fatalf("the JWKS is back, still inside the limit: %d after %d fetches, want 503 and no fetch", status, srv.hits.Load())
+	}
+	for deadline := start.Add(every + 5*time.Second); ; time.Sleep(20 * time.Millisecond) {
+		status, reason := verify()
+		if status == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("still %d %q %s after the JWKS came back", status, reason, time.Since(start))
+		}
+	}
+	if took := time.Since(start); took < every {
+		t.Errorf("verified after %s: the second fetch came before the %s limit", took, every)
+	}
+	if n := srv.hits.Load(); n != 3 {
+		t.Errorf("%d fetches, want 3: construction, the first token, one after the limit", n)
+	}
+	if err := v.Ready(context.Background()); err != nil {
+		t.Fatalf("keys loaded: %v", err)
+	}
+	if v.noKeys.Limit() != rate.Every(every) {
+		t.Fatalf("limit %v", v.noKeys.Limit())
+	}
+	if d := newVerifier(t, srv, SupabaseOptions{}); d.noKeys.Limit() != rate.Every(10*time.Second) {
+		t.Fatalf("default limit %v, want every 10 s", d.noKeys.Limit())
+	}
+}
+
+// That fetch is bounded by the request: a JWKS that hangs costs a request at most its own
+// deadline (and never more than noKeysFetchMax), not the client's 10 s.
+func TestSupabaseNoKeysFetchIsBoundedByTheRequest(t *testing.T) {
+	srv := newJWKSServer(t)
+	srv.setFailing(true) // the construction's fetch fails fast
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	v := newVerifier(t, srv, SupabaseOptions{})
+	srv.set(func(s *jwksServer) { s.keys["k1"] = key; s.failing = false; s.delay = 10 * time.Second })
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := v.Verify(ctx, sign(t, key, "k1", claims()))
+	if status, reason := statusOf(t, err); status != 503 || reason != "jwks_unavailable" {
+		t.Fatalf("got %d %q", status, reason)
+	}
+	if took := time.Since(start); took > 2*time.Second || srv.hits.Load() != 2 {
+		t.Fatalf("took %s with %d fetches: want the request's 100 ms and one fetch", took, srv.hits.Load())
+	}
+}
+
+// A client that hangs up during that fetch does not cut it (the limiter allowed only it):
+// the keys arrive, and the next token verifies without waiting for the limit.
+func TestSupabaseNoKeysFetchOutlivesAHangUp(t *testing.T) {
+	srv := newJWKSServer(t)
+	srv.setFailing(true)
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	v := newVerifier(t, srv, SupabaseOptions{NoKeysEvery: time.Hour})
+	srv.set(func(s *jwksServer) { s.keys["k1"] = key; s.failing = false; s.delay = 150 * time.Millisecond })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(20*time.Millisecond, cancel)
+	if _, err := v.Verify(ctx, sign(t, key, "k1", claims())); err != nil || ctx.Err() == nil {
+		t.Fatalf("the fetch must outlive the hang-up (cancelled %v): %v", ctx.Err() != nil, err)
+	}
+	if err := v.Ready(context.Background()); err != nil {
+		t.Fatalf("the fetch ended with the client: %v", err)
+	}
+	srv.set(func(s *jwksServer) { s.delay = 0 })
+	if _, err := v.Verify(context.Background(), sign(t, key, "k1", claims())); err != nil {
+		t.Fatalf("the next token: %v", err)
+	}
+	if n := srv.hits.Load(); n != 2 {
+		t.Fatalf("%d fetches, want 2: construction and the one the limit allowed", n)
 	}
 }
 

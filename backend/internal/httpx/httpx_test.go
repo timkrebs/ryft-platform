@@ -174,16 +174,11 @@ func TestMetricsHaveTheirOwnPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := l.Addr().String()
-	_ = l.Close()
-	ServeMetrics(slog.New(slog.NewTextHandler(io.Discard, nil)), addr)
-	var resp *http.Response
-	for range 50 {
-		if resp, err = http.Get("http://" + addr + "/metrics"); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	srv := MetricsServer(slog.New(slog.NewTextHandler(io.Discard, nil)), l.Addr().String())
+	served := make(chan struct{})
+	go func() { defer close(served); _ = srv.Serve(l) }()
+	defer func() { _ = srv.Close(); <-served }()
+	resp, err := http.Get("http://" + l.Addr().String() + "/metrics")
 	if err != nil {
 		t.Fatal(err)
 	}

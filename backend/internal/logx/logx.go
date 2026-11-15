@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -36,6 +37,10 @@ type Fields struct {
 	// LogPath, when set, is what the access line says for "path" instead of the URL's: for a route whose path
 	// holds a secret (an invite code in DELETE /v1/admin/invites/{code}), the route pattern.
 	LogPath string
+	// Trace is the request's trace id, 32 lower-case hex digits (httpx.Instrument reads it from
+	// traceparent or X-Cloud-Trace-Context). Only the Cloud format writes it, as Cloud Logging's
+	// trace field, so a request's lines join Cloud Run's request log.
+	Trace string
 }
 
 type fieldsKey struct{}
@@ -65,7 +70,58 @@ func New(service string, level slog.Level) *slog.Logger {
 // NewWriter is New with a custom destination (tests).
 func NewWriter(w io.Writer, service string, level slog.Level) *slog.Logger {
 	h := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level})
-	return slog.New(contextHandler{h}).With("service", service)
+	return slog.New(contextHandler{Handler: h}).With("service", service)
+}
+
+// TraceKey is Cloud Logging's field that joins a line to a trace (and with it to Cloud Run's
+// request log): "projects/<project>/traces/<trace id>".
+const TraceKey = "logging.googleapis.com/trace"
+
+// gcpProject is a project ID: 6 to 30 lower-case letters, digits and hyphens.
+var gcpProject = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
+
+// NewCloud is NewWriter in Cloud Logging's format (Cloud Run, design §6): the level is written
+// as "severity" with Cloud Logging's names (DEBUG, INFO, WARNING, ERROR) and the message as
+// "message", so the console filters by severity and shows the message; a line logged with a
+// request's context that has a trace id gets TraceKey for project. Every other key is as
+// NewWriter writes it. A project that is not a project ID writes no trace field.
+func NewCloud(w io.Writer, service string, level slog.Level, project string) *slog.Logger {
+	h := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level, ReplaceAttr: cloudKeys})
+	ch := contextHandler{Handler: h}
+	if gcpProject.MatchString(project) {
+		ch.tracePrefix = "projects/" + project + "/traces/"
+	}
+	return slog.New(ch).With("service", service)
+}
+
+// cloudKeys renames the record's own level and message to Cloud Logging's keys.
+func cloudKeys(groups []string, a slog.Attr) slog.Attr {
+	if len(groups) > 0 {
+		return a
+	}
+	switch a.Key {
+	case slog.LevelKey:
+		if l, ok := a.Value.Any().(slog.Level); ok {
+			return slog.String("severity", Severity(l))
+		}
+	case slog.MessageKey:
+		a.Key = "message"
+	}
+	return a
+}
+
+// Severity is Cloud Logging's name for a slog level: DEBUG, INFO, WARNING or ERROR (a level
+// between two is the lower one's).
+func Severity(l slog.Level) string {
+	switch {
+	case l < slog.LevelInfo:
+		return "DEBUG"
+	case l < slog.LevelWarn:
+		return "INFO"
+	case l < slog.LevelError:
+		return "WARNING"
+	}
+	return "ERROR"
 }
 
 // ParseLevel maps LOG_LEVEL (debug, info, warn, error) to a level; anything
@@ -83,8 +139,12 @@ func ParseLevel(s string) slog.Level {
 	}
 }
 
-// contextHandler adds the context's Fields to every record.
-type contextHandler struct{ slog.Handler }
+// contextHandler adds the context's Fields to every record; with a tracePrefix (the Cloud
+// format) also the trace.
+type contextHandler struct {
+	slog.Handler
+	tracePrefix string // "projects/<project>/traces/"; "" writes no trace field
+}
 
 func (h contextHandler) Handle(ctx context.Context, r slog.Record) error {
 	if f := FieldsFrom(ctx); f != nil {
@@ -100,14 +160,17 @@ func (h contextHandler) Handle(ctx context.Context, r slog.Record) error {
 		if f.Route != "" {
 			r.AddAttrs(slog.String("route", f.Route))
 		}
+		if h.tracePrefix != "" && f.Trace != "" {
+			r.AddAttrs(slog.String(TraceKey, h.tracePrefix+f.Trace))
+		}
 	}
 	return h.Handler.Handle(ctx, r)
 }
 
 func (h contextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return contextHandler{h.Handler.WithAttrs(attrs)}
+	return contextHandler{Handler: h.Handler.WithAttrs(attrs), tracePrefix: h.tracePrefix}
 }
 
 func (h contextHandler) WithGroup(name string) slog.Handler {
-	return contextHandler{h.Handler.WithGroup(name)}
+	return contextHandler{Handler: h.Handler.WithGroup(name), tracePrefix: h.tracePrefix}
 }

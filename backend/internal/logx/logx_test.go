@@ -35,6 +35,62 @@ func TestContextFieldsOnEveryLine(t *testing.T) {
 	}
 }
 
+// On Cloud Run the lines are Cloud Logging's (design §6): severity with its names and message
+// instead of level and msg, the trace of a request's line as projects/<p>/traces/<id>, and
+// every other key as before.
+func TestCloudFormat(t *testing.T) {
+	var buf bytes.Buffer
+	log := NewCloud(&buf, "api", slog.LevelDebug, "ryftlab-prod")
+	ctx, f := NewContext(context.Background())
+	f.RequestID, f.Trace = "req-1", "4bf92f3577b34da6a3ce929d0e0e4736"
+	log.DebugContext(ctx, "d")
+	log.With("extra", 1).InfoContext(ctx, "i", "k", "v")
+	log.Warn("w")
+	log.Error("e")
+	log.Log(context.Background(), slog.LevelWarn+1, "between")
+
+	lines := bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n"))
+	if len(lines) != 5 {
+		t.Fatalf("want 5 lines, got %d: %s", len(lines), buf.String())
+	}
+	var recs []map[string]any
+	for _, l := range lines {
+		var m map[string]any
+		if err := json.Unmarshal(l, &m); err != nil {
+			t.Fatal(err)
+		}
+		recs = append(recs, m)
+	}
+	for i, want := range []struct{ sev, msg string }{{"DEBUG", "d"}, {"INFO", "i"}, {"WARNING", "w"}, {"ERROR", "e"}, {"WARNING", "between"}} {
+		r := recs[i]
+		if r["severity"] != want.sev || r["message"] != want.msg || r["level"] != nil || r["msg"] != nil || r["service"] != "api" || r["time"] == nil {
+			t.Errorf("line %d = %v, want severity %s and message %q", i, r, want.sev, want.msg)
+		}
+	}
+	if got := recs[1][TraceKey]; got != "projects/ryftlab-prod/traces/4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("trace = %v", got)
+	}
+	if recs[1]["request_id"] != "req-1" || recs[1]["k"] != "v" || recs[1]["extra"] != float64(1) {
+		t.Errorf("the other keys stay: %v", recs[1])
+	}
+	if _, ok := recs[2][TraceKey]; ok {
+		t.Error("a line without a request context carries a trace")
+	}
+
+	// No usable project: no trace field, the rest as above. The plain format never writes one.
+	for name, l := range map[string]*slog.Logger{
+		"cloud, no project":  NewCloud(&buf, "api", slog.LevelInfo, ""),
+		"cloud, bad project": NewCloud(&buf, "api", slog.LevelInfo, "Not A Project"),
+		"plain":              NewWriter(&buf, "api", slog.LevelInfo),
+	} {
+		buf.Reset()
+		l.InfoContext(ctx, "i")
+		if bytes.Contains(buf.Bytes(), []byte("traces")) {
+			t.Errorf("%s: %s", name, buf.String())
+		}
+	}
+}
+
 func TestParseLevel(t *testing.T) {
 	for in, want := range map[string]slog.Level{"debug": slog.LevelDebug, "WARN": slog.LevelWarn,
 		"error": slog.LevelError, "": slog.LevelInfo, "verbose": slog.LevelInfo} {

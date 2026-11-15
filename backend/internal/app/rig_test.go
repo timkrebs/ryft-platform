@@ -161,7 +161,11 @@ type rig struct {
 	e    seams
 
 	loadErr, poolErr, busErr, buildErr, httpErr error
-	poolBlocks                                  bool
+	otlpErr, pushErr                            error         // the push's settings; its result
+	noPush                                      bool          // no OTLP endpoint: no push at all
+	cloud                                       bool          // a Cloud Run service (K_SERVICE)
+	poolBlocks                                  bool          // the pool waits for the signal
+	poolGate                                    chan struct{} // non-nil: the pool opens once it is closed
 	stuck                                       bool          // everything that can hang does, until free
 	release                                     chan struct{} // closed by free
 	freed                                       sync.Once
@@ -194,11 +198,35 @@ func newRig() *rig {
 	g.e = seams{
 		logger:     func(string) *slog.Logger { return log },
 		loadConfig: func(string) (config.Config, error) { return insecureLocal, nil },
+		newPush: func(service string, _ *slog.Logger) (func(context.Context) error, error) {
+			if g.otlpErr != nil || g.noPush {
+				return nil, g.otlpErr
+			}
+			if service != "svc" {
+				return nil, fmt.Errorf("the push was built for %q", service)
+			}
+			return func(context.Context) error {
+				g.rec.add("metrics push")
+				if g.stuck {
+					<-g.release // a push that ignores its context: the step's own bound must hold
+				}
+				return g.pushErr
+			}, nil
+		},
+		cloudRun:  func() bool { return g.cloud },
+		startWait: 2 * time.Second,
 		openPool: func(ctx context.Context, _ config.Config, _ *slog.Logger) (*pgxpool.Pool, error) {
 			g.rec.add("pool")
 			if g.poolBlocks {
 				<-ctx.Done()
 				return nil, ctx.Err()
+			}
+			if g.poolGate != nil {
+				select {
+				case <-g.poolGate:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
 			}
 			if g.poolErr != nil {
 				return nil, g.poolErr

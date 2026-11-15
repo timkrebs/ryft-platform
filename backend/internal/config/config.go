@@ -81,7 +81,13 @@ var (
 // insecure flag or the emulator on Cloud Run, a push identity half set or set to a
 // placeholder, an endpoint that is not a bare https origin on googleapis.com, an
 // audience that is not a bare https origin.
+//
+// A Cloud Run job (CLOUD_RUN_JOB without K_SERVICE: scoring rescore, ingest
+// fold-workouts) publishes nothing and serves no push or tick, so it needs neither the
+// push identity nor GCP_PROJECT; what it is given is still checked, and the two refusals
+// above hold for it as for a service.
 func loadPubSub() (PubSub, Push, error) {
+	job := os.Getenv("CLOUD_RUN_JOB") != "" && os.Getenv("K_SERVICE") == ""
 	ps := PubSub{
 		Project:      strings.TrimSpace(os.Getenv("GCP_PROJECT")),
 		Endpoint:     strings.TrimSpace(getenv("PUBSUB_ENDPOINT", DefaultPubSubEndpoint)),
@@ -119,13 +125,13 @@ func loadPubSub() (PubSub, Push, error) {
 			ps.Project = EmulatorProject
 		}
 	}
-	if !gcpProject.MatchString(ps.Project) {
-		return ps, p, fmt.Errorf("GCP_PROJECT must be the project ID (required unless PUBSUB_EMULATOR_HOST is set), got %q", ps.Project)
+	if !gcpProject.MatchString(ps.Project) && (!job || ps.Project != "") {
+		return ps, p, fmt.Errorf("GCP_PROJECT must be the project ID (required unless PUBSUB_EMULATOR_HOST is set or in a Cloud Run job), got %q", ps.Project)
 	}
 	if err := googleAPIOrigin(ps.Endpoint); err != nil {
 		return ps, p, fmt.Errorf("PUBSUB_ENDPOINT: %w", err)
 	}
-	if p.AllowInsecure {
+	if p.AllowInsecure || (job && p == Push{}) {
 		return ps, p, nil
 	}
 	if err := bareHTTPSOrigin(p.Audience); err != nil {
@@ -242,6 +248,9 @@ func LoadAuth() (Auth, error) {
 		APIKeyUserID:  DefaultUserID,
 		AllowInsecure: os.Getenv("ALLOW_INSECURE_APIKEY_AUTH") == "true",
 	}
+	if err := refuseAPIKeyOnCloudRun(a.Mode); err != nil {
+		return a, err
+	}
 	switch a.Mode {
 	case AuthSupabase:
 		if a.Issuer == "" || a.JWKSURL == "" {
@@ -273,6 +282,30 @@ func LoadAuth() (Auth, error) {
 		return a, fmt.Errorf("AUTH_MODE must be %q or %q, got %q", AuthSupabase, AuthAPIKey, a.Mode)
 	}
 	return a, nil
+}
+
+// apiKeyEnv are apikey mode's variables: local development only.
+var apiKeyEnv = []string{"ALLOW_INSECURE_APIKEY_AUTH", "API_KEY", "USER_ID"}
+
+// refuseAPIKeyOnCloudRun is admission policy P5 in the code (D222): with K_SERVICE or
+// CLOUD_RUN_JOB set, AUTH_MODE=apikey and apikey mode's variables are refused, so a
+// misconfigured revision cannot start with a shared key. scripts/check_cloudrun.py
+// rejects the same names in deploy/run. The error names the variable, never its value.
+func refuseAPIKeyOnCloudRun(mode string) error {
+	for _, k := range cloudRunEnv {
+		if os.Getenv(k) == "" {
+			continue
+		}
+		if mode == AuthAPIKey {
+			return fmt.Errorf("AUTH_MODE=apikey is refused on Cloud Run (%s is set): only supabase there (P5, D222)", k)
+		}
+		for _, n := range apiKeyEnv {
+			if os.Getenv(n) != "" {
+				return fmt.Errorf("%s is refused on Cloud Run (%s is set): it belongs to apikey mode, local development only (P5, D222)", n, k)
+			}
+		}
+	}
+	return nil
 }
 
 // Mode is how a gate acts on a request it would refuse (D87).

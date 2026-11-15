@@ -68,7 +68,7 @@ func (a admin) audited(next http.Handler) http.Handler {
 				action = ri.Route
 			}
 		}
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+		ctx, cancel := httpx.Detach(r.Context(), 5*time.Second) // past the client's hang-up, not the shutdown's hard stop
 		defer cancel()
 		entry := store.AuditEntry{Action: action, TargetUser: e.target, Status: sw.status, RequestID: requestID, Details: e.details}
 		if act, ok := adminActorFrom(r.Context()); ok && act.isKey() {

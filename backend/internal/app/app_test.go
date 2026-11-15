@@ -24,12 +24,13 @@ import (
 	"github.com/timkrebs/ryft/internal/metrics"
 )
 
-// started is what the start records, in order: Load, the pool, the transport, /metrics,
-// Build and last HTTP. Nothing else starts: no consumer, timer, relay or db watch (D219).
-var started = []string{"load", "pool", "bus", "metrics", "build", "http"}
+// started is what the start records, in order: Load, the transport, HTTP (behind the
+// start gate), /metrics, the pool and last Build. Nothing else starts: no consumer, timer,
+// relay or db watch (D219).
+var started = []string{"load", "bus", "http", "metrics", "pool", "build"}
 
-// stopped is the shutdown's order.
-var stopped = []string{"http closed", "pool closed", "metrics closed"}
+// stopped is the shutdown's order: the metrics push once, after the http step.
+var stopped = []string{"http closed", "metrics push", "pool closed", "metrics closed"}
 
 func TestStartOrder(t *testing.T) {
 	g := newRig()
@@ -66,7 +67,7 @@ func TestShutdownOrder(t *testing.T) {
 			t.Errorf("step line %v: want dur_ms and no err", m)
 		}
 	}
-	if want := []string{"drain", "http", "pool"}; !slices.Equal(steps, want) {
+	if want := []string{"drain", "http", "push", "pool"}; !slices.Equal(steps, want) {
 		t.Errorf("steps %v, want %v", steps, want)
 	}
 	if m := g.logs.find("shutting down"); len(m) != 1 || m[0]["reason"] != "signal" || m[0]["err"] != nil || m[0]["task"] != nil {
@@ -274,15 +275,18 @@ func TestDependencyDownAtStart(t *testing.T) {
 		set  func(g *rig)
 		log  string
 		want []string
+		port bool // the HTTP port had opened
 	}{
-		{"database", func(g *rig) { g.poolErr = down }, "db",
-			[]string{"load", "pool"}},
+		{"the metrics push's settings", func(g *rig) { g.otlpErr = down }, "otlp config",
+			[]string{"load"}, false},
 		{"transport", func(g *rig) { g.busErr = down }, "events",
-			[]string{"load", "pool", "bus", "pool closed"}},
-		{"build", func(g *rig) { g.buildErr = down }, "build",
-			[]string{"load", "pool", "bus", "metrics", "build", "pool closed", "metrics closed"}},
+			[]string{"load", "bus", "metrics push"}, false},
 		{"http port", func(g *rig) { g.httpErr = down }, "serve",
-			[]string{"load", "pool", "bus", "metrics", "build", "pool closed", "metrics closed"}},
+			[]string{"load", "bus", "metrics push"}, false},
+		{"database", func(g *rig) { g.poolErr = down }, "db",
+			[]string{"load", "bus", "http", "metrics", "pool", "http closed", "metrics push", "metrics closed"}, true},
+		{"build", func(g *rig) { g.buildErr = down }, "build",
+			[]string{"load", "bus", "http", "metrics", "pool", "build", "http closed", "metrics push", "pool closed", "metrics closed"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newRig()
@@ -297,8 +301,8 @@ func TestDependencyDownAtStart(t *testing.T) {
 			if m := g.logs.find(tc.log); len(m) != 1 || m[0]["err"] != down.Error() {
 				t.Errorf("log %q = %v", tc.log, m)
 			}
-			if g.addr("http") != "" {
-				t.Error("the HTTP port opened")
+			if opened := g.addr("http") != ""; opened != tc.port {
+				t.Errorf("the HTTP port opened: %v, want %v", opened, tc.port)
 			}
 			if m := g.logs.find("shut down"); len(m) != 1 || m[0]["exit"] != float64(1) {
 				t.Errorf("shut down: %v, the process exits 1", m)
@@ -307,33 +311,6 @@ func TestDependencyDownAtStart(t *testing.T) {
 				t.Errorf("shutting down: %v", m)
 			}
 		})
-	}
-}
-
-// The pool wait (db.Open retries for up to 10 minutes) holds the start: no port is
-// open, so the start-up probe is what ends a pod that never gets a database.
-func TestDatabaseWaitOpensNoPort(t *testing.T) {
-	g := newRig()
-	g.poolBlocks = true
-	ctx, cancel := context.WithCancel(context.Background())
-	done := g.run(ctx, g.spec())
-	g.rec.waitLen(t, 2)
-	time.Sleep(50 * time.Millisecond)
-	if g.addr("http") != "" || g.addr("metrics") != "" {
-		t.Error("a port opened during the database wait")
-	}
-	cancel()
-	if err := result(t, done); err != nil {
-		t.Errorf("Run = %v, a signal during the wait is a clean stop", err)
-	}
-	if got := g.rec.list(); !slices.Equal(got, []string{"load", "pool"}) {
-		t.Errorf("records %v", got)
-	}
-	if len(g.logs.find("db")) != 0 || len(g.logs.find("start interrupted by the signal")) != 1 {
-		t.Errorf("the interrupted wait is logged as an error: %v", g.logs.lines())
-	}
-	if m := g.logs.find("shut down"); len(m) != 1 || m[0]["exit"] != float64(0) {
-		t.Errorf("shut down: %v", m)
 	}
 }
 
@@ -554,7 +531,7 @@ func TestPushAndTickSitOutsideV1(t *testing.T) {
 	if err := result(t, done); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"push /push/ingested", "push /push/session.completed", "db ping", "outbox sweep", "v1 auth"}
+	want := []string{"push /push/ingested", "push /push/session.completed", "db ping", "outbox sweep", "metrics push", "v1 auth"}
 	if got := g.rec.after(len(started))[:len(want)]; !slices.Equal(got, want) {
 		t.Errorf("only /v1/me went through the /v1 middleware\n got %v\nwant %v", got, want)
 	}
@@ -582,42 +559,50 @@ func TestStepOverrunsAreReportedAndSurvived(t *testing.T) {
 	}
 }
 
+// The worst case of every service's shutdown, the metrics push included, ends before the
+// watchdog (9 s), which fires before Cloud Run's SIGKILL (10 s). The numbers are the table
+// next to the constants.
 func TestShutdownStaysInBudget(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		s    Spec
 		want time.Duration // the table next to the constants
+		fits bool          // within the watchdog's time
 	}{
-		{"an edge service", Spec{Edge: true}, 13 * time.Second},
-		{"an edge service with the planned 5 s drain delay", Spec{Edge: true, DrainDelay: 5 * time.Second}, 18 * time.Second},
-		{"scoring, notify", Spec{}, 4 * time.Second},
+		{"api, ingest", Spec{Edge: true}, 8 * time.Second, true},
+		{"scoring, notify", Spec{}, 7 * time.Second, true},
 		// A tick in flight is cut by the http step, never waited for: its budget is no part of the shutdown's.
-		{"scoring with its 240 s tick", Spec{TickBudget: 240 * time.Second}, 4 * time.Second},
-		// What A2 sets: Cloud Run's 10 s between SIGTERM and SIGKILL. The push services fit as they are.
-		{"scoring, notify in Cloud Run's 10 s", Spec{Grace: 10 * time.Second}, 4 * time.Second},
+		{"scoring with its 240 s tick", Spec{TickBudget: 240 * time.Second}, 7 * time.Second, true},
+		// A drain delay (Kubernetes' wait for the endpoints) has no room in Cloud Run's 10 s: the
+		// test sees it, and a longer Grace makes room for it.
+		{"api with a 5 s drain delay", Spec{Edge: true, DrainDelay: 5 * time.Second}, 13 * time.Second, false},
+		{"api with a 5 s drain delay in a 30 s grace", Spec{Edge: true, DrainDelay: 5 * time.Second, Grace: 30 * time.Second}, 13 * time.Second, true},
 	} {
 		got := tc.s.worstCase(defaultSeams().bounds) // what Run really uses
 		if got != tc.want {
 			t.Errorf("%s: worst case %v, the table says %v (update both)", tc.name, got, tc.want)
 		}
-		if got >= tc.s.watchdogAfter() {
-			t.Errorf("%s: worst case %v reaches the watchdog at %v: no headroom", tc.name, got, tc.s.watchdogAfter())
+		if fits := got < tc.s.watchdogAfter(); fits != tc.fits {
+			t.Errorf("%s: worst case %v against the watchdog at %v: fits %v, want %v", tc.name, got, tc.s.watchdogAfter(), fits, tc.fits)
 		}
+	}
+	if b := defaultBounds(); b != (bounds{afterClose: time.Second, push: 2 * time.Second, poolClose: time.Second}) {
+		t.Errorf("bounds %+v: the table says afterClose 1 s, push 2 s, pool 1 s", b)
 	}
 }
 
-// The watchdog fires four seconds before the kubelet's 30 s, pinned as literals.
+// The watchdog fires a second before Cloud Run's 10 s, pinned as literals.
 func TestWatchdogTime(t *testing.T) {
-	if got := (Spec{}).grace(); got != 30*time.Second {
-		t.Errorf("default grace %v, the kubelet's is 30 s", got)
+	if got := (Spec{}).grace(); got != 10*time.Second {
+		t.Errorf("default grace %v, Cloud Run's is 10 s", got)
 	}
-	if got := (Spec{}).watchdogAfter(); got != 26*time.Second {
-		t.Errorf("watchdog at %v, want 26 s", got)
+	if got := (Spec{}).watchdogAfter(); got != 9*time.Second {
+		t.Errorf("watchdog at %v, want 9 s", got)
 	}
-	if got := (Spec{Grace: 40 * time.Second}).watchdogAfter(); got != 36*time.Second {
-		t.Errorf("watchdog at %v for a 40 s grace, want 36 s", got)
+	if got := (Spec{Grace: 40 * time.Second}).watchdogAfter(); got != 39*time.Second {
+		t.Errorf("watchdog at %v for a 40 s grace, want 39 s", got)
 	}
-	if got := (Spec{Grace: 3 * time.Second}).watchdogAfter(); got != 1500*time.Millisecond {
+	if got := (Spec{Grace: 800 * time.Millisecond}).watchdogAfter(); got != 400*time.Millisecond {
 		t.Errorf("watchdog at %v for a grace shorter than its margin, want half of it", got)
 	}
 }
@@ -685,8 +670,13 @@ func TestABadTickStepFailsTheStart(t *testing.T) {
 	if err := run(context.Background(), g.spec(), g.e); err == nil || !strings.Contains(err.Error(), "name") {
 		t.Fatalf("Run = %v", err)
 	}
-	if m := g.logs.find("build"); len(m) != 1 || g.addr("http") != "" {
-		t.Errorf("build line %v, http port %q", m, g.addr("http"))
+	if m := g.logs.find("build"); len(m) != 1 {
+		t.Errorf("build line %v", m)
+	}
+	// The port had opened (before the pool) and is closed again.
+	if c, err := net.DialTimeout("tcp", g.addr("http"), time.Second); err == nil {
+		_ = c.Close()
+		t.Errorf("the HTTP port %s still accepts after the failed start", g.addr("http"))
 	}
 }
 
@@ -697,7 +687,7 @@ func TestSignalDuringStartEndsBuild(t *testing.T) {
 	g.build = func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
 	ctx, cancel := context.WithCancel(context.Background())
 	done := g.run(ctx, g.spec())
-	g.rec.waitLen(t, 5) // load, pool, bus, metrics, build
+	g.rec.waitLen(t, len(started)) // load, bus, http, metrics, pool, build
 	cancel()
 	begun := time.Now()
 	err := result(t, done)
@@ -744,7 +734,7 @@ func TestEverythingStuckStaysInBudget(t *testing.T) {
 	g.stuck = true
 	defer g.free()
 	const unit = 200 * time.Millisecond
-	g.e.bounds = bounds{afterClose: unit, poolClose: unit}
+	g.e.bounds = bounds{afterClose: unit, push: unit, poolClose: unit}
 	entered := make(chan struct{})
 	g.parts = Parts{
 		Routes: func(mux *http.ServeMux) {
@@ -774,7 +764,7 @@ func TestEverythingStuckStaysInBudget(t *testing.T) {
 	g.mu.Lock()
 	waited := g.bounds
 	g.mu.Unlock()
-	wantBound := map[string]time.Duration{"http": unit, "http wait": unit, "pool": unit, "metrics": unit}
+	wantBound := map[string]time.Duration{"http": unit, "http wait": unit, "push": unit, "pool": unit, "metrics": unit}
 	for step, want := range wantBound {
 		if got := waited[step]; len(got) != 1 || got[0] != want {
 			t.Errorf("step %s waited %v, its bound is %v", step, got, want)
@@ -783,7 +773,7 @@ func TestEverythingStuckStaysInBudget(t *testing.T) {
 	if len(waited) != len(wantBound) {
 		t.Errorf("the shutdown waited %v, want only %v", waited, wantBound)
 	}
-	reached := map[string]time.Duration{"http": 2 * unit, "pool": unit}
+	reached := map[string]time.Duration{"http": 2 * unit, "push": unit, "pool": unit}
 	for _, m := range g.logs.find("shutdown step") {
 		step, _ := m["step"].(string)
 		dur := time.Duration(m["dur_ms"].(float64)) * time.Millisecond
@@ -792,7 +782,7 @@ func TestEverythingStuckStaysInBudget(t *testing.T) {
 		}
 		delete(reached, step)
 	}
-	for _, step := range []string{"http", "pool", "metrics"} {
+	for _, step := range []string{"http", "push", "pool", "metrics"} {
 		if err == nil || !strings.Contains(err.Error(), step+": ") {
 			t.Errorf("no overrun reported for %s: %v", step, err)
 		}

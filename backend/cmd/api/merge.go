@@ -83,8 +83,9 @@ func (a admin) merge(w http.ResponseWriter, r *http.Request) {
 			"(merge the smaller into the larger), or add force=1", ans.From.ShortID, ans.From.DaysScored, ans.To.ShortID, ans.To.DaysScored))
 		return
 	}
-	// The move, the rescore and the deletion run to the end even if the client hangs up.
-	work, cancel := context.WithTimeout(context.WithoutCancel(ctx), deleteTimeout)
+	// The move, the rescore and the deletion run to the end even if the client hangs up
+	// (not past the shutdown's hard stop: httpx.Detach).
+	work, cancel := httpx.Detach(ctx, deleteTimeout)
 	defer cancel()
 	res, err := a.h.st.MergeUsers(work, from, to, dryRun)
 	switch {

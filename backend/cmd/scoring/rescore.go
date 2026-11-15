@@ -72,10 +72,11 @@ func rescore(args []string) int {
 }
 
 // offline opens the database for a one-off subcommand with scoring's own role. It reads
-// the service's settings with config.Load, the Pub/Sub and push ones included, though a
-// subcommand publishes nothing (its engine has no OnScored): it runs with the scoring
-// service's own environment, as it ran in its pod, so one loader refuses the same
-// mistakes for both (locally compose's PUBSUB_EMULATOR_HOST and ALLOW_INSECURE_PUSH).
+// the service's settings with config.Load, though a subcommand publishes nothing (its
+// engine has no OnScored), so one loader refuses the same mistakes for both (locally
+// compose's PUBSUB_EMULATOR_HOST and ALLOW_INSECURE_PUSH). As a Cloud Run job
+// (CLOUD_RUN_JOB) it needs no push identity and no GCP_PROJECT: DATABASE_URL, its
+// password and the consent mode are all it reads.
 func offline(log *slog.Logger) (context.Context, *store.Store, *scoring.Engine, func(), error) {
 	cfg, err := config.Load("scoring")
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,15 +35,22 @@ var lifecycleLogKeys = func() logcheck.Lines {
 	lines := logcheck.Lines{
 		"listening":                             {"addr": logcheck.Pattern(regexp.MustCompile(`^:[0-9]{1,5}$`))},
 		"metrics listening":                     {"addr": logcheck.Pattern(regexp.MustCompile(`^:[0-9]{1,5}$`))},
-		"start interrupted by the signal":       {"step": logcheck.Enum("config", "db", "events", "build", "serve")},
+		"start interrupted by the signal":       {"step": logcheck.Enum("config", "otlp config", "db", "events", "build", "serve")},
 		"metrics server":                        {"err": errText},
 		"task ended with error during shutdown": {"task": task, "err": errText},
 		"panic": {"task": task, "check": logcheck.Enum("db", "auth"), "step": tickSteps,
 			"panic": errText, "stack": logcheck.Text(16384)},
 		"shutting down":    {"reason": logcheck.Enum("signal", "task", "start"), "task": task, "err": errText},
-		"shutdown step":    {"step": logcheck.Enum("drain", "http", "pool", "metrics"), "dur_ms": logcheck.Count, "err": errText},
-		"shutdown overdue": {"step": logcheck.Enum("begin", "drain", "http", "pool", "metrics"), "elapsed_ms": logcheck.Count},
+		"shutdown step":    {"step": logcheck.Enum("drain", "http", "push", "pool", "metrics"), "dur_ms": logcheck.Count, "err": errText},
+		"shutdown overdue": {"step": logcheck.Enum("begin", "drain", "http", "push", "pool", "metrics"), "elapsed_ms": logcheck.Count},
 		"shut down":        {"dur_ms": logcheck.Count, "exit": logcheck.CountMax(2)},
+
+		// The start gate and the ready paths on Cloud Run (httpx.CloudReady): the cause is
+		// a check's error or the start's, never a request's.
+		"not ready":                      {"err": logcheck.Text(203)},
+		"tick before the start was done": {"waited": took},
+		"push rejected":                  {"path": logcheck.Enum(eventbus.PathTick), "reason": logcheck.Text(40), "err": errText},
+		"push token cannot be checked":   {"path": logcheck.Enum(eventbus.PathTick), "reason": logcheck.Text(40), "err": errText},
 
 		// The transport (eventbus.Open, auth.InsecurePush) and the tick (pubsub.NewTick).
 		"push and tick tokens are NOT checked (ALLOW_INSECURE_PUSH=true): local development only": {},
@@ -55,7 +63,7 @@ var lifecycleLogKeys = func() logcheck.Lines {
 		"tick: not a tick":                                     {"message_id": messageID, "key": logcheck.Text(70)},
 	}
 	// A failed start logs its error under the area's message; a failed server under its tier's (serve, metrics).
-	for _, msg := range []string{"config", "beta config", "apns config", "apns", "db", "events", "build", "serve", "metrics"} {
+	for _, msg := range []string{"config", "otlp config", "beta config", "apns config", "apns", "db", "events", "build", "serve", "metrics"} {
 		lines[msg] = logcheck.Keys{"err": errText, "task": task}
 	}
 	// "events" is also the transport's start line: what it publishes to and how it checks pushes.
@@ -148,12 +156,42 @@ func TestLifecycleLogsKeepToTheirKeys(t *testing.T) {
 		_ = result(t, done)
 		record(g)
 	})
+	t.Run("a tick and a ready probe before the start is done, on Cloud Run", func(t *testing.T) {
+		g := newRig()
+		asScoring(g)
+		g.cloud = true
+		g.poolGate = make(chan struct{})
+		g.e.startWait = 20 * time.Millisecond
+		var dbDown atomic.Bool
+		g.e.ping = func(context.Context, *pgxpool.Pool) error {
+			if dbDown.Load() {
+				return boom
+			}
+			return nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := g.run(ctx, g.spec())
+		eventually(t, func() bool { return g.addr("http") != "" }, "the listener")
+		g.get(t, "/health/ready")
+		g.tick(t)
+		close(g.poolGate)
+		<-g.started
+		dbDown.Store(true)
+		g.get(t, "/health/ready")
+		cancel()
+		if err := result(t, done); err != nil {
+			t.Fatal(err)
+		}
+		record(g)
+	})
 	for name, set := range map[string]func(g *rig){
-		"the database":  func(g *rig) { g.poolErr = boom },
-		"the transport": func(g *rig) { g.busErr = boom },
-		"build":         func(g *rig) { g.buildErr = boom },
-		"the HTTP port": func(g *rig) { g.httpErr = boom },
-		"the settings":  func(g *rig) { g.loadErr = ConfigError{Msg: "beta config", Err: boom} },
+		"the database":            func(g *rig) { g.poolErr = boom },
+		"the transport":           func(g *rig) { g.busErr = boom },
+		"build":                   func(g *rig) { g.buildErr = boom },
+		"the HTTP port":           func(g *rig) { g.httpErr = boom },
+		"the settings":            func(g *rig) { g.loadErr = ConfigError{Msg: "beta config", Err: boom} },
+		"the metrics push's":      func(g *rig) { g.otlpErr = boom },
+		"the push's final answer": func(g *rig) { g.buildErr, g.pushErr = boom, boom },
 	} {
 		t.Run("a failed start: "+name, func(t *testing.T) {
 			g := newRig()
@@ -184,7 +222,8 @@ func TestLifecycleLogsKeepToTheirKeys(t *testing.T) {
 	// The lines the runbooks and the Insights queries are written for were all seen.
 	for _, msg := range []string{"shutting down", "shutdown step", "shut down", "shutdown overdue", "panic", "listening",
 		"metrics listening", "serve", "db", "events", "build", "tick", "tick: step failed", "tick: the budget is spent, step skipped",
-		"push and tick tokens are NOT checked (ALLOW_INSECURE_PUSH=true): local development only"} {
+		"push and tick tokens are NOT checked (ALLOW_INSECURE_PUSH=true): local development only",
+		"not ready", "tick before the start was done", "otlp config"} {
 		if len(lines[msg]) == 0 {
 			t.Errorf("no %q line in any run", msg)
 		}

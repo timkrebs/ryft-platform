@@ -29,6 +29,10 @@ type SupabaseOptions struct {
 	// UnknownKIDEvery limits extra fetches triggered by tokens signed with a
 	// key we have not seen (rotation). Default once a minute.
 	UnknownKIDEvery time.Duration
+	// NoKeysEvery limits the fetches a token triggers while no keys are loaded at
+	// all (default every 10 s): a cold instance whose first fetch failed must not
+	// answer 503 until the next refresh, as the Google verifier (GoogleOIDCOptions).
+	NoKeysEvery time.Duration
 	// Leeway tolerates clock skew on exp/iat. Default 30s.
 	Leeway time.Duration
 	// Client fetches the JWKS; default has a 10s timeout.
@@ -43,11 +47,16 @@ type Supabase struct {
 	kf      keyfunc.Keyfunc
 	parser  *jwt.Parser
 	fetches *fetchHealth
+
+	// fetch reads the same key set as kf with a limiter that always lets it refresh;
+	// noKeys is the limit, at most one fetch per NoKeysEvery while no keys are loaded.
+	fetch  jwkset.Storage
+	noKeys *rate.Limiter
 }
 
 // NewSupabase starts the JWKS refresher; it runs until ctx ends. A JWKS that
-// cannot be fetched yet does not fail construction — Ready reports it and
-// Verify answers 503 until keys arrive.
+// cannot be fetched yet does not fail construction: Ready reports it, and a
+// token fetches it again (at most every NoKeysEvery) before Verify answers 503.
 func NewSupabase(ctx context.Context, o SupabaseOptions) (*Supabase, error) {
 	if o.Issuer == "" || o.JWKSURL == "" {
 		return nil, errors.New("auth: Supabase issuer and JWKS URL are required")
@@ -57,6 +66,9 @@ func NewSupabase(ctx context.Context, o SupabaseOptions) (*Supabase, error) {
 	}
 	if o.UnknownKIDEvery <= 0 {
 		o.UnknownKIDEvery = time.Minute
+	}
+	if o.NoKeysEvery <= 0 {
+		o.NoKeysEvery = 10 * time.Second
 	}
 	if o.Leeway <= 0 {
 		o.Leeway = 30 * time.Second
@@ -72,23 +84,44 @@ func NewSupabase(ctx context.Context, o SupabaseOptions) (*Supabase, error) {
 	fetches := &fetchHealth{}
 	client := &http.Client{Timeout: base.Timeout, Transport: &recordingTransport{next: transport, health: fetches}}
 
-	kf, err := keyfunc.NewDefaultOverrideCtx(ctx, []string{o.JWKSURL}, keyfunc.Override{
-		Client:            client,
-		HTTPTimeout:       10 * time.Second,
-		RefreshInterval:   o.RefreshInterval,
+	// What keyfunc.NewDefaultOverrideCtx builds, put together here (as for the Google
+	// verifier) so that a second reader shares the one remote key set: kf's, whose
+	// limiter is the unknown key id's, and fetch, for a verifier that has no keys at all.
+	remote, err := jwkset.NewStorageFromHTTP(o.JWKSURL, jwkset.HTTPClientStorageOptions{
+		Client:                    client,
+		Ctx:                       ctx,
+		HTTPTimeout:               10 * time.Second,
+		NoErrorReturnFirstHTTPReq: true,
+		RefreshInterval:           o.RefreshInterval,
+		// Every refresh that does not end with a key set lands here: no response, another status, or a
+		// body that is not a key set (the transport sees only the status). Keyfunc's own log line is kept.
+		RefreshErrorHandler: func(ctx context.Context, err error) {
+			slog.Default().ErrorContext(ctx, "Failed to refresh HTTP JWK Set from remote HTTP resource.", "error", err, "url", o.JWKSURL)
+			fetches.failed(err)
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth: JWKS client: %w", err)
+	}
+	storage, err := jwkset.NewHTTPClient(jwkset.HTTPClientOptions{
+		HTTPURLs:          map[string]jwkset.Storage{o.JWKSURL: remote},
 		RefreshUnknownKID: rate.NewLimiter(rate.Every(o.UnknownKIDEvery), 1),
 		// Never park a request behind the refresh limiter for long. It also bounds the refresh an unknown
 		// key id triggers: jwkset waits for the limiter and fetches on the same 1 s context.
 		RateLimitWaitMax: time.Second,
-		// Every refresh that does not end with a key set lands here: no response, another status, or a
-		// body that is not a key set (the transport sees only the status). Keyfunc's own log line is kept.
-		RefreshErrorHandlerFunc: func(u string) func(context.Context, error) {
-			return func(ctx context.Context, err error) {
-				slog.Default().ErrorContext(ctx, "Failed to refresh HTTP JWK Set from remote HTTP resource.", "error", err, "url", u)
-				fetches.failed(err)
-			}
-		},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("auth: JWKS client: %w", err)
+	}
+	fetch, err := jwkset.NewHTTPClient(jwkset.HTTPClientOptions{
+		HTTPURLs:          map[string]jwkset.Storage{o.JWKSURL: remote},
+		RefreshUnknownKID: rate.NewLimiter(rate.Inf, 1), // the limit is noKeys, checked before
+		RateLimitWaitMax:  noKeysFetchMax,               // jwkset fetches on this context: it bounds the fetch
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth: JWKS client: %w", err)
+	}
+	kf, err := keyfunc.New(keyfunc.Options{Ctx: ctx, Storage: storage})
 	if err != nil {
 		return nil, fmt.Errorf("auth: JWKS client: %w", err)
 	}
@@ -96,6 +129,8 @@ func NewSupabase(ctx context.Context, o SupabaseOptions) (*Supabase, error) {
 		jwksURL: o.JWKSURL,
 		kf:      kf,
 		fetches: fetches,
+		fetch:   fetch,
+		noKeys:  rate.NewLimiter(rate.Every(o.NoKeysEvery), 1),
 		parser: jwt.NewParser(
 			jwt.WithValidMethods([]string{"ES256", "RS256"}), // asymmetric only: no HS256, no "none"
 			jwt.WithIssuer(o.Issuer),
@@ -136,7 +171,7 @@ type supabaseClaims struct {
 // that cannot be checked right now, because no signing keys are loaded or an unknown key
 // cannot be fetched, is a 503 (Unavailable), so an outage never signs a user out (D29).
 func (s *Supabase) Verify(ctx context.Context, token string) (Principal, error) {
-	if !s.hasKeys(ctx) {
+	if !s.loadKeys(ctx) {
 		return Principal{}, Unavailable("jwks_unavailable", errors.New("no signing keys loaded"))
 	}
 	var c supabaseClaims
@@ -209,14 +244,36 @@ func (s *Supabase) classify(err error) error {
 	}
 }
 
-func (s *Supabase) hasKeys(ctx context.Context) bool {
-	keys, err := s.kf.Storage().KeyReadAll(ctx)
-	return err == nil && len(keys) > 0
+// loadKeys reports whether signing keys are loaded and, when none are, fetches them
+// first: at most once per NoKeysEvery for the whole verifier (the other requests
+// meanwhile get their 503 at once), at most noKeysFetchMax and never past the request's
+// deadline, as GoogleOIDC.loadKeys. Without it an instance whose first fetch failed (a
+// cold start during a Supabase blip) would answer 503 to every app request until the
+// 10-minute refresh. A failed fetch is logged and recorded by the refresh error handler.
+func (s *Supabase) loadKeys(ctx context.Context) bool {
+	if hasKeys(ctx, s.kf) {
+		return true
+	}
+	if ctx.Err() != nil || !s.noKeys.Allow() {
+		return false
+	}
+	// A key id no set has misses, so jwkset fetches the set (fetch's limiter lets it) into
+	// the storage kf reads; what counts is whether keys came. Detached from the caller's
+	// cancel, so a client that hangs up cannot cancel the one fetch the limiter allows,
+	// but held to the request's deadline (at most noKeysFetchMax).
+	limit := time.Now().Add(noKeysFetchMax)
+	if d, ok := ctx.Deadline(); ok && d.Before(limit) {
+		limit = d
+	}
+	fctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), limit)
+	defer cancel()
+	_, _ = s.fetch.KeyRead(fctx, "")
+	return hasKeys(fctx, s.kf)
 }
 
 // Ready reports whether signing keys are loaded. It never fetches.
 func (s *Supabase) Ready(ctx context.Context) error {
-	if !s.hasKeys(ctx) {
+	if !hasKeys(ctx, s.kf) {
 		return fmt.Errorf("no JWKS keys loaded from %s", s.jwksURL)
 	}
 	return nil

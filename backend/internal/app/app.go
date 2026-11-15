@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
@@ -20,51 +21,61 @@ import (
 	"github.com/timkrebs/ryft/internal/events"
 	"github.com/timkrebs/ryft/internal/events/outbox"
 	"github.com/timkrebs/ryft/internal/httpx"
+	"github.com/timkrebs/ryft/internal/metrics"
 )
 
 // The shutdown's budget. Every step is bounded by what is written here, the bounds
 // live in one place (bounds), the bound of a step includes the waits after it, and a
 // test (TestShutdownStaysInBudget) fails when the worst case reaches the watchdog's
-// time, Spec.Grace (the kubelet's 30 s; A2 sets Cloud Run's 10 s) less watchdogMargin.
+// time, Spec.Grace (Cloud Run's 10 s from SIGTERM to SIGKILL) less watchdogMargin (9 s).
 //
-//	step     bound                                              Edge             push and tick (scoring, notify)
-//	drain    Spec.DrainDelay (A7: 5 s)                          0 (5 s)          0
-//	http     Shutdown (10 s; push, tick and health 1 s) + afterClose   11 s      2 s
-//	pool     poolClose                                          1 s              1 s
-//	metrics  afterClose                                         1 s              1 s
-//	worst case                                                  13 s (18 s)      4 s
+//	step     bound                                                  Edge (api, ingest)  push and tick (scoring, notify)
+//	drain    Spec.DrainDelay                                        0                   0
+//	http     Shutdown (3 s; push, tick and health 2 s) + afterClose 4 s                 3 s
+//	push     the metrics push (OTLP), once                          2 s                 2 s
+//	pool     poolClose                                              1 s                 1 s
+//	metrics  afterClose (the :9090 listener, off Cloud Run only)    1 s                 1 s
+//	worst case                                                      8 s                 7 s
 //
 // Nothing else runs in the background to stop (D219): the consumers are push routes,
 // the timers and the relay are tick steps and inline flushes, the db watch is the
 // tick's ping, and Pub/Sub's REST publish holds no connection to close (D218). So a
 // push or a tick still in flight when the http step's Shutdown ends is cut there and
-// not waited for: Pub/Sub delivers the push again (D100), and the tick's steps see
-// their context end (scoring's pass stops between users) and the next tick comes in
-// 15 minutes. The tick's budget is no part of the shutdown's.
+// not waited for: its context ends (the handlers' base context, and httpx.Detach's), so
+// its database calls return and give their connections back before the pool step
+// (review-a1 finding 6); Pub/Sub delivers the push again (D100), and the next tick comes
+// in 15 minutes. The tick's budget is no part of the shutdown's. The push services'
+// Shutdown is 2 s, not 1 s: an idle HTTP/2 connection of Cloud Run's front end must have
+// the time to see its GOAWAY.
 //
 // A step that overruns is logged, recorded (exit 1) and the next one runs; the
-// watchdog (26 s) ends the process whatever step is stuck.
+// watchdog (9 s) ends the process whatever step is stuck.
 const (
-	defaultEdgeShutdown   = 10 * time.Second // HTTP Shutdown of a service with a public API: today's budget
-	defaultHealthShutdown = time.Second      // of one that serves its pushes, its tick and health only
-	defaultGrace          = 30 * time.Second
+	defaultEdgeShutdown   = 3 * time.Second  // HTTP Shutdown of a service with a public API (a sync in flight is cut, the app retries)
+	defaultHealthShutdown = 2 * time.Second  // of one that serves its pushes, its tick and health only
+	defaultGrace          = 10 * time.Second // Cloud Run's SIGTERM to SIGKILL (compose's docker stop waits as long)
 	defaultTickBudget     = 45 * time.Second // api, ingest and notify; scoring sets 240 s (D219)
-	defaultReadyTimeout   = 2 * time.Second  // how long /readyz waits for its checks
-	watchdogMargin        = 4 * time.Second  // the watchdog fires this long before Grace
+	defaultReadyTimeout   = 2 * time.Second  // how long a ready path waits for its checks
+	watchdogMargin        = time.Second      // the watchdog fires this long before Grace
+	// defaultStartWait is how long a request that arrives during the start (the pool, Build)
+	// waits for it before it is answered 503 with Retry-After (gate). A cold start takes
+	// about a second (design §3).
+	defaultStartWait = 5 * time.Second
 	// tickAnswer is how long a tick may run past its budget before it has answered: the
-	// final step's 10 s (the metrics push, A2) and 5 s to spare. The server's write
-	// timeout is at least the budget plus this (see server).
+	// final step's 10 s (the metrics push) and 5 s to spare. The server's write timeout
+	// is at least the budget plus this (see server).
 	tickAnswer = 15 * time.Second
 )
 
 // bounds are the shutdown steps' own bounds, all in one place; the tests shorten them.
 type bounds struct {
 	afterClose time.Duration // waiting for Serve to return after Shutdown or Close; the /metrics stop
+	push       time.Duration // the metrics push at SIGTERM
 	poolClose  time.Duration
 }
 
 func defaultBounds() bounds {
-	return bounds{afterClose: time.Second, poolClose: time.Second}
+	return bounds{afterClose: time.Second, push: 2 * time.Second, poolClose: time.Second}
 }
 
 // OutboxKind is the outbox app builds for a service, hands to Build as Deps.Outbox and
@@ -74,7 +85,8 @@ type OutboxKind int
 const (
 	// NoOutbox is for a service that publishes nothing.
 	NoOutbox OutboxKind = iota
-	// EventOutbox relays the service's events by key into their topics (scoring, D101).
+	// EventOutbox relays the service's events by key into their topics (api, ingest,
+	// scoring; D101).
 	EventOutbox
 	// WaitOutbox is notify's wait box: its deferrals (outbox rows of publisher notify with
 	// a not-before time) relay into ryft-notify-wait and come back on /push/wait (D219).
@@ -83,25 +95,25 @@ const (
 
 // Spec describes one service. The zero durations take the defaults.
 type Spec struct {
-	Name   string     // api | ingest | scoring | notify: logger, config.Load, transport, tick label, outbox publisher
-	Edge   bool       // Instrument, Recover, SecurityHeaders (api, ingest); else Recover only and a 1 s HTTP shutdown
-	Outbox OutboxKind // which outbox app builds and sweeps (scoring EventOutbox, notify WaitOutbox)
+	Name   string     // api | ingest | scoring | notify: logger, config.Load, transport, tick label, outbox publisher, metrics
+	Edge   bool       // Instrument, Recover, SecurityHeaders (api, ingest); else Recover only and a 2 s HTTP shutdown
+	Outbox OutboxKind // which outbox app builds (and, with Parts.Routes, sweeps)
 
 	// Load reads the service's own settings before anything connects (D78): an error
 	// ends the process at once, not behind the start-up retries. Wrap it in
 	// ConfigError to choose the message it is logged under.
 	Load func(log *slog.Logger) error
 	// Build makes what the service runs on the opened pool and transport. Its ctx lasts
-	// until the shutdown's http step is over (it ends before the pool and /metrics
-	// close), not until the signal; a signal while Build runs ends it, so Build must
-	// return when ctx does (one that does not ends at the kubelet's SIGKILL). An error is
-	// logged under ConfigError's message when it is one, else as "build".
+	// until the shutdown's http step is over (it ends before the pool closes), not until
+	// the signal; a signal while Build runs ends it, so Build must return when ctx does
+	// (one that does not ends at Cloud Run's SIGKILL). An error is logged under
+	// ConfigError's message when it is one, else as "build".
 	Build func(ctx context.Context, d Deps) (Parts, error)
 
-	DrainDelay      time.Duration // keep serving this long after the shutdown starts, for the edge to drop the pod (default none)
-	ShutdownTimeout time.Duration // HTTP Shutdown (default 10 s for Edge, 1 s otherwise)
+	DrainDelay      time.Duration // keep serving this long after the shutdown starts (default none: Cloud Run stops routing first)
+	ShutdownTimeout time.Duration // HTTP Shutdown (default 3 s for Edge, 2 s otherwise)
 	TickBudget      time.Duration // POST /internal/tick's steps together (default 45 s; scoring 240 s, D219)
-	Grace           time.Duration // the pod's terminationGracePeriodSeconds (default 30 s): the watchdog and the budget test use it
+	Grace           time.Duration // SIGTERM to SIGKILL (default Cloud Run's 10 s): the watchdog and the budget test use it
 }
 
 func (s Spec) shutdownTimeout() time.Duration {
@@ -129,7 +141,7 @@ func (s Spec) watchdogAfter() time.Duration {
 
 // worstCase is the sum of the shutdown's step bounds for this Spec and these bounds.
 func (s Spec) worstCase(b bounds) time.Duration {
-	return s.DrainDelay + s.shutdownTimeout() + b.afterClose + b.poolClose + b.afterClose
+	return s.DrainDelay + s.shutdownTimeout() + b.afterClose + b.push + b.poolClose + b.afterClose
 }
 
 // Deps is what Build gets: the opened dependencies.
@@ -138,14 +150,18 @@ type Deps struct {
 	Config config.Config
 	Pool   *pgxpool.Pool
 	// Bus is the service's Pub/Sub (D218): it publishes, and it builds the consumers'
-	// push routes (Bus.Push) and notify's wait sender. app builds the tick with it.
+	// push routes (Bus.Push) and notify's wait sender.
 	Bus    *eventbus.Transport
 	Outbox *outbox.Outbox // per Spec.Outbox; nil for NoOutbox
+	// Tick builds POST /internal/tick from exactly these steps, within Spec.TickBudget,
+	// with the metrics push as its final step: for a service that mounts its own routes
+	// (Parts.Handler). With Parts.Routes app builds the tick itself.
+	Tick func(steps ...eventbus.Tick) (http.Handler, error)
 }
 
 // Parts is what a service runs: Build returns it.
 type Parts struct {
-	// Routes mounts /v1/...; nil for none. It must not register "/", /healthz, /readyz,
+	// Routes mounts /v1/...; nil for none. It must not register "/", the health paths,
 	// the tick or a push path: app mounts those.
 	Routes func(mux *http.ServeMux)
 	Checks []Check // besides the db, which app adds
@@ -157,6 +173,11 @@ type Parts struct {
 	// budget) and logs nothing it would not log as a timer: its error is the tick's to
 	// log, and the next step runs.
 	Ticks []eventbus.Tick
+	// Handler is, instead of the four above, the service's whole mux (api and ingest,
+	// whose health answers are httpx.Health's, as API.md has them): its health paths, its
+	// tick (Deps.Tick), its routes and its 404. app serves it behind the start gate and the
+	// edge middleware and mounts nothing of its own.
+	Handler http.Handler
 }
 
 // PushRoutes is a consumer's push handling as Bus.Push builds it.
@@ -189,20 +210,23 @@ func Run(ctx context.Context, s Spec) error { return run(ctx, s, defaultSeams())
 type seams struct {
 	logger       func(service string) *slog.Logger
 	loadConfig   func(service string) (config.Config, error)
+	newPush      func(service string, log *slog.Logger) (func(context.Context) error, error) // the metrics push; nil func: none
 	openPool     func(ctx context.Context, cfg config.Config, log *slog.Logger) (*pgxpool.Pool, error)
-	ping         func(ctx context.Context, pool *pgxpool.Pool) error                 // /readyz's db check
+	ping         func(ctx context.Context, pool *pgxpool.Pool) error                 // the ready paths' db check
 	dbPing       func(ctx context.Context, pool *pgxpool.Pool, service string) error // the tick's first step (ryft_db_up)
 	sweep        func(ctx context.Context, ob *outbox.Outbox) error                  // the tick's outbox step
 	closePool    func(pool *pgxpool.Pool)
 	openBus      func(ctx context.Context, cfg config.Config, service string, log *slog.Logger) (*eventbus.Transport, error)
 	newOutbox    func(pool *pgxpool.Pool, publisher string, to events.Sender, log *slog.Logger) *outbox.Outbox
 	listen       func(ctx context.Context, addr string) (net.Listener, error)
+	cloudRun     func() bool                        // a Cloud Run service (K_SERVICE): no /metrics listener, generic ready answers
 	exit         func(code int)                     // the watchdog's way out
 	launched     func(task string)                  // a test hook: every task as it starts
 	startDone    func()                             // a test hook: the start is over and its watcher has ended
 	serverExit   func(server string)                // a test hook: a server's Serve has returned
 	bounded      func(step string, d time.Duration) // a test hook: every bound a step waits
 	readyTimeout time.Duration
+	startWait    time.Duration
 	bounds       bounds
 }
 
@@ -210,6 +234,7 @@ func defaultSeams() seams {
 	return seams{
 		logger:     httpx.Logger,
 		loadConfig: config.Load,
+		newPush:    otlpPush,
 		openPool: func(ctx context.Context, cfg config.Config, log *slog.Logger) (*pgxpool.Pool, error) {
 			return db.Open(ctx, cfg.DatabaseURL, cfg.DBMaxConns, log)
 		},
@@ -224,10 +249,28 @@ func defaultSeams() seams {
 		listen: func(ctx context.Context, addr string) (net.Listener, error) {
 			return (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 		},
+		cloudRun:     httpx.CloudRunService,
 		exit:         os.Exit,
 		readyTimeout: defaultReadyTimeout,
+		startWait:    defaultStartWait,
 		bounds:       defaultBounds(),
 	}
+}
+
+// otlpPush is the service's metrics push (D224, design §6): OTLP_ENDPOINT, OTLP_USER and
+// OTLP_TOKEN (config.LoadOTLP, whose refusal ends the start like any setting's), the
+// process's registry as service. Without an endpoint there is no push (nil).
+func otlpPush(service string, log *slog.Logger) (func(context.Context) error, error) {
+	o, err := config.LoadOTLP()
+	if err != nil {
+		return nil, err
+	}
+	p, err := metrics.NewOTLP(metrics.OTLPOptions{Endpoint: o.Endpoint, User: o.User, Token: o.Token, Service: service,
+		Gatherer: prometheus.DefaultGatherer, Log: log})
+	if err != nil || p == nil {
+		return nil, err
+	}
+	return p.Push, nil
 }
 
 // service is one Run: what it has opened so far and the tiers it has started.
@@ -240,8 +283,12 @@ type service struct {
 	life       context.Context // ends after the http step (or a signal during start): Build and the transport run on it
 	endLife    context.CancelFunc
 	cancelWait context.CancelFunc // wakes Run: the first failing task calls it
-	draining   atomic.Bool
-	current    atomic.Value // the shutdown step in progress, for the watchdog
+	// handlers is every request's base context; cut ends it when the http step's Shutdown
+	// runs out, so the handlers still running stop their database calls (finding 6).
+	handlers context.Context
+	cut      context.CancelFunc
+	draining atomic.Bool
+	current  atomic.Value // the shutdown step in progress, for the watchdog
 
 	mu        sync.Mutex
 	cause     error  // the first failure: a start error or a task's, wrapped with its name
@@ -251,8 +298,10 @@ type service struct {
 	panicErr  error // the first recovered panic
 	failed    []error
 
+	push    func(context.Context) error // the metrics push; nil: none
 	pool    *pgxpool.Pool
 	bus     *eventbus.Transport
+	gate    *gate
 	metrics *http.Server
 	web     *http.Server
 	serving bool
@@ -266,6 +315,10 @@ func run(ctx context.Context, s Spec, e seams) error {
 	}
 	r := &service{s: s, e: e, log: e.logger(s.Name)}
 	r.life, r.endLife = context.WithCancel(context.WithoutCancel(ctx))
+	var stop context.Context
+	stop, r.cut = context.WithCancel(context.Background())
+	defer r.cut()
+	r.handlers = httpx.WithStop(stop)
 	var waitCtx context.Context
 	waitCtx, r.cancelWait = context.WithCancel(ctx)
 	defer r.cancelWait()
@@ -285,6 +338,9 @@ func run(ctx context.Context, s Spec, e seams) error {
 	err := r.start(ctx)
 	close(started)
 	<-watched
+	if err != nil && r.gate != nil {
+		r.gate.abort() // the requests waiting for the start get their 503 now
+	}
 	if r.e.startDone != nil {
 		r.e.startDone()
 	}
@@ -358,9 +414,12 @@ func (r *service) logSetup(ctx context.Context, def string, err error) {
 	r.log.Error(msg, "err", cause)
 }
 
-// start opens everything in order: settings, pool, the transport and the outbox,
-// /metrics, Build and last the HTTP listener (the health, tick and push routes), so
-// the start-up probe covers the waits above.
+// start opens everything in order: the settings (the service's own, the metrics push's),
+// the transport, the HTTP listener behind the start gate and /metrics, then the pool, the
+// outbox and Build, and last it opens the gate. The listener comes before the pool so that
+// Cloud Run's startup probe (/health/live) passes while the database is down, and the
+// ticks that arrive meanwhile report it (gate); nothing connects before the settings are
+// valid (D78).
 func (r *service) start(ctx context.Context) (err error) {
 	if r.cfg, err = r.e.loadConfig(r.s.Name); err != nil {
 		r.logSetup(ctx, "config", err)
@@ -372,6 +431,26 @@ func (r *service) start(ctx context.Context) (err error) {
 			return err
 		}
 	}
+	if r.push, err = r.e.newPush(r.s.Name, r.log); err != nil {
+		r.push = nil
+		r.logSetup(ctx, "otlp config", err)
+		return err
+	}
+	// Opening the transport dials nothing (D218): its push verifier checks the ticks that
+	// arrive during the start, and its key refresher lives on the service's life, which
+	// ends after the http step.
+	if r.bus, err = r.e.openBus(r.life, r.cfg, r.s.Name, r.log); err != nil {
+		r.bus = nil
+		r.logSetup(ctx, "events", err)
+		return err
+	}
+	if err = r.listen(ctx); err != nil {
+		r.logSetup(ctx, "serve", err)
+		return err
+	}
+	if !r.e.cloudRun() {
+		r.startMetrics(ctx)
+	}
 	// db.Open retries until the role can log in and the migrate job has applied the
 	// schema; a signal ends the wait.
 	if r.pool, err = r.e.openPool(ctx, r.cfg, r.log); err != nil {
@@ -379,27 +458,23 @@ func (r *service) start(ctx context.Context) (err error) {
 		r.logSetup(ctx, "db", err)
 		return err
 	}
-	// Opening the transport dials nothing (D218); its push verifier's key refresher
-	// lives on the service's life, which ends after the http step.
-	if r.bus, err = r.e.openBus(r.life, r.cfg, r.s.Name, r.log); err != nil {
-		r.bus = nil
-		r.logSetup(ctx, "events", err)
-		return err
-	}
 	ob, err := r.openOutbox()
 	if err != nil {
 		r.logSetup(ctx, "events", err)
 		return err
 	}
-	r.startMetrics(ctx)
-
-	deps := Deps{Log: r.log, Config: r.cfg, Pool: r.pool, Bus: r.bus, Outbox: ob}
+	deps := Deps{Log: r.log, Config: r.cfg, Pool: r.pool, Bus: r.bus, Outbox: ob, Tick: r.tick}
 	parts, err := r.s.Build(r.life, deps)
-	if err != nil {
-		r.logSetup(ctx, "build", err)
-		return err
+	if err == nil {
+		var h http.Handler
+		if h, err = r.handler(parts, ob); err == nil {
+			r.gate.open(h)
+			r.serving = true
+			return nil
+		}
 	}
-	return r.startHTTP(ctx, parts, ob)
+	r.logSetup(ctx, "build", err)
+	return err
 }
 
 // openOutbox is Spec.Outbox's outbox: the events' relays into the transport by key,
@@ -418,6 +493,12 @@ func (r *service) openOutbox() (*outbox.Outbox, error) {
 	return nil, nil
 }
 
+// tick is POST /internal/tick from steps, within the Spec's budget, with the metrics push
+// as its final step (D219, D224).
+func (r *service) tick(steps ...eventbus.Tick) (http.Handler, error) {
+	return r.bus.Tick(r.s.tickBudget(), r.push, steps...)
+}
+
 // ticks are the tick's steps: the db ping (ryft_db_up), the outbox's sweep (what the
 // inline flushes left, and notify's deferrals that came due), then the service's own
 // (D219).
@@ -429,20 +510,26 @@ func (r *service) ticks(ob *outbox.Outbox, own []eventbus.Tick) []eventbus.Tick 
 	return append(steps, own...)
 }
 
-func (r *service) startHTTP(ctx context.Context, parts Parts, ob *outbox.Outbox) error {
-	checks := append([]Check{{Name: "db", Required: true, Fn: func(ctx context.Context) error { return r.e.ping(ctx, r.pool) }}}, parts.Checks...)
-	// No final step yet: A2 hands the tick the metrics push here.
-	tick, err := r.bus.Tick(r.s.tickBudget(), nil, r.ticks(ob, parts.Ticks)...)
-	if err != nil {
-		r.logSetup(ctx, "build", err)
-		return err
+// handler is what the gate opens to: Parts.Handler as it is, or app's mux of the health
+// paths, the tick, the push routes, Parts.Routes and the JSON 404.
+func (r *service) handler(parts Parts, ob *outbox.Outbox) (http.Handler, error) {
+	if parts.Handler != nil {
+		if parts.Routes != nil || len(parts.Checks) > 0 || len(parts.Push) > 0 || len(parts.Ticks) > 0 {
+			return nil, errors.New("app: Parts.Handler is the whole mux: Routes, Checks, Push and Ticks must be empty")
+		}
+		return parts.Handler, nil
 	}
-
+	checks := append([]Check{{Name: "db", Required: true, Fn: func(ctx context.Context) error { return r.e.ping(ctx, r.pool) }}}, parts.Checks...)
+	tick, err := r.tick(r.ticks(ob, parts.Ticks)...)
+	if err != nil {
+		return nil, err
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
-	mux.HandleFunc("GET /readyz", readyz(r.log, checks, &r.draining, r.e.readyTimeout))
+	mux.HandleFunc("GET "+httpx.PathHealthz, httpx.Live)
+	mux.HandleFunc("GET "+httpx.PathLive, httpx.Live)
+	ready := readyz(r.log, checks, &r.draining, r.e.readyTimeout, r.e.cloudRun())
+	mux.Handle("GET "+httpx.PathReadyz, ready)
+	mux.Handle("GET "+httpx.PathReady, ready)
 	// The tick and the pushes sit outside any /v1 middleware: the push token is their
 	// auth, checked by the transport's verifier on every one (D218).
 	mux.Handle(http.MethodPost+" "+eventbus.PathTick, tick)
@@ -453,18 +540,25 @@ func (r *service) startHTTP(ctx context.Context, parts Parts, ob *outbox.Outbox)
 		parts.Routes(mux)
 	}
 	mux.HandleFunc("/", httpx.NotFound)
-	handler := httpx.Recover(mux)
-	if r.s.Edge {
-		handler = httpx.Instrument(r.log, httpx.Recover(httpx.SecurityHeaders(mux)))
-	}
+	return mux, nil
+}
 
+// listen opens the HTTP port and serves the start gate on it: the edge middleware (or
+// Recover) around the gate, which hands the requests to the service's handler once the
+// start is done.
+func (r *service) listen(ctx context.Context) error {
+	r.gate = newGate(r.s.Name, r.log, r.bus.Verifier(), r.push, r.e.cloudRun(), r.e.startWait)
+	handler := httpx.Recover(r.gate)
+	if r.s.Edge {
+		handler = httpx.Instrument(r.log, httpx.Recover(httpx.SecurityHeaders(r.gate)))
+	}
 	addr := ":" + r.cfg.Port
 	ln, err := r.e.listen(ctx, addr)
 	if err != nil {
-		r.logSetup(ctx, "serve", err)
 		return err
 	}
 	r.web = server(r.s, r.log, addr, handler)
+	r.web.BaseContext = func(net.Listener) context.Context { return r.handlers }
 	r.serve = r.tier("serve")
 	r.serve.run("http", func(context.Context) error {
 		err := r.web.Serve(ln)
@@ -477,7 +571,6 @@ func (r *service) startHTTP(ctx context.Context, parts Parts, ob *outbox.Outbox)
 		return nil
 	})
 	r.log.Info("listening", "addr", addr)
-	r.serving = true
 	return nil
 }
 
@@ -492,9 +585,9 @@ func server(s Spec, log *slog.Logger, addr string, h http.Handler) *http.Server 
 	return srv
 }
 
-// startMetrics serves /metrics on its own port (METRICS_PORT; A2 replaces it with the
-// OTLP push). As before, a port that cannot be bound is logged and the service runs
-// without it.
+// startMetrics serves /metrics on its own port (METRICS_PORT), off Cloud Run only: there
+// the push replaces it. As before, a port that cannot be bound is logged and the service
+// runs without it.
 func (r *service) startMetrics(ctx context.Context) {
 	addr := ":" + r.cfg.MetricsPort
 	ln, err := r.e.listen(ctx, addr)
@@ -554,6 +647,17 @@ func (r *service) shutdown() error {
 		r.step("http", r.stopHTTP)
 	}
 	r.endLife()
+	if r.push != nil {
+		// After the http step, so the push carries its last requests' counts.
+		r.step("push", func() error {
+			d := r.bound("push", r.e.bounds.push)
+			return within(d, func() error {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d))
+				defer cancel()
+				return r.push(ctx)
+			})
+		})
+	}
 	if r.pool != nil {
 		r.step("pool", func() error {
 			return within(r.bound("pool", r.e.bounds.poolClose), func() error { r.e.closePool(r.pool); return nil })
@@ -583,14 +687,16 @@ func (r *service) shutdown() error {
 
 // stopHTTP closes the listener and waits for the requests in flight; the budget is
 // the Spec's, on a context the signal does not reach, plus the wait for Serve to
-// return. On overtime it cuts the connections that are left (a push or a tick in
-// flight: see the budget above) and lets the shutdown go on.
+// return. On overtime it ends the handlers' contexts (so a push or a tick in flight
+// gives its database connection back before the pool step), cuts the connections that
+// are left and lets the shutdown go on.
 func (r *service) stopHTTP() error {
 	r.serve.stopping() // Serve returning is the plan now
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(r.bound("http", r.s.shutdownTimeout())))
 	defer cancel()
 	err := r.web.Shutdown(ctx)
 	if err != nil {
+		r.cut()
 		_ = r.web.Close()
 	}
 	if werr := r.serve.wait(r.bound("http wait", r.e.bounds.afterClose)); err == nil {
