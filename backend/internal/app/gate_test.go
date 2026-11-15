@@ -382,6 +382,13 @@ func TestPartsHandler(t *testing.T) {
 // the http step's Shutdown runs out has its context ended (the handlers' base context, and
 // httpx.Detach's on it), so its database call returns and gives its connection back, and
 // the pool closes within its bound. Over HTTP/1.1 and h2c, as Cloud Run's front end speaks.
+//
+// The request's own context must have been ended by the cut, not by the Close right after
+// it: its cause is errCut. Detach's context ends on a goroutine of its own
+// (context.AfterFunc), which can run before the cut has reached the request's context
+// down the tree, so the handler waits for that context instead of reading its Err at
+// that moment (that read was the h2c flake). No timing decides the outcome: the cut ends
+// the request's context, with its cause, before stopHTTP calls Close.
 func TestAnInFlightRequestGivesItsConnectionBack(t *testing.T) {
 	for _, h2c := range []bool{false, true} {
 		t.Run(map[bool]string{false: "HTTP/1.1", true: "h2c"}[h2c], func(t *testing.T) {
@@ -396,7 +403,11 @@ func TestAnInFlightRequestGivesItsConnectionBack(t *testing.T) {
 					defer cancel()
 					close(entered)
 					<-ctx.Done()
-					cause.Store(r.Context().Err() != nil)
+					select {
+					case <-r.Context().Done():
+						cause.Store(errors.Is(context.Cause(r.Context()), errCut))
+					case <-time.After(5 * time.Second): // never ended: cause stays unset, the test fails
+					}
 					close(released)
 				})
 			}
@@ -428,7 +439,7 @@ func TestAnInFlightRequestGivesItsConnectionBack(t *testing.T) {
 				t.Errorf("the pool step overran: the push held its connection past the http step: %v", err)
 			}
 			if v, _ := cause.Load().(bool); !v {
-				t.Error("the request's own context did not end either")
+				t.Error("the request's own context was not ended by the cut (the handlers' base context, cause errCut)")
 			}
 			client.CloseIdleConnections()
 		})
