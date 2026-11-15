@@ -114,6 +114,10 @@ Open:
 - **No `scoring-rescore` job in `deploy/run` yet** (design §9); its env is in D222.
 - **Your steps after A2's merge:** OPERATIONS → GCP, step 7 (`make pooler-check`), then 8 and 9. Steps 0–6 could run
   since B.
+- **Exact floats** (`store: exact floats through the transaction pooler`, branch `backend/float-digits`, 2026-11-15):
+  step 7 failed on Supabase's `extra_float_digits 0`. Migration 0035 sets 1 on the four service roles. Step 7 now
+  reports the owner's 0 and passes, and step 9's login as `ryft_api` checks the role's setting and an exact float8
+  (D228, amends D221). Step 7 runs again after this merge, then step 8.
 
 ## Rebuild (2026-11-13)
 

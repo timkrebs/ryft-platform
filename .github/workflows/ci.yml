@@ -392,11 +392,25 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-      # First the read-only check on its own, so that a skip cannot pass for a pass.
+      # The server as runbook step 7 meets Supabase's (D228): extra_float_digits 0 from the configuration file.
+      # ALTER SYSTEM writes postgresql.auto.conf, so pg_settings says `configuration file`, as there.
+      - name: extra_float_digits 0 in the server's configuration file, as on Supabase
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: docker exec "$PG_CONTAINER" psql -U postgres -v ON_ERROR_STOP=1 -c 'ALTER SYSTEM SET extra_float_digits = 0' -c 'SELECT pg_reload_conf()'
+      # First the read-only check on its own, so that a skip cannot pass for a pass. As the owner (no role setting)
+      # it reports the 0 and passes; the last grep proves the 0 was in force.
       - name: TestPooler through PgBouncer (exec mode, read-only, rolled back)
         run: |
           go test -count=1 -run '^TestPooler$' -v ./internal/store/ | tee "$RUNNER_TEMP/pooler.log"
           grep -q -- '--- PASS: TestPooler' "$RUNNER_TEMP/pooler.log"
+          grep -q -- 'extra_float_digits 0 (configuration file)' "$RUNNER_TEMP/pooler.log"
+      # The store's tests log in through the bouncer as the owner, which has no role setting; the services' roles
+      # have theirs (migration 0035, proven by internal/db's TestServiceRolesReadExactFloats).
+      - name: extra_float_digits back to the default
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: docker exec "$PG_CONTAINER" psql -U postgres -v ON_ERROR_STOP=1 -c 'ALTER SYSTEM RESET extra_float_digits' -c 'SELECT pg_reload_conf()'
       - name: The store's tests, the store's queries through PgBouncer
         run: go test -count=1 ./internal/store/...
       # The bouncer logs each client connection with its database (log_connections, on by default): the
