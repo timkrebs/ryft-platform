@@ -11,7 +11,7 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 | --- | --- |
 | `project.tf` | the API keep list (`google_project_service`, `disable_on_destroy = false`), Data Access audit logs (`DATA_READ`) for Secret Manager, STS and IAM credentials (every secret read and token mint), the Pub/Sub and Cloud Scheduler service agents |
 | `iam.tf` | the accounts `ryft-<api,ingest,scoring,notify,migrate>`, `ryft-push`, `ryft-deployer`, `grafana-reader` (no key, ever); the deployer's rights (**The deployer**, below); Pub/Sub's token creator on `ryft-push` |
-| `wif.tf` | the GitHub pool `github` and provider `github-actions` (condition by repository and owner ID, `deploy.yml` on `main`, environment `deploy`, a GitHub-hosted runner) |
+| `wif.tf` | the GitHub pool `github` and provider `github-actions` (condition by repository and owner ID, `deploy.yml` on `main`, environment `deploy` or `site`, a GitHub-hosted runner); one principal set per environment, `ryft-deployer` bound to `deploy`'s alone (D233), `site`'s for `site-deployer` in ryftlab-site (by hand, step 10a) |
 | `secrets.tf` | the 12 secret containers (ticket B's 11 and `posthog-project-key`, D231), `prevent_destroy`, 30-day delayed destruction, accessors on each secret. **No values**: they never pass through state |
 | `pubsub.tf`, `pubsub.auto.tfvars.json` | topics (messages stored in `europe-west1` only; `enforce_in_transit` stays off, so the Scheduler's publish and an operator's `gcloud pubsub` through the global endpoint still work), push and hold subscriptions, publisher bindings per topic, the agents' bindings. The JSON is written by `go run ./cmd/pubsub-topology` (PR A); do not edit it by hand once that exists |
 | `scheduler.tf` | the job `ryft-tick` (every 15 minutes) |
@@ -94,6 +94,11 @@ The arithmetic of each count is in the runbook (steps 4, 9, 11 and the stop line
    only. With A records for both names: 3 to add (the apex A, www's A and www's TXT), 1 to change
    (the apex TXT set gains `hosting-site=`), 0 to destroy. With a CNAME for www: 2 to add (the apex
    A, www's CNAME), 1 to change, 0 to destroy.
+6. **The WIF split** (D233, step 10a.2, before the site's first deploy): 1 to add, 1 to change, 1
+   to destroy. The provider's condition admits `deploy` and `site` (in place). `ryft-deployer`'s
+   `workloadIdentityUser` moves from the repository's set to `…/attribute.environment/deploy`,
+   create before destroy (`+/-`), so no moment without a binding. Outputs: `github_principal_set`
+   goes; `deployer_principal_set` and `site_principal_set` come.
 
 ```bash
 cd infra/gcp

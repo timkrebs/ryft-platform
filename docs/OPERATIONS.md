@@ -689,8 +689,75 @@ and to Firebase (`npx --yes firebase-tools@$(cat web/.firebase-tools-version) lo
 billing account anywhere. Until 10f, `SITE_DEPLOY` is off, and every run of `deploy.yml` shows
 "Site off" and stays green.
 
-**10a. The site project** (after C1's merge: `$FT` reads `web/.firebase-tools-version`, which
-main has only from then on; without it `firebase-tools@` would be whatever is newest):
+**10a. The environment `site`, the WIF split, then the site project** (after C1's merge and the
+split's, `infra/wif-split`, D233). `deploy.yml`'s `site` job runs in its own GitHub environment
+`site`. The pool's condition admits `deploy` and `site`, and each is its own principal set:
+`ryft-deployer` binds `…/attribute.environment/deploy` alone, `site-deployer` `…/attribute.environment/site`
+alone. So nothing the site job runs (firebase-tools and the dependencies npx resolves) can become
+the services' deployer. In this order; the services keep deploying throughout.
+
+1. **The environment `site`**, main only, with no secrets and no admin bypass:
+
+   ```bash
+   gh api -X PUT repos/timkrebs/ryft-platform/environments/site --input - <<'JSON'
+   {"can_admins_bypass": false, "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
+   JSON
+   gh api -X POST repos/timkrebs/ryft-platform/environments/site/deployment-branch-policies -f name=main -f type=branch
+   gh api repos/timkrebs/ryft-platform/environments/site --jq '{p: .deployment_branch_policy, bypass: .can_admins_bypass}'
+   #   {"bypass":false,"p":{"custom_branch_policies":true,"protected_branches":false}}
+   gh api repos/timkrebs/ryft-platform/environments/site/deployment-branch-policies --jq '.branch_policies[] | [.name,.type]'   # ["main","branch"], nothing else
+   gh api repos/timkrebs/ryft-platform/environments/site/secrets --jq .total_count           # 0
+   ```
+
+   **Stop if** the branch policy isn't `main` alone, the bypass isn't `false`, or the environment holds a secret.
+
+2. **The split's apply.** First check that `SITE_DEPLOY` is off and that no `deploy.yml` run is going:
+
+   ```bash
+   gh variable get SITE_DEPLOY -R timkrebs/ryft-platform                          # off (or "variable SITE_DEPLOY was not found")
+   gh run list --workflow deploy.yml -R timkrebs/ryft-platform -L 3 --json status --jq '.[].status'   # completed, each
+   terraform -chdir=infra/gcp plan -out=wif-split.tfplan
+   # Plan: 1 to add, 1 to change, 1 to destroy:
+   #   ~ google_iam_workload_identity_pool_provider.github    attribute_condition: environment == 'deploy'
+   #       -> environment in ['deploy', 'site'], and the description
+   #   +/- google_service_account_iam_member.deployer_workload_identity    (create replacement, then destroy)
+   #       member: …/attribute.repository_id/<id> -> …/attribute.environment/deploy
+   #   Outputs: - github_principal_set, + deployer_principal_set, + site_principal_set
+   terraform -chdir=infra/gcp apply wif-split.tfplan
+   rm infra/gcp/wif-split.tfplan
+   gcloud iam service-accounts get-iam-policy ryft-deployer@ryftlab-prod.iam.gserviceaccount.com --project=ryftlab-prod \
+     --format=json | jq -r '.bindings[] | .role + " " + (.members | join(" "))'
+   #   roles/iam.workloadIdentityUser principalSet://iam.googleapis.com/projects/<n>/locations/global/workloadIdentityPools/github/attribute.environment/deploy
+   ```
+
+   Then prove the services still sign in. Wait two minutes for IAM, then run deploy.yml by hand.
+   It redeploys main's services with the smoke and says "Site off":
+
+   ```bash
+   gh workflow run deploy.yml --ref main -R timkrebs/ryft-platform
+   gh run list --workflow deploy.yml -L 1 -R timkrebs/ryft-platform    # the run's ID
+   gh run watch <run id> --exit-status -R timkrebs/ryft-platform       # green: deploy, smoke, "Site off"
+   ```
+
+   **Stop if:**
+   - `SITE_DEPLOY` is on: set it off first, because `site` would sign in under the old condition.
+   - A run is going.
+   - The plan holds anything else, or shows the binding as `-/+` (destroy, then create) instead of
+     `+/-`.
+   - `ryft-deployer`'s policy names anything but the `deploy` set.
+   - The run's `deploy` job fails at "Sign in to Google Cloud". Dispatch once more after ten minutes
+     (IAM propagates in up to seven). If it fails again, restore the old member by hand, and report:
+     ```bash
+     gcloud iam service-accounts add-iam-policy-binding ryft-deployer@ryftlab-prod.iam.gserviceaccount.com --project=ryftlab-prod \
+       --role=roles/iam.workloadIdentityUser \
+       --member="principalSet://iam.googleapis.com/projects/$(terraform -chdir=infra/gcp output -raw project_number)/locations/global/workloadIdentityPools/github/attribute.repository_id/$(gh api repos/timkrebs/ryft-platform --jq .id)"
+     ```
+     That member isn't in Terraform: the next apply leaves it, and removing it by hand undoes this.
+
+3. **The site project**, its deploy account bound to the `site` set and nothing else.
+
+   `$FT` reads `web/.firebase-tools-version`, which main has only since C1. Without it,
+   `firebase-tools@` would be whatever is newest.
 
 ```bash
 FT="npx --yes firebase-tools@$(cat web/.firebase-tools-version)"
@@ -708,29 +775,39 @@ SITE_SA=site-deployer@$S.iam.gserviceaccount.com
 gcloud projects add-iam-policy-binding "$S" --member="serviceAccount:$SITE_SA" \
   --role=roles/firebasehosting.admin --condition=None
 gcloud iam service-accounts add-iam-policy-binding "$SITE_SA" --project="$S" \
-  --role=roles/iam.workloadIdentityUser --member="$(terraform -chdir=infra/gcp output -raw github_principal_set)"
+  --role=roles/iam.workloadIdentityUser --member="$(terraform -chdir=infra/gcp output -raw site_principal_set)"
 gcloud projects get-iam-policy "$S" --format='table(bindings.role,bindings.members)'  # you as owner, the SA, nothing else
-gcloud iam service-accounts get-iam-policy "$SITE_SA" --format=json \
-  | jq -r '.bindings[] | .role + " " + (.members | join(" "))'   # workloadIdentityUser: the principalSet of ryftlab-prod's pool github, by repository ID
-gcloud iam service-accounts keys list --iam-account="$SITE_SA" --managed-by=user       # empty
+gcloud iam service-accounts get-iam-policy "$SITE_SA" --project="$S" --format=json \
+  | jq -r '.bindings[] | .role + " " + (.members | join(" "))'
+#   roles/iam.workloadIdentityUser principalSet://iam.googleapis.com/projects/<n>/locations/global/workloadIdentityPools/github/attribute.environment/site
+gcloud iam service-accounts keys list --iam-account="$SITE_SA" --project="$S" --managed-by=user   # empty
 ```
 
-**Stop if** `billingEnabled` isn't `False`; `addfirebase` asks for a plan or a billing account;
-the project policy names anyone but you and `site-deployer`; the SA's policy names anything but the
-`github` pool of `ryftlab-prod`; or the key list isn't empty.
+**If you bound `site-deployer` before the split** (C1's 10a, to the repository's set
+`…/attribute.repository_id/<id>`), swap it. Add the `site` set first, then remove the old one, and
+print what is left:
 
-The GitHub pool's condition already pins `deploy.yml` on main and the `deploy` environment, so
-this binding needs only the repository.
+```bash
+S=ryftlab-site; SITE_SA=site-deployer@$S.iam.gserviceaccount.com
+gcloud iam service-accounts add-iam-policy-binding "$SITE_SA" --project="$S" \
+  --role=roles/iam.workloadIdentityUser --member="$(terraform -chdir=infra/gcp output -raw site_principal_set)"
+gcloud iam service-accounts remove-iam-policy-binding "$SITE_SA" --project="$S" --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/$(terraform -chdir=infra/gcp output -raw project_number)/locations/global/workloadIdentityPools/github/attribute.repository_id/$(gh api repos/timkrebs/ryft-platform --jq .id)"
+gcloud iam service-accounts get-iam-policy "$SITE_SA" --project="$S" --format=json \
+  | jq -r '.bindings[] | .role + " " + (.members | join(" "))'
+#   roles/iam.workloadIdentityUser principalSet://iam.googleapis.com/projects/<n>/locations/global/workloadIdentityPools/github/attribute.environment/site
+```
 
-**Known risk, decide before 10f (D233).** `ryft-deployer` binds the same principal set. So any code
-running in the `site` job could mint a token and act as the services' deployer: firebase-tools and
-its dependencies, which npx resolves at run time. The fix is a small `infra/gcp` PR plus an apply:
-- the `site` job in its own environment `site` (main only);
-- the condition admits `deploy` and `site`;
-- `ryft-deployer` is bound to `attribute.environment/deploy` alone and `site-deployer` to
-  `attribute.environment/site`.
+**Stop if** any of these:
+- `billingEnabled` isn't `False`;
+- `addfirebase` asks for a plan or a billing account;
+- the project policy names anyone but you and `site-deployer`;
+- the SA's policy has any line but the one `workloadIdentityUser` line ending in
+  `attribute.environment/site`, especially `attribute.repository_id/…` or `attribute.environment/deploy`;
+- the key list isn't empty.
 
-It wasn't in C1's scope.
+The pool's condition pins the repository and owner by ID, `deploy.yml`, main, push or dispatch, and a
+GitHub-hosted runner. So the `site` set is exactly that workflow's jobs in the environment `site`.
 
 **10b. Two console settings** (Firebase console → `ryftlab-site`):
 - Hosting → the site's menu → **release storage settings**: keep the 10 newest releases. On Spark
@@ -784,9 +861,17 @@ curl -sI https://ryftlab.de/ | head -n 1                    # an HTTP status lin
 
 **Stop if** a certificate is still pending after 24 hours.
 
-**10f. The switch, and the first site deploy:**
+**10f. The switch, and the first site deploy.** Only after all three parts of 10a:
+- the environment `site` exists;
+- the split is applied, and the dispatch after it was green;
+- `site-deployer`'s one `workloadIdentityUser` member ends in `attribute.environment/site`.
+
+Check the last two again:
 
 ```bash
+terraform -chdir=infra/gcp output -raw site_principal_set; echo         # …/attribute.environment/site
+gcloud iam service-accounts get-iam-policy site-deployer@ryftlab-site.iam.gserviceaccount.com --project=ryftlab-site \
+  --format=json | jq -r '.bindings[].members[]'                          # that one line, nothing else
 gh variable set SITE_DEPLOY --body on -R timkrebs/ryft-platform
 gh workflow run deploy.yml --ref main -R timkrebs/ryft-platform
 gh run list --workflow deploy.yml -L 1 -R timkrebs/ryft-platform    # the run's ID
@@ -795,7 +880,11 @@ gh run watch <run id> --exit-status -R timkrebs/ryft-platform
 
 A run by hand deploys the services from main's tip too, with the smoke (as on every merge).
 
-**Stop if** `site` is red:
+**Stop if** the members aren't that one line. **Stop if** `site` is red:
+- Sign-in, or the live-release step's token, fails with a permission error on
+  `iamcredentials…generateAccessToken`. Then `site-deployer` isn't bound to the `site` set (10a.3),
+  or the job's environment isn't `site`. Set `SITE_DEPLOY` off. Never bind it to the `deploy` set
+  or the repository's set.
 - `firebase deploy` names a missing permission: add only that role to `site-deployer` on
   `ryftlab-site` (for example `roles/serviceusage.serviceUsageConsumer`), then dispatch again.
 - It refuses the credentials themselves (the `external_account` file of WIF): that is *unchecked*
@@ -1435,9 +1524,10 @@ hold; runbook step 10 sets it to `on`. Its jobs, in every run:
   check), then `SUPPORT_EMAIL` on `/beta`. It has no token and no environment. It hands `web/out`
   and `web/firebase.json` on as the artifact `site`, kept for a day. Without `SUPPORT_EMAIL` it
   stops: `gh variable set SUPPORT_EMAIL`, then run `deploy.yml` by hand.
-- `site`: environment `deploy`. It checks main's tip first, as `deploy` does: superseded, it ends
-  green and deploys nothing. Then it signs in as `site-deployer@ryftlab-site` (WIF, the same pool
-  as `ryft-deployer`). It deploys when `web/` differs from the commit of the live release (the
+- `site`: environment `site` (main only, no secrets). It checks main's tip first, as `deploy` does:
+  superseded, it ends green and deploys nothing. Then it signs in as `site-deployer@ryftlab-site`
+  (WIF, the same pool as `ryft-deployer` but the `site` principal set, which only `site-deployer`
+  binds; D233). It deploys when `web/` differs from the commit of the live release (the
   release's message is `web <sha>`), on every run by hand, and when the live release can't be read
   or names no commit of main's history. Otherwise "Site unchanged: the live site is `<sha>`".
   - **The hold:** while `DEPLOY_HOLD_SERVICES` is set, `site` refuses ("site held", red) a deploy

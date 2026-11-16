@@ -102,8 +102,9 @@ PR #194, branch `web/firebase-hosting` (D233, web D19, `docs/work/2026-11-16-fir
   10, 10a–10h): the project, the console's domains, the DNS PR plus apply 3, the certificates, then `SITE_DEPLOY=on`
   and one run by hand.
 - **Open:**
-  - **To decide before 10f:** `site-deployer` and `ryft-deployer` share one WIF principal set, so code in the
-    `site` job could impersonate the services' deployer (D233). The fix is an `infra/gcp` PR plus an apply.
+  - **The WIF split** (D233, branch `infra/wif-split`): the `site` job moves into its own environment `site`, and
+    `ryft-deployer` is bound to the `deploy` principal set alone. Your steps before 10f are in OPERATIONS 10a.1–3:
+    the environment, the apply (1/1/1) plus a dispatch, then `site-deployer` on the `site` set.
   - WIF with firebase-tools is checked only at step 10f.
   - C2 must drop `check_policy_in_force.sh`'s EKS half (D233).
   - D3 removes the scripts the removed jobs used and the nginx image.

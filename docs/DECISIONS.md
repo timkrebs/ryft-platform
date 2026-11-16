@@ -5074,8 +5074,9 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     - `site-build` builds without a token: `npm ci`, the build, the brand check and the SUPPORT_EMAIL checks (moved
       from web-image). It passes `out/` and `firebase.json` on as an artifact. Every step of a job with
       `id-token: write` can mint a token, so no npm install script and no build runs next to one.
-    - `site` runs in environment `deploy`, after the tip check, and signs in by WIF as
-      `site-deployer@ryftlab-site` (the same pool and condition as `ryft-deployer`, no key). It runs
+    - `site` runs in its own environment `site` (main only, no secrets; **the split** below), after the tip
+      check, and signs in by WIF as `site-deployer@ryftlab-site` (the same pool and condition as `ryft-deployer`,
+      its own principal set, no key). It runs
       `firebase deploy --only hosting --message "web <sha>"` with the one pinned firebase-tools
       (`web/.firebase-tools-version`, 15.35.0, install scripts off). Then `web/scripts/check-hosting.mjs` checks
       ryftlab.de and www live, and the policy version of `deploy/run/config.env` on `/privacy`. It runs that
@@ -5095,7 +5096,7 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     - Not covered: a run whose `deploy` fails at migrate while `site` publishes a new version. The two jobs run in
       parallel, so the window lasts until the services' fix ships.
   - `scripts/check_workflows.sh` pins the shape:
-    - the environment `deploy` only on `deploy` and `site`;
+    - an environment only on `deploy` (in `deploy`) and `site` (in `site`), never the other's;
     - no token in `site-build`;
     - in `site`, only checkout, setup-node (no cache key, `package-manager-cache: false`) and download-artifact, by
       SHA;
@@ -5108,16 +5109,39 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     `web/scripts/hosting.mjs` installs the pinned CLI into `web/node_modules/.cache/` with install scripts off,
     then runs `npm rebuild re2` alone, and stops unless `re2` loads (web D19). The deploy doesn't serve, so it
     keeps every install script off.
-  - **Accepted risk, for the user to decide before step 10f:** the WIF principal set that `site-deployer` binds is
-    the one `ryft-deployer` binds: every principal of the repository that passed the condition. So code in `site`
-    could mint its own token and impersonate `ryft-deployer`: Cloud Run and migrate in production. That code is
-    firebase-tools and its dependency tree, which npx resolves at run time, with no lockfile. Splitting
-    `site-build` from `site` keeps npm's install scripts and the build away from the token, but not this.
-    - The fix is an `infra/gcp` change, outside C1's brief: the `site` job in its own GitHub environment `site`,
-      the condition `assertion.environment in ['deploy', 'site']`, `ryft-deployer` bound to
-      `principalSet://…/attribute.environment/deploy`, and `site-deployer` to `…/attribute.environment/site`
-      (`attribute.environment` is already mapped). It comes with `ENV_JOBS` in `check_workflows.sh` and an apply.
-    - Until it lands, `SITE_DEPLOY` off keeps the job from running.
+  - **The split** (amended 2026-11-16 after #194; head-architect's decision, branch `infra/wif-split`):
+    - **The problem:** as C1 merged, `site-deployer` was to bind the same WIF principal set as `ryft-deployer`, the
+      repository's (`attribute.repository_id/<id>`), that is, every principal of the repository that passed the
+      condition. Code in `site` could mint its own token and impersonate `ryft-deployer`: Cloud Run and migrate in
+      production. That code is firebase-tools and its dependency tree, which npx resolves at run time with no
+      lockfile. Splitting `site-build` from `site` kept npm's install scripts and the build away from the token,
+      but not this.
+    - **The decision:** one GitHub environment, and so one principal set, per deploy account.
+      - `site` runs in the environment `site` (main only, no secrets, no admin bypass).
+      - The condition admits `assertion.environment in ['deploy', 'site']`. The mapping already carried
+        `attribute.environment`.
+      - `ryft-deployer` is bound to `principalSet://…/attribute.environment/deploy` alone, and `site-deployer` (by
+        hand in ryftlab-site, runbook 10a.3) to `…/attribute.environment/site` alone.
+      - `check_workflows.sh` pins each job to its environment. `tests/iam.tftest.hcl` pins:
+        - the condition and the mapping;
+        - the deployer's member;
+        - the two outputs (`deployer_principal_set`, `site_principal_set`; `github_principal_set` is gone);
+        - that no `.tf` file names the repository's set;
+        - that `deployer_workload_identity` is replaced create-before-destroy.
+    - **Order, so the services always deploy:**
+      1. The user creates the environment `site`.
+      2. The merge: `SITE_DEPLOY` is off, so `site` doesn't run, and `deploy` signs in under the old condition and
+         binding.
+      3. The apply: 1 to add, 1 to change, 1 to destroy. The condition is changed in place and still admits
+         `deploy`. The new binding is made before the old one goes (`+/-`), and both admit the deploy job's token.
+      4. A dispatched run proves the services still sign in.
+      5. `site-deployer` is bound to the `site` set, or swapped to it from C1's binding.
+      6. 10f.
+    - **Rejected:**
+      - Keeping one environment and narrowing by `job_workflow_ref` or `sub`: the two jobs share both.
+      - A second provider: it would carry the same claims, so it adds nothing an environment doesn't.
+      - Two PRs (add the new binding, then remove the old): create-before-destroy gives the same no-gap order in
+        one apply.
 - **Decision, the DNS:** `infra/gcp/site.tf` holds five variables for the records the Firebase wizard shows:
   `site_apex_a`, `site_apex_txt` (`hosting-site=…`, which joins the apex TXT set), and `site_www_a` with
   `site_www_txt`, or `site_www_cname` instead (exclusive, validated). Their values live in the committed

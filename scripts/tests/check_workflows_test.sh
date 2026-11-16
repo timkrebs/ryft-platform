@@ -188,12 +188,15 @@ jobs:
 # ci.yml runs no job in an environment any more (promote is gone, C1).
 fresh; awk '{ print } $0 == "  ci-ok:" { print "    environment: deploy" }' "$d/ci.yml" > "$d/ci.new"; mv "$d/ci.new" "$d/ci.yml"; run
 expect_fail "a ci.yml job in the environment deploy" "job 'ci-ok' names an environment"
-# The site job: only in the environment deploy, by name.
-job_swap "the site in another environment" "must run in the environment" site "    environment: deploy" "    environment: production"
-job_swap "the site in an environment named by an expression" "must run in the environment" site "    environment: deploy" "    environment: \${{ vars.E }}"
-job_swap "the site without its environment" "site job does not run in" site "    environment: deploy" "    # no environment"
-job_swap "the site with an environment mapping and a url is still fine" "" site "    environment: deploy" '    environment: { name: deploy, url: "https://ryftlab.de" }'
+# The site job: only in the environment site, by name (D233: its own WIF principal set), never deploy's.
+job_swap "the site in another environment" "must run in the environment 'site'" site "    environment: site" "    environment: production"
+job_swap "the site back in the environment deploy" "must run in the environment 'site'" site "    environment: site" "    environment: deploy"
+job_swap "the site in an environment named by an expression" "must run in the environment" site "    environment: site" "    environment: \${{ vars.E }}"
+job_swap "the site without its environment" "site job does not run in \`environment: site\`" site "    environment: site" "    # no environment"
+job_swap "the site with an environment mapping and a url is still fine" "" site "    environment: site" '    environment: { name: site, url: "https://ryftlab.de" }'
+job_swap "the site in a mapping naming deploy" "must run in the environment 'site'" site "    environment: site" '    environment: { name: deploy, url: "https://ryftlab.de" }'
 job_swap "site-build in the environment" "site-build job runs in no environment" site-build "    timeout-minutes: 20" "    timeout-minutes: 20\n    environment: deploy"
+job_swap "site-build in the environment site" "site-build job runs in no environment" site-build "    timeout-minutes: 20" "    timeout-minutes: 20\n    environment: site"
 fresh; cp "$d/deploy.yml" "$d/deploy2.yml"; run
 expect_fail "the environment in a copy of deploy.yml" "deploy2.yml: job 'deploy' names an environment"
 grep -q "deploy2.yml: job 'site' names an environment" "$tmp/err" || fail "the site job in a copy of deploy.yml must fail too: $(cat "$tmp/err")"
@@ -247,6 +250,7 @@ deploy_swap "a pull_request trigger" "runs on exactly" "  workflow_dispatch:" " 
 deploy_swap "a push on every branch" "runs on exactly" "    branches: [main]" "    branches: ['**']"
 job_swap "a wider token" "id-token: write" deploy "      id-token: write" "      id-token: write\n      packages: write"
 job_swap "the deploy in another environment" "must run in the environment" deploy "    environment: deploy" "    environment: production"
+job_swap "the deploy in the site's environment" "must run in the environment 'deploy'" deploy "    environment: deploy" "    environment: site"
 job_swap "a deploy that does not wait for ci-ok" "deploy job must need" deploy "    needs: [ci]" "    needs: []"
 deploy_swap "workflow-level permissions" "permissions: {}" "permissions: {}" "permissions:\n  contents: write"
 bad "another job with the id ci-ok" 'only ci.yml' "name: x

@@ -215,7 +215,8 @@ jobs:
       # environment, so the request token is in no command line) makes gcloud fetch a fresh GitHub OIDC
       # token, audience the provider's https name, whenever it exchanges one, and impersonate
       # ryft-deployer. The WIF condition (infra/gcp) admits this repository's deploy.yml on
-      # refs/heads/main, push or workflow_dispatch. gcloud's and docker's credentials live under
+      # refs/heads/main, push or workflow_dispatch, and ryft-deployer binds only the principal set of
+      # this job's environment `deploy` (not the site's, D233). gcloud's and docker's credentials live under
       # $RUNNER_TEMP, which the runner empties at the end of every job, failed or not, so no step has
       # to run after a failure to clean them up.
       - name: Sign in to Google Cloud as ryft-deployer (WIF)
@@ -412,11 +413,12 @@ jobs:
   # it goes to $RUNNER_TEMP/site, not over the checkout, it may hold firebase.json and out/ and
   # nothing else (no link, no .npmrc, no node_modules, no script), and its firebase.json may carry no
   # hook or framework build. The credentials are passed to the deploy command alone. Nothing signs in
-  # before `tip`. The WIF condition (infra/gcp) admits deploy.yml on main, push or dispatch, in the
-  # environment `deploy`, on a GitHub-hosted runner; site-deployer (Hosting admin on ryftlab-site,
-  # nothing else) binds the same pool (step 10). That principal set can impersonate ryft-deployer too:
-  # code in this job (firebase-tools and its dependencies) could act as the services' deployer
-  # (D233, the follow-up that splits the principal by environment).
+  # before `tip`. This job runs in its own environment `site` (main only), never `deploy`: the WIF
+  # condition (infra/gcp) admits deploy.yml on main, push or dispatch, in `deploy` or `site`, on a
+  # GitHub-hosted runner, and each environment is its own principal set. site-deployer (Hosting admin
+  # on ryftlab-site, nothing else) binds `site` (step 10a); ryft-deployer binds `deploy` alone. So a
+  # token minted here, by firebase-tools or anything it loads, can become site-deployer and nothing
+  # else (D233's split). No secret lives in `site`.
   # It deploys on every run by hand, when the live release cannot be read, when there is none or its
   # message is not "web <a commit of this history>", and when web/ differs from that commit; else a
   # notice ("the live site is <sha>"). While DEPLOY_HOLD_SERVICES is set, a deploy that changes
@@ -435,8 +437,9 @@ jobs:
     if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # The environment admits main only (its deployment branch rule), and the WIF condition requires it.
-    environment: deploy
+    # Its own environment, main only (its deployment branch rule): its token's principal set is
+    # `site`, which only site-deployer binds (infra/gcp wif.tf, runbook step 10a).
+    environment: site
     permissions:
       contents: read
       id-token: write
