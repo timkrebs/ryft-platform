@@ -17,6 +17,9 @@ locals {
     "apns-key-p8"         = ["ryft-notify"]
     "data-key"            = ["ryft-api"]
     "otlp-token"          = ["ryft-api", "ryft-ingest", "ryft-scoring", "ryft-notify"]
+    # PostHog's project API key, served to the app by GET /v1/config (D231). Its pin in deploy/run/api.yaml
+    # comes after the first version: a revision that reads a missing version does not start.
+    "posthog-project-key" = ["ryft-api"]
   }
 }
 

@@ -53,4 +53,16 @@ type RemoteConfig struct {
 	TTLSec               int             `json:"ttl_sec"`
 	PrivacyPolicyVersion string          `json:"privacy_policy_version"`
 	PrivacyPolicyURL     string          `json:"privacy_policy_url"`
+	// Analytics is null while the api has no project key (POSTHOG_PROJECT_KEY unset). It is
+	// independent of the flag analytics.enabled: the app combines the two with the user's
+	// opt-in (D231).
+	Analytics *AnalyticsConfig `json:"analytics"`
+}
+
+// AnalyticsConfig is where the app sends its product analytics (PostHog EU Cloud, D231):
+// the ingestion origin and the project's public API key. Both repositories are public, so
+// the key is served here instead of being compiled into the app.
+type AnalyticsConfig struct {
+	Host       string `json:"host"`
+	ProjectKey string `json:"project_key"`
 }

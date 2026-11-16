@@ -12,7 +12,7 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 | `project.tf` | the API keep list (`google_project_service`, `disable_on_destroy = false`), Data Access audit logs (`DATA_READ`) for Secret Manager, STS and IAM credentials (every secret read and token mint), the Pub/Sub and Cloud Scheduler service agents |
 | `iam.tf` | the accounts `ryft-<api,ingest,scoring,notify,migrate>`, `ryft-push`, `ryft-deployer`, `grafana-reader` (no key, ever); the deployer's rights (**The deployer**, below); Pub/Sub's token creator on `ryft-push` |
 | `wif.tf` | the GitHub pool `github` and provider `github-actions` (condition by repository and owner ID, `deploy.yml` on `main`, environment `deploy`, a GitHub-hosted runner) |
-| `secrets.tf` | the 11 secret containers, `prevent_destroy`, 30-day delayed destruction, accessors on each secret. **No values**: they never pass through state |
+| `secrets.tf` | the 12 secret containers (ticket B's 11 and `posthog-project-key`, D231), `prevent_destroy`, 30-day delayed destruction, accessors on each secret. **No values**: they never pass through state |
 | `pubsub.tf`, `pubsub.auto.tfvars.json` | topics (messages stored in `europe-west1` only; `enforce_in_transit` stays off, so the Scheduler's publish and an operator's `gcloud pubsub` through the global endpoint still work), push and hold subscriptions, publisher bindings per topic, the agents' bindings. The JSON is written by `go run ./cmd/pubsub-topology` (PR A); do not edit it by hand once that exists |
 | `scheduler.tf` | the job `ryft-tick` (every 15 minutes) |
 | `registry.tf` | Artifact Registry `ryft`: the 5 newest versions of each image kept, every other version deleted after 30 days (tagged or not); scanning off |
@@ -82,7 +82,8 @@ else.
 The arithmetic of each count is in the runbook (steps 4, 9, 11 and the stop line).
 
 1. **Apply 1** (`serve = false`, runbook step 4): everything except the invokers, the deployer's
-   bindings on the services and the mappings. 116 to add, 0 to change, 0 to destroy.
+   bindings on the services and the mappings. 118 to add, 0 to change, 0 to destroy (116 before
+   `posthog-project-key`, D231).
 2. **Apply 2** (`serve = true`, step 9, after CI's first deploy at step 8): 13 to add (4 invoker
    bindings, 4 + 1 deployer bindings on the services and the job, 2 mappings, 2 CNAMEs), 1 to
    change (the tick resumes), 1 to destroy (the deployer's project-wide `run.developer`).

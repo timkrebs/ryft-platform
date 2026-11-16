@@ -72,6 +72,17 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Product analytics config (2026-11-16)
+
+Branch `config/analytics` (D231, `docs/work/2026-11-16-analytics-config/`): `GET /v1/config` → `analytics`
+(`{host, project_key}` of PostHog EU Cloud, or `null`) and the flag `analytics.enabled` (migration 0036, enabled at
+0 %). The api reads `POSTHOG_PROJECT_KEY` (a `phc_` key or nothing) and `POSTHOG_HOST` (https origin, default
+`https://eu.i.posthog.com`) at start-up and logs neither. `infra/gcp` gains the secret `posthog-project-key` (api
+only). The merge deploys the code and the migration; `analytics` stays `null` until your three steps, in this order:
+`terraform -chdir=infra/gcp` plan/apply (2 to add), `put posthog-project-key`, then the one-line pin PR
+(OPERATIONS → GCP → PostHog's project key). Then allow-list testers for `analytics.enabled` once the app ships it
+and the privacy policy in force names PostHog (OPERATIONS → Feature flags, its stop line).
+
 ## The site on Firebase Hosting, C1 (2026-11-16)
 
 Branch `web/firebase-hosting` (D233, web D19, `docs/work/2026-11-16-firebase-hosting/`):

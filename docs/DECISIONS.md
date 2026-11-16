@@ -5020,6 +5020,47 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   English for `privacy_policy_url` (no field changes). Bringing German back means the pages, the messages, a `[locale]`
   segment and a second loop entry, from this change's parent commit.
 
+## D231 — The api serves the app's analytics target: `GET /v1/config` → `analytics` and the flag `analytics.enabled`
+
+- **Context:** the app's product analytics go to PostHog EU Cloud: opt-in, pseudonymous, a fixed event list, no IP
+  (the analytics plan of 2026-11-16, decisions 4–6 and "Order" step 1, approved by the user). Both repositories are
+  public, so the project key must not be compiled into the app. PostHog's project key is a client key, sent with
+  every event; what it must never be confused with is a personal API key (`phx_…`), which reads and changes the
+  organisation.
+- **Decision:**
+  - **Contract (additive):** `RemoteConfig.analytics`, always present, `{host, project_key}` or `null` while the api
+    has no key, and the flag `analytics.enabled`, seeded enabled at 0 % (migration 0036, never overwritten), so testers
+    get it by the allow-list as with `train.import`. The two are independent; the app sends only when the flag is on,
+    `analytics` is set and the user opted in, and drops its queue when any of them stops holding. No route checks the
+    flag.
+  - **Config:** `POSTHOG_PROJECT_KEY` (optional; trimmed; when set it must match `phc_[A-Za-z0-9_-]{20,128}`, so a
+    personal key or a pasted wrong secret stops the start instead of reaching every app) and `POSTHOG_HOST` (default
+    `https://eu.i.posthog.com`; exactly `https://<host name>`, lower case, no IP address, port, path, query or
+    fragment; checked with or without a key). Both are read in the api's `Load`, before anything connects. Neither
+    value appears in an error, a log line (the start logs `analytics configured=<bool>`) or a metric label. The
+    code doesn't pin the host to PostHog's EU name, so a first-party proxy can front it later. On Cloud Run it is the
+    default: `deploy/run` doesn't set `POSTHOG_HOST`, and `check_cloudrun.py` refuses it until a reviewed PR adds it
+    to `api.yaml` and to the check's table.
+  - **Secret:** `posthog-project-key` in `infra/gcp/secrets.tf`, accessor `ryft-api` only, like the other 11.
+  - **Deploy safety: the pin follows the first version.** Cloud Run refuses a revision that reads a missing secret
+    version, and `deploy.yml` replaces api last, so a pin merged before the user's `apply` and `put` would leave every
+    deploy red until then. The deployer can't read Secret Manager (its roles are pinned), so the deploy has no check
+    that could catch it, and a `FILL_ME_IN` in `config.env` would hold every deploy. So this PR adds no pin:
+    `check_cloudrun.py` knows the secret and accepts `POSTHOG_PROJECT_KEY` in `api.yaml` as optional (pinned by
+    number, from that secret, api only). The pin is a one-line PR after `apply` and `put` (OPERATIONS → GCP →
+    PostHog's project key). Until it merges, `analytics` is `null`.
+- **Alternatives:**
+  - The pin in this PR, with the runbook order apply → put → merge: no follow-up PR, but a merge out of order turns
+    the deploy red, also for every other PR merged after it.
+  - Compiling the key into the app: public repository.
+  - A check in `deploy.yml` that every pinned version exists: needs `secretmanager.versions.get` for the deployer.
+  - Serving the key only when the flag is on for the caller: the app needs both anyway, and the plan keeps them
+    independent.
+- **Consequences:** the app reads `analytics` from the newest config; a key change is a new version and a pin move.
+  The kill switch is the flag (the app's next config, within six hours). This changes no privacy text: naming PostHog
+  there is a step of the analytics plan, not of this PR. Nothing is sent until the flag, the key and the opt-in are
+  all there.
+
 ## D233 — The site on Firebase Hosting: deployed by `deploy.yml` behind `SITE_DEPLOY`; CI loses the EKS jobs (C1; amends D107, D223, D225)
 
 - **Context:** since 2026-11-16 the services run on Cloud Run (runbook steps 1–9). No host serves ryftlab.de, so
