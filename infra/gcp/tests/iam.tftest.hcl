@@ -64,8 +64,9 @@ run "secret_accessors_exactly" {
     condition = toset(keys(google_secret_manager_secret.this)) == toset([
       "db-password-api", "db-password-ingest", "db-password-scoring", "db-password-notify", "db-password-owner",
       "supabase-secret-key", "admin-api-key", "apple-key-p8", "apns-key-p8", "data-key", "otlp-token",
+      "posthog-project-key",
     ])
-    error_message = "the 11 secret containers of ticket B"
+    error_message = "the 11 secret containers of ticket B and posthog-project-key (D231)"
   }
 
   assert {
@@ -94,10 +95,10 @@ run "secret_accessors_exactly" {
 
   assert {
     condition = alltrue([
-      for s in ["supabase-secret-key", "admin-api-key", "apple-key-p8", "data-key"] :
+      for s in ["supabase-secret-key", "admin-api-key", "apple-key-p8", "data-key", "posthog-project-key"] :
       google_secret_manager_secret_iam_binding.accessor[s].members == toset(["serviceAccount:ryft-api@ryftlab-prod.iam.gserviceaccount.com"])
     ])
-    error_message = "the Supabase secret key, ADMIN_API_KEY, the Apple key and the data key: api only"
+    error_message = "the Supabase secret key, ADMIN_API_KEY, the Apple key, the data key and the PostHog key: api only"
   }
 
   assert {

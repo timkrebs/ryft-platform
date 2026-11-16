@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/flags"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
@@ -14,7 +15,8 @@ import (
 	"github.com/timkrebs/ryft/internal/store"
 )
 
-// remoteConfig is GET /v1/config: every feature flag evaluated for the caller.
+// remoteConfig is GET /v1/config: every feature flag evaluated for the caller, the policy
+// in force and where the app's analytics go (null without a project key, D231).
 func (h *handler) remoteConfig(w http.ResponseWriter, r *http.Request) {
 	all, err := h.st.Flags(r.Context())
 	if err != nil {
@@ -26,7 +28,15 @@ func (h *handler) remoteConfig(w http.ResponseWriter, r *http.Request) {
 		metrics.FlagEvaluations.WithLabelValues(k, onOff(on)).Inc()
 	}
 	httpx.WriteJSON(w, 200, model.RemoteConfig{Flags: out, EvaluatedAt: time.Now().UTC().Truncate(time.Second), TTLSec: flags.TTL,
-		PrivacyPolicyVersion: h.beta.PrivacyPolicyVersion, PrivacyPolicyURL: h.beta.PrivacyPolicyURL})
+		PrivacyPolicyVersion: h.beta.PrivacyPolicyVersion, PrivacyPolicyURL: h.beta.PrivacyPolicyURL, Analytics: h.analytics})
+}
+
+// analyticsConfig is what GET /v1/config serves as analytics: nil (null) without a project key.
+func analyticsConfig(a config.Analytics) *model.AnalyticsConfig {
+	if a.ProjectKey == "" {
+		return nil
+	}
+	return &model.AnalyticsConfig{Host: a.Host, ProjectKey: a.ProjectKey}
 }
 
 func onOff(on bool) string {

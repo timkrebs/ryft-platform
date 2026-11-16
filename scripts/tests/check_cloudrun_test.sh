@@ -203,6 +203,25 @@ add ingest.yaml 'name: LOG_LEVEL,' '- { name: DATA_ENCRYPTION_KEY, valueFrom: { 
 bad "ingest with the data key" "ingest reads data-key, which only api can access"
 add api.yaml 'name: LOG_LEVEL,' '- { name: OWNER_PASSWORD, valueFrom: { secretKeyRef: { name: db-password-owner, key: "1" } } }'
 bad "api with the owner's password" "api reads db-password-owner, which only migrate can access"
+# D231: api's PostHog key is optional (its pin follows the secret's first version), checked like the rest.
+# Each case starts from a copy without the pin, so they hold before and after the pin PR.
+nopin() { if grep -qF 'name: POSTHOG_PROJECT_KEY,' "$d/api.yaml"; then drop api.yaml 'name: POSTHOG_PROJECT_KEY,'; fi; }
+nopin
+ok "api without the PostHog key's pin"
+nopin
+add api.yaml 'name: OTLP_TOKEN,' '- { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "1" } } }'
+ok "api with the PostHog key pinned at 1"
+nopin
+add api.yaml 'name: OTLP_TOKEN,' '- { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "latest" } } }'
+bad "the PostHog key at latest" "pins posthog-project-key at 'latest'"
+nopin
+add api.yaml 'name: OTLP_TOKEN,' '- { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: admin-api-key, key: "1" } } }'
+bad "the PostHog key from another secret" "POSTHOG_PROJECT_KEY reads secret admin-api-key, want posthog-project-key"
+nopin
+add api.yaml 'name: OTLP_TOKEN,' '- { name: POSTHOG_PROJECT_KEY, value: "phc_inline" }'
+bad "the PostHog key as a plain value" "POSTHOG_PROJECT_KEY is not in ticket-b.md's env table for api"
+add ingest.yaml 'name: OTLP_TOKEN,' '- { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "1" } } }'
+bad "ingest with the PostHog key" "ingest reads posthog-project-key, which only api can access"
 # design §4: migrate's pin of a role equals the service's own.
 pinkey migrate.yaml db-password-api "key: \"$(( $(pin_of api.yaml db-password-api) + 1 ))\""
 bad "migrate's pin ahead of api's" "db-password-api is pinned at"

@@ -33,9 +33,10 @@ func main() { app.Main(spec()) }
 // whole of it (Parts.Handler).
 func spec() app.Spec {
 	var (
-		authCfg  config.Auth
-		beta     config.Beta
-		adminCfg config.Admin
+		authCfg   config.Auth
+		beta      config.Beta
+		adminCfg  config.Admin
+		analytics config.Analytics
 	)
 	return app.Spec{
 		Name:       "api",
@@ -59,17 +60,24 @@ func spec() app.Spec {
 			if adminCfg, err = config.LoadAdmin(); err != nil {
 				return app.ConfigError{Msg: "admin config", Err: err}
 			}
+			// A host that is no https origin stops the start (D231). The line says whether a
+			// key is set, never the key or the host.
+			if analytics, err = config.LoadAnalytics(); err != nil {
+				return app.ConfigError{Msg: "analytics config", Err: err}
+			}
+			log.Info("analytics", "configured", analytics.ProjectKey != "")
 			return nil
 		},
 		Build: func(ctx context.Context, d app.Deps) (app.Parts, error) {
-			return build(ctx, d, authCfg, beta, adminCfg)
+			return build(ctx, d, authCfg, beta, adminCfg, analytics)
 		},
 	}
 }
 
 // build makes the api's mux on the opened pool and transport. ctx is Build's: the JWKS
 // refresher runs on it.
-func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Beta, adminCfg config.Admin) (app.Parts, error) {
+func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Beta, adminCfg config.Admin,
+	analytics config.Analytics) (app.Parts, error) {
 	log := d.Log
 	// The import's comparisons are internal/train's pure rules (D131).
 	st := store.New(d.Pool).WithImportRules(importRules())
@@ -88,7 +96,7 @@ func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Bet
 	ob := d.Outbox
 	h := &handler{st: st, bus: events.Publisher{Sender: ob}, outbox: ob, log: log, cache: newInsightCache(), accounts: acct,
 		engine: scoring.NewEngine(st, log), beta: beta,
-		emails: acct, webURL: adminCfg.PublicWebURL}
+		emails: acct, webURL: adminCfg.PublicWebURL, analytics: analyticsConfig(analytics)}
 	// Email-bound invites need the Supabase project to confirm emails (D159). Nothing reads its setting at
 	// start: the tick does, and the first request that needs it (binding.go). Until it is known to be on,
 	// bound codes are neither made nor redeemed.
@@ -276,6 +284,8 @@ type handler struct {
 	binding bindingGate
 	// webURL is PUBLIC_WEB_URL, the base of an invite link; "" is config.DefaultPublicWebURL.
 	webURL string
+	// analytics is GET /v1/config → analytics; nil (served as null) without a project key (D231).
+	analytics *model.AnalyticsConfig
 	// importFinish is the training import's finish time; 0 is importFinishTimeout (tests
 	// shorten it to make a slow finish fail fast).
 	importFinish time.Duration

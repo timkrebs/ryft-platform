@@ -118,7 +118,9 @@ def main():
         # Beta: a new account needs a code while the gate is on (ADMIN_API_KEY makes
         # one per user), and a consent to the current policy before it may sync.
         status, cfg = a.api("GET", "/v1/config")
-        check(status == 200 and cfg.get("privacy_policy_version"), f"/v1/config: {status} {cfg}")
+        # The message names the fields, never the values: analytics.project_key is a credential (D231).
+        check(status == 200 and cfg.get("privacy_policy_version"),
+              f"/v1/config: {status} {sorted(cfg) if isinstance(cfg, dict) else type(cfg).__name__}")
         for u in (a, b):
             status, me_u = u.api("GET", "/v1/me")
             if not me_u.get("beta_access"):

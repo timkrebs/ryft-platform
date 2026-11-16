@@ -360,10 +360,17 @@ check(m == me0, f"baseline not restored: {m} vs {me0}")
 ok(f"PATCH /v1/me: manual 481 → {m['sleep_base_source']} {m['sleep_base_min']}; base with manual=false → 422")
 
 # ---- remote config (GET /v1/config, /v1/admin/flags) ---------------------------
-APP_FLAGS = {"train.enabled", "sleep.planner", "today.redesign", "coach.enabled", "push.enabled", "physiology.card"}
+APP_FLAGS = {"train.enabled", "sleep.planner", "today.redesign", "coach.enabled", "push.enabled", "physiology.card",
+             "analytics.enabled"}
 cfg = get("/v1/config")
-check(set(cfg) == {"flags", "evaluated_at", "ttl_sec", "privacy_policy_version", "privacy_policy_url"} and cfg["ttl_sec"] == 21600,
-      f"/v1/config shape: {cfg}")
+# The messages name the keys, never the values: analytics.project_key is a credential of its own (D231).
+check(set(cfg) == {"flags", "evaluated_at", "ttl_sec", "privacy_policy_version", "privacy_policy_url", "analytics"}
+      and cfg["ttl_sec"] == 21600, f"/v1/config shape: {sorted(cfg)}")
+an = cfg["analytics"]
+got = sorted(an) if isinstance(an, dict) else type(an).__name__
+check(an is None or (isinstance(an, dict) and set(an) == {"host", "project_key"} and an["host"].startswith("https://")
+                     and an["project_key"].startswith("phc_")),
+      f"/v1/config analytics: null, or host (https) and project_key (phc_…); got {got}")
 check(APP_FLAGS <= set(cfg["flags"]) and all(isinstance(v, bool) for v in cfg["flags"].values()),
       f"/v1/config must evaluate the app's flags: {cfg['flags']}")
 check(get("/v1/config")["flags"] == cfg["flags"], "the same user gets the same flags")
@@ -416,7 +423,8 @@ def consent(key=None):
 
 
 cfg_b = get("/v1/config")
-check(cfg_b["privacy_policy_url"].startswith("https://") and POLICY, f"/v1/config privacy fields: {cfg_b}")
+check(cfg_b["privacy_policy_url"].startswith("https://") and POLICY,
+      f"/v1/config privacy fields: {cfg_b.get('privacy_policy_url')} {cfg_b.get('privacy_policy_version')}")
 
 # ---- sync state (GET /v1/me/sync, scoring_state; D91) ---------------------------
 SCORING_STATES = {"scored", "pending", "waiting_for_sleep", "stale"}

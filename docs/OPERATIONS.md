@@ -1257,6 +1257,63 @@ new revision serves. After a day, disable N as in step 5.
 
 **Stop if** `git grep` shows a pin you didn't move, or `make cloudrun-check` fails.
 
+**PostHog's project key (D231), once.** `GET /v1/config` serves the app's analytics target from
+the api's `POSTHOG_PROJECT_KEY`; without it, `analytics` is `null` and the app sends nothing. The
+secret `posthog-project-key` (api only) comes with `infra/gcp`. Its pin in `api.yaml` follows its
+first version, never the other way round: a revision that reads a missing version doesn't start, and
+the deploy goes red at api. In this order:
+
+1. The container and its accessor:
+
+   ```bash
+   terraform -chdir=infra/gcp plan -out=posthog.tfplan
+   # Plan: 2 to add, 0 to change, 0 to destroy:
+   #   google_secret_manager_secret.this["posthog-project-key"]
+   #   google_secret_manager_secret_iam_binding.accessor["posthog-project-key"]   (members: ryft-api only)
+   terraform -chdir=infra/gcp apply posthog.tfplan
+   rm infra/gcp/posthog.tfplan
+   ```
+
+2. The value: PostHog (EU Cloud) → Project settings → **Project API key** (`phc_…`), copied. Never a
+   personal API key (`phx_…`): the api refuses to start with one. In the same settings, check that
+   **Discard client IP data** is on (no IP, D231).
+
+   ```bash
+   put() { read -rs "?Value for $1: " V; echo; printf '%s' "$V" | gcloud secrets versions add "$1" --project=ryftlab-prod --data-file=-; unset V; }
+   put posthog-project-key                                   # Created version [1] of the secret [posthog-project-key]
+   pbcopy < /dev/null                                        # clear the clipboard you pasted from
+   gcloud secrets versions list posthog-project-key --project=ryftlab-prod --format='value(name.basename(),state)'   # 1 ENABLED
+   ```
+
+3. The pin, a PR of one line. If `put` printed another number than 1, pin that one.
+
+   ```bash
+   git fetch origin && git switch -c deploy/posthog-key-pin origin/main
+   # deploy/run/api.yaml: right after the OTLP_TOKEN line, with its indentation, add
+   #   - { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "1" } } }
+   make cloudrun-check
+   bash scripts/tests/check_cloudrun_test.sh                 # CI's smoke job runs it on a deploy/run change
+   git commit -am "deploy: posthog-project-key at version 1"
+   git push -u origin HEAD && gh pr create --fill -R timkrebs/ryft-platform
+   ```
+
+   Its merge's deploy is the first that reads the key. Then:
+
+   ```bash
+   gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="api" AND jsonPayload.message="analytics"' \
+     --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=1h --limit=1 \
+     --format='value(timestamp,jsonPayload.configured)'      # True
+   ```
+
+A new key moves as **Another secret's pin** above (api only). To turn analytics off at once, use the
+flag (Feature flags): the app stops at its next config, within six hours, at its next launch sooner.
+Removing the pin turns `analytics` to `null` with the next deploy.
+
+**Stop if** the plan holds anything else; the key you copied starts with `phx_` or `phs_`; PostHog's
+**Discard client IP data** is off (the only thing that keeps the IP out, D231); or the api's new
+revision doesn't become ready (the old one keeps serving; `gcloud run revisions list --service=api
+--region=europe-west1 --project=ryftlab-prod`).
+
 **Deploys off.**
 
 ```bash
@@ -3842,6 +3899,11 @@ allow-list is empty) and answers `201` for a new key, `200` otherwise; the api l
 every change (`msg="feature flag set"`). The app caches its answer for up to six hours,
 so a change reaches everyone within that. Rotate the key with
 `terraform apply -replace='random_password.admin_key["api"]'` in `infra/vault`.
+
+`analytics.enabled` (D231) ships dark like `train.import`: the app sends product analytics only while
+it is on, `GET /v1/config` → `analytics` is set (GCP → **PostHog's project key**) and the user opted
+in. Testers first, by the allow-list; `{"enabled": false, "rollout_pct": 100}` is the kill switch.
+Nothing on the server checks the flag, so it takes effect at the app's next config.
 
 ## Push (APNs)
 
