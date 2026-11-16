@@ -5142,8 +5142,17 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   - whether firebase-tools takes WIF's `external_account` credentials;
   - whether `roles/firebasehosting.admin` is enough;
   - what message a console rollback carries. The runbook sets `SITE_DEPLOY` off first, so it doesn't matter.
-  - Hosting's header merging, Content-Type on the AASA and bare `/de` are settled against the emulator in CI
-    (web D19), and checked again live after every deploy.
+  - Hosting's header merging, Content-Type on the AASA and bare `/de` were settled against the emulator, with RE2,
+    in #194's `web-e2e` (run 43857046841; web D19). They're checked again live after every deploy:
+    - one CSP per response, the admin one on `/admin` only;
+    - the AASA served as `application/json`, byte-identical;
+    - bare `/de` → `/` by its exact rule;
+    - one Cache-Control, the last matching rule's;
+    - query strings kept;
+    - no Location off the site.
+
+    The emulator also showed two things the docs don't say. The `redirects` rules' 301s carry no header rules
+    (cleanUrls' 301s do). `/%61dmin` serves `admin.html` under the marketing CSP, where it is inert.
 - **Consequences:**
   - Rollback: `SITE_DEPLOY` off, Firebase console → Release history → Roll back, the revert merged while it's
     off, then `SITE_DEPLOY` on and a run by hand.

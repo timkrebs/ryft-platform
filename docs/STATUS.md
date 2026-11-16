@@ -85,11 +85,13 @@ and the privacy policy in force names PostHog (OPERATIONS → Feature flags, its
 
 ## The site on Firebase Hosting, C1 (2026-11-16)
 
-Branch `web/firebase-hosting` (D233, web D19, `docs/work/2026-11-16-firebase-hosting/`):
+PR #194, branch `web/firebase-hosting` (D233, web D19, `docs/work/2026-11-16-firebase-hosting/`):
 - **The site:** the export goes to Firebase Hosting in `ryftlab-site`. The build generates `firebase.json` (#156's
   redirect, `/de` → English, the app-link rewrite, the headers per path class, one CSP rule per path).
   `tests/hosting.test.ts` replaced `nginx.test.ts`, and `make web-e2e` runs against the pinned emulator
-  (firebase-tools 15.35.0). `web/scripts/check-hosting.mjs` holds step 10's assertions.
+  (firebase-tools 15.35.0, with `re2` built so that it matches with RE2). `web/scripts/check-hosting.mjs` holds
+  step 10's assertions. CI's `web-e2e` on #194: 195 Playwright tests and the 34 checks passed. web D19 records
+  what the emulator answered for (a)–(f).
 - **The deploy:** `deploy.yml` gains `site-off`, `site-build` (no token) and `site` (WIF as `site-deployer`, then
   the live checks), behind the repository variable `SITE_DEPLOY`. While it's off, a merge deploys the services and
   says "Site off".
@@ -99,9 +101,12 @@ Branch `web/firebase-hosting` (D233, web D19, `docs/work/2026-11-16-firebase-hos
 - **Merging deploys** the services as usual; no migration. The site waits for runbook step 10 (OPERATIONS → GCP →
   10, 10a–10h): the project, the console's domains, the DNS PR plus apply 3, the certificates, then `SITE_DEPLOY=on`
   and one run by hand.
-- **Open:** the Hosting emulator's answers to web D19's (a)–(f) come from CI's first `web-e2e` run. WIF with
-  firebase-tools comes from step 10f. C2 must drop `check_policy_in_force.sh`'s EKS half (D233). D3 removes the
-  scripts the removed jobs used and the nginx image.
+- **Open:**
+  - **To decide before 10f:** `site-deployer` and `ryft-deployer` share one WIF principal set, so code in the
+    `site` job could impersonate the services' deployer (D233). The fix is an `infra/gcp` PR plus an apply.
+  - WIF with firebase-tools is checked only at step 10f.
+  - C2 must drop `check_policy_in_force.sh`'s EKS half (D233).
+  - D3 removes the scripts the removed jobs used and the nginx image.
 
 ## GCP serverless (2026-11-14)
 
