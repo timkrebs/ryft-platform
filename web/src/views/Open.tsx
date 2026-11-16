@@ -6,7 +6,7 @@ import styles from './Open.module.css';
 
 /**
  * What a universal link (/day/…, /sleep/…, /insights/…, /train/…, /auth/…) shows on a
- * device without the app: nginx serves this one file for all of them. No header links into
+ * device without the app: Hosting serves this one file for all of them. No header links into
  * the site's flow, and nothing on the page reads the URL: an auth callback's query and
  * fragment carry tokens.
  */

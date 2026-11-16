@@ -10,6 +10,9 @@ src/fonts/FFL.txt
 src/generated
 nginx/csp.conf
 nginx/csp-admin.conf
+firebase.json
+.firebase
+*-debug.log
 test-results
 playwright-report
 .lighthouseci

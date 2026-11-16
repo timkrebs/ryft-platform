@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// A quick local preview of out/ without nginx: the same lookup as nginx/default.conf's
-// try_files ($uri, $uri.html, $uri/index.html, then 404.html). For the real thing, with
-// headers, CSP and the app-link routes, use `npm run serve` (the nginx image).
+// A quick local preview of out/ without Firebase Hosting: the lookup of cleanUrls ($uri,
+// $uri.html, $uri/index.html, then 404.html). For the real thing, with headers, CSP, redirects
+// and the app-link routes, use `npm run hosting` (the Hosting emulator, web D19).
 //
 //   node scripts/preview.mjs [port]
 import { createReadStream, existsSync, statSync } from 'node:fs';

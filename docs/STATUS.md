@@ -87,6 +87,31 @@ and the privacy policy in force names PostHog (OPERATIONS → Feature flags, its
   checks after it (OPERATIONS → PostHog's project key, step 3) are the `analytics configured` log line, the
   revision's secret ref, and `GET /v1/config` as the smoke user, which prints the key's prefix and length only.
 
+## The site on Firebase Hosting, C1 (2026-11-16)
+
+PR #194, branch `web/firebase-hosting` (D233, web D19, `docs/work/2026-11-16-firebase-hosting/`):
+- **The site:** the export goes to Firebase Hosting in `ryftlab-site`. The build generates `firebase.json` (#156's
+  redirect, `/de` → English, the app-link rewrite, the headers per path class, one CSP rule per path).
+  `tests/hosting.test.ts` replaced `nginx.test.ts`, and `make web-e2e` runs against the pinned emulator
+  (firebase-tools 15.35.0, with `re2` built so that it matches with RE2). `web/scripts/check-hosting.mjs` holds
+  step 10's assertions. CI's `web-e2e` on #194: 195 Playwright tests and the 34 checks passed. web D19 records
+  what the emulator answered for (a)–(f).
+- **The deploy:** `deploy.yml` gains `site-off`, `site-build` (no token) and `site` (WIF as `site-deployer`, then
+  the live checks), behind the repository variable `SITE_DEPLOY`. While it's off, a merge deploys the services and
+  says "Site off".
+- **The DNS:** the site's records come from `infra/gcp/site.tf`'s variables, valued in `site.auto.tfvars`.
+- **CI without EKS:** the `images`, `web-image`, `promote` and `admission` jobs are gone, and so are
+  `admission-e2e.yml`, `deploy-watch.yml` and the CEL harness.
+- **Merging deploys** the services as usual; no migration. The site waits for runbook step 10 (OPERATIONS → GCP →
+  10, 10a–10h): the project, the console's domains, the DNS PR plus apply 3, the certificates, then `SITE_DEPLOY=on`
+  and one run by hand.
+- **Open:**
+  - **To decide before 10f:** `site-deployer` and `ryft-deployer` share one WIF principal set, so code in the
+    `site` job could impersonate the services' deployer (D233). The fix is an `infra/gcp` PR plus an apply.
+  - WIF with firebase-tools is checked only at step 10f.
+  - C2 must drop `check_policy_in_force.sh`'s EKS half (D233).
+  - D3 removes the scripts the removed jobs used and the nginx image.
+
 ## GCP serverless (2026-11-14)
 
 The design (`docs/work/2026-11-14-gcp/design.md`, #163) replaces the EKS rebuild: an SCP now denies `eks:CreateCluster`

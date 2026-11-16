@@ -249,3 +249,138 @@ Consequences:
 
 Would change if the user wants German back: `messages/de.json`, `content/legal/de` and a
 `[locale]` segment again, from this PR's parent commit.
+
+## D19 — Firebase Hosting serves the site, not nginx (2026-11-16; C1, platform D233)
+
+The export moves from the nginx image on EKS to Firebase Hosting in the project `ryftlab-site`
+(Spark plan, no billing account; platform `docs/work/2026-11-14-gcp/design.md` §8). The pages
+are unchanged. nginx's config becomes `firebase.json`:
+- The build writes it (`scripts/firebase-json.mjs`, postbuild, after `csp.mjs`). The rules are
+  the pure `firebaseJson()` in `scripts/lib/hosting.mjs`, from the same CSP sources as the nginx
+  snippets. It is git-ignored, like `nginx/csp.conf`.
+- firebase-tools is one exact version, in `.firebase-tools-version` and nowhere else, always
+  with npm's install scripts off. `deploy.yml`'s `site` job (once `SITE_DEPLOY` is `on`) runs
+  it as `npx --yes firebase-tools@<it>`. The emulator (`npm run e2e:hosting`, `npm run hosting`,
+  project `demo-ryft`, no login) installs it once into `node_modules/.cache/firebase-tools-<it>`
+  (`npm ci` clears it). There one package gets its install script, `re2` (`npm rebuild re2`),
+  and `scripts/hosting.mjs` stops unless `re2` loads. The deploy doesn't serve, so it needs no
+  `re2`.
+- `scripts/check-hosting.mjs` holds runbook step 10's assertions. It runs against the emulator
+  in CI and live after every deploy.
+
+What `firebase.json` says:
+- `public: out`, `cleanUrls: true`, `trailingSlash` unset, and no logging keys.
+- `ignore: ["**/*.gz"]` and nothing else: `firebase init`'s `**/.*` would drop `.well-known/`.
+- Redirects, all 301, in this order:
+  1. #156's trailing-slash rule, `^/(?P<p>[A-Za-z0-9][A-Za-z0-9/._-]*)/$` → `/:p`.
+  2. `/de` → `/`, an exact `source`, so it never depends on how Hosting fills a capture that did
+     not match.
+  3. `^/de/(?P<p>…)$` → `/:p`, with the same safe capture (D18).
+- One rewrite: the app-link paths go to `/open.html`.
+- The headers are written as `regex` only, in RE2's syntax and anchored.
+  - The shared set (nginx's `headers-common.conf`, value for value) is on every path.
+  - The marketing CSP is on every path except exactly `/admin`. RE2 has no lookaround, so this
+    is a complement (`allExcept('admin')`).
+  - Cache-Control goes from general to specific.
+  - The AASA gets `Content-Type: application/json` and an hour's cache.
+  - `/admin` is last, with the admin CSP, `no-store` and `X-Robots-Tag`.
+- `tests/hosting.test.ts` pins every rule. For a table of paths, and for every path of up to
+  seven characters over a small alphabet, exactly one CSP rule matches and it is the right one.
+  The last matching Cache-Control rule is checked per path class, every Location stays on the
+  site, and #156's capture tables are kept. `tests/output.test.ts` checks that the built file is
+  `firebaseJson()` of the build's hashes, with the same two policies as `nginx/csp*.conf`.
+
+What Hosting's docs leave open: each point is tested against the emulator in CI's `web-e2e`
+(`e2e/hosting.spec.ts`, which logs `observed: …` per case) and again live (`check-hosting.mjs`).
+Where the emulator and the docs disagree, the emulator wins, but no Location may ever start with
+`//` or `/\`. The session that wrote this couldn't run the emulator: its sandbox refused
+`npx firebase-tools` and every Node run. **What it observed** comes from CI's `web-e2e` on
+#194 (run 43857046841, firebase-tools 15.35.0 with `re2`, so RE2 matching): 195 Playwright tests
+passed (5 skipped) and all 34 checks of `check-hosting` passed. Live Hosting is checked again
+after every deploy.
+- **(a) One CSP per response, the admin one on `/admin` only.** The two CSP rules are disjoint,
+  so the result doesn't depend on how Hosting merges rules.
+  - Observed: exactly one CSP on every response. The admin policy is on `/admin` only, and the
+    marketing one is on `/`, `/privacy`, the 404s, `/administrator`, `/adm`, `/admin.html`'s 301,
+    the AASA and the app links.
+  - Observed: `/%61dmin` → 200 with the **marketing** CSP. The emulator matches headers against
+    the path as sent and finds files by the decoded path, so `admin.html` is served there under
+    the stricter policy. Its script is blocked, the page does nothing, and nothing is widened.
+    It also lacks `/admin`'s `X-Robots-Tag` and `no-store`. Nothing links that URL, and the page
+    is static, with no data in it. Accepted.
+- **(b) A `headers` rule sets the AASA's Content-Type.** The file has no extension.
+  - Observed: 200, `Content-Type: application/json`, an hour's cache, no redirect.
+  - The body is byte-identical to `public/.well-known/apple-app-site-association`.
+- **(c) `/de` → `/`, `/de/` → `/de`, `/de/privacy` → `/privacy`.** Observed as expected. Bare
+  `/de` is answered by its exact rule, not the capture rule, and `/de/privacy/2026-10-20` →
+  `/privacy/2026-10-20`.
+  - Observed: **the `redirects` rules' 301s carry no header rules** (0 of 8 security headers,
+    no Cache-Control). That covers #156's trailing slash, `/de`, `/de/…` and `/admin/`.
+  - Observed: **`cleanUrls`' 301s carry all of them** (`/privacy.html`, `/admin.html`: 8 of 8
+    and the path's Cache-Control).
+  - nginx sent them on every redirect. A bare 301 carries no content, so it's accepted. The
+    tests allow none, fail on two, and `check-hosting` reports the count live.
+  - One cost: the hour's Cache-Control meant for the `/de` 301s (D18) doesn't reach them. A
+    browser may keep a 301 that has no Cache-Control for good. If German comes back under `/de`,
+    visitors who followed one of these redirects may keep landing on the English page until their
+    cache clears. Live Hosting may differ; `check-hosting` shows it.
+- **(d) `//`, `/\` and `%5C`.** Observed: no Location ever left the site.
+  - `/privacy/` → `/privacy`.
+  - `/%5Cevil.example/`, `/de/%5Cevil.example`, `/a/%5Cevil.example/`, `/%2F%2Fevil.example/`
+    and `/de//evil.example` → 404.
+  - `/x//` → 301 `/x/`, then `/x`. The capture may hold `/`, so it isn't the 404 that design §8
+    expects. The Location stays on the site, so it's accepted.
+  - `//evil.example/` → 404. The emulator doesn't merge slashes; live Hosting may answer 301
+    `/evil.example`, which is accepted.
+- **(e) Query strings on the redirects.** Observed: kept on every redirect, as nginx did
+  (`/de?x=1` → `/?x=1`, `/privacy/?x=1` → `/privacy?x=1`, `/admin.html?x=1` → `/admin?x=1`).
+- **(f) One Cache-Control per response.** The Cache-Control rules overlap on purpose. Observed:
+  exactly one, the last matching rule's value:
+  - `/privacy` `no-cache`;
+  - the app links and `/admin` `no-store`;
+  - the AASA an hour;
+  - `/_next/static/` a year, immutable;
+  - the day-long extensions a day;
+  - every other path 300 s.
+
+  If live Hosting sends two, `check-hosting` fails ("2 × Cache-Control"), and the classes must
+  be made disjoint like the CSP rules.
+- **Observed in C1's first CI run: the emulator needs the native `re2`.** Its static server
+  (superstatic) loads `re2` as an optional module. Without it, superstatic falls back to
+  JavaScript's `RegExp`, which can't parse RE2's `(?P<name>…)`, and the emulator died on the
+  first request (ECONNRESET, then nothing listening). So only `re2` gets its install script
+  (above). With `re2`, the emulator matches with RE2, as Hosting does.
+- Also unchecked:
+  - Whether live Hosting adds its own HSTS. If it does, `check-hosting` fails on two HSTS headers
+    or on a different value.
+  - Whether Location is relative or absolute. The tests accept both, on the same origin only.
+
+Differences from nginx, accepted:
+1. There is no `/healthz` (no pod, no probe).
+2. A 404 carries its path's headers: 300 s and the marketing CSP, not `404.html`'s `no-cache`.
+3. The `redirects` rules' 301s carry no security headers and no Cache-Control; `cleanUrls`' 301s
+   carry them all (c).
+4. There is no `merge_slashes`: `/x//` takes two hops (`/x/`, then `/x`), on the site.
+5. An app-link path with a trailing slash (`/day/`) now goes 301 to `/day` first. nginx served
+   `open.html` at once. The redirects run before the rewrite.
+6. `/de/<file>.png` and similar now go 301 to `/<file>.png`. nginx's extension location
+   answered 404.
+7. The day-long cache matches extensions case-sensitively. Only 404s are affected: every file in
+   `public/` is lowercase.
+8. Hosting compresses. No precompressed copies are uploaded, and `*.gz` is a 404.
+9. There is no access log of ours. nginx logged no address, and that test went with
+   `tests/nginx.test.ts`. Google's edge sees the visitor's IP. The privacy text's paragraph on
+   the site (`docs/LEGAL_CHECKLIST.md` S6) is the user's decision, in C2.
+10. Location may be absolute; the tests compare paths on the origin (`sitePath`).
+11. Percent-encoded paths may match headers as sent (`/%61dmin`; see (a)).
+12. The `/admin` rule is now "exactly one CSP rule matches `/admin`". It was "a location
+    includes exactly one header snippet".
+
+The nginx image (`nginx/`, `Dockerfile`, `npm run image`, `make web-image`) stays until the
+platform's PR D3 removes it. While it exists, its shared headers and CSPs are checked against
+`firebase.json`'s.
+
+Would change if the first emulator or live run disagrees with an expectation above. A doubled
+header is fixed by making those rules disjoint. If headers do not reach redirects, browsers
+keep the `/de` 301s without D18's one-hour limit. Whether that is acceptable, or the `/de` rules
+become 302s, is then the user's decision.

@@ -1,12 +1,11 @@
-# One workflow for the whole repository (D107). On a pull request a `changes` job picks the
-# checks the diff needs (path filters, job-level `if:`); a push to main and a manual run
+# One workflow for the whole repository's checks (D107). On a pull request a `changes` job picks
+# the checks the diff needs (path filters, job-level `if:`); a push to main and a manual run
 # execute every check. `ci-ok` needs them all and is the required check: a skipped check is
 # never a failed one, but a failed or cancelled one (or a failed `changes`) turns it red.
-# On main, after the checks: the services' images (backend/) and the site's (web/) go to
-# ghcr.io/timkrebs/ryft/<name>:<short-sha>, each only when its directory differs from its
-# running pin in the EKS overlay (scripts/deploy_targets.sh). `promote` then pins every group
-# it built in one PR that merges itself once its checks pass, and Argo CD deploys the merge
-# (docs/OPERATIONS.md -> Deploy, D96/D107). No :latest: nothing deploys it.
+# Checks only: nothing here builds an image to deploy, pushes to a registry or opens a pull
+# request (the GHCR images and EKS's "deploy: images" PRs are gone, C1). deploy.yml deploys main:
+# it waits for this workflow's ci-ok on the commit, then ships the services to Cloud Run and the
+# site to Firebase Hosting (docs/OPERATIONS.md -> GCP -> Deploy, roll back, rotate).
 name: ci
 
 on:
@@ -14,21 +13,18 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Every check, on any branch (deploy.yml reads only the push runs on main).
   workflow_dispatch:
-    inputs:
-      force:
-        description: Build and pin a group although its source did not change (SUPPORT_EMAIL moved, say). A hold still wins.
-        type: choice
-        options: [none, services, web, all]
-        default: none
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  # A newer push to a PR replaces its run. A run on main is never cancelled half way: that would
-  # leave a deploy/<sha> branch without its PR, or throw away image builds.
+  # A newer push to a PR replaces its run. A run on main is never cancelled half way: deploy.yml
+  # deploys a commit only once this run's ci-ok on it is green, and every commit on main keeps a
+  # complete verdict (and the coverage upload the next pull request compares with). GitHub keeps
+  # one run waiting per ref, the newest.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -37,10 +33,10 @@ env:
   NEXT_PUBLIC_SUPPORT_EMAIL: ${{ vars.SUPPORT_EMAIL }}
 
 jobs:
-  # Which checks does this change need? Filters only on pull requests: on a push the filter
-  # would compare with the previous commit, which is not the question the image jobs ask
-  # (they compare with the running pin, scripts/deploy_targets.sh). The workflow file itself is
-  # in every filter, so a change to CI runs everything.
+  # Which checks does this change need? Filters only on pull requests: a push to main and a
+  # manual run execute every check, so main's ci-ok (what deploy.yml waits for) judges the whole
+  # tree. The workflow file itself is in every filter, so a change to CI runs everything. No
+  # checkout: on a pull request the filter lists the changed files through the API.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -56,17 +52,8 @@ jobs:
       run_argocd_luatest: ${{ github.event_name != 'pull_request' || steps.filter.outputs.argocd_luatest == 'true' }}
       run_web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
       run_monitoring: ${{ github.event_name != 'pull_request' || steps.filter.outputs.monitoring == 'true' }}
-      # The admission policies against a kind cluster (D120): what the diff touches, minus a promote
-      # PR (and its merge on main), whose diff is only pins, holds and policy-version literals
-      # (scripts/promote_only.sh). A manual run always runs it.
-      run_admission: ${{ github.event_name == 'workflow_dispatch' || ((github.event_name != 'pull_request' || steps.filter.outputs.admission == 'true') && steps.promote.outputs.only != 'true') }}
       run_golden: ${{ github.event_name != 'pull_request' || steps.filter.outputs.golden == 'true' }}
       run_topology: ${{ github.event_name != 'pull_request' || steps.filter.outputs.topology == 'true' }}
-      # Image groups to build and pin (never on a pull request).
-      services: ${{ steps.targets.outputs.services || 'false' }}
-      web: ${{ steps.targets.outputs.web || 'false' }}
-      # A hold is active: promote then runs for the sake of closing older deploy PRs.
-      held: ${{ steps.targets.outputs.held || 'false' }}
     steps:
       - if: github.event_name == 'pull_request'
         id: filter
@@ -146,28 +133,6 @@ jobs:
               - 'web/**'
               - 'docs/SCORING.md'
               - '.github/workflows/ci.yml'
-            # The admission policies, the manifests they judge and the scripts of the kind run.
-            admission:
-              - 'deploy/**'
-              - 'infra/aws/kubernetes/**'
-              - 'scripts/admission_e2e.sh'
-              - 'scripts/install_kind.sh'
-              - 'scripts/install_yq.sh'
-              - 'scripts/install_kubectl.sh'
-              - 'scripts/install_helm.sh'
-              - 'scripts/check_chart_bump.sh'
-              - 'scripts/tests/admission_chart_guards_test.sh'
-              - 'scripts/lib/kind_guard.sh'
-              - 'scripts/lib/tracked_copy.sh'
-              - 'scripts/lib/admission_*.sh'
-              - 'scripts/lib/tf_values.sh'
-              - 'scripts/lib/tf_scan.py'
-              # the namespaces' labels and Pod Security levels are a hand copy of infra/vault's
-              # (kubernetes_namespace_v1.service, adm_create_namespaces)
-              - 'infra/vault/**'
-              - 'scripts/lib/gitsrv.go'
-              - 'Makefile'
-              - '.github/workflows/ci.yml'
             # The alert rules and the synthetic checks; the checks' body markers are read from
             # the site's own sources (the policy text and the AASA).
             monitoring:
@@ -200,38 +165,6 @@ jobs:
               - 'deploy/pubsub-emulator/**'
               - 'Makefile'
               - '.github/workflows/ci.yml'
-      # The whole history: deploy_targets.sh compares with the running pin; the promote check below
-      # diffs the change. On a pull request this is the merge of the PR (the default ref).
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      # Is the change only what promote writes? (A deploy PR, and its merge on main.) The predicate
-      # is the base's copy when the base has one, so a PR cannot widen what it skips by editing it.
-      # Fails closed: any doubt is "not promote only", and the `admission` job runs. When the base has no
-      # copy of the script (the PR that introduces it, a base that cannot be read) the answer is "no": the
-      # PR's own copy is never the judge of its own diff.
-      - if: github.event_name != 'workflow_dispatch'
-        id: promote
-        env:
-          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: |
-          only=false
-          if git show "$BASE:scripts/promote_only.sh" > "$RUNNER_TEMP/promote_only.sh" 2>/dev/null; then
-            if bash "$RUNNER_TEMP/promote_only.sh" "$BASE" "$HEAD"; then only=true; fi
-          else
-            echo "the base has no scripts/promote_only.sh: not promote only"
-          fi
-          echo "only=$only" >> "$GITHUB_OUTPUT"
-      - if: github.event_name != 'pull_request'
-        id: targets
-        env:
-          FORCE: ${{ inputs.force }}
-        run: |
-          out=$(./scripts/deploy_targets.sh)
-          echo "$out"
-          echo "$out" >> "$GITHUB_OUTPUT"
 
   test:
     needs: [changes]
@@ -301,7 +234,8 @@ jobs:
       # Every run uploads; the newest one from main is the baseline of the next pull request.
       # This step must stay BEFORE the coverage-gate step: the gate downloads main's files into
       # backend/coverage, and those must never be uploaded again as this run's coverage.
-      # An artifact outage must not hold back `images` on main; a missing upload only means no baseline.
+      # An artifact outage must not turn ci-ok red on main (deploy.yml waits for it); a missing upload only
+      # means no baseline.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         continue-on-error: true
         with:
@@ -521,9 +455,9 @@ jobs:
 
   # The bytes of every tracked file (scripts/check_bytes.sh), on every run: no path filter, no
   # `changes` dependency, so no diff can slip under a filter that forgot its directory (a
-  # symlink, an image, a hidden line break in a file no filter names). About a second. `images`,
-  # `web-image` and `ci-ok` need it; the `manifests` job repeats it as its first step, so that
-  # nothing there parses a tree whose bytes are not clean.
+  # symlink, an image, a hidden line break in a file no filter names). About a second. `ci-ok`
+  # needs it; the `manifests` job repeats it as its first step, so that nothing there parses a
+  # tree whose bytes are not clean.
   bytes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -537,8 +471,8 @@ jobs:
       # excuse: one ::warning annotation, the list in the log. Here, not in `lint`: this job has no path filter, so a
       # PR that only edits docs/DECISIONS.md (or the skip list) runs it, and a renumbered D shows up on the PR that
       # did it instead of on someone else's Go PR. It needs only git and awk. Exit 0 on warnings, so it never fails
-      # the job; it fails only when the script cannot work (which would also stop images, web-image and ci-ok on
-      # main; the PR's own run catches it first). `--strict` is the later promotion to a failure.
+      # the job; it fails only when the script cannot work (which would also turn ci-ok red on main, and so stop
+      # deploy.yml; the PR's own run catches it first). `--strict` is the later promotion to a failure.
       - name: Decisions are referenced from code, or skipped with a reason (warnings only)
         run: ./scripts/decision_refs.sh
 
@@ -586,18 +520,20 @@ jobs:
       - run: make k8s-validate
       # The Vault add-on's local charts as Helm renders them (vault-extras' policies, PDB and Role, the ryft-vault
       # issuer), with yq and kubeconform: what tests/addons.tftest.hcl cannot see behind the mocked Helm provider.
-      # Helm pinned and checked as in `admission`; the script fails here (GITHUB_JOB=manifests) instead of skipping.
+      # Helm pinned and checked against a sha256 (scripts/install_helm.sh); the script fails here
+      # (GITHUB_JOB=manifests) instead of skipping.
       - run: ./scripts/install_helm.sh
       - run: bash scripts/tests/vault_extras_chart_test.sh
-      # The workflows themselves (.github/actionlint.yaml holds the known gaps).
+      # The workflows themselves.
       - run: actionlint
       # What actionlint cannot know, read from the parsed YAML (the pinned yq is first on PATH; the
-      # script fails without it): no pull_request_target/workflow_run, only `promote` and deploy.yml's
-      # `deploy` name the environment `deploy`, only promote reads the deploy App's key, deploy.yml is
+      # script fails without it): no pull_request_target/workflow_run, only deploy.yml's `deploy` and
+      # `site` name the environment `deploy`, nothing names the old deploy App's key, deploy.yml is
       # gated by GCP_DEPLOY, never cancelled, has no status function or continue-on-error, scans before
-      # it signs in and changes Cloud Run only from main's tip, only this file defines ci-ok (deploy.yml
-      # reads that job of this workflow's own run), no external reusable workflow, no
-      # `secrets: inherit`, no test hooks of the scripts.
+      # it signs in and changes Cloud Run only from main's tip, builds the site without a token and
+      # deploys it only from main's tip, only this file defines ci-ok (deploy.yml reads that job of
+      # this workflow's own run), no external reusable workflow, no `secrets: inherit`, no test hooks
+      # of the scripts.
       - run: ./scripts/check_workflows.sh
       # deploy/run (Cloud Run, what deploy.yml applies): config.env lints, every template renders with
       # fake values, and the rendered YAML has design §3's limits, the ingress, account, h2c port and
@@ -610,9 +546,9 @@ jobs:
       - run: node web/scripts/check-policy-version.mjs --strict
       # deploy/run/config.env's version is a published text (its English page, in the list), the
       # k8s copies (deploy/k8s/base/{api,ingest}/config.env) equal it, and on a pull request a draft
-      # text is not put into force there. While EKS runs, also its version in force (the overlay's
-      # pin, moved by promote with the web pin): api and ingest agree and the pinned web commit serves
-      # it at /privacy (the newest English page).
+      # text is not put into force there. Also EKS's version in force (the overlay's literals): api and
+      # ingest agree and the pinned web commit serves it at /privacy (the newest English page). That pin
+      # no longer moves (promote is gone, C1), so a new privacy version needs C2, which drops this half.
       - name: The privacy policy in force has its page
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -630,8 +566,9 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: ./scripts/check_privacy_versions.sh "origin/$BASE_REF"
-      # Every image the overlay pins exists on ghcr.io (a promote PR, or a hand-made
-      # pin with a typo: 101bc7 for 1015bc7 stopped the migrate job on 2026-10-21).
+      # Every image the overlay pins exists on ghcr.io (a hand-made pin with a typo: 101bc7 for
+      # 1015bc7 stopped the migrate job on 2026-10-21). Nothing pushes there any more (C1); D3
+      # removes the overlay and this check.
       - run: ./scripts/check_registry.sh
 
   smoke:
@@ -758,79 +695,6 @@ jobs:
       - run: bash scripts/tests/admission_intended_test.sh
       - run: bash scripts/tests/check_rule_groups_test.sh
 
-  # The admission policies (D120, T12-d) against a real API server: the CEL harness offline (its
-  # cases), then a kind cluster at EKS's minor (the node image pinned by digest) with the CRDs of the
-  # add-ons and of Argo CD (argo-cd chart 10.10.5, T12-f's RBAC when argocd.tf has it), the namespaces
-  # with infra/vault's labels, the chart installed in Audit (the committed values) and in Deny (every
-  # binding): every Application's render server-side dry-run applied as Argo CD's controller, one
-  # refused fixture per rule, status.typeChecking of every policy, claims a, b, c, d and h.
-  # scripts/admission_e2e.sh holds the steps (make admission-e2e runs the longer local variant, the
-  # same script with --mode full). Required in `ci-ok` when it ran; skipped for a promote PR.
-  admission:
-    needs: [changes]
-    if: needs.changes.outputs.run_admission == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    env:
-      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
-      TF_IN_AUTOMATION: "true"
-    steps:
-      # The whole history on a pull request: the chart-version check below diffs against the base.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      # The chart's templates and values never change without a higher version in Chart.yaml: the Helm
-      # provider upgrades a release only when the version moves (the comment in Chart.yaml).
-      - name: The chart version moves with its templates
-        if: github.event_name == 'pull_request'
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-        run: |
-          bash scripts/check_chart_bump.sh "$BASE" "$GITHUB_SHA"
-          bash scripts/check_chart_bump.sh "$BASE" "$GITHUB_SHA" infra/aws/kubernetes/charts/vault-extras
-      # From here on every step that renders may only use git over file:// (see `manifests`). The
-      # terraform step of the script, which downloads modules, lifts it for itself.
-      - name: Git over file:// only, after the checkout
-        run: echo "GIT_ALLOW_PROTOCOL=file" >> "$GITHUB_ENV"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: infra/aws/kubernetes/admission-celtest/go.mod
-          cache-dependency-path: infra/aws/kubernetes/admission-celtest/go.sum
-      # yq (mikefarah), kind, kubectl and helm pinned, each checked against a sha256 (the scripts hold
-      # both); the versions are printed in the summary of the run.
-      - run: ./scripts/install_yq.sh
-      - run: ./scripts/install_kind.sh
-      - run: ./scripts/install_kubectl.sh
-      - run: ./scripts/install_helm.sh
-      # The chart's guards: values it must refuse to render, and the bindings it must render.
-      - name: The admission chart's guards
-        run: bash scripts/tests/admission_chart_guards_test.sh
-      # Terraform only to evaluate argocd.tf's values offline (scripts/lib/tf_values.sh): mock providers.
-      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
-        with:
-          terraform_version: 1.16.7
-          terraform_wrapper: false
-      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ github.workspace }}/.terraform-plugin-cache
-          key: terraform-${{ runner.os }}-${{ hashFiles('infra/aws/kubernetes/.terraform.lock.hcl') }}
-      # The policies against the repository's renders without an API server, once: its cases are the
-      # first line, and the fixtures the kind run uses must be its output (the diff).
-      - name: The CEL harness, and the fixtures are its output
-        run: |
-          if ! CELTEST_EMIT="$RUNNER_TEMP/fixtures" ./infra/aws/kubernetes/admission-celtest/run.sh > "$RUNNER_TEMP/celtest.log" 2>&1; then
-            tail -60 "$RUNNER_TEMP/celtest.log"
-            exit 1
-          fi
-          tail -2 "$RUNNER_TEMP/celtest.log"
-          diff -r "$RUNNER_TEMP/fixtures" infra/aws/kubernetes/admission-e2e/fixtures/generated
-      - name: kind cluster, CRDs, chart in Audit and Deny, dry-runs, fixtures, claims
-        run: ./scripts/admission_e2e.sh --mode ci --summary "$RUNNER_TEMP/admission-summary.md"
-
   # ryftlab.de (web/): every check of the site. The platform is this checkout; the app
   # repository is checked out next to it (it is public) for the drift checks (tokens, Swift
   # licences, routes, legal drafts, model version).
@@ -880,6 +744,13 @@ jobs:
         env:
           REQUIRE_OUT: '1'
 
+  # The site as Firebase Hosting serves it (design §8, C1). `npm run build` writes the export
+  # (web/out) and web/firebase.json and runs the brand check on the output; `npm run e2e:hosting`
+  # starts the Hosting emulator of the pinned firebase-tools (web/.firebase-tools-version) on
+  # http://localhost:8080 and runs Playwright (every page, light + dark, routes, headers, axe),
+  # scripts/check-hosting.mjs (the assertions deploy.yml's `site` job repeats against ryftlab.de),
+  # the links and Lighthouse (mobile; LCP < 1.5 s, < 80 KB JS) against it; any failure is exit 1.
+  # No image and no container: Hosting serves the files themselves.
   web-e2e:
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_web == 'true'
@@ -898,36 +769,10 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --no-audit --no-fund
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Build the image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: web
-          load: true
-          # An attestation turns the result into an index, which `load` cannot take.
-          provenance: false
-          sbom: false
-          tags: ryft-web:ci
-          build-args: |
-            NEXT_PUBLIC_TESTFLIGHT_URL=${{ vars.TESTFLIGHT_URL }}
-            NEXT_PUBLIC_SUPPORT_EMAIL=${{ vars.SUPPORT_EMAIL }}
-          cache-from: type=gha,scope=web
-          cache-to: type=gha,mode=max,scope=web
-      - name: Serve it as the cluster does (read-only, non-root, no capabilities)
-        run: |
-          docker run -d --name web -p 8080:8080 --read-only --tmpfs /tmp --tmpfs /var/cache/nginx \
-            --cap-drop ALL --security-opt no-new-privileges --user 101:101 ryft-web:ci
-          for _ in $(seq 1 30); do curl -fsS http://localhost:8080/healthz && break; sleep 1; done
-      - name: Trivy (fail on critical)
-        run: |
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222 \
-            image --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress ryft-web:ci
+      - run: npm run build
       - run: npx playwright install --with-deps chromium
-      - name: Playwright (every page, light + dark, routes, headers, axe)
-        run: npx playwright test
-        env:
-          BASE_URL: http://localhost:8080
+      - name: The Hosting emulator, Playwright, check-hosting, links and Lighthouse
+        run: npm run e2e:hosting
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -936,10 +781,6 @@ jobs:
             web/playwright-report
             web/test-results
           retention-days: 14
-      - name: Links (internal and external)
-        run: npm run links
-      - name: Lighthouse (mobile; LCP < 1.5 s, < 80 KB JS)
-        run: npm run lighthouse
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -948,13 +789,12 @@ jobs:
           # A dot directory: without this the reports were never uploaded.
           include-hidden-files: true
           retention-days: 14
-      - if: always()
-        run: docker logs web | tail -50
 
   # gitleaks over the whole history on every PR and push, with the reviewed allowlist in
   # .gitleaks.toml (picked up from the repository root); HEAD only: gitleaks' default would scan
-  # every branch, and any pushed work in progress would turn every PR red. Not a prerequisite of the image
-  # jobs: a leak is fixed by rotating the secret, and a false positive must not block a hotfix.
+  # every branch, and any pushed work in progress would turn every PR red. `ci-ok` needs it, and
+  # deploy.yml deploys only a commit whose ci-ok is green: a leak is fixed by rotating the secret,
+  # a false positive by a reviewed entry in .gitleaks.toml.
   secrets:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1009,14 +849,14 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: ./scripts/golden_guard.sh "$BASE_SHA"
 
-  # The required check on main (with pr-title). Skipped checks are fine, failed or cancelled
-  # ones are not; if `changes` itself fails, everything behind it is skipped and this is red.
-  # A new check job is one more entry in `needs`.
+  # The required check on main (with pr-title), and what deploy.yml waits for on a push to main.
+  # Skipped checks are fine, failed or cancelled ones are not; if `changes` itself fails,
+  # everything behind it is skipped and this is red. A new check job is one more entry in `needs`.
   ci-ok:
     # always(), not !cancelled(): a cancelled run must still report (red), because a skipped
     # required check counts as passing for branch protection.
     if: always()
-    needs: [changes, bytes, test, pooler, lint, vulns, topology, smoke, manifests, terraform, argocd-luatest, monitoring, admission, web-checks, web-e2e, secrets, golden-guard]
+    needs: [changes, bytes, test, pooler, lint, vulns, topology, smoke, manifests, terraform, argocd-luatest, monitoring, web-checks, web-e2e, secrets, golden-guard]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -1025,192 +865,3 @@ jobs:
         run: |
           echo "$RESULTS"
           case " $RESULTS " in *" failure "*|*" cancelled "*) exit 1 ;; esac
-
-  images:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.changes.outputs.services == 'true'
-    needs: [changes, bytes, test, pooler, lint, topology, manifests, smoke]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      matrix:
-        service: [ingest, scoring, api, notify, migrate]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ghcr.io/timkrebs/ryft/${{ matrix.service }}
-          tags: |
-            type=sha,format=short,prefix=
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: backend
-          build-args: SERVICE=${{ matrix.service }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
-
-  # The site's image, one job: build amd64 into the runner, scan it, and only then push both
-  # architectures from the same builder (its own layer cache makes the pushed amd64 manifest
-  # the one that was scanned; no shared GHA cache here, a poisoned cache entry must not reach
-  # a pushed image); scan the pushed digest again. A pushed but unpinned
-  # image is inert: nothing deploys it, and there is no :latest.
-  web-image:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.changes.outputs.web == 'true'
-    needs: [changes, bytes, web-checks, web-e2e, manifests]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      # SUPPORT_EMAIL is baked into the HTML: unset, /beta would ship a TODO marker.
-      - name: SUPPORT_EMAIL is set
-        run: |
-          test -n "$NEXT_PUBLIC_SUPPORT_EMAIL" || { echo "::error::The repository variable SUPPORT_EMAIL is not set; the site would ship without a contact address. gh variable set SUPPORT_EMAIL, then re-run this job."; exit 1; }
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ghcr.io/timkrebs/ryft/web
-          flavor: latest=false
-          tags: |
-            type=sha,format=short,prefix=
-      # The tag is the first seven characters of this commit, the same as promote.sh pins.
-      - name: Exactly one tag, the first 7 characters of the commit
-        env:
-          TAGS: ${{ steps.meta.outputs.tags }}
-        run: |
-          want="ghcr.io/timkrebs/ryft/web:${GITHUB_SHA::7}"
-          [ "$TAGS" = "$want" ] || { echo "::error::tags are '$TAGS', want '$want'"; exit 1; }
-      - name: Build for the cluster's architecture (amd64), into the runner
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: web
-          platforms: linux/amd64
-          load: true
-          provenance: false
-          sbom: false
-          tags: ryft-web:scan
-          build-args: |
-            NEXT_PUBLIC_TESTFLIGHT_URL=${{ vars.TESTFLIGHT_URL }}
-            NEXT_PUBLIC_SUPPORT_EMAIL=${{ vars.SUPPORT_EMAIL }}
-      # SUPPORT_EMAIL lands on /beta (the mailto on /support is in the legal text itself, and
-      # /support always carries a TODO(user) marker for other drafts): the address is there and the
-      # support-address marker is not.
-      - name: The built site has its contact address
-        run: |
-          docker run -d --name web-scan -p 8080:8080 ryft-web:scan
-          for _ in $(seq 1 30); do curl -fsS http://localhost:8080/healthz >/dev/null && break; sleep 1; done
-          curl -fsSL http://localhost:8080/beta -o "$RUNNER_TEMP/beta.html"
-          grep -qF "href=\"mailto:${NEXT_PUBLIC_SUPPORT_EMAIL}" "$RUNNER_TEMP/beta.html" || { echo "::error::/beta has no mailto: link to the support address"; exit 1; }
-          ! grep -qF 'TODO(user): support email address' "$RUNNER_TEMP/beta.html" || { echo "::error::/beta still carries the support-address TODO marker"; exit 1; }
-          docker rm -f web-scan >/dev/null
-      - name: Trivy before any push (fail on critical)
-        run: |
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222 \
-            image --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress ryft-web:scan
-      - id: build
-        name: Push amd64 and arm64 with provenance and an SBOM
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: web
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: mode=max
-          sbom: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            NEXT_PUBLIC_TESTFLIGHT_URL=${{ vars.TESTFLIGHT_URL }}
-            NEXT_PUBLIC_SUPPORT_EMAIL=${{ vars.SUPPORT_EMAIL }}
-      - name: Trivy on the pushed digest (fail on critical)
-        env:
-          IMAGE: ghcr.io/timkrebs/ryft/web@${{ steps.build.outputs.digest }}
-        run: |
-          docker run --rm \
-            aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222 \
-            image --platform linux/amd64 --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress "$IMAGE"
-      - name: Summary
-        env:
-          TAGS: ${{ steps.meta.outputs.tags }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-        run: |
-          {
-            echo "### ghcr.io/timkrebs/ryft/web"
-            echo '```'
-            echo "$TAGS"
-            echo "digest: $DIGEST"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # After the images of a push to main (or a manual run on main): pin deploy/k8s/overlays/eks
-  # to them on a branch deploy/<sha>, in ONE "deploy: images <sha>" PR that names, per group,
-  # the old pin and the commits since, close every older deploy/* PR as superseded, and let it
-  # merge itself (squash) once its required checks pass; Argo CD syncs the merge. Closing the
-  # PR blocks that deploy. The groups are the ones scripts/deploy_targets.sh targets: a
-  # directory that differs from its running pin, which also keeps the merged pin commit from
-  # promoting itself. All or nothing: it runs only when every targeted group was built.
-  # `!cancelled()`, not `always()`: a skipped job reports "skipped" whether it had nothing to
-  # do or its needs failed, so each targeted group must say "success".
-  # The token is the GitHub App's (repository variable RYFT_DEPLOY_APP_CLIENT_ID, secret
-  # RYFT_DEPLOY_APP_KEY, kept in the environment `deploy`, which only main may use): PRs made
-  # with GITHUB_TOKEN would not run the checks.
-  promote:
-    # Skipped until the App exists (docs/STATUS.md -> GitOps: your steps).
-    if: >-
-      !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-      && vars.RYFT_DEPLOY_APP_CLIENT_ID != '' && needs.changes.result == 'success'
-      && (needs.changes.outputs.services == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.held == 'true')
-      && (needs.changes.outputs.services != 'true' || needs.images.result == 'success')
-      && (needs.changes.outputs.web != 'true' || needs.web-image.result == 'success')
-    needs: [changes, images, web-image]
-    runs-on: ubuntu-latest
-    environment: deploy
-    # The App's token does the work; GITHUB_TOKEN gets nothing.
-    permissions: {}
-    concurrency:
-      group: promote
-      cancel-in-progress: false
-    steps:
-      - id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ vars.RYFT_DEPLOY_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RYFT_DEPLOY_APP_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          token: ${{ steps.app.outputs.token }}
-      - name: Pin the images in a PR
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          SLUG: ${{ steps.app.outputs.app-slug }}
-          FORCE: ${{ inputs.force }}
-        run: ./scripts/promote.sh

@@ -40,6 +40,12 @@ variables {
   github_repository_id       = "100000001"
   github_repository_owner_id = "200000002"
   google_site_verification   = "google-site-verification=example-only"
+  # The site's records (site.tf) are tested in site.tftest.hcl; empty here, whatever site.auto.tfvars holds.
+  site_apex_a    = []
+  site_apex_txt  = ""
+  site_www_a     = []
+  site_www_txt   = ""
+  site_www_cname = ""
 }
 
 run "zone_for_the_domain" {
@@ -171,7 +177,7 @@ run "the_same_values_as_route_53" {
     condition = fileexists("${path.module}/../aws/dns/mail.tf") ? alltrue([
       for v in concat(
         google_dns_record_set.mx.rrdatas,
-        [for r in google_dns_record_set.apex_txt.rrdatas : trim(r, "\"") if !startswith(r, "\"google-site-verification=")],
+        [for r in google_dns_record_set.apex_txt.rrdatas : trim(r, "\"") if !startswith(r, "\"google-site-verification=") && !startswith(r, "\"hosting-site=")],
         [for r in google_dns_record_set.dmarc.rrdatas : trim(r, "\"")],
         flatten([for r in google_dns_record_set.mail_cname : r.rrdatas]),
         flatten([for r in google_dns_record_set.mail_srv : r.rrdatas]),

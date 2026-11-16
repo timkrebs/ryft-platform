@@ -1,7 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 
-// End-to-end tests against the real nginx image (npm run image && npm run serve), so
-// routes, headers, CSP and the app-link fallback are tested as the cluster serves them.
+// End-to-end tests against the Firebase Hosting emulator with the generated firebase.json
+// (npm run e2e:hosting starts it around them, web D19), so routes, headers, CSP and the
+// app-link fallback are tested as Hosting serves them. BASE_URL points them elsewhere.
 export default defineConfig({
   testDir: 'e2e',
   fullyParallel: true,

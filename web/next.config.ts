@@ -1,6 +1,7 @@
 import type { NextConfig } from 'next';
 
-// A fully static export (out/), served by nginx (nginx/, Dockerfile). No server runtime.
+// A fully static export (out/), served by Firebase Hosting with the generated firebase.json (web D19).
+// No server runtime.
 const nextConfig: NextConfig = {
   output: 'export',
   trailingSlash: false,

@@ -2,33 +2,44 @@
 # shellcheck disable=SC2154,SC1091,SC2015,SC2016
 # scripts/check_workflows.sh on throwaway workflow directories: the bypasses of a grep (flow style,
 # quoted or spaced keys, escaped names, anchors, external reusable workflows, secrets: inherit,
-# dynamic secrets, test hooks), deploy.yml's gate, status functions and continue-on-error, triggers,
-# tokens, concurrency, its superseded and tip gates, its scan-before-sign-in order, a third-party
-# action or docker.sock in it, and a second ci-ok all fail; the repository's own workflows pass.
+# dynamic secrets, test hooks), the environment outside deploy.yml's deploy and site, the old App
+# key anywhere, deploy.yml's gate, status functions and continue-on-error, triggers, tokens,
+# concurrency, its superseded and tip gates, its scan-before-sign-in order, a third-party action or
+# docker.sock in it, the site jobs' shape (C1: no token in site-build, the switch and the superseded
+# conjuncts, the actions by SHA, no cache, nothing signs in up to `tip`, the deploy and the live
+# check behind the tip gate) and a second ci-ok all fail; the repository's own workflows pass.
+# Every case runs, also after one has failed; the test fails at the end and names each failed case.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
-fail() { echo "✗ check_workflows_test: $*" >&2; exit 1; }
+failures=0
+fail() { echo "✗ check_workflows_test: $*" >&2; failures=$((failures + 1)); }
 # yq is on ubuntu-latest. Locally a missing yq skips this test with a notice; in CI it is a failure.
 if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>&1 | grep -q mikefarah; then
-  if [ -n "${CI:-}" ]; then fail "yq (mikefarah v4) is missing in CI: check_workflows.sh cannot run"; fi
+  if [ -n "${CI:-}" ]; then fail "yq (mikefarah v4) is missing in CI: check_workflows.sh cannot run"; exit 1; fi
   echo "- check_workflows_test: SKIPPED, yq (mikefarah v4) is not installed locally (brew install yq). CI does not skip."
   # Without yq the script itself must refuse, not pass.
   rc=0; "$HERE/scripts/check_workflows.sh" >/dev/null 2>&1 || rc=$?
-  [ "$rc" = 2 ] || fail "without yq the script must exit 2 (got $rc)"
+  [ "$rc" = 2 ] || { fail "without yq the script must exit 2 (got $rc)"; exit 1; }
   exit 0
 fi
 d="$tmp/wf"
-fresh() { rm -rf "$d"; mkdir -p "$d"; cp "$HERE/.github/workflows/ci.yml" "$HERE/.github/workflows/pr.yml" "$HERE/.github/workflows/deploy-watch.yml" "$HERE/.github/workflows/deploy.yml" "$d/"; }
+fresh() { rm -rf "$d"; mkdir -p "$d"; cp "$HERE"/.github/workflows/*.yml "$d/"; }
 run() { rc=0; "$HERE/scripts/check_workflows.sh" "$d" >"$tmp/out" 2>"$tmp/err" || rc=$?; }
+# expect_fail <name> <expected message part>, expect_pass <name>: the verdict of the last run.
+expect_fail() {
+  if [ "$rc" != 1 ]; then fail "$1 must fail (rc=$rc): $(cat "$tmp/err")"; return; fi
+  grep -q -- "$2" "$tmp/err" || fail "$1: message lacks '$2': $(cat "$tmp/err")"
+}
+expect_pass() { [ "$rc" = 0 ] || fail "$1 must pass (rc=$rc): $(cat "$tmp/err")"; }
 # bad <name> <expected message part> <yaml of x.yml>: the repository's workflows plus x.yml must fail with that message.
-bad() { fresh; printf '%s\n' "$3" > "$d/x.yml"; run; [ "$rc" = 1 ] || fail "$1 must fail (rc=$rc): $(cat "$tmp/err")"; grep -q "$2" "$tmp/err" || fail "$1: message lacks '$2': $(cat "$tmp/err")"; }
-good() { fresh; printf '%s\n' "$2" > "$d/x.yml"; run; [ "$rc" = 0 ] || fail "$1 must pass (rc=$rc): $(cat "$tmp/err")"; }
+bad() { fresh; printf '%s\n' "$3" > "$d/x.yml"; run; expect_fail "$1" "$2"; }
+good() { fresh; printf '%s\n' "$2" > "$d/x.yml"; run; expect_pass "$1"; }
 JOB='    runs-on: x
     steps:
       - run: true'
 
 fresh; run
-[ "$rc" = 0 ] || fail "the repository's own workflows must pass: $(cat "$tmp/err")"
+expect_pass "the repository's own workflows"
 
 # --- triggers: a key, a list entry, an inline list, a mapping, flow style, YAML escapes, a comment
 bad "pull_request_target as a key" 'pull_request_target' "name: x
@@ -94,6 +105,32 @@ jobs:
   a:
 $JOB"
 
+# --- deploy.yml edits.
+# deploy_edit <line> <replacement> [job]: deploy.yml in $d with that exact line replaced (awk -v: "\n" in
+# the replacement is a line break), every occurrence, or only inside the job <job> (from "  <job>:" to
+# the next key at that indentation). Returns 1 when the line is not there (the test is stale).
+deploy_edit() {
+  awk -v from="$1" -v to="$2" -v job="${3:+  $3:}" '
+    /^  [A-Za-z0-9_-]+:$/ { in_job = (job == "" || $0 == job) }
+    job == "" { in_job = 1 }
+    in_job && $0 == from { $0 = to; hit = 1 }
+    { print } END { exit !hit }' "$d/deploy.yml" > "$d/deploy.new" || { rm -f "$d/deploy.new"; return 1; }
+  mv "$d/deploy.new" "$d/deploy.yml"
+}
+# deploy_swap <name> <expected message part> <line> <replacement>: every such line replaced must fail.
+deploy_swap() {
+  fresh
+  deploy_edit "$3" "$4" || { fail "$1: the line '$3' is not in deploy.yml (the test is stale)"; return; }
+  run; expect_fail "$1" "$2"
+}
+# job_swap <name> <expected message part, or "" to pass> <job> <line> <replacement>: the line replaced in that job only.
+job_swap() {
+  fresh
+  deploy_edit "$4" "$5" "$3" || { fail "$1: the line '$4' is not in deploy.yml's job $3 (the test is stale)"; return; }
+  run
+  if [ -z "$2" ]; then expect_pass "$1"; else expect_fail "$1" "$2"; fi
+}
+
 # --- the environment: another job, another workflow, another spelling
 bad "another job naming the environment" 'names an environment' "name: x
 on: push
@@ -148,30 +185,20 @@ jobs:
     environment: \${{ inputs.e }}
     steps:
       - run: true"
-fresh; sed 's/^    environment: deploy$/    environment: production/' "$d/ci.yml" > "$d/ci.new"; mv "$d/ci.new" "$d/ci.yml"; run
-[ "$rc" = 1 ] || fail "promote in another environment must fail"
-fresh; sed 's/^    environment: deploy$/    environment: ${{ vars.E }}/' "$d/ci.yml" > "$d/ci.new"; mv "$d/ci.new" "$d/ci.yml"; run
-[ "$rc" = 1 ] || fail "promote in an environment named by an expression must fail"
-fresh; grep -v '^    environment: deploy$' "$d/ci.yml" > "$d/ci.new"; mv "$d/ci.new" "$d/ci.yml"; run
-[ "$rc" = 1 ] && grep -q "does not run in" "$tmp/err" || fail "promote without its environment must fail"
-fresh; sed 's/^    environment: deploy$/    environment: { name: deploy, url: "https:\/\/ryftlab.de" }/' "$d/ci.yml" > "$d/ci.new"; mv "$d/ci.new" "$d/ci.yml"; run
-[ "$rc" = 0 ] || fail "promote with an environment mapping and a url is still fine: $(cat "$tmp/err")"
-fresh; cp "$d/ci.yml" "$d/ci2.yml"; run
-[ "$rc" = 1 ] || fail "the environment in another file named like ci must fail"
+# ci.yml runs no job in an environment any more (promote is gone, C1).
+fresh; awk '{ print } $0 == "  ci-ok:" { print "    environment: deploy" }' "$d/ci.yml" > "$d/ci.new"; mv "$d/ci.new" "$d/ci.yml"; run
+expect_fail "a ci.yml job in the environment deploy" "job 'ci-ok' names an environment"
+# The site job: only in the environment deploy, by name.
+job_swap "the site in another environment" "must run in the environment" site "    environment: deploy" "    environment: production"
+job_swap "the site in an environment named by an expression" "must run in the environment" site "    environment: deploy" "    environment: \${{ vars.E }}"
+job_swap "the site without its environment" "site job does not run in" site "    environment: deploy" "    # no environment"
+job_swap "the site with an environment mapping and a url is still fine" "" site "    environment: deploy" '    environment: { name: deploy, url: "https://ryftlab.de" }'
+job_swap "site-build in the environment" "site-build job runs in no environment" site-build "    timeout-minutes: 20" "    timeout-minutes: 20\n    environment: deploy"
 fresh; cp "$d/deploy.yml" "$d/deploy2.yml"; run
-[ "$rc" = 1 ] && grep -q "deploy2.yml: job 'deploy' names an environment" "$tmp/err" || fail "the environment in a copy of deploy.yml must fail: $(cat "$tmp/err")"
+expect_fail "the environment in a copy of deploy.yml" "deploy2.yml: job 'deploy' names an environment"
+grep -q "deploy2.yml: job 'site' names an environment" "$tmp/err" || fail "the site job in a copy of deploy.yml must fail too: $(cat "$tmp/err")"
 
 # --- deploy.yml (Cloud Run): the gate, the triggers, the token, the serialization, the wait.
-# deploy_swap <name> <expected message part> <line> <replacement>: deploy.yml with that exact line
-# replaced (awk -v: "\n" in the replacement is a line break) must fail with that message.
-deploy_swap() {
-  fresh
-  awk -v from="$3" -v to="$4" '$0 == from { $0 = to; hit = 1 } { print } END { exit !hit }' "$d/deploy.yml" > "$d/deploy.new" \
-    || fail "$1: the line '$3' is not in deploy.yml (the test is stale)"
-  mv "$d/deploy.new" "$d/deploy.yml"; run
-  [ "$rc" = 1 ] || fail "$1 must fail (rc=$rc)"
-  grep -q "$2" "$tmp/err" || fail "$1: message lacks '$2': $(cat "$tmp/err")"
-}
 DEPLOY_IF="    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES == '' && needs.ci.outputs.current == 'true'"
 TIP_IF="        if: steps.tip.outputs.current == 'true'"
 SMOKE_IF="        if: steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.smoke)"
@@ -193,13 +220,13 @@ deploy_swap "continue-on-error on migrate" "continue-on-error" \
 # The tokens: the wait reads the Actions API only, the hold has none.
 deploy_swap "the wait with a write token" "exactly actions: read" "      actions: read" "      actions: read\n      checks: write"
 deploy_swap "the wait back on check runs" "exactly actions: read" "      actions: read" "      checks: read"
-deploy_swap "the hold with a token" "has no token" "    permissions: {}" "    permissions:\n      contents: write"
+job_swap "the hold with a token" "has no token" held "    permissions: {}" "    permissions:\n      contents: write"
 # Only main's tip deploys: the job, and every step that changes Cloud Run or smokes.
 deploy_swap "a deploy that ignores the superseded wait" "needs.ci.outputs.current" "$DEPLOY_IF" "    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES == ''"
-deploy_swap "migrate and the services without the tip gate" "steps.tip.outputs.current == 'true'" "$TIP_IF" "        if: github.sha != ''"
+job_swap "migrate and the services without the tip gate" "steps.tip.outputs.current == 'true'" deploy "$TIP_IF" "        if: github.sha != ''"
 deploy_swap "the smoke's tip gate undone by a top-level ||" "no || outside parentheses" \
   "$SMOKE_IF" "        if: steps.tip.outputs.current == 'true' && github.event_name != 'workflow_dispatch' || inputs.smoke"
-deploy_swap "no tip step" 'no step with id' "        id: tip" "        id: tip2"
+job_swap "no tip step" "deploy job has no step with id" deploy "        id: tip" "        id: tip2"
 # Build and scan before any sign-in or push, with no third-party action and no docker.sock.
 deploy_swap "setup-buildx-action back" "its only action" \
   "      - name: Build the five images (linux/amd64) and scan each saved image (Trivy, fail on critical)" \
@@ -214,13 +241,13 @@ deploy_swap "Trivy on the daemon instead of the saved image" "no scan step" \
   '            docker run --rm "$TRIVY" image --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress "ryft-$s:$GITHUB_SHA"'
 deploy_swap "the gate after another term" "must start with vars.GCP_DEPLOY" \
   "    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES != ''" "    if: vars.DEPLOY_HOLD_SERVICES != '' && vars.GCP_DEPLOY == 'on'"
-deploy_swap "a deploy that can be cancelled" "cancel-in-progress: false" "      cancel-in-progress: false" "      cancel-in-progress: true"
+job_swap "a deploy that can be cancelled" "cancel-in-progress: false" deploy "      cancel-in-progress: false" "      cancel-in-progress: true"
 deploy_swap "a concurrency group per commit" "concurrency group" "      group: deploy" "      group: deploy-\${{ github.sha }}"
 deploy_swap "a pull_request trigger" "runs on exactly" "  workflow_dispatch:" "  pull_request:\n  workflow_dispatch:"
 deploy_swap "a push on every branch" "runs on exactly" "    branches: [main]" "    branches: ['**']"
-deploy_swap "a wider token" "id-token: write" "      id-token: write" "      id-token: write\n      packages: write"
-deploy_swap "the deploy in another environment" "must run in the environment" "    environment: deploy" "    environment: production"
-deploy_swap "a deploy that does not wait for ci-ok" "must need" "    needs: [ci]" "    needs: []"
+job_swap "a wider token" "id-token: write" deploy "      id-token: write" "      id-token: write\n      packages: write"
+job_swap "the deploy in another environment" "must run in the environment" deploy "    environment: deploy" "    environment: production"
+job_swap "a deploy that does not wait for ci-ok" "deploy job must need" deploy "    needs: [ci]" "    needs: []"
 deploy_swap "workflow-level permissions" "permissions: {}" "permissions: {}" "permissions:\n  contents: write"
 bad "another job with the id ci-ok" 'only ci.yml' "name: x
 on: push
@@ -234,7 +261,60 @@ jobs:
     name: ci-ok
 $JOB"
 
-# --- the App key
+# --- the site (C1): site-off, site-build, site.
+SITE_IF="    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true'"
+SITE_STEP_IF="        if: steps.tip.outputs.current == 'true' && steps.live.outputs.deploy == 'true'"
+# The tokens: site-off none, site-build contents: read only, site contents: read and id-token: write.
+job_swap "site-off with a token" "has no token" site-off "    permissions: {}" "    permissions:\n      contents: read"
+job_swap "site-off with no permissions key (the workflow's none)" "" site-off "    permissions: {}" "    # no permissions key"
+job_swap "site-build with id-token" "without id-token" site-build "      contents: read" "      contents: read\n      id-token: write"
+job_swap "site-build with id-token only" "may not have id-token" site-build "      contents: read" "      id-token: write"
+job_swap "the site with a wider token" "site job has exactly contents: read and id-token: write" site "      id-token: write" "      id-token: write\n      deployments: write"
+# Both need ci, the superseded conjunct and the switch; the gate stays first and without ||.
+job_swap "the site without ci" "site job must need" site "    needs: [ci, site-build]" "    needs: [site-build]"
+job_swap "the site's needs in another order" "" site "    needs: [ci, site-build]" "    needs: [site-build, ci]"
+job_swap "site-build without ci" "site-build job must need" site-build "    needs: [ci]" "    needs: []"
+job_swap "the site ignoring the superseded wait" "top-level conjunct needs.ci.outputs.current" site "$SITE_IF" "    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on'"
+job_swap "the site with the superseded wait negated" "top-level conjunct needs.ci.outputs.current" site "$SITE_IF" "    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && !(needs.ci.outputs.current == 'true')"
+job_swap "site-build ignoring the superseded wait" "top-level conjunct needs.ci.outputs.current" site-build "$SITE_IF" "    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on'"
+job_swap "the site's conjuncts in another order" "" site "$SITE_IF" "    if: vars.GCP_DEPLOY == 'on' && needs.ci.outputs.current == 'true' && vars.SITE_DEPLOY == 'on'"
+job_swap "the site without its switch" "vars.SITE_DEPLOY == 'on'" site "$SITE_IF" "    if: vars.GCP_DEPLOY == 'on' && needs.ci.outputs.current == 'true'"
+job_swap "the site's gate behind an ||" "must start with vars.GCP_DEPLOY" site "$SITE_IF" "    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true' || github.event_name == 'workflow_dispatch'"
+job_swap "site-off without the gate" "must start with vars.GCP_DEPLOY" site-off "    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY != 'on'" "    if: vars.SITE_DEPLOY != 'on'"
+# One site deploy at a time, never cancelled.
+job_swap "a site deploy that can be cancelled" "concurrency group \`site\`" site "      cancel-in-progress: false" "      cancel-in-progress: true"
+job_swap "a site concurrency group per commit" "concurrency group \`site\`" site "      group: site" "      group: site-\${{ github.sha }}"
+# The actions: by SHA, and only these.
+job_swap "a third-party sign-in action in the site" "its only actions are actions/checkout, setup-node and download-artifact" site \
+  "      - name: main is still at this commit" "      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093\n      - name: main is still at this commit"
+job_swap "download-artifact by tag" "its only actions" site \
+  "      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0" "      - uses: actions/download-artifact@v7"
+job_swap "actions/cache in site-build" "its only actions are actions/checkout, setup-node and upload-artifact" site-build \
+  "      - run: npm ci --no-audit --no-fund" "      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9\n      - run: npm ci --no-audit --no-fund"
+# setup-node without a cache in the site (site-build may have one: it has no token).
+job_swap "setup-node with an npm cache in the site" "setup-node without a cache" site "          node-version-file: web/.nvmrc" "          node-version-file: web/.nvmrc\n          cache: npm"
+job_swap "setup-node with a cache path in the site" "setup-node without a cache" site "          node-version-file: web/.nvmrc" "          node-version-file: web/.nvmrc\n          cache-dependency-path: web/package-lock.json"
+job_swap "setup-node in the site without package-manager-cache: false" "package-manager-cache: false" site "          package-manager-cache: false" "          # the automatic cache left on"
+job_swap "setup-node in the site with the automatic cache on" "setup-node without a cache" site "          package-manager-cache: false" "          package-manager-cache: true"
+job_swap "setup-node with an npm cache in site-build" "" site-build "          node-version-file: web/.nvmrc" "          node-version-file: web/.nvmrc\n          cache: npm"
+# Nothing signs in up to and including tip.
+job_swap "gcloud in the site's tip step" "at or before the step \`tip\`" site "          tip=" "          gcloud auth list\n          tip="
+job_swap "the OIDC request token before the site's tip" "at or before the step \`tip\`" site "          tip=" '          echo "${#ACTIONS_ID_TOKEN_REQUEST_URL}"\n          tip='
+job_swap "firebase-tools before the site's tip" "at or before the step \`tip\`" site "          tip=" '          npx --yes firebase-tools@15.35.0 login:list\n          tip='
+job_swap "no tip step in the site" "site job has no step with id" site "        id: tip" "        id: tip2"
+# firebase deploy and check-hosting only behind the tip gate, and only in the site job.
+job_swap "the site's deploy and live check without the tip gate" "it deploys the site or checks it live" site "$SITE_STEP_IF" "        if: steps.live.outputs.deploy == 'true'"
+job_swap "the site's tip gate undone by a top-level ||" "no || outside parentheses" site \
+  "$SITE_STEP_IF" "        if: steps.tip.outputs.current == 'true' && steps.live.outputs.deploy == 'true' || github.event_name == 'workflow_dispatch'"
+job_swap "the site's tip gate with an || in parentheses" "" site \
+  "$SITE_STEP_IF" "        if: steps.tip.outputs.current == 'true' && (steps.live.outputs.deploy == 'true' || github.event_name == 'workflow_dispatch')"
+job_swap "check-hosting before the site's tip" "it deploys the site or checks it live" site "          tip=" "          node web/scripts/check-hosting.mjs --base https://ryftlab.de\n          tip="
+job_swap "firebase deploy in site-build" "outside the site job" site-build \
+  "      - run: npm run build" "      - run: npm run build\n      - run: npx --yes firebase-tools@15.35.0 deploy --only hosting --project ryftlab-site"
+job_swap "firebase.json named in site-build is no deploy" "" site-build \
+  "      - run: npm run build" "      - run: npm run build\n      - run: test -s firebase.json && echo deploying later"
+
+# --- the App key: named nowhere (promote is gone, C1)
 bad "another job reading the App key" 'RYFT_DEPLOY_APP_KEY' "name: x
 on: push
 jobs:
@@ -264,6 +344,14 @@ jobs:
     env: {RYFT_DEPLOY_APP_KEY: x}
     steps:
       - run: true"
+bad "the App key in a job named promote" 'RYFT_DEPLOY_APP_KEY' "name: x
+on: push
+jobs:
+  promote:
+    runs-on: x
+    steps:
+      - run: echo \${{ secrets.RYFT_DEPLOY_APP_KEY }}"
+job_swap "the App key in deploy.yml's site job" "RYFT_DEPLOY_APP_KEY" site "      SITE_PROJECT: ryftlab-site" "      SITE_PROJECT: ryftlab-site\n      K: \${{ secrets.RYFT_DEPLOY_APP_KEY }}"
 
 # --- dynamic secrets and secrets: inherit
 bad "secrets[format(...)]" 'other than as secrets' "name: x
@@ -359,7 +447,7 @@ jobs:
   a:
     runs-on: x
     steps:
-      - run: ./scripts/promote.sh
+      - run: ./scripts/check_registry.sh
         env:
           $hook: /bin/true"
   bad "$hook at workflow level" "$hook" "name: x
@@ -465,7 +553,10 @@ fresh; : > "$d/x.yml"; run
 
 # The linter release of ci.yml's lint job must be the Makefile's (make lint warns on another).
 fresh; sed 's/version: v2\.15\.0/version: v9.9.9/' "$d/ci.yml" > "$d/ci.new" && mv "$d/ci.new" "$d/ci.yml"; run
-[ "$rc" = 1 ] || fail "a golangci-lint version that differs from the Makefile's must fail (rc=$rc): $(cat "$tmp/err")"
-grep -q 'GOLANGCI_LINT_VERSION' "$tmp/err" || fail "the message does not name the Makefile variable: $(cat "$tmp/err")"
+expect_fail "a golangci-lint version that differs from the Makefile's" 'GOLANGCI_LINT_VERSION'
 
-echo "✓ check_workflows_test: parsed, not grepped: triggers, the environment only in promote and deploy.yml's deploy, the App key only in promote, deploy.yml's gate, status functions, continue-on-error, triggers, tokens, concurrency, the superseded and tip gates, scan before sign-in, no third-party action or docker.sock, ci-ok only in ci.yml, no external reusable workflows, no secrets: inherit or dynamic secrets, no test hooks"
+if [ "$failures" -gt 0 ]; then
+  echo "✗ check_workflows_test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "✓ check_workflows_test: parsed, not grepped: triggers, the environment only in deploy.yml's deploy and site, the old App key nowhere, deploy.yml's gate, status functions, continue-on-error, triggers, tokens, concurrency, the superseded and tip gates, scan before sign-in, no third-party action or docker.sock, the site built without a token and deployed and checked only from main's tip (switch, actions by SHA, no cache, nothing signs in up to tip), ci-ok only in ci.yml, no external reusable workflows, no secrets: inherit or dynamic secrets, no test hooks"

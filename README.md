@@ -69,11 +69,14 @@ Runbook, namespaces, network policy, scaling, backups and restore:
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push and pull request: `go vet`,
-`go test -race`, `golangci-lint` (config: `.golangci.yml`), `make k8s-validate`
-(kustomize + kubeconform) and `make up && make smoke` on Docker. On pushes that pass,
-it builds the three images (linux/amd64 + linux/arm64) from `backend/Dockerfile` and
-pushes `ghcr.io/timkrebs/ryft/<service>:<short-sha>`, plus `:latest` on `main`.
+`.github/workflows/ci.yml` checks every pull request, every push to `main` and every manual run:
+`go vet`, `go test -race`, `golangci-lint` (config: `.golangci.yml`), `govulncheck` and Trivy,
+`make k8s-validate`, `make up && make smoke` on Docker, Terraform, the site's checks, and the site
+against the Firebase Hosting emulator (`web-e2e`). Its `ci-ok` job is the required check. It builds no
+image to deploy and opens no pull request (since C1). `.github/workflows/deploy.yml` deploys `main`:
+after `ci-ok` is green on the commit, it builds, scans and pushes the five images to Artifact Registry
+and rolls them out on Cloud Run, and it ships `web/` to Firebase Hosting (`SITE_DEPLOY`).
+`docs/OPERATIONS.md` → GCP → **Deploy, roll back, rotate** has the details.
 Locally: `make test`, `cd backend && golangci-lint run`, `make k8s-validate`.
 
 ## 3. iOS app
