@@ -704,12 +704,20 @@ the services' deployer. In this order; the services keep deploying throughout.
    JSON
    gh api -X POST repos/timkrebs/ryft-platform/environments/site/deployment-branch-policies -f name=main -f type=branch
    gh api repos/timkrebs/ryft-platform/environments/site --jq '{p: .deployment_branch_policy, bypass: .can_admins_bypass}'
-   #   {"bypass":false,"p":{"custom_branch_policies":true,"protected_branches":false}}
+   #   p: {"custom_branch_policies":true,"protected_branches":false}; bypass may print null (see below)
    gh api repos/timkrebs/ryft-platform/environments/site/deployment-branch-policies --jq '.branch_policies[] | [.name,.type]'   # ["main","branch"], nothing else
    gh api repos/timkrebs/ryft-platform/environments/site/secrets --jq .total_count           # 0
    ```
 
-   **Stop if** the branch policy isn't `main` alone, the bypass isn't `false`, or the environment holds a secret.
+   **Then confirm "admin bypass off" in the browser**, as for `deploy` (EKS → The `deploy`
+   environment and the App key, step 3): Settings → Environments → `site` → "Allow administrators to
+   bypass configured protection rules" must be **unchecked** (untick it and Save if not).
+   `can_admins_bypass` is not in GitHub's REST schema, so the checkbox is the proof. Create the
+   environment **before the merge**: a job naming an environment that doesn't exist creates it
+   without a branch policy.
+
+   **Stop if** the branch policy isn't `main` alone, the checkbox is still ticked, or the
+   environment holds a secret.
 
 2. **The split's apply.** First check that `SITE_DEPLOY` is off and that no `deploy.yml` run is going:
 
