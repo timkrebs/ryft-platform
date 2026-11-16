@@ -1384,7 +1384,7 @@ the deploy goes red at api. In this order:
 3. The pin, a PR of one line. If `put` printed another number than 1, pin that one.
 
    ```bash
-   git fetch origin && git switch -c deploy/posthog-key-pin origin/main
+   git fetch origin && git switch -c deploy/posthog-pin origin/main
    # deploy/run/api.yaml: right after the OTLP_TOKEN line, with its indentation, add
    #   - { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "1" } } }
    make cloudrun-check
@@ -1399,7 +1399,8 @@ the deploy goes red at api. In this order:
    gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="api" AND jsonPayload.message="analytics"' \
      --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=1h --limit=1 \
      --format='value(timestamp,jsonPayload.configured)'      # True
-   # The serving revision reads the pinned version (names only, never the value):
+   # The service's template pins the version, so every new revision gets it (names only, never the
+   # value; after a rollback the serving revision can be an older one, which /v1/config below shows):
    gcloud run services describe api --region=europe-west1 --project=ryftlab-prod --format=json \
      | jq -c '.spec.template.spec.containers[0].env[] | select(.name == "POSTHOG_PROJECT_KEY") | .valueFrom.secretKeyRef'   # {"key":"1","name":"posthog-project-key"}
    # GET /v1/config as the smoke user. It prints the shape of `analytics`: the host, the key's
