@@ -4,9 +4,10 @@
 # `environment : deploy`, YAML escapes in names and anchors read as GitHub reads them:
 #   1. no workflow triggers on pull_request_target or workflow_run: they run with the base
 #      repository's secrets and token on code a pull request influences;
-#   2. the environment `deploy` (where the deploy App's key and the smoke user live, only main may
-#      use it) is named by exactly two jobs, `promote` in ci.yml and `deploy` in deploy.yml, and
-#      RYFT_DEPLOY_APP_KEY is read only in promote (any case: secret names are case-insensitive);
+#   2. the environment `deploy` (only main may use it, the smoke user's secrets live there, and the
+#      WIF condition of infra/gcp admits only a job in it) is named by exactly two jobs, `deploy` and
+#      `site` in deploy.yml, and RYFT_DEPLOY_APP_KEY (the key of EKS's promote, gone since C1) is named
+#      nowhere (any case: secret names are case-insensitive);
 #   3. a job-level `uses:` is a workflow of this repository (./.github/workflows/<file>.yml): an
 #      external reusable workflow could name the environment, or run with our secrets;
 #   4. no `secrets: inherit`, and `secrets` is only ever read as `secrets.<NAME>`: not
@@ -20,7 +21,8 @@
 #      calls a status function (always(), cancelled(), failure(), success(): without one GitHub
 #      wraps the condition in success(), so a failed job or step stops everything after it) and
 #      nothing sets continue-on-error; the tokens are exactly: ci (the ci-ok wait) actions: read,
-#      deploy contents: read and id-token: write, every other job none. The deploy job needs `ci`
+#      deploy and site contents: read and id-token: write, site-build contents: read, every other
+#      job (site-off, held) none. The deploy job needs `ci`
 #      and runs only when it found main still at this commit (needs.ci.outputs.current), in
 #      concurrency group `deploy` with cancel-in-progress false (a migrate or a rollout is never cut
 #      off); its only action is actions/checkout by SHA, nothing in the file mounts docker.sock,
@@ -28,7 +30,16 @@
 #      including it names gcloud, the OIDC request variables, docker login or docker push (sign-in
 #      and push come after the scan); every step that runs `gcloud run` or the smoke comes after the
 #      step `tip` and its `if` starts with steps.tip.outputs.current == 'true' (no || outside
-#      parentheses: && binds tighter and would undo the gate);
+#      parentheses: && binds tighter and would undo the gate). The site (C1): site-build (npm runs
+#      code there) has no id-token and no environment, and its only actions are checkout,
+#      setup-node and upload-artifact by SHA; site runs in concurrency group `site` with
+#      cancel-in-progress false, its only actions are checkout, setup-node (no cache key, and
+#      package-manager-cache: false) and download-artifact by SHA, and no step up to and including its step `tip` signs in (gcloud,
+#      firebase, the OIDC request variables, GOOGLE_APPLICATION_CREDENTIALS); both need `ci`, and
+#      their `if` has the top-level conjuncts vars.SITE_DEPLOY == 'on' and
+#      needs.ci.outputs.current == 'true'; every step of `site` that names `firebase ... deploy`
+#      or check-hosting comes after `tip` and its `if` starts with steps.tip.outputs.current ==
+#      'true' (no top-level ||), and no other job of deploy.yml names `firebase ... deploy`;
 #   8. only ci.yml defines a job with the id or name `ci-ok`: deploy.yml reads the ci-ok job of
 #      ci.yml's own run, and another job of that name would read as that check.
 # Comments are gone after parsing. Without yq it fails (exit 2): a check that cannot read the
@@ -52,7 +63,7 @@ import json, re, sys
 fname, base = sys.argv[1], sys.argv[2]
 is_ci = base == "ci.yml"
 is_deploy = base == "deploy.yml"
-ENV_JOBS = {("ci.yml", "promote"), ("deploy.yml", "deploy")}  # the jobs that run in the environment deploy
+ENV_JOBS = {("deploy.yml", "deploy"), ("deploy.yml", "site")}  # the jobs that run in the environment deploy
 raw = sys.stdin.read()
 dups = []
 def pairs(ps):  # yq prints a duplicate key twice; a JSON reader keeps one of them, which one differs between readers
@@ -112,8 +123,8 @@ def check_text(s, path, where):
         fail(f"{where} names a test hook of the scripts ({HOOK_RE.search(s).group(1)}): a workflow must not switch a check off")
     if TIME_ASSIGN.search(s):
         fail(f"{where} assigns NOW or TODAY (the scripts' test clocks)")
-    if KEY_RE.search(s) and not (is_ci and job == "promote"):
-        fail(f"{where}: RYFT_DEPLOY_APP_KEY outside ci.yml's promote job (job: {job or 'workflow level'})")
+    if KEY_RE.search(s):
+        fail(f"{where}: names RYFT_DEPLOY_APP_KEY, the key of EKS's promote, which is gone (C1): no workflow may read it (job: {job or 'workflow level'})")
     exprs = EXPR_RE.findall(s)
     if path and path[-1] == "if":
         exprs.append(s)
@@ -156,7 +167,7 @@ for jid, job in jobs.items():
         e = job["environment"]
         name = e if isinstance(e, str) else e.get("name") if isinstance(e, dict) else None
         if (base, jid) not in ENV_JOBS:
-            fail(f"job '{jid}' names an environment ({name!r}): only ci.yml's promote and deploy.yml's deploy may (the deploy App's key and the smoke user are scoped to it)")
+            fail(f"job '{jid}' names an environment ({name!r}): only deploy.yml's deploy and site may (the smoke user's secrets and the WIF condition are scoped to it)")
         elif name != "deploy":
             fail(f"{jid} must run in the environment 'deploy', not {name!r}")
     # 8. the job deploy.yml waits for
@@ -181,7 +192,18 @@ SCAN = re.compile(r"\$\{?TRIVY\}?\"?\s+image\b[^\n]*\s--input\b")
 SIGNS_IN = re.compile(r"ACTIONS_ID_TOKEN_REQUEST|(?<![A-Za-z0-9_\-])gcloud(?![A-Za-z0-9_\-])|(?<![A-Za-z0-9_\-])docker\b[^\n;&|]*?\b(?:login|push)\b")
 CHANGES_RUN = re.compile(r"(?<![A-Za-z0-9_\-])gcloud\s+run\s|(?<![A-Za-z0-9_\-])make\s+smoke-prod\b")
 CHECKOUT = re.compile(r"actions/checkout@[0-9a-f]{40}")
-DEPLOY_PERMS = {"ci": {"actions": "read"}, "deploy": {"contents": "read", "id-token": "write"}}
+DEPLOY_PERMS = {"ci": {"actions": "read"}, "deploy": {"contents": "read", "id-token": "write"},
+                "site-build": {"contents": "read"}, "site": {"contents": "read", "id-token": "write"}}
+# The site (C1): the actions each job may use, by SHA; what signs in; what deploys or checks the live site.
+SITE_ACTIONS = {"site-build": re.compile(r"actions/(checkout|setup-node|upload-artifact)@[0-9a-f]{40}"),
+                "site": re.compile(r"actions/(checkout|setup-node|download-artifact)@[0-9a-f]{40}")}
+# The CLI by name (firebase, firebase-tools@<v>), not a file like web/firebase.json or a host like firebasehosting.
+FIREBASE_CLI = r"(?<![A-Za-z0-9_\-./])firebase(?:-tools)?(?![A-Za-z0-9_.])"
+SITE_SIGNS_IN = re.compile(SIGNS_IN.pattern + "|" + FIREBASE_CLI + r"|GOOGLE_APPLICATION_CREDENTIALS")
+FIREBASE_DEPLOY = re.compile(FIREBASE_CLI + r"[^\n]*?(?<![A-Za-z0-9_\-])deploy(?![A-Za-z0-9_\-])")
+CHECK_HOSTING = re.compile(r"check-hosting")
+CURRENT_TERM = re.compile(r"needs\.ci\.outputs\.current\s*==\s*'true'")
+SITE_ON_TERM = re.compile(r"vars\.SITE_DEPLOY\s*==\s*'on'")
 
 def top_level_or(expr):
     """A || outside parentheses and quoted strings ('' is a quote inside one)."""
@@ -204,6 +226,36 @@ def top_level_or(expr):
             return True
         i += 1
     return False
+
+def conjuncts(expr):
+    """The terms of the top-level && (outside parentheses and quoted strings), stripped."""
+    terms, depth, i, quoted, start = [], 0, 0, False, 0
+    while i < len(expr):
+        c = expr[i]
+        if quoted:
+            if c == "'":
+                if expr[i + 1:i + 2] == "'":
+                    i += 1
+                else:
+                    quoted = False
+        elif c == "'":
+            quoted = True
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif depth <= 0 and expr.startswith("&&", i):
+            terms.append(expr[start:i].strip())
+            i += 2
+            start = i
+            continue
+        i += 1
+    terms.append(expr[start:].strip())
+    return terms
+
+def job_steps(job):
+    steps = job.get("steps") if isinstance(job, dict) else None
+    return [s if isinstance(s, dict) else {} for s in steps] if isinstance(steps, list) else None
 
 def step_label(n, s):
     return f"step {n}" + (f" ({s['name']})" if isinstance(s, dict) and isinstance(s.get("name"), str) else "")
@@ -232,8 +284,11 @@ if is_deploy:
         want = DEPLOY_PERMS.get(jid, {})
         have = job.get("permissions", None if jid in DEPLOY_PERMS else {})
         if have != want:
-            if jid == "deploy":
-                fail(f"deploy.yml's deploy job has exactly contents: read and id-token: write, has {have!r}")
+            if jid in ("deploy", "site"):
+                fail(f"deploy.yml's {jid} job has exactly contents: read and id-token: write, has {have!r}")
+            elif jid == "site-build":
+                fail(f"deploy.yml's site-build job has exactly contents: read, without id-token (npm runs code there, and "
+                     f"every step of a job with id-token: write can mint a token), has {have!r}")
             elif jid == "ci":
                 fail(f"deploy.yml's ci job (the ci-ok wait) has exactly actions: read (ci.yml's run and its jobs), has {have!r}")
             else:
@@ -285,6 +340,78 @@ if is_deploy:
                 if not (tip is not None and n > tip and isinstance(cond, str) and TIP_GATE.match(cond.strip()) and not top_level_or(cond)):
                     fail(f"deploy.yml's deploy job, {step_label(n, steps[n])}: it changes Cloud Run or smokes, so it comes after the "
                          f"step `tip` and its `if` starts with steps.tip.outputs.current == 'true' (no || outside parentheses), is {cond!r}")
+    # The site (C1): site-build builds without a token, site deploys from main's tip only.
+    for sid in ("site-build", "site"):
+        sj = jobs.get(sid)
+        if not isinstance(sj, dict):
+            fail(f"deploy.yml has no job `{sid}`")
+            continue
+        needs = sj.get("needs")
+        needs = [needs] if isinstance(needs, str) else needs
+        if not isinstance(needs, list) or "ci" not in needs:
+            fail(f"deploy.yml's {sid} job must need `ci` (the wait for ci-ok, and main still at this commit)")
+        terms = conjuncts(sj["if"]) if isinstance(sj.get("if"), str) else []
+        if not any(CURRENT_TERM.fullmatch(t) for t in terms):
+            fail(f"deploy.yml's {sid} job: its `if` must have the top-level conjunct needs.ci.outputs.current == 'true' "
+                 f"(a superseded run deploys nothing), is {sj.get('if')!r}")
+        if not any(SITE_ON_TERM.fullmatch(t) for t in terms):
+            fail(f"deploy.yml's {sid} job: its `if` must have the top-level conjunct vars.SITE_DEPLOY == 'on' (the site's switch), is {sj.get('if')!r}")
+        steps = job_steps(sj)
+        if steps is None:
+            fail(f"deploy.yml's {sid} job has no list of steps")
+            continue
+        for n, s in enumerate(steps):
+            if "uses" in s and not (isinstance(s["uses"], str) and SITE_ACTIONS[sid].fullmatch(s["uses"])):
+                allowed = "checkout, setup-node and upload-artifact" if sid == "site-build" else "checkout, setup-node and download-artifact"
+                fail(f"deploy.yml's {sid} job, {step_label(n, s)}: `uses: {s['uses']}`: its only actions are actions/{allowed}, by SHA")
+    sb = jobs.get("site-build")
+    if isinstance(sb, dict):
+        perms = sb.get("permissions")
+        if isinstance(perms, dict) and "id-token" in perms or isinstance(perms, str):
+            fail(f"deploy.yml's site-build job may not have id-token (npm runs code there), has permissions {perms!r}")
+        if "environment" in sb:
+            fail("deploy.yml's site-build job runs in no environment: nothing there needs its secrets, and the WIF condition admits only that environment")
+    st = jobs.get("site")
+    if isinstance(st, dict):
+        c = st.get("concurrency")
+        if not (isinstance(c, dict) and c.get("group") == "site" and c.get("cancel-in-progress") is False):
+            fail(f"deploy.yml's site job runs in concurrency group `site` with cancel-in-progress: false, has {c!r}")
+        steps = job_steps(st) or []
+        runs = [s["run"] if isinstance(s.get("run"), str) else "" for s in steps]
+        for n, s in enumerate(steps):
+            u = s.get("uses")
+            if isinstance(u, str) and u.startswith("actions/setup-node@"):
+                w = s.get("with", {})
+                bad = [k for k in w if "cache" in str(k).lower() and not (k == "package-manager-cache" and w[k] is False)] \
+                    if isinstance(w, dict) else ["(with is not a mapping)"]
+                if bad:
+                    fail(f"deploy.yml's site job, {step_label(n, s)}: setup-node without a cache ({', '.join(map(str, bad))}): "
+                         "no cache entry, which another job may have written, is restored next to the token")
+                elif not (isinstance(w, dict) and w.get("package-manager-cache") is False):
+                    fail(f"deploy.yml's site job, {step_label(n, s)}: setup-node needs package-manager-cache: false "
+                         "(a packageManager field in a package.json would otherwise turn its automatic cache on next to the token)")
+        tip = next((n for n, s in enumerate(steps) if s.get("id") == "tip"), None)
+        if tip is None:
+            fail("deploy.yml's site job has no step with id `tip` (main is still at this commit, before it signs in)")
+        else:
+            for n in range(tip + 1):
+                rest = json.dumps({k: v for k, v in steps[n].items() if k != "run"})
+                m = SITE_SIGNS_IN.search(runs[n]) or SITE_SIGNS_IN.search(rest)
+                if m:
+                    fail(f"deploy.yml's site job, {step_label(n, steps[n])}: `{m.group(0)[:60]}` at or before the step `tip`: "
+                         "nothing signs in or mints a token before the run knows main is still at this commit")
+        for n, r in enumerate(runs):
+            if FIREBASE_DEPLOY.search(r) or CHECK_HOSTING.search(r):
+                cond = steps[n].get("if")
+                if not (tip is not None and n > tip and isinstance(cond, str) and TIP_GATE.match(cond.strip()) and not top_level_or(cond)):
+                    fail(f"deploy.yml's site job, {step_label(n, steps[n])}: it deploys the site or checks it live, so it comes after the "
+                         f"step `tip` and its `if` starts with steps.tip.outputs.current == 'true' (no || outside parentheses), is {cond!r}")
+    for jid, job in jobs.items():
+        if jid == "site" or not isinstance(job, dict):
+            continue
+        for n, s in enumerate(job_steps(job) or []):
+            if isinstance(s.get("run"), str) and FIREBASE_DEPLOY.search(s["run"]):
+                fail(f"deploy.yml's job '{jid}', {step_label(n, s)}: `firebase ... deploy` outside the site job (only `site` deploys the site, from main's tip)")
     if wf.get("permissions") != {}:
         fail("deploy.yml sets `permissions: {}` at the top; each job asks for its own")
 
@@ -324,5 +451,5 @@ if [ -f "$dir/ci.yml" ] && [ -f Makefile ]; then
     fail "the golangci-lint version of ci.yml's lint job (${ci_v:-not found}) must equal GOLANGCI_LINT_VERSION in the Makefile (${mk_v:-not found})"
   fi
 fi
-[ "$rc" = 0 ] && echo "workflows: no pull_request_target/workflow_run, no external reusable workflow, no secrets: inherit or dynamic secrets, no test hooks; only promote and deploy.yml's deploy name the environment deploy, only promote reads the App key; deploy.yml is gated by GCP_DEPLOY, serialized, waits for ci.yml's ci-ok, has no status function or continue-on-error, scans before it signs in, and changes Cloud Run only from main's tip"
+[ "$rc" = 0 ] && echo "workflows: no pull_request_target/workflow_run, no external reusable workflow, no secrets: inherit or dynamic secrets, no test hooks; only deploy.yml's deploy and site name the environment deploy, nothing names the old App key; deploy.yml is gated by GCP_DEPLOY, serialized, waits for ci.yml's ci-ok, has no status function or continue-on-error, scans before it signs in, changes Cloud Run only from main's tip, builds the site without a token and deploys and checks it only from main's tip"
 exit "$rc"

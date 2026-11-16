@@ -46,7 +46,7 @@ for (const file of walk(OUT)) {
   }
 }
 
-// Next's internal not-found route; 404.html is the page nginx serves.
+// Next's internal not-found route; 404.html is the page Hosting serves on a 404.
 for (const p of ['_not-found.html', '_not-found', '_global-error.html', '_global-error']) {
   if (existsSync(join(OUT, p))) {
     rmSync(join(OUT, p), { recursive: true });

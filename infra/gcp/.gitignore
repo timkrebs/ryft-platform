@@ -15,9 +15,11 @@ crash.log
 # to change depending on the environment.
 *.tfvars
 terraform.tfvars.json
-# Except the reviewed gates, which hold no secret and must be committed (README -> The gates).
+# Except the reviewed gates, which hold no secret and must be committed (README -> The gates), and the
+# site's public DNS values from the Firebase wizard (site.tf, runbook step 10).
 # pubsub.auto.tfvars.json (the generated topology) is committed too; *.tfvars does not match it.
 !gates.auto.tfvars
+!site.auto.tfvars
 
 # Ignore override files as they are usually used to override resources locally and so
 # are not checked in

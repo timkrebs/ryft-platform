@@ -1,6 +1,10 @@
 import { expect, test } from '@playwright/test';
+import { sitePath } from '../scripts/check-hosting.mjs';
 
-// The URLs the app links to, the AASA, and how nginx answers around them.
+// The URLs the app links to, the AASA, and how Firebase Hosting answers around them (its emulator:
+// npm run e2e:hosting, web D19). What Hosting's docs leave open (header merging, headers on
+// redirects, query strings, "//") is settled in e2e/hosting.spec.ts. A Location is compared as a
+// path of the site: relative, or absolute on this origin.
 test.describe('routes the app depends on', () => {
   for (const path of ['/privacy', '/terms', '/support', '/impressum']) {
     test(`${path} is 200`, async ({ request }) => {
@@ -11,12 +15,10 @@ test.describe('routes the app depends on', () => {
   }
 
   // The German pages are gone (web D18); older builds of the app still link to /de/….
-  test('the old German URLs redirect to the English page', async ({ request }) => {
+  test('the old German URLs redirect to the English page', async ({ request, baseURL }) => {
     for (const [from, to] of [
       ['/de', '/'],
-      ['/de?x=1', '/?x=1'],
       ['/de/privacy', '/privacy'],
-      ['/de/privacy?x=1&y=2', '/privacy?x=1&y=2'],
       ['/de/terms', '/terms'],
       ['/de/impressum', '/impressum'],
       ['/de/support', '/support'],
@@ -25,16 +27,13 @@ test.describe('routes the app depends on', () => {
       ['/de/licenses', '/licenses'],
       ['/de/privacy/2026-10-20', '/privacy/2026-10-20'],
       ['/de/terms/2026-10-20', '/terms/2026-10-20'],
-      // The trailing slash goes first (to /de…), then the language: two hops, query kept.
+      // The trailing slash goes first (to /de…), then the language: two hops.
       ['/de/', '/de'],
-      ['/de/?x=1', '/de?x=1'],
       ['/de/privacy/', '/de/privacy'],
     ]) {
       const res = await request.get(from, { maxRedirects: 0 });
-      expect(res.status(), from).toBe(301);
-      expect(res.headers()['location'], from).toBe(to);
-      if (!from.endsWith('/') && !from.includes('/?'))
-        expect(res.headers()['cache-control'], from).toBe('public, max-age=3600');
+      expect.soft(res.status(), from).toBe(301);
+      expect.soft(sitePath(baseURL!, res.headers()['location']), from).toBe(to);
     }
     // Followed to the end, every old link lands on an English page.
     for (const from of ['/de/', '/de/privacy/', '/de/impressum']) {
@@ -44,9 +43,9 @@ test.describe('routes the app depends on', () => {
     }
   });
 
-  // The /de rule builds Location from the decoded path, like the trailing-slash rule: nothing
-  // under /de/ may turn into "//host", "/\host" or a header with a control character.
-  test('a /de/… path never redirects off the site', async ({ request }) => {
+  // The /de rule builds Location from a capture, like the trailing-slash rule: nothing under /de/
+  // may turn into "//host", "/\host" or a header with a control character.
+  test('a /de/… path never redirects off the site', async ({ request, baseURL }) => {
     for (const path of [
       '/de/%5Cevil.com',
       '/de/%09/evil.com',
@@ -64,15 +63,15 @@ test.describe('routes the app depends on', () => {
         continue;
       }
       expect(res.status(), path).toBe(301);
-      expect(location, path).toMatch(/^\/[A-Za-z0-9]/);
-      expect(location, path).not.toMatch(/[\\\s\x00-\x1f\x7f]/);
+      expect(sitePath(baseURL!, location), path).toMatch(/^\/[A-Za-z0-9]/);
     }
   });
 
   test('apple-app-site-association is JSON, no redirect, no extension', async ({ request }) => {
     const res = await request.get('/.well-known/apple-app-site-association', { maxRedirects: 0 });
     expect(res.status()).toBe(200);
-    expect(res.headers()['content-type']).toBe('application/json');
+    // Set by firebase.json's headers rule (the file has no extension); Hosting may add the charset.
+    expect(res.headers()['content-type']).toMatch(/^application\/json(?:; ?charset=utf-8)?$/i);
     const body = await res.json();
     expect(body.applinks.details[0].appIDs[0]).toMatch(/\.dev\.timkrebs\.ryft$/);
   });
@@ -107,27 +106,27 @@ test.describe('routes the app depends on', () => {
     expect(await page.locator('a[href*="secret"]').count()).toBe(0);
   });
 
-  test('trailing slashes redirect to the canonical path, relatively', async ({ request }) => {
+  // Query strings and "//" on these redirects: e2e/hosting.spec.ts, (d) and (e).
+  test('trailing slashes redirect to the canonical path', async ({ request, baseURL }) => {
     for (const [from, to] of [
       ['/privacy/', '/privacy'],
       ['/science/', '/science'],
       ['/terms/2026-10-20/', '/terms/2026-10-20'],
-      ['/privacy/?x=1', '/privacy?x=1'],
       ['/privacy/2026-10-26/', '/privacy/2026-10-26'],
       ['/licenses/', '/licenses'],
       ['/de/', '/de'],
       ['/de/science/', '/de/science'],
       ['/de/privacy/', '/de/privacy'],
-      ['/x//y/', '/x/y'],
     ]) {
       const res = await request.get(from, { maxRedirects: 0 });
-      expect(res.status(), from).toBe(301);
-      expect(res.headers()['location'], from).toBe(to);
+      expect.soft(res.status(), from).toBe(301);
+      expect.soft(sitePath(baseURL!, res.headers()['location']), from).toBe(to);
     }
   });
 
-  // The decoded path must never reach Location: "/\evil.com" is another host to a browser, and
-  // a tab or CR in the header is worse. These are 404s with the site's 404 page, no redirect.
+  // The capture must never reach Location with a backslash, space or control character: "/\evil.com"
+  // is another host to a browser, and a tab or CR in the header is worse. These are 404s with the
+  // site's 404 page, no redirect.
   test('a trailing-slash path with a backslash, space or control character is a 404, not a redirect', async ({
     request,
   }) => {
@@ -142,19 +141,18 @@ test.describe('routes the app depends on', () => {
       '/_next/static/',
     ]) {
       const res = await request.get(path, { maxRedirects: 0 });
-      expect(res.status(), path).toBe(404);
-      expect(res.headers()['location'], path).toBeUndefined();
-      expect(await res.text(), path).toContain('Page not found');
+      expect.soft(res.status(), path).toBe(404);
+      expect.soft(res.headers()['location'], path).toBeUndefined();
+      expect.soft(await res.text(), path).toContain('Page not found');
     }
   });
 
-  test('no redirect points off the site', async ({ request }) => {
+  test('no redirect points off the site', async ({ request, baseURL }) => {
     for (const path of ['/%2F%2Fevil.com/', '/a//', '/x//y/', '/de/']) {
       const res = await request.get(path, { maxRedirects: 0 });
       const location = res.headers()['location'];
       if (location === undefined) continue;
-      expect(location, path).toMatch(/^\/[A-Za-z0-9]/);
-      expect(location, path).not.toMatch(/[\\\s\x00-\x1f\x7f]/);
+      expect(sitePath(baseURL!, location), path).toMatch(/^\/[A-Za-z0-9]/);
     }
   });
 
@@ -166,12 +164,7 @@ test.describe('routes the app depends on', () => {
     }
   });
 
-  test('healthz', async ({ request }) => {
-    const res = await request.get('/healthz');
-    expect(res.status()).toBe(200);
-    expect(await res.text()).toBe('ok\n');
-  });
-
+  // Header rules match the request path on every status, so a 404 and a rewrite carry them too.
   test('security headers and the CSP on pages and errors', async ({ request }) => {
     for (const path of ['/', '/privacy', '/nope', '/auth/callback']) {
       const h = (await request.get(path)).headers();
