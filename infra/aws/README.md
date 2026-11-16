@@ -260,6 +260,11 @@ helm template admission-policy infra/aws/kubernetes/charts/admission-policy \
   -f infra/aws/kubernetes/admission-values.yaml --set breakGlass=true,actions.vso=deny  # still Warn+Audit
 ```
 
+**Gone with C1 (platform D233):** `admission-celtest/`, the Makefile's `admission-celtest` and
+`admission-e2e`, CI's `admission` job and the workflow `admission-e2e` are deleted (nothing on GCP
+admits anything). The two paragraphs below describe what was there, in C1's parent commit.
+`scripts/admission_e2e.sh` stays until D3.
+
 **Offline CEL test.** `make admission-celtest` (`admission-celtest/`, its own Go module
 outside the chart, so nothing of it can enter the Helm release) renders the chart with the committed values and the decoded `project.yaml`,
 renders `deploy/` (`helm template`, `kubectl kustomize`; read-only, no cluster), and

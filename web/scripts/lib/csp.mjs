@@ -1,8 +1,42 @@
 // The Content-Security-Policies for the site, from the inline scripts of the built pages.
 // Two policies, never combined in one response (two CSP headers intersect, and the marketing
 // policy's connect-src 'none' would then win): the marketing one for every page, and the
-// admin page's own (web D15).
-import { cspHash } from './html.mjs';
+// admin page's own (web D15). Served by Firebase Hosting through firebase.json (./hosting.mjs, web
+// D19) and, until PR D3 removes the image, written as nginx snippets.
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { cspHash, inlineScripts } from './html.mjs';
+
+/** The admin page of the export: its script is hashed into its own policy only. */
+export const ADMIN_PAGE = 'admin.html';
+
+/**
+ * The inline-script hashes of a built export (`out`): `hashes` from every page except the admin
+ * page (the marketing policy, so the admin hash never enters it), `adminHashes` from the admin page
+ * alone, and the counts the build logs. scripts/csp.mjs (nginx) and scripts/firebase-json.mjs
+ * (Firebase Hosting) both take them from here.
+ */
+export function builtHashes(out) {
+  const files = [...walk(out)].filter((f) => f.endsWith('.html'));
+  const bodies = (list) => list.flatMap((f) => inlineScripts(readFileSync(f, 'utf8')).map((s) => s.body));
+  const pages = files.filter((f) => relative(out, f) !== ADMIN_PAGE);
+  const admin = files.filter((f) => relative(out, f) === ADMIN_PAGE);
+  return {
+    pages: pages.length,
+    scripts: bodies(pages).length,
+    hashes: hashesOf(bodies(pages)),
+    adminPages: admin.length,
+    adminHashes: hashesOf(bodies(admin)),
+  };
+}
+
+function* walk(dir) {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) yield* walk(p);
+    else yield p;
+  }
+}
 
 /** The marketing policy: scripts only by hash, everything else only from this origin, nothing framed. */
 export function policy(hashes) {

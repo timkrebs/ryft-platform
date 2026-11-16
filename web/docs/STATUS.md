@@ -1,5 +1,25 @@
 # Status — ryftapp.de (web/)
 
+## 2026-11-16 — Firebase Hosting (branch `web/firebase-hosting`, C1)
+
+D19: the site is served by Firebase Hosting (project `ryftlab-site`). The build writes
+`firebase.json`, and `deploy.yml`'s `site` job deploys it once `SITE_DEPLOY` is `on`. The nginx
+image stays until the platform's PR D3 but no longer ships. Nothing was run in the session that
+wrote this: the sandbox refused `npm ci`, every `node` run and `npx firebase-tools`. Every line
+was desk-checked only. CI's `web-checks` and `web-e2e` are the first real run, so record the
+emulator's `observed: …` lines in D19.
+
+| Area | What pins it | Where |
+| --- | --- | --- |
+| `firebase.json` | Keys, `ignore`, redirects, rewrite, RE2-safe anchored regexes; one CSP rule per path (a table plus every path of up to seven characters); the last Cache-Control per class; Location always `/` or `/` + a letter or digit | `tests/hosting.test.ts` |
+| The built file | `firebaseJson()` of the build's hashes; the same two CSPs as `nginx/csp*.conf` | `tests/output.test.ts` (after the build) |
+| Routes, headers | `/de` → `/`, `/de/<path>` → `/<path>`, trailing slash, app links → `open.html` with `no-store`, the AASA as JSON, no Location off the site | `e2e/routes.spec.ts`, `e2e/admin.spec.ts` against the emulator |
+| D19's open points (a)–(f) | One CSP and one Cache-Control per response, the AASA's type, headers on redirects, `//` and `%5C`, query strings | `e2e/hosting.spec.ts` (logs what it saw) |
+| Live | The same assertions against ryftlab.de and www, plus the privacy version shown on `/privacy` | `scripts/check-hosting.mjs` (`deploy.yml` `site`, runbook step 10) |
+
+Open for the user: the privacy text's paragraph on the site (no nginx access log; Google's edge
+sees the IP; `docs/LEGAL_CHECKLIST.md` S6, C2).
+
 ## 2026-11-16 — English only (branch `web/english-only`)
 
 D18: the German pages are gone, and `/de` and `/de/…` answer 301 to the English page (cached
@@ -10,7 +30,7 @@ theme switch, both appearances and Satoshi stay. The restyle (#142, #143) was dr
 
 | Area | What this branch's tests pin (run by CI's `web-checks`, `web-e2e` and `manifests`, not locally) | Where |
 | --- | --- | --- |
-| Routes | 200 `text/html` on `/`, `/science`, `/beta`, `/privacy` (+ versions), `/terms` (+ version), `/support`, `/impressum`, `/licenses`, `/open`, the universal-link paths; `/de`, `/de/privacy`, `/de/terms`, `/de/impressum`, `/de/privacy/<version>` → 301 to the English path; `/de/` plus a backslash, space or control character → 404 | `e2e/routes.spec.ts` against the nginx image, `tests/nginx.test.ts` |
+| Routes | 200 `text/html` on `/`, `/science`, `/beta`, `/privacy` (+ versions), `/terms` (+ version), `/support`, `/impressum`, `/licenses`, `/open`, the universal-link paths; `/de`, `/de/privacy`, `/de/terms`, `/de/impressum`, `/de/privacy/<version>` → 301 to the English path; `/de/` plus a backslash, space or control character → 404 | `e2e/routes.spec.ts` and `e2e/hosting.spec.ts` against the Hosting emulator, `tests/hosting.test.ts` (C1, web D19) |
 | Pages | English only, no hreflang alternates, no `/de` in the sitemap | `tests/output.test.ts`; Playwright on every page |
 | Privacy | `2026-10-20` and `2026-10-26` keep their English pages; `2026-10-26` in force, its text unchanged | `npm run check:policy`, `scripts/check_policy_in_force.sh` |
 
