@@ -18,6 +18,7 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 | `registry.tf` | Artifact Registry `ryft`: the 5 newest versions of each image kept, every other version deleted after 30 days (tagged or not); scanning off |
 | `run.tf` | who invokes the four services (one authoritative `run.invoker` binding each), and the domain mappings `api.` and `ingest.ryftlab.de` (only with `serve = true`) |
 | `dns.tf` | the zone `ryftlab.de` (`prevent_destroy`, DNSSEC off) with every record of `infra/aws/dns`, CAA with `pki.goog`, Search Console's TXT, and the mappings' CNAMEs |
+| `site.tf`, `site.auto.tfvars` | the site's records on Firebase Hosting (C1, D233): the apex A set and its `hosting-site=` TXT (joins the apex TXT set), and www's A set and TXT or its CNAME, from the values the Firebase wizard shows. Empty adds nothing |
 | `logging.tf` | the bucket `ryft-logs` (europe-west1, 14 days) and the sink into it |
 | `alerts.tf` | the Grafana-managed rules on Cloud Monitoring: HTTP5xxRatio, SyncSlow, DeadLetters, PushBacklog, Saturated (only once `grafana_datasource_uid` is set) |
 | `checks.tf` | warnings for what fails silently: the `_Default` log sink still on, a mapping not Ready |
@@ -40,6 +41,8 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 
 `gates.auto.tfvars` is committed, so each flip is a reviewed one-line PR. HCP Terraform loads
 `*.auto.tfvars` in remote runs. Never set `serve` or `public_invokers` as workspace variables.
+`site.auto.tfvars` (the site's DNS values) works the same way: committed, reviewed, never a
+workspace variable, and `tests/site.tftest.hcl` holds it to its five keys.
 
 | `serve` | `public_invokers` | Invokers (authoritative, per service) | Deployer's `run.developer` | Mappings and their DNS | Tick |
 | --- | --- | --- | --- | --- | --- |
@@ -86,7 +89,10 @@ The arithmetic of each count is in the runbook (steps 4, 9, 11 and the stop line
 3. **The stop line** (`public_invokers = false`): no changes after its gcloud commands; without
    them 0 to add, 3 to change (api's and ingest's invoker bindings, the tick), 0 to destroy.
 4. **Step 11** (the Grafana variables set): 2 to add (the folder and the rule group).
-5. **Apply 3** (C1, step 10): the site's record sets only.
+5. **Apply 3** (C1, step 10, after the PR that fills in `site.auto.tfvars`): the site's record sets
+   only. With A records for both names: 3 to add (the apex A, www's A and www's TXT), 1 to change
+   (the apex TXT set gains `hosting-site=`), 0 to destroy. With a CNAME for www: 2 to add (the apex
+   A, www's CNAME), 1 to change, 0 to destroy.
 
 ```bash
 cd infra/gcp

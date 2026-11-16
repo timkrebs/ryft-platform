@@ -679,19 +679,24 @@ dispatched run fails (a permission error on `run.*`: the fallback above, nothing
 failure: **A normal deploy** below); or the 413 isn't ours (then a contract change, a 31 MiB cap:
 design §3, api-contract-owner).
 
-### 10. The site and the app *(waits for C1)*
+### 10. The site and the app *(C1, D233)*
 
-The site project first. This half can run any time. Run it as you, logged in to gcloud and
-`firebase login`, with no billing account anywhere:
+Run from the repository root on an up-to-date main, in bash or zsh, as you, logged in to gcloud
+and to Firebase (`npx --yes firebase-tools@$(cat web/.firebase-tools-version) login` once). No
+billing account anywhere. Until 10f, `SITE_DEPLOY` is off, and every run of `deploy.yml` shows
+"Site off" and stays green.
+
+**10a. The site project** (any time, before or after C1's merge):
 
 ```bash
-S=ryftlab-site                                       # if the ID is taken, pick another and use it in C1's config
+FT="npx --yes firebase-tools@$(cat web/.firebase-tools-version)"
+S=ryftlab-site                                       # taken? stop: deploy.yml's SITE_PROJECT and SITE_DEPLOYER need a PR first
 gcloud projects create "$S" --name="RYFT site"       # no --organization; never link a billing account
 gcloud billing projects describe "$S" --format='value(billingEnabled)'   # False
 gcloud services enable firebase.googleapis.com firebasehosting.googleapis.com iam.googleapis.com \
   iamcredentials.googleapis.com --project="$S"
-npx --yes firebase-tools@<C1's pin> projects:addfirebase "$S"       # Spark, because there is no billing account
-npx --yes firebase-tools@<C1's pin> hosting:sites:list --project "$S"   # the default site, ryftlab-site
+$FT projects:addfirebase "$S"                        # Spark, because there is no billing account
+$FT hosting:sites:list --project "$S"                # one site, ryftlab-site
 
 # The deploy SA: Hosting only, usable only through the GitHub pool in ryftlab-prod.
 gcloud iam service-accounts create site-deployer --project="$S" --display-name="CI: Firebase Hosting deploys"
@@ -701,41 +706,112 @@ gcloud projects add-iam-policy-binding "$S" --member="serviceAccount:$SITE_SA" \
 gcloud iam service-accounts add-iam-policy-binding "$SITE_SA" --project="$S" \
   --role=roles/iam.workloadIdentityUser --member="$(terraform -chdir=infra/gcp output -raw github_principal_set)"
 gcloud projects get-iam-policy "$S" --format='table(bindings.role,bindings.members)'  # you as owner, the SA, nothing else
+gcloud iam service-accounts get-iam-policy "$SITE_SA" --format=json \
+  | jq -r '.bindings[] | .role + " " + (.members | join(" "))'   # workloadIdentityUser: the principalSet of ryftlab-prod's pool github, by repository ID
 gcloud iam service-accounts keys list --iam-account="$SITE_SA" --managed-by=user       # empty
 ```
 
+**Stop if** `billingEnabled` isn't `False`; `addfirebase` asks for a plan or a billing account;
+the project policy names anyone but you and `site-deployer`; the SA's policy names anything but the
+`github` pool of `ryftlab-prod`; or the key list isn't empty.
+
 The GitHub pool's condition already pins `deploy.yml` on main and the `deploy` environment, so
-this binding needs only the repository. If the first deploy names a missing permission, add
-only that one (for example `roles/serviceusage.serviceUsageConsumer` on `ryftlab-site`).
+this binding needs only the repository.
 
-Then, with C1 merged:
-1. Firebase console → Hosting → Add custom domain: `ryftlab.de`, then `www.ryftlab.de` with
-   "redirect to `ryftlab.de`".
-2. Put the A and TXT values the wizard shows into `infra/gcp`'s site variables (C1 names them).
-   Then **apply 3**:
-   `terraform -chdir=infra/gcp plan -out=apply-3.tfplan`, then `apply apply-3.tfplan`. It adds
-   only the site's record sets.
-3. Run `deploy.yml` by hand once (the `site` job).
-4. Check:
+**10b. Two console settings** (Firebase console → `ryftlab-site`):
+- Hosting → the site's menu → **release storage settings**: keep the 10 newest releases. On Spark
+  storage is capped at 10 GB, every deploy keeps a version, and over the cap no deploy goes through
+  *(the setting's wording is unchecked)*.
+- Project settings → Integrations → **Cloud Logging**: leave it unlinked. Linked, Hosting would log
+  every visitor's IP address and user agent for 30 days (design §8).
 
-   ```bash
-   for p in /privacy /impressum /terms /support; do
-     curl -s -o /dev/null -w "%{http_code} $p\n" "https://ryftlab.de$p"            # 200 each
-   done
-   curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" https://ryftlab.de/de/privacy   # 301 https://ryftlab.de/privacy (web D18; C1's firebase.json must carry the rule)
-   curl -sI https://ryftlab.de/.well-known/apple-app-site-association           # content-type: application/json, no redirect
-   curl -sI 'https://ryftlab.de//evil.example/' | grep -i '^location' || echo 'no location'   # no location
-   curl -sI https://www.ryftlab.de/privacy | grep -i '^location'                # https://ryftlab.de/privacy
-   ```
-
-5. The app build uses `https://api.ryftlab.de` and `https://ingest.ryftlab.de`. App Store
-   Connect's privacy, support and marketing URLs move to `https://ryftlab.de/…` (REBUILD step
-   12). Check the AASA's team ID. The Sign in with Apple return URL stays Supabase's. Until
-   here, only you sign in.
+**10c. The custom domains** (C1 merged). Hosting → Add custom domain → `ryftlab.de` (quick setup),
+then `www.ryftlab.de` with "Redirect to an existing website" → `ryftlab.de`. Copy every record the
+wizard shows for each, exactly: for the apex, its A record(s) and the TXT `hosting-site=ryftlab-site`;
+for www, either A record(s) and a TXT, or one CNAME (`ryftlab-site.web.app`).
 
 **Stop if** the console asks for Blaze to connect a domain (Spark doesn't allow it: stop, you
-decide); apply 3 touches anything but the site's record sets; a certificate is still pending
-after 24 hours; or any check above fails.
+decide), or the wizard asks for any other record (an AAAA, an `_acme-challenge` TXT): `site.tf`
+doesn't model it.
+
+**10d. The records, then apply 3.** The values go into `infra/gcp/site.auto.tfvars` (the
+variables are in `infra/gcp/site.tf`), in a PR:
+
+```bash
+git switch main && git pull --ff-only
+git switch -c infra/site-dns
+$EDITOR infra/gcp/site.auto.tfvars     # site_apex_a, site_apex_txt; site_www_a + site_www_txt, or site_www_cname
+git commit -am "infra: the site's DNS records (GCP apply 3)"
+git push -u origin infra/site-dns
+gh pr create --fill
+gh pr checks --watch                   # ci-ok green (the terraform job runs tests/site.tftest.hcl)
+gh pr merge --squash --delete-branch
+git switch main && git pull --ff-only
+terraform -chdir=infra/gcp plan -out=apply-3.tfplan
+terraform -chdir=infra/gcp apply apply-3.tfplan
+rm infra/gcp/apply-3.tfplan
+```
+
+Its merge runs `deploy.yml` (the services, as on every merge; "Site off").
+
+**Stop if** the plan has anything but `google_dns_record_set.site_*` to add and
+`google_dns_record_set.apex_txt` to change (it gains the `hosting-site=` string): with A records
+for www **3 to add, 1 to change, 0 to destroy**; with a CNAME for www **2 to add, 1 to change, 0 to
+destroy**.
+
+**10e. The certificates.** Wait until the console shows both domains as connected. That takes 15
+minutes to 24 hours: the records must resolve and the CAA set already allows `pki.goog` and
+`letsencrypt.org`.
+
+```bash
+dig +short A ryftlab.de @"$(terraform -chdir=infra/gcp output -json name_servers | jq -r '.[0]')"   # the wizard's address(es)
+curl -sI https://ryftlab.de/ | head -n 1                    # an HTTP status line, no TLS error (a 404 before the first deploy)
+```
+
+**Stop if** a certificate is still pending after 24 hours.
+
+**10f. The switch, and the first site deploy:**
+
+```bash
+gh variable set SITE_DEPLOY --body on -R timkrebs/ryft-platform
+gh workflow run deploy.yml --ref main -R timkrebs/ryft-platform
+gh run list --workflow deploy.yml -L 1 -R timkrebs/ryft-platform    # the run's ID
+gh run watch <run id> --exit-status -R timkrebs/ryft-platform
+```
+
+A run by hand deploys the services from main's tip too, with the smoke (as on every merge).
+
+**Stop if** `site` is red:
+- `firebase deploy` names a missing permission: add only that role to `site-deployer` on
+  `ryftlab-site` (for example `roles/serviceusage.serviceUsageConsumer`), then dispatch again.
+- It refuses the credentials themselves (the `external_account` file of WIF): that is *unchecked*
+  until this run. Set `SITE_DEPLOY` off and report it; the fix is a change in `deploy.yml`.
+- The live check fails: the new release is live. Read its FAIL lines; if the site is broken, roll
+  back (GCP → Deploy, roll back, rotate → The site).
+
+**10g. The checks by hand**, the same assertions as the job's, plus Apple's CDN:
+
+```bash
+node web/scripts/check-hosting.mjs --base https://ryftlab.de --www https://www.ryftlab.de \
+  --policy-version "$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' deploy/run/config.env)" --apple-cdn
+for p in /privacy /impressum /terms /support; do
+  curl -s -o /dev/null -w "%{http_code} $p\n" "https://ryftlab.de$p"            # 200 each
+done
+curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" https://ryftlab.de/de/privacy   # 301 …/privacy (web D18)
+curl -sI https://ryftlab.de/.well-known/apple-app-site-association           # 200, content-type: application/json, no location
+curl -sI 'https://ryftlab.de//evil.example/' | grep -i '^location' || echo 'no location'   # no location
+curl -sI https://www.ryftlab.de/privacy | grep -i '^location'                # https://ryftlab.de/privacy
+curl -sI https://ryftlab.de/admin | grep -ci '^content-security-policy'      # 1
+```
+
+**Stop if** any line of `check-hosting.mjs` says FAIL, or any check above differs. Apple's CDN may
+lag its first fetch: if only `--apple-cdn` fails, run it again after an hour, and stop if it still
+fails after 24 hours.
+
+**10h. The app.** The app build uses `https://api.ryftlab.de` and `https://ingest.ryftlab.de`. App
+Store Connect's privacy, support and marketing URLs move to `https://ryftlab.de/…` (REBUILD step
+12). Check the AASA's team ID. The Sign in with Apple return URL stays Supabase's. Until here, only
+you sign in. Testers wait for C2 in force (step 15).
 
 ### 11. Observability
 

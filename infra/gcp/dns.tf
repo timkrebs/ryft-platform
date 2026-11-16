@@ -5,9 +5,9 @@
 #
 # Long-lived on purpose: a new zone gets new name servers and needs another change at GoDaddy.
 #
-# C1 (the site on Firebase Hosting) adds its own records from variables the Hosting wizard fills: the
-# apex A records, and the A and TXT records of www, as record sets of their own; its apex
-# `hosting-site=` string joins local.apex_txt below. Nothing of C1 is built here.
+# C1 (the site on Firebase Hosting) adds its own records in site.tf, from the variables the Hosting
+# wizard fills (site.auto.tfvars): the apex A records, and www's A and TXT or its CNAME, as record sets
+# of their own; its apex `hosting-site=` string joins local.apex_txt below.
 resource "google_dns_managed_zone" "ryftlab_de" {
   project     = var.project_id
   name        = "ryftlab-de"
@@ -38,7 +38,8 @@ locals {
   apex_txt = concat(
     local.m365_apex_txt,
     [var.google_site_verification],
-    # C1: the site's apex `hosting-site=` value (a variable of C1's) goes here, one line.
+    # C1: Firebase Hosting's `hosting-site=` value for the apex (site.tf), once the wizard showed it.
+    var.site_apex_txt == "" ? [] : [var.site_apex_txt],
   )
 
   dmarc = "v=DMARC1; p=quarantine; adkim=r; aspf=r; rua=mailto:dmarc_rua@onsecureserver.net;"
