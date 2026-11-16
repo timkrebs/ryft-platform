@@ -4994,6 +4994,8 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   `toolchain` line lags until a hand edit. CI then tests one patch behind what ships, and govulncheck still judges
   the image. Trivy on go.mod also sees test-only modules, which the images don't contain, so it is a little stricter
   than the gate.
+- **Amended by D232:** go.mod's floor moves to 1.26.0 (client_golang v1.25.0 and x/sync v0.23.0 need it), so the GODEBUG
+  defaults are 1.26's. The image and the `toolchain` line stay Go 1.27.
 
 ## D230 — The site is English only: the privacy guards read the English page, `/de/…` is a 301 (amends D78, D107)
 
@@ -5036,15 +5038,25 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   - `store`'s `TestPooler` (CI's pooler job, `make pooler-check`) reads every one of those forms back through the
     pooler, inner whitespace and the delimiter included (`pull-up bar` among them).
   - No Dependabot `ignore`.
+  - The login doesn't change (`go doc` on 5.12's `pgconn.Config`): `MaxProtocolVersion` and `MinProtocolVersion`
+    still default to 3.0, and `ChannelBinding` to `prefer` (D229). The new `SSLCertMode` defaults to `allow`, and we
+    hold no client certificate. `RequireAuth` empty accepts every method. `TestPoolConfigHooks` still finds no
+    startup parameter. CI's pooler runs without TLS, so the Supavisor login over TLS is first proved by the
+    deploy's `make smoke-prod`. The startup probe is `/health/live`, so a revision that can't log in still takes
+    the traffic and answers 503. If the smoke fails, roll back by traffic (OPERATIONS → GCP → Deploy, roll back,
+    rotate), then revert.
 - **The `[]string` parameters in production:**
   - `queueDays` (`unnest($2::text[])`, on every sync, import, fold and recompute) and `PendingAmong`: dates.
   - The journal's `array_position($n::text[], category)`: `model.BehaviorCategories`.
-  - Exercises' `primary_muscles`, `secondary_muscles` and `equipment` (INSERT/UPDATE).
+  - Exercises' `primary_muscles`, `secondary_muscles` and `equipment` (the store's INSERT/UPDATE, and migrate's
+    upsert of the built-in catalogue).
   - Feedback's `request_ids`.
-  - `ReplacePRs` (`kind = ANY`) and the fold's `source = ANY`.
+  - `ReplacePRs` (`kind = ANY`).
+  - The fold's `source = ANY`, on every sync with workouts: HealthKit source names such as `Tim’s Apple Watch`.
   - migrate's seed slugs and role names.
-  - Only `equipment` (free text of 1 to 40 characters) holds inner spaces from a user. Its quoting is the only text
-    that changes, and the stored value doesn't.
+  - Three of them carry inner spaces, so their text on the wire changes: the fold's sources (on the hot path),
+    `equipment` (1 to 40 characters) and `request_ids` (1 to 64). The values Postgres reads don't change, and
+    `TestPooler` reads a source-shaped and an equipment-shaped element back through the pooler.
 - **go.mod's floor moves from 1.25.0 to 1.26.0.** client_golang v1.25.0, x/sync v0.23.0, x/sys, x/text and
   prometheus/common require Go 1.26. D229 said the floor moves when we choose it; this is the choice. The image stays
   `golang:1.27-alpine` and the `toolchain` line stays go1.27.4, so only the GODEBUG defaults move:

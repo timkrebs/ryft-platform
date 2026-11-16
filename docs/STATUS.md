@@ -72,6 +72,13 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Backend modules (2026-11-16)
+
+Branch `deps/backend-2026-11` (D232) takes Dependabot #176's seven updates, pgx v5.12.0 among them, and moves
+go.mod's floor to Go 1.26.0 (the image stays Go 1.27). pgx 5.12 quotes inner whitespace in a text array, which
+Postgres reads the same: `TestExecModeEncoding` pins the new text and `TestPooler` reads it back through the pooler.
+The merge deploys the services as usual; no migration, nothing for you to run. #176 closes itself.
+
 ## GCP serverless (2026-11-14)
 
 The design (`docs/work/2026-11-14-gcp/design.md`, #163) replaces the EKS rebuild: an SCP now denies `eks:CreateCluster`
