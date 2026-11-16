@@ -97,8 +97,11 @@ The arithmetic of each count is in the runbook (steps 4, 9, 11 and the stop line
 6. **The WIF split** (D233, step 10a.2, before the site's first deploy): 1 to add, 1 to change, 1
    to destroy. The provider's condition admits `deploy` and `site` (in place). `ryft-deployer`'s
    `workloadIdentityUser` moves from the repository's set to `…/attribute.environment/deploy`,
-   create before destroy (`+/-`), so no moment without a binding. Outputs: `github_principal_set`
-   goes; `deployer_principal_set` and `site_principal_set` come.
+   create before destroy (`+/-`), so the policy is never without a binding. IAM takes up to seven
+   minutes to apply each change, so `SITE_DEPLOY` stays off through it and 10f waits ten minutes.
+   Outputs: `github_principal_set` goes; `deployer_principal_set` and `site_principal_set` come.
+   The `deploy` set spans the pool, so `tests/iam.tftest.hcl` holds the root to one pool and one
+   provider.
 
 ```bash
 cd infra/gcp

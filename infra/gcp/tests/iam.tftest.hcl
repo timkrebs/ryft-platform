@@ -343,10 +343,20 @@ run "wif_condition_by_ids" {
   # The one binding of this root that lets the pool become an account, replaced without a gap (create_before_destroy).
   assert {
     condition = (
-      length(regexall("roles/iam\\.workloadIdentityUser", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
-      length(regexall("(?s)resource \"google_service_account_iam_member\" \"deployer_workload_identity\" \\{.*create_before_destroy\\s*=\\s*true", file("${path.module}/wif.tf"))) == 1
+      length(regexall("(?m)^[^#\\n]*roles/iam\\.workloadIdentityUser", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      length(regexall("resource \"google_service_account_iam_member\" \"deployer_workload_identity\" \\{[^}]*\\n\\s*lifecycle\\s*\\{\\s*create_before_destroy\\s*=\\s*true", file("${path.module}/wif.tf"))) == 1
     )
-    error_message = "deployer_workload_identity is this root's only workloadIdentityUser binding, with lifecycle create_before_destroy = true (a deploy is never without its binding)"
+    error_message = "deployer_workload_identity is this root's only workloadIdentityUser binding, with its own lifecycle create_before_destroy = true (a deploy is never without its binding)"
+  }
+
+  # attribute.environment/deploy spans the pool, so it is only as narrow as the one provider's condition:
+  # a second provider (another repository's deploy environment) would widen it (D233).
+  assert {
+    condition = (
+      length(regexall("(?m)^resource \"google_iam_workload_identity_pool\" ", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      length(regexall("(?m)^resource \"google_iam_workload_identity_pool_provider\" ", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
+    )
+    error_message = "one pool and one provider in this root: a second provider would admit its own deploy environment into ryft-deployer's set"
   }
 
   assert {

@@ -5127,16 +5127,24 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
         - the deployer's member;
         - the two outputs (`deployer_principal_set`, `site_principal_set`; `github_principal_set` is gone);
         - that no `.tf` file names the repository's set;
-        - that `deployer_workload_identity` is replaced create-before-destroy.
+        - that `deployer_workload_identity` is replaced create-before-destroy;
+        - one pool and one provider. `…/attribute.environment/deploy` spans the pool, so it is only as narrow as
+          the one provider's condition (repository and owner by ID). The brief named this member form. The
+          alternative, a mapped `repository_id:environment` attribute, is safe against a second provider too, but
+          it would change the mapping and every member for a pool that has no second provider.
     - **Order, so the services always deploy:**
-      1. The user creates the environment `site`.
+      1. The user creates the environment `site`, before the merge (a job naming a missing environment creates it
+         without a branch policy).
       2. The merge: `SITE_DEPLOY` is off, so `site` doesn't run, and `deploy` signs in under the old condition and
          binding.
       3. The apply: 1 to add, 1 to change, 1 to destroy. The condition is changed in place and still admits
          `deploy`. The new binding is made before the old one goes (`+/-`), and both admit the deploy job's token.
       4. A dispatched run proves the services still sign in.
       5. `site-deployer` is bound to the `site` set, or swapped to it from C1's binding.
-      6. 10f.
+      6. 10f, at least ten minutes after the apply. Nothing orders the condition's update before the old binding's
+         removal, and IAM takes up to seven minutes to apply each, so `SITE_DEPLOY` stays off until then. 10f
+         re-checks both accounts' members, because 10a.2's fallback (the old member back by hand) undoes the
+         split.
     - **Rejected:**
       - Keeping one environment and narrowing by `job_workflow_ref` or `sub`: the two jobs share both.
       - A second provider: it would carry the same claims, so it adds nothing an environment doesn't.

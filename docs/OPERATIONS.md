@@ -689,8 +689,8 @@ and to Firebase (`npx --yes firebase-tools@$(cat web/.firebase-tools-version) lo
 billing account anywhere. Until 10f, `SITE_DEPLOY` is off, and every run of `deploy.yml` shows
 "Site off" and stays green.
 
-**10a. The environment `site`, the WIF split, then the site project** (after C1's merge and the
-split's, `infra/wif-split`, D233). `deploy.yml`'s `site` job runs in its own GitHub environment
+**10a. The environment `site`, the WIF split, then the site project** (C1 is merged; 10a.1
+before the split's merge, `infra/wif-split`, D233; 10a.2 and 10a.3 after it). `deploy.yml`'s `site` job runs in its own GitHub environment
 `site`. The pool's condition admits `deploy` and `site`, and each is its own principal set:
 `ryft-deployer` binds `…/attribute.environment/deploy` alone, `site-deployer` `…/attribute.environment/site`
 alone. So nothing the site job runs (firebase-tools and the dependencies npx resolves) can become
@@ -707,6 +707,7 @@ the services' deployer. In this order; the services keep deploying throughout.
    #   p: {"custom_branch_policies":true,"protected_branches":false}; bypass may print null (see below)
    gh api repos/timkrebs/ryft-platform/environments/site/deployment-branch-policies --jq '.branch_policies[] | [.name,.type]'   # ["main","branch"], nothing else
    gh api repos/timkrebs/ryft-platform/environments/site/secrets --jq .total_count           # 0
+   gh api repos/timkrebs/ryft-platform/environments/site/variables --jq .total_count         # 0
    ```
 
    **Then confirm "admin bypass off" in the browser**, as for `deploy` (EKS → The `deploy`
@@ -717,7 +718,8 @@ the services' deployer. In this order; the services keep deploying throughout.
    without a branch policy.
 
    **Stop if** the branch policy isn't `main` alone, the checkbox is still ticked, or the
-   environment holds a secret.
+   environment holds a secret or a variable (an environment variable overrides the repository's,
+   `DEPLOY_HOLD_SERVICES` for one).
 
 2. **The split's apply.** First check that `SITE_DEPLOY` is off and that no `deploy.yml` run is going:
 
@@ -748,7 +750,9 @@ the services' deployer. In this order; the services keep deploying throughout.
    ```
 
    **Stop if:**
-   - `SITE_DEPLOY` is on: set it off first, because `site` would sign in under the old condition.
+   - `SITE_DEPLOY` is on: set it off first. Nothing orders the condition's update before the old
+     member's removal, and IAM takes up to seven minutes to apply either, so in that window a
+     `site` token could still match `ryft-deployer`'s repository-wide member.
    - A run is going.
    - The plan holds anything else, or shows the binding as `-/+` (destroy, then create) instead of
      `+/-`.
@@ -760,7 +764,11 @@ the services' deployer. In this order; the services keep deploying throughout.
        --role=roles/iam.workloadIdentityUser \
        --member="principalSet://iam.googleapis.com/projects/$(terraform -chdir=infra/gcp output -raw project_number)/locations/global/workloadIdentityPools/github/attribute.repository_id/$(gh api repos/timkrebs/ryft-platform --jq .id)"
      ```
-     That member isn't in Terraform: the next apply leaves it, and removing it by hand undoes this.
+     That member isn't in Terraform: the next apply leaves it. It also undoes the split, because the
+     condition now admits `site` and that member matches every admitted job. So stop here:
+     `SITE_DEPLOY` stays off, and 10a.3 and 10f wait until the cause is fixed and the member is
+     gone again (the same command with `remove-iam-policy-binding`; the policy check above prints
+     the `deploy` set alone).
 
 3. **The site project**, its deploy account bound to the `site` set and nothing else.
 
@@ -871,12 +879,17 @@ curl -sI https://ryftlab.de/ | head -n 1                    # an HTTP status lin
 
 **10f. The switch, and the first site deploy.** Only after all three parts of 10a:
 - the environment `site` exists;
-- the split is applied, and the dispatch after it was green;
-- `site-deployer`'s one `workloadIdentityUser` member ends in `attribute.environment/site`.
+- the split was applied at least ten minutes ago (IAM's propagation), and the dispatch after it
+  was green;
+- `ryft-deployer`'s one `workloadIdentityUser` member ends in `attribute.environment/deploy`
+  (no repository-wide member left from 10a.2's fallback);
+- `site-deployer`'s one member ends in `attribute.environment/site`.
 
 Check the last two again:
 
 ```bash
+gcloud iam service-accounts get-iam-policy ryft-deployer@ryftlab-prod.iam.gserviceaccount.com --project=ryftlab-prod \
+  --format=json | jq -r '.bindings[] | select(.role == "roles/iam.workloadIdentityUser") | .members[]'   # …/attribute.environment/deploy alone
 terraform -chdir=infra/gcp output -raw site_principal_set; echo         # …/attribute.environment/site
 gcloud iam service-accounts get-iam-policy site-deployer@ryftlab-site.iam.gserviceaccount.com --project=ryftlab-site \
   --format=json | jq -r '.bindings[].members[]'                          # that one line, nothing else
@@ -888,7 +901,7 @@ gh run watch <run id> --exit-status -R timkrebs/ryft-platform
 
 A run by hand deploys the services from main's tip too, with the smoke (as on every merge).
 
-**Stop if** the members aren't that one line. **Stop if** `site` is red:
+**Stop if** either account's members aren't its one line. **Stop if** `site` is red:
 - Sign-in, or the live-release step's token, fails with a permission error on
   `iamcredentials…generateAccessToken`. Then `site-deployer` isn't bound to the `site` set (10a.3),
   or the job's environment isn't `site`. Set `SITE_DEPLOY` off. Never bind it to the `deploy` set
@@ -2757,7 +2770,8 @@ signal, so also look at the Actions tab now and then.
 
 **Promote and the image jobs are gone from CI (C1):** no job reads `RYFT_DEPLOY_APP_KEY` any more,
 and `scripts/check_workflows.sh` refuses it anywhere. The environment `deploy` now holds the smoke
-user's secrets, and only `deploy.yml`'s `deploy` and `site` jobs name it.
+user's secrets, and only `deploy.yml`'s `deploy` job names it. `site` runs in its own environment
+`site` (GCP step 10a, D233).
 
 The `promote` job runs in the GitHub environment `deploy`, restricted to the branch
 `main` and not bypassable by administrators, and the deploy App's private key
