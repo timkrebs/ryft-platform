@@ -144,7 +144,7 @@ describe.skipIf(!built)('built site', () => {
       const page = readFileSync(join(OUT, f), 'utf8');
       expect(page, f).not.toMatch(/hrefLang=/i);
       expect(page, f).toContain('<html lang="en"');
-      expect(page, f).toMatch(/<link rel="canonical" href="https:\/\/ryftlab\.de\//);
+      expect(page, f).toMatch(/<link rel="canonical" href="https:\/\/ryftlab\.de[/"]/);
     }
     expect(readFileSync(join(OUT, 'sitemap.xml'), 'utf8')).not.toContain('/de');
   });
