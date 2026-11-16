@@ -72,6 +72,17 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Product analytics config (2026-11-16)
+
+Branch `config/analytics` (D231, `docs/work/2026-11-16-analytics-config/`): `GET /v1/config` → `analytics`
+(`{host, project_key}` of PostHog EU Cloud, or `null`) and the flag `analytics.enabled` (migration 0036, enabled at
+0 %). The api reads `POSTHOG_PROJECT_KEY` (a `phc_` key or nothing) and `POSTHOG_HOST` (https origin, default
+`https://eu.i.posthog.com`) at start-up and logs neither. `infra/gcp` gains the secret `posthog-project-key` (api
+only). The merge deploys the code and the migration; `analytics` stays `null` until your three steps, in this order:
+`terraform -chdir=infra/gcp` plan/apply (2 to add), `put posthog-project-key`, then the one-line pin PR
+(OPERATIONS → GCP → PostHog's project key). Then allow-list testers for `analytics.enabled` once the app ships it
+and the privacy policy in force names PostHog (OPERATIONS → Feature flags, its stop line).
+
 ## GCP serverless (2026-11-14)
 
 The design (`docs/work/2026-11-14-gcp/design.md`, #163) replaces the EKS rebuild: an SCP now denies `eks:CreateCluster`

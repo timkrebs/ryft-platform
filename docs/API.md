@@ -510,9 +510,20 @@ the last answer (and compiled-in defaults) when offline.
 <!-- type: model.RemoteConfig -->
 ```json
 { "flags": { "train.enabled": true, "sleep.planner": true, "today.redesign": false,
-             "coach.enabled": false, "push.enabled": false, "physiology.card": false },
-  "evaluated_at": "2026-10-19T06:12:00Z", "ttl_sec": 21600,
-  "privacy_policy_version": "2026-10-26", "privacy_policy_url": "https://ryftlab.de/privacy" }
+             "coach.enabled": false, "push.enabled": false, "physiology.card": false,
+             "train.import": false, "analytics.enabled": true },
+  "evaluated_at": "2026-11-16T06:12:00Z", "ttl_sec": 21600,
+  "privacy_policy_version": "2026-10-26", "privacy_policy_url": "https://ryftlab.de/privacy",
+  "analytics": { "host": "https://eu.i.posthog.com", "project_key": "phc_…" } }
+```
+
+Without a project key on the server, `analytics` is `null` (the field is always present):
+
+<!-- type: model.RemoteConfig -->
+```json
+{ "flags": { "analytics.enabled": false }, "evaluated_at": "2026-11-16T06:12:00Z", "ttl_sec": 21600,
+  "privacy_policy_version": "2026-10-26", "privacy_policy_url": "https://ryftlab.de/privacy",
+  "analytics": null }
 ```
 
 | Field | Type | Notes |
@@ -522,6 +533,16 @@ the last answer (and compiled-in defaults) when offline.
 | `ttl_sec` | int | How long to use it: 21600 (6 h). |
 | `privacy_policy_version` | string | The privacy policy in force. Consent (`POST /v1/me/consent`) is given to this version; when it changes, every user consents again before the next sync. |
 | `privacy_policy_url` | string | Where it is published, in English (the site is English only since 2026-11-16; `/de/privacy` answers 301 to `/privacy`). |
+| `analytics` | `AnalyticsConfig?` | Where the app sends its product analytics (PostHog EU Cloud, D231): `{host, project_key}`, or `null` while the server has no project key. Independent of the flag `analytics.enabled`: the app combines the two with the user's opt-in (below). |
+| `analytics.host` | string | The ingestion origin, `https://eu.i.posthog.com` by default; always `https://`, no path. |
+| `analytics.project_key` | string | PostHog's project API key (`phc_…`), a client key. It is served here, not compiled into the app, because the app's repository is public. Don't log it, and don't persist it beyond the cached config. |
+
+**Analytics: when the app sends anything.** Only while all three hold: `flags["analytics.enabled"]`
+is `true`, `analytics` is not `null`, and the user opted in (off until they do). Send to
+`analytics.host` with `analytics.project_key` from the newest answer. When any of the three stops
+holding (the flag off, `analytics` null, the opt-in withdrawn), stop sending and drop what is queued.
+The event list, the pseudonymous identifier and the opt-in screen are the app's (the analytics
+plan, decisions 4–6); no IP is stored (D231).
 
 A flag is on for a user when it is enabled and the user is on its allow-list or in its
 first `rollout_pct` of 100 buckets: bucket = the first four bytes of SHA-256 of
@@ -532,9 +553,11 @@ user and flag, so raising a rollout only adds users. The operator sets flags
 | Key | Default |
 | --- | --- |
 | `train.enabled`, `sleep.planner` | on (100 %) |
-| `today.redesign`, `coach.enabled`, `push.enabled`, `physiology.card`, `train.import` | off (enabled, 0 %: on only for allow-listed testers) |
+| `today.redesign`, `coach.enabled`, `push.enabled`, `physiology.card`, `train.import`, `analytics.enabled` | off (enabled, 0 %: on only for allow-listed testers) |
 
 `train.import` is the switch for the training import (`POST /v1/train/import`): the app shows the import only while it is on, and the endpoint checks it too, so an account it is off for gets `403 import_not_enabled` whatever the app does. It ships dark (enabled, 0 %): testers get it by the allow-list.
+
+`analytics.enabled` is the switch for the app's product analytics (`analytics` above). It ships dark the same way: testers by the allow-list, the kill switch by `enabled: false`. No endpoint checks it; the app does.
 
 ### `PATCH /v1/me/notifications` — push preferences
 
@@ -2748,6 +2771,12 @@ struct RemoteConfig: Codable {   // GET /v1/config
     let ttlSec: Int
     let privacyPolicyVersion: String
     let privacyPolicyUrl: String
+    let analytics: AnalyticsConfig?   // null without a project key on the server; send only with flags["analytics.enabled"] and the opt-in
+}
+
+struct AnalyticsConfig: Codable {   // RemoteConfig.analytics (PostHog EU Cloud)
+    let host: String         // https origin
+    let projectKey: String   // phc_…; never logged
 }
 
 enum NotificationCategory: String, Codable, CaseIterable {
@@ -3100,6 +3129,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-11-16 | **Product analytics: `GET /v1/config` → `analytics` and the flag `analytics.enabled`** (D231; platform PR `config: analytics`). Additive. **Fields:** `RemoteConfig.analytics`, always present: `{"host": "https://eu.i.posthog.com", "project_key": "phc_…"}` (PostHog EU Cloud), or `null` while the server has no project key (until the operator stores it, and in local compose). **Flag:** `analytics.enabled`, shipped enabled at 0 %: on only for allow-listed testers, like `train.import`. The two are independent; nothing else changes. **The app:** decode `analytics` as optional; send events only while `flags["analytics.enabled"]` is `true`, `analytics` is not `null` and the user opted in (off by default); take the host and the key from the newest config, never from the build, and never log the key; when any of the three stops holding, stop sending and drop the queue. The event list, the pseudonymous identifier and the opt-in are the app's analytics plan (decisions 4–6). **Swift:** `AnalyticsConfig`, `RemoteConfig.analytics`. |
 | 2026-11-16 | **Docs only: the privacy policy is published in English only** (web D18; platform PR `web: english only`). `GET /v1/config` → `privacy_policy_url` is unchanged (`https://ryftlab.de/privacy`); its note said "in German and English" and now says English. The site's German pages are gone; `/de`, `/de/privacy`, `/de/terms` and `/de/impressum`, which older app builds link, answer `301` to the English page. **Fields:** none added, renamed or removed; `privacy_policy_version` is unchanged (`2026-10-26`). **The app:** nothing required; a build that links `/de/…` lands on the English page. **Swift:** none. |
 | 2026-11-15 | **Health paths for Cloud Run: `GET /health/live` and `GET /health/ready`** (D220; platform PR A2). Every service also answers `/health/live` (`200 {"status":"ok"}`, from the moment it listens) and `/health/ready` (`200 {"status":"ready"}`, or `503`), with the handlers of `/healthz` and `/readyz`, which stay for local compose. On Cloud Run the ready paths answer `503 {"error":"not ready"}` without `Retry-After` and without the cause, reused for 5 s; locally the body keeps its cause (api's and ingest's unchanged; scoring's and notify's with `status` and `checks`; Endpoints → Health). `/metrics` isn't served on Cloud Run. One new `503` cause for every route: during a cold start a request waits up to 5 s for the service to reach its database, then gets `503 {"error":"temporarily unavailable, send the request again"}` with `Retry-After: 5`, the shape and handling of every other `503`. HTTP/2 (h2c) end to end on Cloud Run keeps the 32 MiB sync unchanged. **Fields:** none added, renamed or removed in `/v1`. **The app:** nothing; its existing `503` retry covers the cold start. **Swift:** none. |
 | 2026-11-14 | **Two hosts in production: the sync moves to `https://ingest.ryftlab.de`** (D217; platform PR A1, the move to Cloud Run). `POST /v1/sync` is served at **`https://ingest.ryftlab.de`**, every other route stays at **`https://api.ryftlab.de`** (Conventions → Base URLs); this replaces "for both services" in the D213 entry below. A Cloud Run domain mapping points one host at one service and cannot route `/v1/sync` to ingest by path. The api host answers `404` to `POST /v1/sync` (unknown route), the ingest host `404` to every other `/v1/*` route. Neither host is served until the GCP runbook has run (D217). Local compose is unchanged: ingest on `:8081`, api on `:8082`. The health paths for Cloud Run (`/health/live`, `/health/ready`) come in a later entry (PR A2). Nothing else in the contract changes: paths, bodies, statuses, `code`s, limits (32 MiB for a sync), timeouts and headers are as before. **Fields:** none added, renamed or removed. **The app:** a build configured with both URLs, `https://api.ryftlab.de` and `https://ingest.ryftlab.de`, that sends `POST /v1/sync` to the ingest URL and every other request to the api URL; the ingest URL is no longer optional in production (a build that falls back to the api URL for the sync gets `404` on every sync). **Swift:** none (no type changes; the URLs are configuration). |

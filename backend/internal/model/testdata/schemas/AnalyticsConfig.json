@@ -1,0 +1,17 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "host": {
+      "type": "string"
+    },
+    "project_key": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "host",
+    "project_key"
+  ],
+  "title": "AnalyticsConfig",
+  "type": "object"
+}

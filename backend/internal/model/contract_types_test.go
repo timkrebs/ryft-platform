@@ -78,6 +78,7 @@ var contractTypes = map[string]reflect.Type{
 	"FeatureFlag":            reflect.TypeOf(FeatureFlag{}),
 	"FlagInput":              reflect.TypeOf(FlagInput{}),
 	"RemoteConfig":           reflect.TypeOf(RemoteConfig{}),
+	"AnalyticsConfig":        reflect.TypeOf(AnalyticsConfig{}),
 	"PushRegistration":       reflect.TypeOf(PushRegistration{}),
 	"PushToken":              reflect.TypeOf(PushToken{}),
 	"QuietHours":             reflect.TypeOf(QuietHours{}),
