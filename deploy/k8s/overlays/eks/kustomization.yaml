@@ -73,7 +73,7 @@ images:
   # Not deployed (D215, resources above): promote still moves this pin, and the policy-in-force
   # and registry checks read it here instead of from the render.
   - name: ghcr.io/timkrebs/ryft/web
-    newTag: "98bf845"
+    newTag: "2c8a5d0"
 
 # The privacy policy version in force on EKS (D78, F1): the base's version
 # (deploy/k8s/base/{api,ingest}/config.env) once the web image that carries its page is
