@@ -964,6 +964,8 @@ main only), and only while the repository variable `GCP_DEPLOY` is `on`. One run
 
 Every run builds and deploys all five, whatever the merge changed, and runs `migrate` (a no-op
 when no file is new). The run summary lists the tag, the digests and each service's new revision.
+The site's jobs run next to these (**The site**, below). `ci.yml` only checks: since C1 it builds no
+image to deploy and opens no pull request.
 One deploy job runs at a time, and a newer run never cancels it. GitHub keeps one run waiting, the
 newest. A run in between shows as cancelled. Nobody re-runs an old deploy run: a manual
 `gh workflow run deploy.yml --ref main` deploys main's head, and that is the retry everywhere
@@ -1152,12 +1154,13 @@ gh variable set DEPLOY_HOLD_SERVICES --body '#<issue>' -R timkrebs/ryft-platform
 gh variable list -R timkrebs/ryft-platform                                         # DEPLOY_HOLD_SERVICES #<issue>
 ```
 
-While it is set, no run builds or deploys anything, by push or by hand. A held run shows three
-jobs. `wait for ci-ok` runs as always, and a red `ci-ok` still fails the run. `held` is green, with
-the notice "DEPLOY_HOLD_SERVICES is set (#<issue>): nothing was built or deployed" and "Deploy
-held" in the summary. `deploy` is skipped. The reason shows in every run, so keep it to the issue
-number. Merges pile up on main. Nothing tracks the hold's age (the old deploy watch doesn't read
-this variable), so write the release into the issue. To release it:
+While it is set, no run builds or deploys a service, by push or by hand. `wait for ci-ok` runs as
+always, and a red `ci-ok` still fails the run. `held` is green, with the notice
+"DEPLOY_HOLD_SERVICES is set (#<issue>): no service was built or deployed (the site has its own
+switch, SITE_DEPLOY)" and "Deploy held" in the summary. `deploy` is skipped. The site isn't held:
+its jobs run as always (**The site**, below); to stop it too, set `SITE_DEPLOY` off. The reason
+shows in every run, so keep it to the issue number. Merges pile up on main. Nothing tracks the
+hold's age (the old deploy watch is gone, C1), so write the release into the issue. To release it:
 
 ```bash
 gh variable delete DEPLOY_HOLD_SERVICES -R timkrebs/ryft-platform
@@ -1184,7 +1187,7 @@ holds nothing.
 2. One PR moves both pins:
 
    ```bash
-   git fetch origin && git switch -c "chore/rotate-db-password-$S" origin/main   # not deploy/...: EKS's promote closes those until D3
+   git fetch origin && git switch -c "chore/rotate-db-password-$S" origin/main
    scripts/rotate_db_password.sh "$S" <N+1>
    gcloud secrets versions describe <N+1> --secret="db-password-$S" --project=ryftlab-prod --format='value(state)'   # ENABLED
    make cloudrun-check
@@ -1273,6 +1276,57 @@ had already started may still deploy. Cancel it only while it is in `wait for ci
 a merge or a run by hand. For a pause, use the hold instead: its runs say why.
 
 **Stop if** a push run after the switch has a `deploy` job that ran.
+
+**The site** (design §8, C1). `deploy.yml` also ships `web/` to Firebase Hosting in the project
+`ryftlab-site`. The repository variable `SITE_DEPLOY` switches it, separately from the services'
+hold; runbook step 10 sets it to `on`. Its jobs, in every run:
+- `site-off`: when `SITE_DEPLOY` isn't `on`. A notice ("SITE_DEPLOY is not on") and "Site off" in
+  the summary. Nothing is built or deployed, and the run stays green.
+- `site-build`: `npm ci`, `npm run build` (the export in `web/out`, `web/firebase.json`, the brand
+  check), then `SUPPORT_EMAIL` on `/beta`. It has no token and no environment. It hands `web/out`
+  and `web/firebase.json` on as the artifact `site`, kept for a day. Without `SUPPORT_EMAIL` it
+  stops: `gh variable set SUPPORT_EMAIL`, then run `deploy.yml` by hand.
+- `site`: environment `deploy`. It checks main's tip first, as `deploy` does: superseded, it ends
+  green and deploys nothing. Then it signs in as `site-deployer@ryftlab-site` (WIF, the same pool
+  as `ryft-deployer`). It deploys when `web/` differs from the commit of the live release (the
+  release's message is `web <sha>`), on every run by hand, and when the live release can't be read
+  or names no commit of main's history. Otherwise "Site unchanged: the live site is `<sha>`", and
+  green. The deploy is `firebase deploy --only hosting --message "web <sha>"` with the firebase-tools
+  of `web/.firebase-tools-version`. Then `web/scripts/check-hosting.mjs` runs against
+  `https://ryftlab.de` and `https://www.ryftlab.de` with `PRIVACY_POLICY_VERSION` from
+  `deploy/run/config.env`: the emulator's assertions of `web-e2e`, live.
+
+A run by hand always deploys the site. Use one after `SUPPORT_EMAIL` or `TESTFLIGHT_URL` changed,
+because those aren't in `web/`. It also builds and deploys the five services from main's tip.
+
+```bash
+gh variable set SITE_DEPLOY --body on -R timkrebs/ryft-platform     # runbook step 10
+gh variable set SITE_DEPLOY --body off -R timkrebs/ryft-platform    # anything but on: only site-off runs
+# The live release (you own ryftlab-site; the token goes through stdin):
+{ printf 'Authorization: Bearer '; gcloud auth print-access-token; } | curl -fsS -H @- \
+  https://firebasehosting.googleapis.com/v1beta1/sites/ryftlab-site/channels/live | jq -r '.release.message, .release.releaseTime'   # web <sha>, when
+```
+
+What each outcome leaves:
+- `firebase deploy` failed: the run is red, and the live release is still the old one. Hosting
+  releases a version only once all of it is uploaded. Read the step's log. A missing permission
+  gets only that role (runbook step 10). Then `gh workflow run deploy.yml --ref main`.
+- The live check is red: the **new** release is live. Look at the step's findings. If the site is
+  broken, roll back.
+
+**A site rollback.** The console's release history takes seconds and builds nothing:
+1. `gh variable set SITE_DEPLOY --body off`. With the switch on, the next run compares main's
+   `web/` with whatever the rolled-back release's message names, or finds none, and deploys main's
+   `web/` over the rollback *(the message a console rollback carries is unchecked)*.
+2. Firebase console → `ryftlab-site` → Hosting → Release history → the release before the bad one
+   → Roll back.
+3. Check the pages (runbook step 10's checks).
+4. Open the revert (as for the services, above). Set `SITE_DEPLOY` on again, then merge it: its
+   run deploys the reverted `web/` (and the services, unchanged).
+
+**Stop if** the live check fails twice on the same release (roll back); `firebase deploy` fails for
+a reason other than a missing permission; or `site` deployed in a run whose summary says
+superseded.
 
 ### The €20 stop line
 
@@ -1635,6 +1689,10 @@ the workload on a change.
   (`kubectl -n ryft-<svc> describe vaultstaticsecret ryft-secrets`).
 
 ## Deploy and roll back
+
+**EKS only, and its CI is gone (C1):** `ci.yml` no longer has the `images`, `web-image` and `promote`
+jobs, so nothing below builds, pushes or pins an image any more. Cloud Run and the site deploy with
+`deploy.yml` (**GCP → Deploy, roll back, rotate**).
 
 **One-way door (2026-10-31, D144/D145).** Once an app build sends `deleted` or a record `id` (the
 changelog "Deletions and HealthKit ids"), ingest must not be re-pinned to an image from before
@@ -2404,7 +2462,11 @@ an old series there); the CloudWatch query does not.
 
 ### The deploy watch
 
-`.github/workflows/deploy-watch.yml` runs `scripts/deploy_watch.sh` every day at 05:17 UTC
+**Gone with promote (C1):** `.github/workflows/deploy-watch.yml` is deleted. With no promote, every
+change to `web/` or `backend/` would have stayed "different from its pin" and turned it red every day.
+`scripts/deploy_watch.sh` and its test stay until D3.
+
+`.github/workflows/deploy-watch.yml` ran `scripts/deploy_watch.sh` every day at 05:17 UTC
 (and on `gh workflow run deploy-watch`) with a read-only token. It reuses
 `deploy_targets.sh`, changes nothing and fails with its findings in the run summary:
 
@@ -2431,6 +2493,10 @@ is switched off after 60 days without repository activity; a failed run is the o
 signal, so also look at the Actions tab now and then.
 
 ### The `deploy` environment and the App key
+
+**Promote and the image jobs are gone from CI (C1):** no job reads `RYFT_DEPLOY_APP_KEY` any more,
+and `scripts/check_workflows.sh` refuses it anywhere. The environment `deploy` now holds the smoke
+user's secrets, and only `deploy.yml`'s `deploy` and `site` jobs name it.
 
 The `promote` job runs in the GitHub environment `deploy`, restricted to the branch
 `main` and not bypassable by administrators, and the deploy App's private key
@@ -5753,7 +5819,8 @@ limit and **web's pin** (this repository's short SHA, like the services', quoted
   pages are gone; `/de/…` (still linked by older app builds) answers 301 to the English path.
   `/privacy` is `PRIVACY_POLICY_URL`, its version `PRIVACY_POLICY_VERSION` (OPERATIONS →
   Beta).
-**A web release is a merge.** A PR that changes `web/` (checks `web-checks`, `web-e2e`,
+*(EKS; `web-image` and `promote` are gone (C1). The site now ships with `deploy.yml`'s `site` job:
+**GCP → Deploy, roll back, rotate → The site**.)* **A web release is a merge.** A PR that changes `web/` (checks `web-checks`, `web-e2e`,
 and `manifests` for the privacy texts) is merged; `web-image` builds, scans (Trivy) and
 pushes the image, `promote` opens "deploy: images <sha>" with web's commits, and its
 merge deploys it: about 25–40 minutes from merge to live. The build stops when the

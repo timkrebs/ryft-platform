@@ -3,7 +3,10 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
+import adminConfig from '../config/admin.json';
 import fonts from '../config/fonts.json';
+import { builtHashes } from '../scripts/lib/csp.mjs';
+import { firebaseJson } from '../scripts/lib/hosting.mjs';
 import { cspHash } from '../scripts/lib/html.mjs';
 import { THEME_INIT, THEME_SWITCH } from '../src/lib/inline-scripts';
 
@@ -122,6 +125,21 @@ describe.skipIf(!built)('built site', () => {
       );
       expect(csp).toContain("connect-src 'none'");
     });
+  });
+
+  // What Firebase Hosting serves by (web D19): written after csp.mjs from the same export, so its two
+  // policies are the ones in nginx/csp.conf and nginx/csp-admin.conf (the image stays until PR D3).
+  it('writes firebase.json from the built hashes, with the policies of nginx/csp*.conf', () => {
+    const json = JSON.parse(readFileSync('firebase.json', 'utf8'));
+    const { hashes, adminHashes } = builtHashes(OUT);
+    expect(json).toEqual(firebaseJson({ hashes, adminHashes, config: adminConfig }));
+    const rules: { headers: { key: string; value: string }[] }[] = json.hosting.headers;
+    const policies = rules.flatMap((r) => r.headers.filter((h) => h.key === 'Content-Security-Policy'));
+    const line = /^add_header Content-Security-Policy "([^"]*)" always;$/m;
+    const conf = (f: string) => readFileSync(`nginx/${f}`, 'utf8');
+    const nginx = ['csp.conf', 'csp-admin.conf'].map((f) => line.exec(conf(f))?.[1]);
+    expect(nginx.every(Boolean)).toBe(true);
+    expect(policies.map((h) => h.value)).toEqual(nginx);
   });
 
   it('keeps the app-link fallback, drafts, the styleguide and 404 out of search engines', () => {

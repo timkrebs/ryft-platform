@@ -2,6 +2,7 @@ node_modules
 .next
 out
 src/generated
+firebase.json
 src/styles/tokens.css
 src/styles/tokens.json
 public

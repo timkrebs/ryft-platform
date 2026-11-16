@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
+import { sitePath } from '../scripts/check-hosting.mjs';
 import { API, AUTH, EMAIL, PASSWORD, Stub, TOTP } from './admin-stub';
 
-// The operator's page, against the real nginx image (headers, CSP) with Supabase Auth and
-// the api replaced by e2e/admin-stub.ts. See web D15–D17.
+// The operator's page, against the Firebase Hosting emulator (headers, CSP: firebase.json, web
+// D19) with Supabase Auth and the api replaced by e2e/admin-stub.ts. See web D15–D17.
 
 const SCREEN_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
 
@@ -123,6 +124,7 @@ test.describe('headers: /admin has its own policy, every other page keeps connec
   }) => {
     const admin = await request.get('/admin');
     const adminHash = directive(admin.headers()['content-security-policy']!, 'script-src');
+    // Hosting matches header rules on the path: the marketing rule leaves out exactly /admin.
     for (const path of [
       '/',
       '/privacy',
@@ -131,6 +133,8 @@ test.describe('headers: /admin has its own policy, every other page keeps connec
       '/auth/callback',
       '/no-such-page',
       '/admin/x',
+      '/administrator',
+      '/adm',
     ]) {
       const res = await request.get(path, { maxRedirects: 0 });
       const csps = res.headersArray().filter((h) => h.name.toLowerCase() === 'content-security-policy');
@@ -149,13 +153,15 @@ test.describe('headers: /admin has its own policy, every other page keeps connec
     }
   });
 
+  // cleanUrls answers /admin.html, the trailing-slash rule /admin/.
   test('/admin.html and /admin/ redirect to /admin; the file is never served under the marketing policy', async ({
     request,
+    baseURL,
   }) => {
     for (const from of ['/admin.html', '/admin/']) {
       const res = await request.get(from, { maxRedirects: 0 });
       expect(res.status(), from).toBe(301);
-      expect(res.headers()['location'], from).toBe('/admin');
+      expect(sitePath(baseURL!, res.headers()['location']), from).toBe('/admin');
     }
   });
 
@@ -270,13 +276,12 @@ test.describe('headers: /admin has its own policy, every other page keeps connec
     expect(await page.evaluate(() => sessionStorage.length)).toBe(0);
   });
 
-  test('the image serves the precompressed pages, and the .gz files themselves are 404', async ({
-    request,
-  }) => {
+  // Hosting compresses on its own (nginx served precompressed copies, web D7); the build makes no
+  // *.gz, and firebase.json's ignore keeps any out of the upload.
+  test('compressed pages keep their policy, and *.gz names are 404', async ({ request }) => {
     for (const path of ['/', '/privacy', '/admin']) {
       const res = await request.get(path, { headers: { 'accept-encoding': 'gzip' } });
       expect(res.status(), path).toBe(200);
-      expect(res.headers()['content-encoding'], path).toBe('gzip');
       expect(res.headers()['content-security-policy'], path).toBeTruthy();
       expect(await res.text(), path).toContain('<html');
     }
