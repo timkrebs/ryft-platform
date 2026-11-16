@@ -104,7 +104,16 @@ PR #194, branch `web/firebase-hosting` (D233, web D19, `docs/work/2026-11-16-fir
 - **Open:**
   - **The WIF split** (D233, branch `infra/wif-split`): the `site` job moves into its own environment `site`, and
     `ryft-deployer` is bound to the `deploy` principal set alone. Your steps before 10f are in OPERATIONS 10a.1–3:
-    the environment, the apply (1/1/1) plus a dispatch, then `site-deployer` on the `site` set.
+    the environment (10a.1, before the merge), the apply (1/1/1) plus a dispatch, then `site-deployer` on the `site`
+    set; 10f at least ten minutes after the apply, re-checking both accounts.
+  - **Main is red since #194's merge (2026-11-16), so nothing deploys:** `web-checks` → `tokens:check` fails with
+    "Typography.swift → size not found". CI checks out `timkrebs/ryft-app` at its `main` (not pinned), and the app's
+    `Ryft/Design/Typography.swift` no longer has the `fileprivate var size: CGFloat {` block `web/scripts/tokens.mjs`
+    reads. The fix is `readType` for the app's new shape (web-engineer) or the app's side (ios-lead). Until it lands,
+    every `deploy.yml` run stops at "wait for ci-ok". 10a.2 needs a green main.
+  - `ci.yml`'s comment above `check_workflows.sh` (`only deploy.yml's deploy and site name the environment deploy`)
+    is stale since the split. It is fixed with the next `ci.yml` change: any `ci.yml` change runs `web-checks`, red
+    until the tokens fix.
   - WIF with firebase-tools is checked only at step 10f.
   - C2 must drop `check_policy_in_force.sh`'s EKS half (D233).
   - D3 removes the scripts the removed jobs used and the nginx image.

@@ -721,9 +721,12 @@ the services' deployer. In this order; the services keep deploying throughout.
    environment holds a secret or a variable (an environment variable overrides the repository's,
    `DEPLOY_HOLD_SERVICES` for one).
 
-2. **The split's apply.** First check that `SITE_DEPLOY` is off and that no `deploy.yml` run is going:
+2. **The split's apply.** First check that `SITE_DEPLOY` is off, that no `deploy.yml` run is going,
+   and that ci.yml's `ci-ok` is green on main's tip. Otherwise the dispatch below stops at "wait for
+   ci-ok" and proves nothing about the sign-in:
 
    ```bash
+   gh run list --workflow ci.yml --branch main --event push -L 1 -R timkrebs/ryft-platform --json headSha,conclusion --jq '.[] | [.headSha[0:7], .conclusion] | @tsv'   # main's tip, success
    gh variable get SITE_DEPLOY -R timkrebs/ryft-platform                          # off (or "variable SITE_DEPLOY was not found")
    gh run list --workflow deploy.yml -R timkrebs/ryft-platform -L 3 --json status --jq '.[].status'   # completed, each
    terraform -chdir=infra/gcp plan -out=wif-split.tfplan
@@ -753,7 +756,7 @@ the services' deployer. In this order; the services keep deploying throughout.
    - `SITE_DEPLOY` is on: set it off first. Nothing orders the condition's update before the old
      member's removal, and IAM takes up to seven minutes to apply either, so in that window a
      `site` token could still match `ryft-deployer`'s repository-wide member.
-   - A run is going.
+   - A run is going, or main's newest `ci-ok` isn't `success`.
    - The plan holds anything else, or shows the binding as `-/+` (destroy, then create) instead of
      `+/-`.
    - `ryft-deployer`'s policy names anything but the `deploy` set.
