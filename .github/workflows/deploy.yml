@@ -420,8 +420,9 @@ jobs:
   # It deploys on every run by hand, when the live release cannot be read, when there is none or its
   # message is not "web <a commit of this history>", and when web/ differs from that commit; else a
   # notice ("the live site is <sha>"). While DEPLOY_HOLD_SERVICES is set, a deploy that changes
-  # PRIVACY_POLICY_VERSION against the live release's commit is refused (red): the site would show a
-  # version the api does not ask for yet. The live check runs on every run from main's tip.
+  # PRIVACY_POLICY_VERSION against the live release's commit is refused (red), and so is every deploy
+  # while that commit is unknown: the site would show a version the api does not ask for yet. The
+  # live check runs on every run from main's tip.
   # A failed `firebase deploy` is red and leaves nothing half-done: Hosting releases a version only
   # once all of it is uploaded and finalized, and the live release stays the old one. A failed live
   # check (check-hosting.mjs) is red and leaves the NEW release live. Rollback: Firebase console ->
@@ -525,10 +526,11 @@ jobs:
           gcloud auth login --cred-file="$RUNNER_TEMP/gcp-wif.json" --quiet
       # Which commit is live? The live channel's release carries the message this job deploys with,
       # "web <sha>". The access token goes to curl on stdin, never on a command line. The message is
-      # matched, never printed (it is the API's text). A run by hand always deploys. While the
-      # services are held, a deploy that moves PRIVACY_POLICY_VERSION (deploy/run/config.env at the
-      # live commit against this one) is refused: /privacy would show a version the api, still on
-      # the old commit, does not ask users to consent to. Lift the hold and dispatch; both ship.
+      # matched, never printed (it is the API's text). A run by hand always deploys, hold aside. While
+      # the services are held, a deploy that moves PRIVACY_POLICY_VERSION (deploy/run/config.env at
+      # the live commit against this one) is refused, and so is any deploy while the live commit is
+      # unknown (fail closed): /privacy would show a version the api, still on the old commit, does
+      # not ask users to consent to. Lift the hold and dispatch; both ship.
       - name: The live release, and whether web/ changed since
         id: live
         if: steps.tip.outputs.current == 'true'
@@ -560,7 +562,11 @@ jobs:
           else
             echo "web/ changed since the live release $live: deploying."
           fi
-          if [ "$deploy" = true ] && [ -n "$HOLD" ] && [ -n "$live" ]; then
+          if [ "$deploy" = true ] && [ -n "$HOLD" ]; then
+            if [ -z "$live" ]; then
+              echo "::error title=site held::the services are held (DEPLOY_HOLD_SERVICES) and the live site's commit is unknown, so whether PRIVACY_POLICY_VERSION moves cannot be told: the site is not deployed. Delete DEPLOY_HOLD_SERVICES, then: gh workflow run deploy.yml --ref main"
+              exit 1
+            fi
             was=$(git show "$live:deploy/run/config.env" 2>/dev/null | sed -n 's/^PRIVACY_POLICY_VERSION=//p' || true)
             now=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' deploy/run/config.env)
             if [ "$was" != "$now" ]; then

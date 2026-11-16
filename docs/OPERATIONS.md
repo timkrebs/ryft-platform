@@ -1248,8 +1248,9 @@ While it is set, no run builds or deploys a service, by push or by hand. `wait f
 always, and a red `ci-ok` still fails the run. `held` is green, with the notice
 "DEPLOY_HOLD_SERVICES is set (#<issue>): no service was built or deployed (the site has its own
 switch, SITE_DEPLOY)" and "Deploy held" in the summary. `deploy` is skipped. The site isn't held: its jobs run as always
-(**The site**, below), except that `site` refuses to publish a new `PRIVACY_POLICY_VERSION` while
-the hold is set. To stop the site too, set `SITE_DEPLOY` off. The reason
+(**The site**, below), with one exception while the hold is set. `site` refuses a deploy that moves
+`PRIVACY_POLICY_VERSION`, and any deploy while the live release's commit is unknown; a run by hand
+is refused too. To stop the site too, set `SITE_DEPLOY` off. The reason
 shows in every run, so keep it to the issue number. Merges pile up on main. Nothing tracks the
 hold's age (the old deploy watch is gone, C1), so write the release into the issue. To release it:
 
@@ -1439,10 +1440,11 @@ hold; runbook step 10 sets it to `on`. Its jobs, in every run:
   as `ryft-deployer`). It deploys when `web/` differs from the commit of the live release (the
   release's message is `web <sha>`), on every run by hand, and when the live release can't be read
   or names no commit of main's history. Otherwise "Site unchanged: the live site is `<sha>`".
-  - **The hold:** while `DEPLOY_HOLD_SERVICES` is set, a deploy that moves `PRIVACY_POLICY_VERSION`
-    (`deploy/run/config.env` at the live release's commit against main's) is refused ("site held",
-    red). Otherwise `/privacy` would show a version the held api doesn't ask for. Lift the hold, then
-    `gh workflow run deploy.yml --ref main`: both ship.
+  - **The hold:** while `DEPLOY_HOLD_SERVICES` is set, `site` refuses ("site held", red) a deploy
+    that moves `PRIVACY_POLICY_VERSION` (`deploy/run/config.env` at the live release's commit
+    against main's). It also refuses every deploy while that commit is unknown, a run by hand
+    included. Otherwise `/privacy` could show a version the held api doesn't ask for. Lift the hold,
+    then `gh workflow run deploy.yml --ref main`: both ship.
   - **The deploy:** `firebase deploy --only hosting --message "web <sha>"` with the firebase-tools
     of `web/.firebase-tools-version`. It runs from `site-build`'s artifact, unpacked beside the
     checkout. The artifact must hold `firebase.json` and `out/` and nothing else, with no links.
@@ -1450,7 +1452,8 @@ hold; runbook step 10 sets it to `on`. Its jobs, in every run:
     `https://www.ryftlab.de` with `PRIVACY_POLICY_VERSION` from `deploy/run/config.env`. It runs the
     emulator's assertions of `web-e2e`, live, on every run from main's tip, deployed or unchanged.
 
-A run by hand always deploys the site. Use one after `SUPPORT_EMAIL` or `TESTFLIGHT_URL` changed,
+A run by hand always deploys the site, except while the services are held (**The hold**, above). Use
+one after `SUPPORT_EMAIL` or `TESTFLIGHT_URL` changed,
 because those aren't in `web/`. It also builds and deploys the five services from main's tip.
 
 ```bash
@@ -1482,9 +1485,11 @@ What each outcome leaves:
    `gh workflow run deploy.yml --ref main -R timkrebs/ryft-platform`. A run by hand always deploys,
    so this one deploys the reverted `web/` (and the services again) and runs the live check.
 
-**Stop if** the live check fails twice on the same release (roll back); `firebase deploy` fails for
-a reason other than a missing permission; or `site` deployed in a run whose summary says
-superseded.
+**Stop if** the live check fails twice on the same release on a header, a page, a redirect, the
+AASA or the policy version: roll back. A timeout, a TLS or DNS error, or www alone failing is not
+the release: the check runs on every push and doesn't retry, so dispatch again, and look at the
+domain in the console if it persists. Also stop if `firebase deploy` fails for a reason other than
+a missing permission, or if `site` deployed in a run whose summary says superseded.
 
 ### The €20 stop line
 

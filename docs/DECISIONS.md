@@ -5090,7 +5090,8 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     The file comes from npm code in `site-build`, and those keys would run commands next to the token.
   - `DEPLOY_HOLD_SERVICES` doesn't hold the site; `SITE_DEPLOY` off does. One exception: while the services are
     held, `site` refuses (red) a deploy that moves `PRIVACY_POLICY_VERSION` against the live release's commit.
-    Otherwise `/privacy` would show a version the held api doesn't ask users to consent to.
+    It also refuses every deploy while that commit is unknown (fail closed, from the re-review), a run by hand
+    included. Otherwise `/privacy` could show a version the held api doesn't ask users to consent to.
     - Not covered: a run whose `deploy` fails at migrate while `site` publishes a new version. The two jobs run in
       parallel, so the window lasts until the services' fix ships.
   - `scripts/check_workflows.sh` pins the shape:

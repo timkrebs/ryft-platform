@@ -15,6 +15,17 @@ code-reviewer, read-only, on `git diff origin/main...HEAD` at 52a0ca2. It couldn
 | 8 | nit | `scripts/check_workflows.sh` | The deploy rule is per-line; setup-node isn't required to set `package-manager-cache: false`. | **Fixed:** `package-manager-cache: false` required, with tests. The per-line limit is recorded in D233. |
 | 9 | nit | OPERATIONS EKS sections, `infra/aws/README.md`, `web/docs/STATUS.md` | Stale references to `admission-celtest` and `nginx.test.ts`. | **Fixed:** a "Gone with C1" pointer at the top of each EKS section, and STATUS names the Hosting tests. |
 
+## Re-check of b8091c0 (same reviewer, narrow)
+
+Points 1–3 OK: the artifact filter fails closed; nothing reads the artifact as code after `cd`; there are no
+pipefail traps; `cli()` and `re2Loads()` are correct; the `package-manager-cache` rule has its tests. Remaining:
+- **should-fix:** the hold rule failed open when the live commit was unknown. **Fixed:** while held, every deploy
+  with an unknown live commit is refused.
+- **nit:** the hold paragraph and "a run by hand always deploys" didn't say a run by hand is refused during a
+  hold. **Fixed.**
+- **nit:** the "fails twice, roll back" stop rule would roll back after a network or www failure. **Fixed:** roll
+  back only for a failure in the release itself; otherwise dispatch again.
+
 Verified correct by the reviewer:
 - the CSP complement and that exactly one rule matches;
 - the redirect capture safety;
