@@ -8,10 +8,10 @@
 # an _acme-challenge TXT): stop, it isn't modelled here.
 
 # ryftlab.de
-site_apex_a   = []
-site_apex_txt = ""
+site_apex_a   = ["199.36.158.100"]
+site_apex_txt = "hosting-site=ryftlab-site"
 
 # www.ryftlab.de
 site_www_a     = []
 site_www_txt   = ""
-site_www_cname = ""
+site_www_cname = "ryftlab-site.web.app"
