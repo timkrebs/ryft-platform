@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
   // Screenshots are pre-generated in every size and format (scripts/screenshots.mjs).
   images: { unoptimized: true },
   experimental: {
-    // One 404 page for both root layouts (English at /, German under /de).
+    // One 404 page for every root layout (the site and /admin).
     globalNotFound: true,
   },
 };

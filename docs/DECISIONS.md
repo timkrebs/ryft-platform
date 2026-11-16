@@ -4995,6 +4995,31 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   the image. Trivy on go.mod also sees test-only modules, which the images don't contain, so it is a little stricter
   than the gate.
 
+## D230 — The site is English only: the privacy guards read the English page, `/de/…` is a 301 (amends D78, D107)
+
+- **Context:** the user's decision of 2026-11-14: the site is English only, like the app, and the restyle that #142 was
+  for (light only, Inter) is dropped. The site's own record is web D18 (`web/docs/DECISIONS.md`). D78's and D107's
+  guards and REBUILD step 12's check of `/de/privacy` assumed a page in each of two languages.
+- **Decision:**
+  - `scripts/check_policy_in_force.sh` (the EKS part and B2's Cloud Run part), `scripts/pin_images.sh` and
+    `web/scripts/check-policy-version.mjs` read `web/content/legal/en/privacy/<version>.mdx` only. A German page in
+    an older commit is ignored, a draft there or none at all. The language loops stay loops of one, for the day German
+    comes back.
+  - `/de` and `/de/<path>` answer 301 to `/` and `/<path>`, through the trailing-slash rule's safe capture (#156): a
+    letter or digit first, then letters, digits and `/ . _ -`, else 404. So the Location can't leave the site. It is
+    cached for an hour, not forever, so the paths stay free if German comes back. Older app builds link
+    `/de/privacy`, `/de/terms` and `/de/impressum`.
+  - nginx carries the rule for now. C1 (Firebase Hosting) must carry the same 301 in `firebase.json`.
+    `docs/work/2026-11-14-gcp/design.md` §8 and runbook row 10 now say so.
+  - `privacy-versions.json` keeps every version (2026-10-20, 2026-10-26), each with its English page. The version in
+    force and its text don't change.
+- **Alternatives:** keep the German privacy pages alone, for the consent screen of older builds. Rejected: two texts
+  of one version must say the same thing, and C2 is written in English. A 410 for `/de/…`: older builds would show an
+  error where the English text is one hop away.
+- **Consequences:** a policy PR is one page, the list, `deploy/run/config.env` and its copies. `docs/API.md` says
+  English for `privacy_policy_url` (no field changes). Bringing German back means the pages, the messages, a `[locale]`
+  segment and a second loop entry, from this change's parent commit.
+
 ## D231 — The api serves the app's analytics target: `GET /v1/config` → `analytics` and the flag `analytics.enabled`
 
 - **Context:** the app's product analytics go to PostHog EU Cloud: opt-in, pseudonymous, a fixed event list, no IP

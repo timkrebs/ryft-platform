@@ -522,13 +522,14 @@ gcloud billing budgets describe "$BUDGET" --format='yaml(amount,thresholdRules,b
 **The user's decision (follow-up 2, 2026-11-14): the site is back in the pre-alpha.** The whole static export of
 `web/` goes on Firebase Hosting at `https://ryftlab.de`. This replaces the deferred ticket F and its GitHub Pages
 option. It brings back:
-- the legal pages (`/privacy`, `/de/privacy`, `/terms`, `/support`, `/impressum`), so the consent screen's
+- the legal pages (`/privacy`, `/terms`, `/support`, `/impressum`; the site is English only since 2026-11-16, web
+  D18, and `/de`, `/de/…` answer 301 to the English path), so the consent screen's
   `privacy_policy_url`, the app's Terms, Privacy and Support links and App Store Connect's URLs load again;
 - the AASA: universal links, password AutoFill, push links (`ryft.url`) and invite links;
 - `/admin`, the operator's page.
 
-REBUILD step 12's "open no gate and invite nobody" clears once `/privacy`, `/de/privacy` and `/impressum` return 200
-(runbook step 10). Testers also wait for C2 to be in force, because the text in force still names AWS (§14). API.md
+REBUILD step 12's "open no gate and invite nobody" clears once `/privacy` and `/impressum` return 200 and
+`/de/privacy` answers 301 to `/privacy` (runbook step 10). Testers also wait for C2 to be in force, because the text in force still names AWS (§14). API.md
 needs no change: the URLs are the ones it already documents.
 
 **Everything in `web/` goes static.**
@@ -564,9 +565,13 @@ What nginx does that Hosting doesn't, and whether leaving it out breaks anything
     `max-age=31536000; includeSubDomains`, COOP, CORP, `Permissions-Policy`;
   - the marketing CSP on everything except `/admin`;
   - on `/admin` only: the admin CSP, `no-store` and `X-Robots-Tag`;
-  - `Cache-Control` as today: a year for `/_next/static/**`, a day for icons and images, `no-cache` for `/privacy`,
-    `/de/privacy` and the 404, `no-store` for the app-link paths, 300 s for the other pages;
+  - `Cache-Control` as today: a year for `/_next/static/**`, a day for icons and images, `no-cache` for `/privacy`
+    and the 404, `no-store` for the app-link paths, 300 s for the other pages;
   - for the AASA: `Content-Type: application/json` and an hour's cache.
+- The old German URLs (web D18, added 2026-11-16): `firebase.json` carries nginx's `/de` rule, a 301 from `/de` to
+  `/` and from `/de/<path>` to `/<path>`, cached for an hour, the path held to the trailing-slash rule's safe
+  characters. Test bare `/de` on its own (how Hosting fills a capture that did not match is unchecked), and run
+  `e2e/routes.spec.ts`'s German-URL cases against the Hosting emulator.
 - `"ignore": ["**/*.gz"]` and nothing else. `firebase init`'s default list has `**/.*`, which would drop
   `.well-known/` and the AASA with it.
 
@@ -779,7 +784,7 @@ other step runs in a shell where `TF_TOKEN_app_terraform_io` is unset, so the CL
 | 7 | **Supabase:** the transaction pooler host and port 6543 for the services, session 5432 for migrate, the pool size (Database → Connection pooling), Data API still off, Site URL and redirect URLs on `ryftlab.de`. One `verify-full` login as `ryft_api.<ref>` on 6543 and as the migrate role on 5432 (whether the pooler's certificate matches Supabase's CA and host name is *(unchecked)*; a mismatch fails closed), then `make smoke-supabase` on 6543 (§4) | the login fails or `ECIRCUITBREAKER` appears: stop and wait it out, don't retry in a loop |
 | 8 | **First deploy:** repository variable `GCP_DEPLOY=on`, then run `deploy.yml` by hand. Nothing is public yet | `migrate` doesn't log `migration applied` / `up to date`, or a revision isn't ready |
 | 9 | **`infra/gcp` apply 2:** invokers (`allUsers` on api and ingest, `ryft-push` on scoring and notify) and the domain mappings for `api.` and `ingest.`. Then `make smoke-prod`; a 33 MiB sync through `ingest.ryftlab.de` gets our JSON 413; a request with a forged `X-Forwarded-For` shows the real address in the limiter's log (§5.1) | the plan touches more than IAM and mappings; a certificate is still pending **after 24 hours** (the docs give 15 minutes to 24 hours; then the fallback of §1); the smoke fails; the 413 isn't ours (§3) |
-| 10 | **The site and the app (C1 merged).** Create `ryftlab-site` (the commands below; this half can run any time). In the Firebase console, Hosting → Add custom domain: `ryftlab.de`, then `www.ryftlab.de` with "redirect to `ryftlab.de`". Put the A and TXT values the wizard shows into `infra/gcp`'s site variables and apply (**apply 3**). Run `deploy.yml` by hand once (the `site` job). Then: `curl -s -o /dev/null -w '%{http_code}\n'` prints `200` for `/privacy`, `/de/privacy`, `/impressum`, `/terms`, `/support`; `curl -sI https://ryftlab.de/.well-known/apple-app-site-association` shows `content-type: application/json` and no redirect; `curl -sI 'https://ryftlab.de//evil.example/'` has no `location`; `https://www.ryftlab.de/privacy` redirects to the apex. The app build uses `api.` + `ingest.ryftlab.de`; App Store Connect's privacy, support and marketing URLs move to `https://ryftlab.de/…` (REBUILD step 12); check the AASA's team ID. The Sign in with Apple return URL stays Supabase's. Until here, only you sign in | the console asks for Blaze to connect a domain (Spark doesn't allow it: stop, the user decides); apply 3 touches anything but the site's record sets; a certificate is still pending after 24 hours; any check above fails |
+| 10 | **The site and the app (C1 merged).** Create `ryftlab-site` (the commands below; this half can run any time). In the Firebase console, Hosting → Add custom domain: `ryftlab.de`, then `www.ryftlab.de` with "redirect to `ryftlab.de`". Put the A and TXT values the wizard shows into `infra/gcp`'s site variables and apply (**apply 3**). Run `deploy.yml` by hand once (the `site` job). Then: `curl -s -o /dev/null -w '%{http_code}\n'` prints `200` for `/privacy`, `/impressum`, `/terms`, `/support`, and `/de/privacy` answers `301` to `/privacy`; `curl -sI https://ryftlab.de/.well-known/apple-app-site-association` shows `content-type: application/json` and no redirect; `curl -sI 'https://ryftlab.de//evil.example/'` has no `location`; `https://www.ryftlab.de/privacy` redirects to the apex. The app build uses `api.` + `ingest.ryftlab.de`; App Store Connect's privacy, support and marketing URLs move to `https://ryftlab.de/…` (REBUILD step 12); check the AASA's team ID. The Sign in with Apple return URL stays Supabase's. Until here, only you sign in | the console asks for Blaze to connect a domain (Spark doesn't allow it: stop, the user decides); apply 3 touches anything but the site's record sets; a certificate is still pending after 24 hours; any check above fails |
 | 11 | **Observability:** OTLP tokens; `grafana-reader`'s key by hand (`gcloud iam service-accounts keys create grafana-reader.json --iam-account=grafana-reader@ryftlab-prod.iam.gserviceaccount.com`), pasted into the data source, then `rm grafana-reader.json`; `make alerts-apply`; the two synthetics; one test alert. `gcloud iam service-accounts keys list --managed-by=user` per SA shows that one key only | no `ryft_db_up` from any service after 30 min (the ticks aren't arriving) |
 | 12 | **E, old org: Route 53.** ≥ 48 h after the switch, with D1 merged: ` TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws/dns init`, then ` TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws/dns apply -destroy`; read every line before `yes` | mail failed during the 48 h; the plan lists anything but the zone and its records |
 | 13 | **D, old org: the Vault keys, the bucket, the AWS budget** (the README's two-PR route). With D1 merged: ` TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws init`, then ` TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws apply`: only the two key policies and the bucket's `force_destroy` change. With D2 merged, the same `apply` again: destroys only | the first plan shows anything but those three changes; the second shows a `+` or `~`, or a resource that isn't RYFT's (a shared account: by IDs, never by tag) |
