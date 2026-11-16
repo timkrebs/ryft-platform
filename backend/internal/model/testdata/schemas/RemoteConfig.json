@@ -1,6 +1,10 @@
 {
   "additionalProperties": false,
   "properties": {
+    "analytics": {
+      "$ref": "AnalyticsConfig",
+      "nullable": true
+    },
     "evaluated_at": {
       "format": "date-time",
       "type": "string"
@@ -23,6 +27,7 @@
     }
   },
   "required": [
+    "analytics",
     "evaluated_at",
     "flags",
     "privacy_policy_url",

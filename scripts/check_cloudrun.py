@@ -15,9 +15,10 @@ renderer deploy.yml uses), parses the result with yq (mikefarah v4) and asserts,
     probe both on /health/live, the startup probe within 30 s (an instance must start while the
     database is down, so its tick reports ryft_db_up 0; /health/ready is the synthetics' target);
     all traffic to the latest revision;
-  - the env exactly as ticket-b.md's tables (names and the values the renderer builds), every secret
-    pinned by a version number (never latest), each secret only in the services of the accessor table,
-    and migrate's DB_PASSWORD_<SVC> pin equal to PGPASSWORD's in <svc>.yaml (design §4);
+  - the env exactly as ticket-b.md's tables (names and the values the renderer builds; api may add the
+    pin of posthog-project-key, D231), every secret pinned by a version number (never latest), each
+    secret only in the services of the accessor table, and migrate's DB_PASSWORD_<SVC> pin equal to
+    PGPASSWORD's in <svc>.yaml (design §4);
   - P5 (design §5.1): none of AUTH_MODE=apikey, ALLOW_INSECURE_APIKEY_AUTH, API_KEY, USER_ID,
     ALLOW_INSECURE_PUSH or PORT anywhere;
   - keys only from an allowlist (no envFrom, command, args, volumes, extra annotations such as
@@ -73,10 +74,15 @@ SECRET_ENV = {
     "notify": {"PGPASSWORD": "db-password-notify", "APNS_KEY_P8": "apns-key-p8", "OTLP_TOKEN": "otlp-token"},
     "migrate": {"PGPASSWORD": "db-password-owner", **{f"DB_PASSWORD_{s.upper()}": f"db-password-{s}" for s in SERVICES}},
 }
-# The only service accounts that can access each secret (ticket-b.md, the accessor table).
+# Secret env a file may hold or leave out (env name -> secret), checked like the rest when present.
+# POSTHOG_PROJECT_KEY (D231): without it api serves analytics null. Its pin comes once the secret has a
+# version, because a revision that reads a missing version does not start and the deploy goes red.
+OPTIONAL_SECRET_ENV = {"api": {"POSTHOG_PROJECT_KEY": "posthog-project-key"}}
+# The only service accounts that can access each secret (ticket-b.md, the accessor table; infra/gcp/secrets.tf).
 ACCESSORS = {**{f"db-password-{s}": {s, "migrate"} for s in SERVICES}, "db-password-owner": {"migrate"},
              "supabase-secret-key": {"api"}, "admin-api-key": {"api"}, "apple-key-p8": {"api"},
-             "apns-key-p8": {"notify"}, "data-key": {"api"}, "otlp-token": set(SERVICES)}
+             "apns-key-p8": {"notify"}, "data-key": {"api"}, "otlp-token": set(SERVICES),
+             "posthog-project-key": {"api"}}
 P5 = ("ALLOW_INSECURE_APIKEY_AUTH", "API_KEY", "USER_ID", "ALLOW_INSECURE_PUSH", "PORT")
 P5_RE = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(P5) + r")(?![A-Za-z0-9_])")
 VERSION = re.compile(r"[1-9][0-9]*")
@@ -241,14 +247,15 @@ def check_env(name, env, want_plain, cfg):
             exp = want if want is not None else cfg[n]
             if plain[n] != exp:
                 fail(where, f"{n}={plain[n]!r}, want {exp!r}")
-    want_sec = SECRET_ENV[name]
-    for n in sorted(set(secrets) - set(want_sec)):
+    want_sec, may_sec = SECRET_ENV[name], OPTIONAL_SECRET_ENV.get(name, {})
+    known = {**may_sec, **want_sec}
+    for n in sorted(set(secrets) - set(known)):
         fail(where, f"{n} from {secrets[n][0]} is not in ticket-b.md's secret table for {name}")
     for n in sorted(set(want_sec) - set(secrets)):
         fail(where, f"{n} (secret {want_sec[n]}) is missing")
     for n, (sec, _) in secrets.items():
-        if n in want_sec and sec != want_sec[n]:
-            fail(where, f"{n} reads secret {sec}, want {want_sec[n]}")
+        if n in known and sec != known[n]:
+            fail(where, f"{n} reads secret {sec}, want {known[n]}")
         if name not in ACCESSORS.get(sec, set()):
             fail(where, f"{name} reads {sec}, which only {', '.join(sorted(ACCESSORS.get(sec, set()))) or 'nobody'} can access")
     return secrets
