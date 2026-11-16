@@ -8,8 +8,8 @@ theme switch, both appearances and Satoshi stay. The restyle (#142, #143) was dr
 2026-11-14. Where the tables below say otherwise, they record the site as it was checked on
 2026-10-21 and are marked so.
 
-| Check (this branch) | Result |
-| --- | --- |
+| Area | What this branch's tests pin (run by CI's `web-checks`, `web-e2e` and `manifests`, not locally) | Where |
+| --- | --- | --- |
 | Routes | 200 `text/html` on `/`, `/science`, `/beta`, `/privacy` (+ versions), `/terms` (+ version), `/support`, `/impressum`, `/licenses`, `/open`, the universal-link paths; `/de`, `/de/privacy`, `/de/terms`, `/de/impressum`, `/de/privacy/<version>` → 301 to the English path; `/de/` plus a backslash, space or control character → 404 | `e2e/routes.spec.ts` against the nginx image, `tests/nginx.test.ts` |
 | Pages | English only, no hreflang alternates, no `/de` in the sitemap | `tests/output.test.ts`; Playwright on every page |
 | Privacy | `2026-10-20` and `2026-10-26` keep their English pages; `2026-10-26` in force, its text unchanged | `npm run check:policy`, `scripts/check_policy_in_force.sh` |

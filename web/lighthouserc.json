@@ -34,7 +34,7 @@
           }
         },
         {
-          "matchingUrlPattern": "^http://localhost:8080/(de|science|beta)?$",
+          "matchingUrlPattern": "^http://localhost:8080/(science|beta)?$",
           "assertions": { "categories:seo": ["error", { "minScore": 0.9 }] }
         }
       ]

@@ -106,7 +106,7 @@ render '"2026-11-02 # x"' '"2026-11-02 # x"' "\"$second\""; bad "an inline comme
 render '"2026-11-31"' '"2026-11-31"' "\"$both\"";   bad "a date that does not exist" "real calendar date"
 render '"2026-12-31"' '"2026-12-31"' "\"$second\""; bad "an unlisted version" "not in"
 render '"2026-11-02"' '"2026-11-02"' "\"$first\"";  bad "web rolled back past the version" "no en page"
-render '"2026-12-01"' '"2026-12-01"' "\"$en_only\""; ok "the English page alone (web D18: no German page is needed)"
+render '"2026-12-01"' '"2026-12-01"' "\"$en_only\""; ok "the English page alone (English only: no German page is needed)"
 render '"2026-10-20"' '"2026-10-20"' "\"$second\""; bad "a newer page is served than the one in force" "serves 2026-11-02"
 render '"2026-10-20"' '"2026-10-20"' "\"$both\"";   bad "a newer page in en and de than the one in force" "serves 2026-12-01\|serves 2026-11-31"
 render '"2026-10-20"' '"2026-10-20"' '"f437747"';   ok "a pin outside this history with the first version"
@@ -141,7 +141,7 @@ echo '["2026-10-20","2026-11-02","2026-12-01","2026-11-31","2027-01-01","2027-02
 page en 2027-01-01; page de 2027-01-01; git add -A; git commit -qm "published 2027-01-01"; pub=$(git rev-parse HEAD | cut -c1-7)
 render '"2027-01-01"' '"2027-01-01"' "\"$pub\""; ok "a change to a published page"
 page en 2027-02-01 draft; page de 2027-02-01; git add -A; git commit -qm "en draft"; dr=$(git rev-parse HEAD | cut -c1-7)
-render '"2027-02-01"' '"2027-02-01"' "\"$dr\""; bad "a change to a page that is a draft (a published German page does not count, web D18)" "not status: published"
+render '"2027-02-01"' '"2027-02-01"' "\"$dr\""; bad "a change to a page that is a draft (a published German page does not count, English only)" "not status: published"
 page en 2027-02-01 "'draft'"; git add -A; git commit -qm "quoted draft"; dq=$(git rev-parse HEAD | cut -c1-7)
 render '"2027-02-01"' '"2027-02-01"' "\"$dq\""; bad "a quoted draft status" "not status: published"
 # the frontmatter is read the way the site reads it: only exactly "published" (after normalising) passes
@@ -263,7 +263,7 @@ run_cfg 2028-01-01; ok "a change to a published version"
 run_cfg 2026-10-20; ok "back to a version listed before the current one (a draft)"
 run_cfg 2027-01-01; page en 2027-01-01 draft; bad "a published text set back to a draft in place" "cannot go back to a draft"
 page en 2027-01-01; ok "published again"
-# web D18: a German page is not read any more, a draft there or none at all
+# English only: a German page is not read any more, a draft there or none at all
 page de 2027-01-01 draft; ok "a German draft beside a published English page is ignored"
 # the PR that introduces deploy/run/config.env: base has none, its api copy is what was published
 rm -f $RC; copies 2027-01-01; git add -A; git commit -qm "before Cloud Run"; git branch -q -f base HEAD

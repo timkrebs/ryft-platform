@@ -84,7 +84,7 @@ grep -qx "in force: $cur -> $NEW" "$tmp/err" || fail "the move is reported: $(ca
 cp "$real" "$tmp/k.yaml"
 pinp "$old_sha" web "$tmp/k.yaml" >/dev/null 2>&1 || fail "web pin at the older commit failed"
 [ "$(force "$tmp/k.yaml")" = "2098-01-01 2098-01-01" ] || fail "the version comes from base at the pinned commit: $(force "$tmp/k.yaml")"
-# a commit without config.env: the newest English page (web D18; a German page there is ignored)
+# a commit without config.env: the newest English page (the site is English only; a German page there is ignored)
 cp "$real" "$tmp/k.yaml"
 pinp "$pages_sha" web "$tmp/k.yaml" >/dev/null 2>&1 || fail "web pin at a commit without config.env failed"
 [ "$(force "$tmp/k.yaml")" = "2097-05-05 2097-05-05" ] || fail "without config.env the newest page decides: $(force "$tmp/k.yaml")"

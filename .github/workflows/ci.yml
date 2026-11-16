@@ -605,7 +605,7 @@ jobs:
       # services'), only the accessors' secrets, and none of P5's names (scripts/check_cloudrun.py).
       - run: make cloudrun-check
       # The privacy policy version in deploy/run/config.env (its home on Cloud Run) has its page on
-      # the site (English only since web D18), the k8s copies equal it, and the site has no page the
+      # the site (English only, D230), the k8s copies equal it, and the site has no page the
       # platform does not name (D107): consent is recorded against that version.
       - run: node web/scripts/check-policy-version.mjs --strict
       # deploy/run/config.env's version is a published text (its English page, in the list), the

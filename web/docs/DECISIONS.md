@@ -237,12 +237,13 @@ Consequences:
   safe characters (platform #156): it starts with a letter or digit and holds only letters,
   digits and `/ . _ -`, so Location is never `//host`, `/\host` or a header with a control
   character; any other `/de/…` path is a 404 (`tests/nginx.test.ts`). The move to Firebase
-  Hosting (C1) carries the same 301 in `firebase.json`.
+  Hosting (C1) must carry the same 301 in `firebase.json` (the C1 spec, platform
+  `docs/work/2026-11-14-gcp/design.md` §8, says so).
 - The English legal notice carried the VAT and consumer-dispute statements only by linking
   to the German page; they are ported into `content/legal/en/impressum.mdx` as they were.
 - `scripts/lib/policy.mjs` checks the English privacy page only. The repository's own guards
   (`scripts/check_policy_in_force.sh`, `scripts/pin_images.sh`) looked for both languages
-  and are changed with this.
+  and are changed with this (platform D230).
 - `content/legal/privacy-versions.json` keeps every version (2026-10-20, 2026-10-26); each
   keeps its English page. The version in force does not change with this.
 

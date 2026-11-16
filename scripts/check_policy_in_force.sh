@@ -11,7 +11,7 @@
 #  - the web image's commit does not SERVE the version at /privacy (the rendered web Deployment's
 #    image, or, with web not deployed (D215), the overlay's web pin): the site shows the newest
 #    page (web/src/lib/content.ts), so the newest web/content/legal/en/privacy/<version>.mdx
-#    there must be the version in force (the site is English only since web D18; older
+#    there must be the version in force (the site is English only, D230; older
 #    commits also carry a German page, which is not checked). A pin
 #    that is not a commit of this history passes only when it is the known foreign pin
 #    f437747 (built in the archived ryft-web repository) AND the version is the first listed
@@ -149,7 +149,7 @@ resolve_pin "$tag" || err "web is pinned to $tag, which is not exactly one commi
 full=$pin_full; tag_kind=$pin_kind
 in_history=; [ "$pin_kind" != commit ] || in_history=1
 # The pages of an image (<kind> <full sha> <lang> <version>; the language loop is one entry
-# since web D18 and stays a loop for the day German comes back). The foreign image carries a
+# since the site is English only and stays a loop for the day German comes back). The foreign image carries a
 # draft: nothing in this tree is published for it.
 page_at() { if [ "$1" = commit ]; then git show "$2:web/content/legal/$3/privacy/$4.mdx" 2>/dev/null; fi; }
 page() { page_at "$tag_kind" "$full" "$1" "$2"; }

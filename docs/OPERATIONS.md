@@ -722,7 +722,7 @@ Then, with C1 merged:
    for p in /privacy /impressum /terms /support; do
      curl -s -o /dev/null -w "%{http_code} $p\n" "https://ryftlab.de$p"            # 200 each
    done
-   curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" https://ryftlab.de/de/privacy   # 301 https://ryftlab.de/privacy (web D18; firebase.json carries the rule)
+   curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" https://ryftlab.de/de/privacy   # 301 https://ryftlab.de/privacy (web D18; C1's firebase.json must carry the rule)
    curl -sI https://ryftlab.de/.well-known/apple-app-site-association           # content-type: application/json, no redirect
    curl -sI 'https://ryftlab.de//evil.example/' | grep -i '^location' || echo 'no location'   # no location
    curl -sI https://www.ryftlab.de/privacy | grep -i '^location'                # https://ryftlab.de/privacy

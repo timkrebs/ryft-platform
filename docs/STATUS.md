@@ -130,10 +130,10 @@ Open:
   red. So set `GCP_DEPLOY` off before the merge, and once main's `ci-ok` is green, set it on and dispatch with
   `-f smoke=false` (OPERATIONS → Deploy, roll back, rotate).
 - **English only** (`web: english only`, branch `web/english-only`, 2026-11-16): the site is English only, like the app
-  (web D18; the user's decision of 2026-11-14, with the restyle of #142/#143 dropped). The German pages, messages,
+  (web D18, D230; the user's decision of 2026-11-14, with the restyle of #142/#143 dropped). The German pages, messages,
   routes and `content/legal/de` are gone; `privacy-versions.json` keeps both versions, each with its English page, and
   2026-10-26 stays in force. nginx answers `/de` and `/de/…` with a 301 to the English path (the trailing-slash rule's
-  safe capture, cached for an hour); C1 carries the same 301 in `firebase.json`. `check_policy_in_force.sh`,
+  safe capture, cached for an hour); C1 must carry the same 301 in `firebase.json` (design §8 says so now). `check_policy_in_force.sh`,
   `pin_images.sh` and `check-policy-version.mjs` read the English page only. Then C1, then C2.
 
 ## Rebuild (2026-11-13)

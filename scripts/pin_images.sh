@@ -12,8 +12,8 @@
 # literals of the overlay's configMapGenerator, api and ingest) to the version of
 # deploy/k8s/base/{api,ingest}/config.env AS OF the pinned commit, so the page and the version go
 # live in one sync (D78, F1). A commit from before config.env existed (before the F1 change) has
-# none: the newest web/content/legal/en/privacy/*.mdx there decides (web D18; a German page there
-# is not read). The one known foreign pin f437747 (built in the archived ryft-web repository) carries
+# none: the newest web/content/legal/en/privacy/*.mdx there decides (English only, D230; a German
+# page there is not read). The one known foreign pin f437747 (built in the archived ryft-web repository) carries
 # 2026-10-20. Any other sha must resolve to exactly one commit of this history, else it exits
 # non-zero, as it does when the two base files disagree, the version is no real date or the overlay
 # lacks the literals. stderr: "in force: A -> B" (PIN_QUIET=1 silences it). Pinning services leaves
@@ -93,7 +93,7 @@ if "web" in groups:
                 sys.exit(f"✗ pin_images: base api has {versions['api']} and base ingest {versions['ingest']} at {sha}: they must agree")
             version = versions["api"]
         else:
-            # The site is English only (web D18); older commits also carry a German page.
+            # The site is English only (D230); older commits also carry a German page.
             r = run("ls-tree", "--name-only", f"{full}:web/content/legal/en/privacy/")
             names = sorted(n[:-4] for n in r.stdout.split("\n") if n.endswith(".mdx"))
             if r.returncode != 0 or not names:
