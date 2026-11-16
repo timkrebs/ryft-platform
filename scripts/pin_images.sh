@@ -12,8 +12,8 @@
 # literals of the overlay's configMapGenerator, api and ingest) to the version of
 # deploy/k8s/base/{api,ingest}/config.env AS OF the pinned commit, so the page and the version go
 # live in one sync (D78, F1). A commit from before config.env existed (before the F1 change) has
-# none: the newest web/content/legal/{en,de}/privacy/*.mdx there decides, and both languages must
-# agree. The one known foreign pin f437747 (built in the archived ryft-web repository) carries
+# none: the newest web/content/legal/en/privacy/*.mdx there decides (web D18; a German page there
+# is not read). The one known foreign pin f437747 (built in the archived ryft-web repository) carries
 # 2026-10-20. Any other sha must resolve to exactly one commit of this history, else it exits
 # non-zero, as it does when the two base files disagree, the version is no real date or the overlay
 # lacks the literals. stderr: "in force: A -> B" (PIN_QUIET=1 silences it). Pinning services leaves
@@ -66,7 +66,7 @@ if "web" in groups:
     import datetime, json, subprocess
     # The version the pinned web image serves, as of the pinned commit (not the working tree):
     # base's config.env there; for a commit from before config.env existed, the newest privacy
-    # page there (both languages must agree: that is what /privacy serves). The one known
+    # English page there (that is what /privacy serves). The one known
     # foreign pin (f437747, built in the archived ryft-web repository) carries 2026-10-20.
     # Any other sha must resolve to exactly one commit of this history.
     FOREIGN = "f437747"
@@ -93,16 +93,12 @@ if "web" in groups:
                 sys.exit(f"✗ pin_images: base api has {versions['api']} and base ingest {versions['ingest']} at {sha}: they must agree")
             version = versions["api"]
         else:
-            newest = {}
-            for lang in ("en", "de"):
-                r = run("ls-tree", "--name-only", f"{full}:web/content/legal/{lang}/privacy/")
-                names = sorted(n[:-4] for n in r.stdout.split("\n") if n.endswith(".mdx"))
-                if r.returncode != 0 or not names:
-                    sys.exit(f"✗ pin_images: {sha} has no config.env and no {lang} privacy page: cannot tell which version it serves")
-                newest[lang] = names[-1]
-            if newest["en"] != newest["de"]:
-                sys.exit(f"✗ pin_images: at {sha} the newest privacy page is {newest['en']} in English and {newest['de']} in German")
-            version = newest["en"]
+            # The site is English only (web D18); older commits also carry a German page.
+            r = run("ls-tree", "--name-only", f"{full}:web/content/legal/en/privacy/")
+            names = sorted(n[:-4] for n in r.stdout.split("\n") if n.endswith(".mdx"))
+            if r.returncode != 0 or not names:
+                sys.exit(f"✗ pin_images: {sha} has no config.env and no en privacy page: cannot tell which version it serves")
+            version = names[-1]
     elif not cands and sha == FOREIGN:
         version = FOREIGN_VERSION
     else:

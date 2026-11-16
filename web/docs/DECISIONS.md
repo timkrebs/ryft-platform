@@ -216,3 +216,35 @@ Auth, both named in its footer; every other page still makes no request beyond t
 strings are for one operator, live in the bundle, outside `messages/{en,de}.json`, and there
 is no `/de/admin`: the page sits outside `[locale]`, so the two-language checks do not apply
 to it.
+
+## D18 — English only; the German pages are gone (2026-11-05, kept 2026-11-14; amends D8)
+
+The user's decision of 2026-11-05, kept on 2026-11-14 when the restyle it was made for (light
+only, Inter; platform #142) was dropped: the site is English only, the same as the app. The
+theme switch, the dark appearance and Satoshi stay as they are. German goes because every
+page, legal text, string and OG image existed twice. So: `src/app/[locale]`, `messages/de.json`,
+`content/legal/de`, `content/science/de.mdx` and `public/og/de.png` are deleted, with the
+language switch, the hreflang alternates, the German sitemap entries and
+`scripts/check-messages.mjs` (parity has nothing to compare; `tests/messages.test.ts`
+keeps the empty-string check). `src/lib/i18n.ts` keeps `Locale`, `messages()`,
+`localePath()` (now the identity) and `intlLocale()` (`en-GB`), so the views compile
+unchanged and a second language can come back without touching them.
+
+Consequences:
+- Older builds of the app link to `/de/privacy`, `/de/terms` and `/de/impressum`; nginx
+  answers every `/de/…` with a 301 to the English page (`e2e/routes.spec.ts`), cached for an
+  hour. The redirect's capture is the decoded path, so it is held to the trailing-slash rule's
+  safe characters (platform #156): it starts with a letter or digit and holds only letters,
+  digits and `/ . _ -`, so Location is never `//host`, `/\host` or a header with a control
+  character; any other `/de/…` path is a 404 (`tests/nginx.test.ts`). The move to Firebase
+  Hosting (C1) carries the same 301 in `firebase.json`.
+- The English legal notice carried the VAT and consumer-dispute statements only by linking
+  to the German page; they are ported into `content/legal/en/impressum.mdx` as they were.
+- `scripts/lib/policy.mjs` checks the English privacy page only. The repository's own guards
+  (`scripts/check_policy_in_force.sh`, `scripts/pin_images.sh`) looked for both languages
+  and are changed with this.
+- `content/legal/privacy-versions.json` keeps every version (2026-10-20, 2026-10-26); each
+  keeps its English page. The version in force does not change with this.
+
+Would change if the user wants German back: `messages/de.json`, `content/legal/de` and a
+`[locale]` segment again, from this PR's parent commit.

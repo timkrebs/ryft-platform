@@ -2,7 +2,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import { ALL } from './pages';
 
-// Every page in both languages, dark and light: renders, no console errors (CSP
+// Every page, dark and light: renders, no console errors (CSP
 // violations show up there), no serious or critical axe findings, a screenshot each.
 for (const path of ALL) {
   for (const scheme of ['dark', 'light'] as const) {
@@ -15,7 +15,7 @@ for (const path of ALL) {
       const res = await page.goto(path, { waitUntil: 'networkidle' });
       expect(res?.status()).toBe(200);
       await expect(page.locator('h1').first()).toBeVisible();
-      expect(await page.locator('html').getAttribute('lang')).toBe(path.startsWith('/de') ? 'de' : 'en');
+      expect(await page.locator('html').getAttribute('lang')).toBe('en');
       expect(await page.title()).toMatch(/RYFT/);
 
       const axe = await new AxeBuilder({ page })

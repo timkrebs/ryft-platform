@@ -69,6 +69,8 @@ rgit init -q -b main
 for l in en de; do mkdir -p "$root/web/content/legal/$l/privacy"; : > "$root/web/content/legal/$l/privacy/2097-05-05.mdx"; : > "$root/web/content/legal/$l/privacy/2097-01-01.mdx"; done
 rgit add -A; rgit commit -qm pages; pages_sha=$(rgit rev-parse HEAD | cut -c1-7)
 : > "$root/web/content/legal/de/privacy/2097-06-06.mdx"; rgit add -A; rgit commit -qm "de ahead"; ahead_sha=$(rgit rev-parse HEAD | cut -c1-7)
+rm -r "$root/web/content/legal/en"; rgit add -A; rgit commit -qm "no en page"; noen_sha=$(rgit rev-parse HEAD | cut -c1-7)
+git -C "$root" checkout -q "$pages_sha" -- web/content/legal/en
 base_env 2098-01-01; rgit add -A; rgit commit -qm old; old_sha=$(rgit rev-parse HEAD | cut -c1-7)
 base_env "$NEW"; rgit commit -qam new; new_sha=$(rgit rev-parse HEAD | cut -c1-7)
 pinp() { "$root/scripts/pin_images.sh" "$@"; }
@@ -82,12 +84,15 @@ grep -qx "in force: $cur -> $NEW" "$tmp/err" || fail "the move is reported: $(ca
 cp "$real" "$tmp/k.yaml"
 pinp "$old_sha" web "$tmp/k.yaml" >/dev/null 2>&1 || fail "web pin at the older commit failed"
 [ "$(force "$tmp/k.yaml")" = "2098-01-01 2098-01-01" ] || fail "the version comes from base at the pinned commit: $(force "$tmp/k.yaml")"
-# a commit without config.env: the newest page, and both languages must agree
+# a commit without config.env: the newest English page (web D18; a German page there is ignored)
 cp "$real" "$tmp/k.yaml"
 pinp "$pages_sha" web "$tmp/k.yaml" >/dev/null 2>&1 || fail "web pin at a commit without config.env failed"
 [ "$(force "$tmp/k.yaml")" = "2097-05-05 2097-05-05" ] || fail "without config.env the newest page decides: $(force "$tmp/k.yaml")"
 cp "$real" "$tmp/k.yaml"
-pinp "$ahead_sha" web "$tmp/k.yaml" >/dev/null 2>&1 && fail "en and de disagree on the newest page: must fail"
+pinp "$ahead_sha" web "$tmp/k.yaml" >/dev/null 2>&1 || fail "web pin at a commit with a newer German page failed"
+[ "$(force "$tmp/k.yaml")" = "2097-05-05 2097-05-05" ] || fail "the English page decides, not the German one: $(force "$tmp/k.yaml")"
+cp "$real" "$tmp/k.yaml"
+pinp "$noen_sha" web "$tmp/k.yaml" >/dev/null 2>&1 && fail "no config.env and no English page: must fail"
 cmp -s "$real" "$tmp/k.yaml" || fail "a refused pin leaves the file untouched"
 # the one known foreign pin carries 2026-10-20 whatever the list says; any other unknown sha is refused
 pinp f437747 web "$tmp/k.yaml" >/dev/null 2>&1 || fail "the foreign pin f437747 failed"

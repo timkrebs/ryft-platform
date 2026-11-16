@@ -9,7 +9,6 @@
     "home": "RYFT, home",
     "mainNav": "Main",
     "footerNav": "Legal and support",
-    "language": "Language",
     "theme": "Colour theme",
     "sampleData": "Sample data"
   },
@@ -23,11 +22,6 @@
     "system": "System",
     "light": "Light",
     "dark": "Dark"
-  },
-  "language": {
-    "name": "English",
-    "switchLabel": "Deutsch",
-    "switchHint": "Diese Seite auf Deutsch"
   },
   "footer": {
     "privacy": "Privacy",
