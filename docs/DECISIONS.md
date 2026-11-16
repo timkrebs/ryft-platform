@@ -5019,3 +5019,49 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
 - **Consequences:** a policy PR is one page, the list, `deploy/run/config.env` and its copies. `docs/API.md` says
   English for `privacy_policy_url` (no field changes). Bringing German back means the pages, the messages, a `[locale]`
   segment and a second loop entry, from this change's parent commit.
+
+## D232 — pgx 5.12's text arrays are taken as they are; go.mod's floor moves to Go 1.26.0 (amends D229)
+
+- **Context:** Dependabot #176 bumps the backend's minor and patch modules: pgx v5.9.2 → v5.12.0, client_golang
+  v1.25.0, client_model v0.6.3, x/sync v0.23.0, x/time v0.15.0, jwkset v0.11.4, keyfunc/v3 v3.9.1. It failed one test,
+  `internal/db` `TestExecModeEncoding/[]string,_quoted_where_needed`. In `exec` mode (D221, Supavisor in transaction
+  mode) a `[]string` goes out as a text array literal, so its text is what the server parses.
+- **Cause:** pgx 5.12's `quoteArrayElementIfNeeded` quotes an element that holds whitespace anywhere, or the
+  type's delimiter. 5.9.2 quoted whitespace only at either end. So `b c` now goes out as `"b c"`. Postgres's
+  `array_in` reads both as the same element, and the text quoting was already correct for `""`, `NULL`, `{`, `}`,
+  `,`, `"` and `\`. The change only adds quotes Postgres accepts. It doesn't change which values reach a query.
+- **Decision:** take all 7 updates.
+  - `TestExecModeEncoding` pins 5.12's text: `{a,"b c","","NULL"," x","{,}"}`, plus a case for tab, quote and
+    backslash.
+  - `store`'s `TestPooler` (CI's pooler job, `make pooler-check`) reads every one of those forms back through the
+    pooler, inner whitespace and the delimiter included (`pull-up bar` among them).
+  - No Dependabot `ignore`.
+- **The `[]string` parameters in production:**
+  - `queueDays` (`unnest($2::text[])`, on every sync, import, fold and recompute) and `PendingAmong`: dates.
+  - The journal's `array_position($n::text[], category)`: `model.BehaviorCategories`.
+  - Exercises' `primary_muscles`, `secondary_muscles` and `equipment` (INSERT/UPDATE).
+  - Feedback's `request_ids`.
+  - `ReplacePRs` (`kind = ANY`) and the fold's `source = ANY`.
+  - migrate's seed slugs and role names.
+  - Only `equipment` (free text of 1 to 40 characters) holds inner spaces from a user. Its quoting is the only text
+    that changes, and the stored value doesn't.
+- **go.mod's floor moves from 1.25.0 to 1.26.0.** client_golang v1.25.0, x/sync v0.23.0, x/sys, x/text and
+  prometheus/common require Go 1.26. D229 said the floor moves when we choose it; this is the choice. The image stays
+  `golang:1.27-alpine` and the `toolchain` line stays go1.27.4, so only the GODEBUG defaults move:
+  - `cryptocustomrand`: crypto ignores a custom random reader. Every key and signature in the code and tests uses
+    `crypto/rand.Reader`.
+  - `tlssecpmlkem`: the SecP256r1/384r1 ML-KEM hybrids join the TLS key exchanges a client offers (Supabase, Pub/Sub,
+    APNs, PostHog). The server still picks one it supports.
+  - `urlstrictcolons`: `url.Parse` refuses a second colon in an unbracketed host. Every URL we parse has one host and
+    at most one port (the DSN, OTLP, Pub/Sub, the config's https checks).
+  - `httpservecontentmaxranges`: caps the ranges `http.ServeContent` serves. The services don't call it.
+- **Alternatives:**
+  - The other six, with pgx held at 5.9.2 by an `ignore` for `>=5.12`. Rejected: the encoding is correct, and holding
+    pgx means missing its next security fix. pgx had two security releases in 2026 (5.9.0 and 5.9.2, D229).
+  - Testing for semantics alone (round trip only, no pinned text). Rejected: the pin is what told us pgx changed what
+    it sends through the pooler. Keeping it costs one line per pgx change.
+  - Holding the floor at 1.25.0 by holding the five modules. Rejected: it holds the Prometheus client and x/sys
+    back for a GODEBUG delta that touches nothing we do.
+- **Consequences:** the next pgx release that changes a text encoding fails `TestExecModeEncoding` again, as it
+  should. Check the new text against Postgres's input rules and `TestPooler`, then re-pin. A module that needs Go 1.27
+  moves the floor again, with its own GODEBUG list. There's no date to look again: nothing is held back.

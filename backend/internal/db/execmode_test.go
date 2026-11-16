@@ -62,8 +62,11 @@ func TestExecModeEncoding(t *testing.T) {
 		{"timestamptz, in UTC with microseconds", time.Date(2026, 11, 15, 6, 30, 15, 123456000, time.FixedZone("CET", 3600)),
 			"2026-11-15 05:30:15.123456Z"},
 		{"date as the store passes it", "2026-11-15", "2026-11-15"},
-		// Postgres keeps an unquoted element's inner space and trims only its ends, which pgx quotes.
-		{"[]string, quoted where needed", []string{"a", "b c", "", "NULL", " x", "{,}"}, `{a,b c,"","NULL"," x","{,}"}`},
+		// pgx 5.12 quotes every element that holds whitespace anywhere (5.9 only at either end) or the
+		// type's delimiter. Postgres reads "b c" and b c as the same element, and store's TestPooler reads
+		// these back through the pooler (D232).
+		{"[]string, quoted where needed", []string{"a", "b c", "", "NULL", " x", "{,}"}, `{a,"b c","","NULL"," x","{,}"}`},
+		{"[]string, escapes", []string{"tab\there", `q"uote`, `back\slash`}, `{"tab` + "\t" + `here","q\"uote","back\\slash"}`},
 		{"[]bool", []bool{true, false}, "{t,f}"},
 		{"[]int64", []int64{1, 2}, "{1,2}"},
 		{"jsonb as a string", `{"a":1}`, `{"a":1}`},
