@@ -5078,16 +5078,45 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
       `site-deployer@ryftlab-site` (the same pool and condition as `ryft-deployer`, no key). It runs
       `firebase deploy --only hosting --message "web <sha>"` with the one pinned firebase-tools
       (`web/.firebase-tools-version`, 15.35.0, install scripts off). Then `web/scripts/check-hosting.mjs` checks
-      ryftlab.de and www live, and the policy version of `deploy/run/config.env` on `/privacy`.
+      ryftlab.de and www live, and the policy version of `deploy/run/config.env` on `/privacy`. It runs that
+      check on every run from main's tip, deployed or not, so drift shows.
+    - The artifact is data, never code for `site`. It's unpacked into `$RUNNER_TEMP/site`, not over the
+      checkout. Anything in it besides `firebase.json` and `out/`, and any link, fails the step. npx would read an
+      `.npmrc` or a `node_modules/` there, and npm code in `site-build` could plant either (the review of #194).
   - The site deploys when `web/` differs from the commit named in the live release's message, and on every run by
     hand. Otherwise it's "unchanged". A superseded run can't lose a web change: the next run compares against what's
     live, not against the previous push. Deploying on every push would add a version per push to Spark's 10 GB.
   - `site` refuses a `firebase.json` with `predeploy`/`postdeploy` hooks, `hosting.source` or `frameworksBackend`.
     The file comes from npm code in `site-build`, and those keys would run commands next to the token.
-  - `DEPLOY_HOLD_SERVICES` doesn't hold the site; `SITE_DEPLOY` off does. `scripts/check_workflows.sh` pins the
-    shape: the environment `deploy` only on `deploy` and `site`; no token in `site-build`; only checkout,
-    setup-node (no cache) and download-artifact, by SHA, in `site`; `firebase deploy` and the live check only after
-    `tip`.
+  - `DEPLOY_HOLD_SERVICES` doesn't hold the site; `SITE_DEPLOY` off does. One exception: while the services are
+    held, `site` refuses (red) a deploy that moves `PRIVACY_POLICY_VERSION` against the live release's commit.
+    Otherwise `/privacy` would show a version the held api doesn't ask users to consent to.
+    - Not covered: a run whose `deploy` fails at migrate while `site` publishes a new version. The two jobs run in
+      parallel, so the window lasts until the services' fix ships.
+  - `scripts/check_workflows.sh` pins the shape:
+    - the environment `deploy` only on `deploy` and `site`;
+    - no token in `site-build`;
+    - in `site`, only checkout, setup-node (no cache key, `package-manager-cache: false`) and download-artifact, by
+      SHA;
+    - `firebase deploy` and the live check only after `tip`.
+
+    Its `firebase … deploy` rule reads one `run` line at a time. A deploy hidden behind an env indirection, a line
+    continuation or curl to the REST API would pass it; review catches those.
+  - **The emulator needs the native `re2`** (observed in #194's first CI run). Its static server falls back to
+    JavaScript's `RegExp` without it, can't parse RE2's `(?P<name>…)`, and dies on the first request.
+    `web/scripts/hosting.mjs` installs the pinned CLI into `web/node_modules/.cache/` with install scripts off,
+    then runs `npm rebuild re2` alone, and stops unless `re2` loads (web D19). The deploy doesn't serve, so it
+    keeps every install script off.
+  - **Accepted risk, for the user to decide before step 10f:** the WIF principal set that `site-deployer` binds is
+    the one `ryft-deployer` binds: every principal of the repository that passed the condition. So code in `site`
+    could mint its own token and impersonate `ryft-deployer`: Cloud Run and migrate in production. That code is
+    firebase-tools and its dependency tree, which npx resolves at run time, with no lockfile. Splitting
+    `site-build` from `site` keeps npm's install scripts and the build away from the token, but not this.
+    - The fix is an `infra/gcp` change, outside C1's brief: the `site` job in its own GitHub environment `site`,
+      the condition `assertion.environment in ['deploy', 'site']`, `ryft-deployer` bound to
+      `principalSet://…/attribute.environment/deploy`, and `site-deployer` to `…/attribute.environment/site`
+      (`attribute.environment` is already mapped). It comes with `ENV_JOBS` in `check_workflows.sh` and an apply.
+    - Until it lands, `SITE_DEPLOY` off keeps the job from running.
 - **Decision, the DNS:** `infra/gcp/site.tf` holds five variables for the records the Firebase wizard shows:
   `site_apex_a`, `site_apex_txt` (`hosting-site=…`, which joins the apex TXT set), and `site_www_a` with
   `site_www_txt`, or `site_www_cname` instead (exclusive, validated). Their values live in the committed
@@ -5116,7 +5145,8 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   - Hosting's header merging, Content-Type on the AASA and bare `/de` are settled against the emulator in CI
     (web D19), and checked again live after every deploy.
 - **Consequences:**
-  - Rollback: Firebase console → Release history → Roll back, then `SITE_DEPLOY` off and a revert.
+  - Rollback: `SITE_DEPLOY` off, Firebase console → Release history → Roll back, the revert merged while it's
+    off, then `SITE_DEPLOY` on and a run by hand.
   - A run by hand deploys the services and the site.
   - **C2 inherits one change:** `scripts/check_policy_in_force.sh`'s EKS half wants the `overlays/eks` web pin to
     serve the version in force. Nothing moves that pin any more, so C2's version bump must drop that half (D3 would

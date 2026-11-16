@@ -258,10 +258,13 @@ are unchanged. nginx's config becomes `firebase.json`:
 - The build writes it (`scripts/firebase-json.mjs`, postbuild, after `csp.mjs`). The rules are
   the pure `firebaseJson()` in `scripts/lib/hosting.mjs`, from the same CSP sources as the nginx
   snippets. It is git-ignored, like `nginx/csp.conf`.
-- firebase-tools is one exact version, in `.firebase-tools-version` and nowhere else. It always
-  runs as `npx --yes firebase-tools@<it>` with npm's install scripts off: the emulator
-  (`npm run e2e:hosting`, `npm run hosting`, project `demo-ryft`, no login) and `deploy.yml`'s
-  `site` job (once `SITE_DEPLOY` is `on`).
+- firebase-tools is one exact version, in `.firebase-tools-version` and nowhere else, always
+  with npm's install scripts off. `deploy.yml`'s `site` job (once `SITE_DEPLOY` is `on`) runs
+  it as `npx --yes firebase-tools@<it>`. The emulator (`npm run e2e:hosting`, `npm run hosting`,
+  project `demo-ryft`, no login) installs it once into `node_modules/.cache/firebase-tools-<it>`
+  (`npm ci` clears it). There one package gets its install script, `re2` (`npm rebuild re2`),
+  and `scripts/hosting.mjs` stops unless `re2` loads. The deploy doesn't serve, so it needs no
+  `re2`.
 - `scripts/check-hosting.mjs` holds runbook step 10's assertions. It runs against the emulator
   in CI and live after every deploy.
 
@@ -320,9 +323,12 @@ first CI run; record what it observed here.**
   the last matching rule's value, as reported for Hosting (not documented). If
   live Hosting sends two, `check-hosting` fails ("2 × Cache-Control"), and the classes must be
   made disjoint like the CSP rules.
+- **Observed in C1's first CI run: the emulator needs the native `re2`.** Its static server
+  (superstatic) loads `re2` as an optional module. Without it, superstatic falls back to
+  JavaScript's `RegExp`, which can't parse RE2's `(?P<name>…)`, and the emulator died on the
+  first request (ECONNRESET, then nothing listening). So only `re2` gets its install script
+  (above). With `re2`, the emulator matches with RE2, as Hosting does.
 - Also unchecked:
-  - Whether the emulator's regex rules need the native `re2` module under ignore-scripts. If
-    they do, set `npm_config_ignore_scripts=false` for the emulator only, never for the deploy.
   - Whether live Hosting adds its own HSTS. If it does, `check-hosting` fails on two HSTS headers
     or on a different value.
   - Whether Location is relative or absolute. The tests accept both, on the same origin only.

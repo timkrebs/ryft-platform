@@ -294,7 +294,8 @@ job_swap "actions/cache in site-build" "its only actions are actions/checkout, s
 # setup-node without a cache in the site (site-build may have one: it has no token).
 job_swap "setup-node with an npm cache in the site" "setup-node without a cache" site "          node-version-file: web/.nvmrc" "          node-version-file: web/.nvmrc\n          cache: npm"
 job_swap "setup-node with a cache path in the site" "setup-node without a cache" site "          node-version-file: web/.nvmrc" "          node-version-file: web/.nvmrc\n          cache-dependency-path: web/package-lock.json"
-job_swap "setup-node with the automatic cache off in the site" "" site "          node-version-file: web/.nvmrc" "          node-version-file: web/.nvmrc\n          package-manager-cache: false"
+job_swap "setup-node in the site without package-manager-cache: false" "package-manager-cache: false" site "          package-manager-cache: false" "          # the automatic cache left on"
+job_swap "setup-node in the site with the automatic cache on" "setup-node without a cache" site "          package-manager-cache: false" "          package-manager-cache: true"
 job_swap "setup-node with an npm cache in site-build" "" site-build "          node-version-file: web/.nvmrc" "          node-version-file: web/.nvmrc\n          cache: npm"
 # Nothing signs in up to and including tip.
 job_swap "gcloud in the site's tip step" "at or before the step \`tip\`" site "          tip=" "          gcloud auth list\n          tip="

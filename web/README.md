@@ -34,9 +34,10 @@ they're missing.
 ## Firebase Hosting, locally
 
 The Hosting emulator of the pinned firebase-tools (`.firebase-tools-version`, the one place the
-version lives; `npx --yes`, npm's install scripts off) serves `out/` with the generated
-`firebase.json` at http://localhost:8080. The project is `demo-ryft`, so no login and no Google
-project is involved. Build first.
+version lives) serves `out/` with the generated `firebase.json` at http://localhost:8080. The
+first run installs it into `node_modules/.cache/firebase-tools-<version>` with npm's install
+scripts off, then builds `re2` alone (the emulator needs it for the regex rules; web D19). The
+project is `demo-ryft`, so no login and no Google project is involved. Build first.
 
 ```bash
 npm run e2e:hosting   # the emulator around Playwright, check:hosting, links and Lighthouse; exit 1 if any failed

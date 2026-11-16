@@ -689,7 +689,8 @@ and to Firebase (`npx --yes firebase-tools@$(cat web/.firebase-tools-version) lo
 billing account anywhere. Until 10f, `SITE_DEPLOY` is off, and every run of `deploy.yml` shows
 "Site off" and stays green.
 
-**10a. The site project** (any time, before or after C1's merge):
+**10a. The site project** (after C1's merge: `$FT` reads `web/.firebase-tools-version`, which
+main has only from then on; without it `firebase-tools@` would be whatever is newest):
 
 ```bash
 FT="npx --yes firebase-tools@$(cat web/.firebase-tools-version)"
@@ -720,6 +721,16 @@ the project policy names anyone but you and `site-deployer`; the SA's policy nam
 
 The GitHub pool's condition already pins `deploy.yml` on main and the `deploy` environment, so
 this binding needs only the repository.
+
+**Known risk, decide before 10f (D233).** `ryft-deployer` binds the same principal set. So any code
+running in the `site` job could mint a token and act as the services' deployer: firebase-tools and
+its dependencies, which npx resolves at run time. The fix is a small `infra/gcp` PR plus an apply:
+- the `site` job in its own environment `site` (main only);
+- the condition admits `deploy` and `site`;
+- `ryft-deployer` is bound to `attribute.environment/deploy` alone and `site-deployer` to
+  `attribute.environment/site`.
+
+It wasn't in C1's scope.
 
 **10b. Two console settings** (Firebase console → `ryftlab-site`):
 - Hosting → the site's menu → **release storage settings**: keep the 10 newest releases. On Spark
@@ -802,7 +813,7 @@ for p in /privacy /impressum /terms /support; do
 done
 curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" https://ryftlab.de/de/privacy   # 301 …/privacy (web D18)
 curl -sI https://ryftlab.de/.well-known/apple-app-site-association           # 200, content-type: application/json, no location
-curl -sI 'https://ryftlab.de//evil.example/' | grep -i '^location' || echo 'no location'   # no location
+curl -sI 'https://ryftlab.de//evil.example/' | grep -i '^location' || echo 'no location'   # no location, or /evil.example on ryftlab.de (web D19 d); never //evil.example or another host
 curl -sI https://www.ryftlab.de/privacy | grep -i '^location'                # https://ryftlab.de/privacy
 curl -sI https://ryftlab.de/admin | grep -ci '^content-security-policy'      # 1
 ```
@@ -1236,8 +1247,9 @@ gh variable list -R timkrebs/ryft-platform                                      
 While it is set, no run builds or deploys a service, by push or by hand. `wait for ci-ok` runs as
 always, and a red `ci-ok` still fails the run. `held` is green, with the notice
 "DEPLOY_HOLD_SERVICES is set (#<issue>): no service was built or deployed (the site has its own
-switch, SITE_DEPLOY)" and "Deploy held" in the summary. `deploy` is skipped. The site isn't held:
-its jobs run as always (**The site**, below); to stop it too, set `SITE_DEPLOY` off. The reason
+switch, SITE_DEPLOY)" and "Deploy held" in the summary. `deploy` is skipped. The site isn't held: its jobs run as always
+(**The site**, below), except that `site` refuses to publish a new `PRIVACY_POLICY_VERSION` while
+the hold is set. To stop the site too, set `SITE_DEPLOY` off. The reason
 shows in every run, so keep it to the issue number. Merges pile up on main. Nothing tracks the
 hold's age (the old deploy watch is gone, C1), so write the release into the issue. To release it:
 
@@ -1426,11 +1438,17 @@ hold; runbook step 10 sets it to `on`. Its jobs, in every run:
   green and deploys nothing. Then it signs in as `site-deployer@ryftlab-site` (WIF, the same pool
   as `ryft-deployer`). It deploys when `web/` differs from the commit of the live release (the
   release's message is `web <sha>`), on every run by hand, and when the live release can't be read
-  or names no commit of main's history. Otherwise "Site unchanged: the live site is `<sha>`", and
-  green. The deploy is `firebase deploy --only hosting --message "web <sha>"` with the firebase-tools
-  of `web/.firebase-tools-version`. Then `web/scripts/check-hosting.mjs` runs against
-  `https://ryftlab.de` and `https://www.ryftlab.de` with `PRIVACY_POLICY_VERSION` from
-  `deploy/run/config.env`: the emulator's assertions of `web-e2e`, live.
+  or names no commit of main's history. Otherwise "Site unchanged: the live site is `<sha>`".
+  - **The hold:** while `DEPLOY_HOLD_SERVICES` is set, a deploy that moves `PRIVACY_POLICY_VERSION`
+    (`deploy/run/config.env` at the live release's commit against main's) is refused ("site held",
+    red). Otherwise `/privacy` would show a version the held api doesn't ask for. Lift the hold, then
+    `gh workflow run deploy.yml --ref main`: both ship.
+  - **The deploy:** `firebase deploy --only hosting --message "web <sha>"` with the firebase-tools
+    of `web/.firebase-tools-version`. It runs from `site-build`'s artifact, unpacked beside the
+    checkout. The artifact must hold `firebase.json` and `out/` and nothing else, with no links.
+  - **The live check:** `web/scripts/check-hosting.mjs` against `https://ryftlab.de` and
+    `https://www.ryftlab.de` with `PRIVACY_POLICY_VERSION` from `deploy/run/config.env`. It runs the
+    emulator's assertions of `web-e2e`, live, on every run from main's tip, deployed or unchanged.
 
 A run by hand always deploys the site. Use one after `SUPPORT_EMAIL` or `TESTFLIGHT_URL` changed,
 because those aren't in `web/`. It also builds and deploys the five services from main's tip.
@@ -1457,8 +1475,12 @@ What each outcome leaves:
 2. Firebase console → `ryftlab-site` → Hosting → Release history → the release before the bad one
    → Roll back.
 3. Check the pages (runbook step 10's checks).
-4. Open the revert (as for the services, above). Set `SITE_DEPLOY` on again, then merge it: its
-   run deploys the reverted `web/` (and the services, unchanged).
+4. Open the revert (as for the services, above) and merge it **with `SITE_DEPLOY` still off**. With
+   it on, a merge landing before the revert would deploy the bad `web/` again. Its run deploys the
+   services (unchanged) and says "Site off".
+5. `gh variable set SITE_DEPLOY --body on -R timkrebs/ryft-platform`, then
+   `gh workflow run deploy.yml --ref main -R timkrebs/ryft-platform`. A run by hand always deploys,
+   so this one deploys the reverted `web/` (and the services again) and runs the live check.
 
 **Stop if** the live check fails twice on the same release (roll back); `firebase deploy` fails for
 a reason other than a missing permission; or `site` deployed in a run whose summary says
@@ -2785,6 +2807,13 @@ binary from `scripts/install_yq.sh` (version and sha256 in that file; `manifests
 is a `Path(kind)` there, so its references are followed automatically.
 
 ### Admission policies: the kind run (D120, D151, D152, T12-d)
+
+**Gone with C1 (D233):** CI's `admission` job, `.github/workflows/admission-e2e.yml`,
+`infra/aws/kubernetes/admission-celtest/` and the Makefile's `admission-celtest` and `admission-e2e`
+are deleted, because nothing on GCP admits anything. Every `make admission-*`, `admission-celtest/run.sh`
+and `admission` job in this section and in the EKS sections below names what was there until D3. The
+files are in C1's parent commit (`git show <C1-merge>^:infra/aws/kubernetes/admission-celtest/run.sh`).
+`scripts/admission_e2e.sh` stays until D3.
 
 The policies of `infra/aws/kubernetes/charts/admission-policy` are tried against a real API server
 in kind before they reach `ryft-prod-euc1`: in CI on every change, and by hand before an apply and on

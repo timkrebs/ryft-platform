@@ -33,8 +33,8 @@
 #      parentheses: && binds tighter and would undo the gate). The site (C1): site-build (npm runs
 #      code there) has no id-token and no environment, and its only actions are checkout,
 #      setup-node and upload-artifact by SHA; site runs in concurrency group `site` with
-#      cancel-in-progress false, its only actions are checkout, setup-node (without a cache) and
-#      download-artifact by SHA, and no step up to and including its step `tip` signs in (gcloud,
+#      cancel-in-progress false, its only actions are checkout, setup-node (no cache key, and
+#      package-manager-cache: false) and download-artifact by SHA, and no step up to and including its step `tip` signs in (gcloud,
 #      firebase, the OIDC request variables, GOOGLE_APPLICATION_CREDENTIALS); both need `ci`, and
 #      their `if` has the top-level conjuncts vars.SITE_DEPLOY == 'on' and
 #      needs.ci.outputs.current == 'true'; every step of `site` that names `firebase ... deploy`
@@ -387,6 +387,9 @@ if is_deploy:
                 if bad:
                     fail(f"deploy.yml's site job, {step_label(n, s)}: setup-node without a cache ({', '.join(map(str, bad))}): "
                          "no cache entry, which another job may have written, is restored next to the token")
+                elif not (isinstance(w, dict) and w.get("package-manager-cache") is False):
+                    fail(f"deploy.yml's site job, {step_label(n, s)}: setup-node needs package-manager-cache: false "
+                         "(a packageManager field in a package.json would otherwise turn its automatic cache on next to the token)")
         tip = next((n for n, s in enumerate(steps) if s.get("id") == "tip"), None)
         if tip is None:
             fail("deploy.yml's site job has no step with id `tip` (main is still at this commit, before it signs in)")

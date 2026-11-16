@@ -30,7 +30,7 @@ theme switch, both appearances and Satoshi stay. The restyle (#142, #143) was dr
 
 | Area | What this branch's tests pin (run by CI's `web-checks`, `web-e2e` and `manifests`, not locally) | Where |
 | --- | --- | --- |
-| Routes | 200 `text/html` on `/`, `/science`, `/beta`, `/privacy` (+ versions), `/terms` (+ version), `/support`, `/impressum`, `/licenses`, `/open`, the universal-link paths; `/de`, `/de/privacy`, `/de/terms`, `/de/impressum`, `/de/privacy/<version>` → 301 to the English path; `/de/` plus a backslash, space or control character → 404 | `e2e/routes.spec.ts` against the nginx image, `tests/nginx.test.ts` |
+| Routes | 200 `text/html` on `/`, `/science`, `/beta`, `/privacy` (+ versions), `/terms` (+ version), `/support`, `/impressum`, `/licenses`, `/open`, the universal-link paths; `/de`, `/de/privacy`, `/de/terms`, `/de/impressum`, `/de/privacy/<version>` → 301 to the English path; `/de/` plus a backslash, space or control character → 404 | `e2e/routes.spec.ts` and `e2e/hosting.spec.ts` against the Hosting emulator, `tests/hosting.test.ts` (C1, web D19) |
 | Pages | English only, no hreflang alternates, no `/de` in the sitemap | `tests/output.test.ts`; Playwright on every page |
 | Privacy | `2026-10-20` and `2026-10-26` keep their English pages; `2026-10-26` in force, its text unchanged | `npm run check:policy`, `scripts/check_policy_in_force.sh` |
 

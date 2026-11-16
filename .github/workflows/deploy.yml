@@ -13,10 +13,12 @@
 # checks) in a job without a token and hands web/out and web/firebase.json on as an artifact; `site`
 # signs in as site-deployer in the project ryftlab-site and runs `firebase deploy` from main's tip
 # when web/ differs from the commit of the live release (its message, "web <sha>"), and on every
-# manual run, then checks ryftlab.de and www live (web/scripts/check-hosting.mjs). The repository
-# variable SITE_DEPLOY switches it: anything but `on` runs only `site-off`, a notice, until runbook
-# step 10 sets it. A dispatch therefore deploys the site too (after a change of SUPPORT_EMAIL or
-# TESTFLIGHT_URL, say). DEPLOY_HOLD_SERVICES does not hold the site; SITE_DEPLOY off does.
+# manual run, then checks ryftlab.de and www live (web/scripts/check-hosting.mjs; on every run from
+# main's tip, deployed or not). The repository variable SITE_DEPLOY switches it: anything but `on`
+# runs only `site-off`, a notice, until runbook step 10 sets it. A dispatch therefore deploys the
+# site too (after a change of SUPPORT_EMAIL or TESTFLIGHT_URL, say). DEPLOY_HOLD_SERVICES does not
+# hold the site, except that `site` refuses to publish a new PRIVACY_POLICY_VERSION while the
+# services are held (the api would still ask for the old one); SITE_DEPLOY off holds it.
 #
 # Only main's tip deploys. Merges can land close together, and ci.yml keeps one run waiting per ref,
 # so a commit in between may never get its ci-ok. A run whose commit is no longer main's tip (looked
@@ -403,24 +405,30 @@ jobs:
 
   # The site on Firebase Hosting in the project ryftlab-site (design §8, runbook step 10), from main's
   # tip only. Every step of a job with id-token: write can mint a token, so: the only actions are
-  # checkout, download-artifact and setup-node, by SHA; setup-node without `cache:` (no cache entry,
-  # which another job may have written, is restored here; web/ has no packageManager field, so
-  # setup-node caches nothing on its own either); npm runs no install script (npm_config_ignore_scripts);
-  # firebase-tools is the one exact version in web/.firebase-tools-version; firebase.json (written by
-  # site-build) may carry no hook or framework build; the credentials are passed to the deploy command
-  # alone. Nothing signs in before `tip`. The WIF condition (infra/gcp) admits
-  # deploy.yml on main, push or dispatch, in the environment `deploy`, on a GitHub-hosted runner;
-  # site-deployer (Hosting admin on ryftlab-site, nothing else) binds the same pool (step 10).
+  # checkout, download-artifact and setup-node, by SHA; setup-node without a cache (no `cache:`, and
+  # package-manager-cache: false, so no cache entry, which another job may have written, is restored
+  # here); npm runs no install script (npm_config_ignore_scripts); firebase-tools is the one exact
+  # version in web/.firebase-tools-version. site-build's artifact is data, never code for this job:
+  # it goes to $RUNNER_TEMP/site, not over the checkout, it may hold firebase.json and out/ and
+  # nothing else (no link, no .npmrc, no node_modules, no script), and its firebase.json may carry no
+  # hook or framework build. The credentials are passed to the deploy command alone. Nothing signs in
+  # before `tip`. The WIF condition (infra/gcp) admits deploy.yml on main, push or dispatch, in the
+  # environment `deploy`, on a GitHub-hosted runner; site-deployer (Hosting admin on ryftlab-site,
+  # nothing else) binds the same pool (step 10). That principal set can impersonate ryft-deployer too:
+  # code in this job (firebase-tools and its dependencies) could act as the services' deployer
+  # (D233, the follow-up that splits the principal by environment).
   # It deploys on every run by hand, when the live release cannot be read, when there is none or its
   # message is not "web <a commit of this history>", and when web/ differs from that commit; else a
-  # notice ("the live site is <sha>") and the run is green.
+  # notice ("the live site is <sha>"). While DEPLOY_HOLD_SERVICES is set, a deploy that changes
+  # PRIVACY_POLICY_VERSION against the live release's commit is refused (red): the site would show a
+  # version the api does not ask for yet. The live check runs on every run from main's tip.
   # A failed `firebase deploy` is red and leaves nothing half-done: Hosting releases a version only
   # once all of it is uploaded and finalized, and the live release stays the old one. A failed live
   # check (check-hosting.mjs) is red and leaves the NEW release live. Rollback: Firebase console ->
   # Hosting -> Release history -> Roll back (seconds, nothing built). Then SITE_DEPLOY off, so that no
-  # run deploys main's web/ over it, and a revert of the merge; set SITE_DEPLOY on again before the
-  # revert merges, and its run deploys the old tree (docs/OPERATIONS.md -> GCP -> Deploy, roll back,
-  # rotate -> The site).
+  # run deploys main's web/ over it, and a revert of the merge, merged while it is off; then
+  # SITE_DEPLOY on and a run by hand, which deploys the reverted tree (docs/OPERATIONS.md -> GCP ->
+  # Deploy, roll back, rotate -> The site).
   site:
     needs: [ci, site-build]
     if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true'
@@ -444,14 +452,15 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # site-build's export: web/out and web/firebase.json.
+      # site-build's export (out/ and firebase.json), beside the checkout, never over it.
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: site
-          path: web
+          path: ${{ runner.temp }}/site
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: web/.nvmrc
+          package-manager-cache: false
       # Before anything signs in: is main still at this commit? A newer commit's run deploys the site
       # (it waits for its own ci-ok, then for this job's concurrency group), and this older one must not
       # put an older web/ live behind it. Superseded: a notice, the steps below are skipped, the run is
@@ -516,63 +525,83 @@ jobs:
           gcloud auth login --cred-file="$RUNNER_TEMP/gcp-wif.json" --quiet
       # Which commit is live? The live channel's release carries the message this job deploys with,
       # "web <sha>". The access token goes to curl on stdin, never on a command line. The message is
-      # matched, never printed (it is the API's text).
+      # matched, never printed (it is the API's text). A run by hand always deploys. While the
+      # services are held, a deploy that moves PRIVACY_POLICY_VERSION (deploy/run/config.env at the
+      # live commit against this one) is refused: /privacy would show a version the api, still on
+      # the old commit, does not ask users to consent to. Lift the hold and dispatch; both ship.
       - name: The live release, and whether web/ changed since
         id: live
         if: steps.tip.outputs.current == 'true'
         env:
           EVENT: ${{ github.event_name }}
+          HOLD: ${{ vars.DEPLOY_HOLD_SERVICES }}
         run: |
           deploy=true
-          if [ "$EVENT" = workflow_dispatch ]; then
-            echo "A run by hand: the site is deployed."
-          elif ! channel=$({ printf 'Authorization: Bearer '; gcloud auth print-access-token; } \
+          live=
+          if ! channel=$({ printf 'Authorization: Bearer '; gcloud auth print-access-token; } \
               | curl -fsS --retry 3 --max-time 30 -H @- "https://firebasehosting.googleapis.com/v1beta1/sites/$SITE_PROJECT/channels/live"); then
             echo "::warning title=site::the live release of $SITE_PROJECT cannot be read: deploying anyway (the same tree again is harmless)"
           else
             msg=$(jq -r '.release.message // ""' <<<"$channel" 2>/dev/null || true)
-            live=
             if [[ $msg =~ ^web\ ([0-9a-f]{40})$ ]]; then live=${BASH_REMATCH[1]}; fi
-            if [ -z "$live" ]; then
-              echo "The live release's message is not 'web <commit>' (no release yet, or one made by hand or by a console rollback): deploying."
-            elif ! git merge-base --is-ancestor "$live" HEAD 2>/dev/null; then
-              echo "The live release names $live, which is not a commit of this history: deploying."
-            elif git diff --quiet "$live" HEAD -- web/; then
-              deploy=false
-              echo "::notice title=site unchanged::the live site is $live and web/ is unchanged since: nothing to deploy"
-              printf '### Site unchanged\nThe live site is %s, and web/ is unchanged since: nothing was deployed.\n' "$live" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "web/ changed since the live release $live: deploying."
+            if [ -n "$live" ] && ! git merge-base --is-ancestor "$live" HEAD 2>/dev/null; then
+              echo "The live release names $live, which is not a commit of this history."
+              live=
+            fi
+          fi
+          if [ "$EVENT" = workflow_dispatch ]; then
+            echo "A run by hand: the site is deployed."
+          elif [ -z "$live" ]; then
+            echo "No live release of this history named 'web <commit>' (none yet, or one made by hand or by a console rollback): deploying."
+          elif git diff --quiet "$live" HEAD -- web/; then
+            deploy=false
+            echo "::notice title=site unchanged::the live site is $live and web/ is unchanged since: nothing to deploy"
+            printf '### Site unchanged\nThe live site is %s, and web/ is unchanged since: nothing was deployed.\n' "$live" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "web/ changed since the live release $live: deploying."
+          fi
+          if [ "$deploy" = true ] && [ -n "$HOLD" ] && [ -n "$live" ]; then
+            was=$(git show "$live:deploy/run/config.env" 2>/dev/null | sed -n 's/^PRIVACY_POLICY_VERSION=//p' || true)
+            now=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' deploy/run/config.env)
+            if [ "$was" != "$now" ]; then
+              echo "::error title=site held::the services are held (DEPLOY_HOLD_SERVICES) and PRIVACY_POLICY_VERSION moves from '$was' to '$now' since the live site $live: the site is not deployed, or /privacy would show a version the api does not ask for yet. Delete DEPLOY_HOLD_SERVICES, then: gh workflow run deploy.yml --ref main"
+              exit 1
             fi
           fi
           echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
-      # From web/ (firebase.json: public out). The credentials only in this command's environment.
-      # firebase.json was written by npm code in site-build: before it is used here, it may hold no
-      # hook (predeploy, postdeploy) and no framework build (hosting.source, frameworksBackend), which
-      # firebase-tools would run in this job, next to the token. .firebase-tools-version is the
-      # checkout's (the artifact holds only out/ and firebase.json).
+      # From $RUNNER_TEMP/site (firebase.json: public out). The credentials only in this command's
+      # environment. The artifact was written by npm code in site-build, so before anything here
+      # reads it: regular files and directories only (no link), firebase.json and out/ and nothing
+      # else (npx would read an .npmrc or a node_modules/ in its working directory), and
+      # firebase.json with no hook (predeploy, postdeploy) and no framework build (hosting.source,
+      # frameworksBackend), which firebase-tools would run next to the token. Names from the
+      # artifact are counted, never printed. .firebase-tools-version is the checkout's.
       - name: firebase deploy --only hosting (ryftlab-site)
         if: steps.tip.outputs.current == 'true' && steps.live.outputs.deploy == 'true'
-        working-directory: web
         env:
           npm_config_ignore_scripts: "true"
         run: |
-          v=$(cat .firebase-tools-version)
+          v=$(cat web/.firebase-tools-version)
           [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error title=site::web/.firebase-tools-version is not one exact version"; exit 1; }
+          site="$RUNNER_TEMP/site"
+          odd=$(cd "$site" && find . -mindepth 1 \( \! \( -type f -o -type d \) -o \! \( -path ./firebase.json -o -path ./out -o -path './out/*' \) -o \( -path ./firebase.json \! -type f \) -o \( -path ./out \! -type d \) \) -print | wc -l)
+          [ "$odd" -eq 0 ] || { echo "::error title=site::site-build's artifact holds $odd entries that are not firebase.json or under out/, or are links: nothing is deployed"; exit 1; }
           for f in firebase.json out/index.html out/.well-known/apple-app-site-association; do
-            test -f "$f" || { echo "::error title=site::site-build's artifact has no web/$f"; exit 1; }
+            test -f "$site/$f" || { echo "::error title=site::site-build's artifact has no $f"; exit 1; }
           done
           jq -e '(.hosting | type) == "object" and .hosting.public == "out"
             and (.hosting | has("source") or has("frameworksBackend") | not)
-            and ([.. | objects | select(has("predeploy") or has("postdeploy"))] | length == 0)' firebase.json >/dev/null \
-            || { echo "::error title=site::web/firebase.json must be one hosting entry with public: out, and no predeploy, postdeploy, hosting.source or frameworksBackend"; exit 1; }
+            and ([.. | objects | select(has("predeploy") or has("postdeploy"))] | length == 0)' "$site/firebase.json" >/dev/null \
+            || { echo "::error title=site::the artifact's firebase.json must be one hosting entry with public: out, and no predeploy, postdeploy, hosting.source or frameworksBackend"; exit 1; }
+          cd "$site"
           GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/gcp-wif.json" npx --yes "firebase-tools@$v" deploy --only hosting --project "$SITE_PROJECT" --non-interactive --message "web $GITHUB_SHA"
           printf '### Site\nweb %s is live on %s (firebase-tools %s).\n' "$GITHUB_SHA" "$SITE_PROJECT" "$v" >> "$GITHUB_STEP_SUMMARY"
       # The emulator's assertions (ci.yml's web-e2e) again, against ryftlab.de and www: headers, the
-      # one CSP per response, redirects, the AASA, the policy version in force. Red leaves the new
-      # release live: roll back as above.
+      # one CSP per response, redirects, the AASA, the policy version in force. On every run from
+      # main's tip, deployed or not, so drift (a rollback by hand, a version moved without the site)
+      # shows. Red after a deploy leaves the new release live: roll back as above.
       - name: The live site (check-hosting.mjs on ryftlab.de and www)
-        if: steps.tip.outputs.current == 'true' && steps.live.outputs.deploy == 'true'
+        if: steps.tip.outputs.current == 'true'
         run: |
           pv=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' deploy/run/config.env)
           [[ $pv =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "::error title=site::PRIVACY_POLICY_VERSION in deploy/run/config.env is not a date"; exit 1; }
