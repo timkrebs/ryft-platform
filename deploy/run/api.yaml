@@ -69,6 +69,7 @@ spec:
             - { name: OTLP_ENDPOINT, value: "${OTLP_ENDPOINT}" }
             - { name: OTLP_USER, value: "${OTLP_USER}" }
             - { name: OTLP_TOKEN, valueFrom: { secretKeyRef: { name: otlp-token, key: "1" } } }
+            - { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "1" } } }
             - { name: LOG_LEVEL, value: "${LOG_LEVEL}" }
   # Every deploy sends all traffic to the new revision, which also ends a rollback's pin
   # (gcloud run services update-traffic, docs/OPERATIONS.md → GCP).
