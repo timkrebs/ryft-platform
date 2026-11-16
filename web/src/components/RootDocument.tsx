@@ -11,7 +11,7 @@ const schemes = [
   ['light', tokens.colors.background.light],
 ] as const;
 
-/** <html> for both root layouts (English at /, other locales under /<locale>). */
+/** <html> for the site's root layout and the 404 page. */
 export function RootDocument({ locale, children }: { locale: Locale; children: ReactNode }) {
   return (
     <html lang={locale} className={satoshi.variable} suppressHydrationWarning>

@@ -127,7 +127,6 @@ test.describe('headers: /admin has its own policy, every other page keeps connec
       '/',
       '/privacy',
       '/beta',
-      '/de',
       '/invite/TEST',
       '/auth/callback',
       '/no-such-page',

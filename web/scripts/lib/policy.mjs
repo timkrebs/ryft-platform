@@ -1,5 +1,5 @@
-// The privacy policy version: ours (content/legal/<locale>/privacy/<version>.mdx, both
-// languages) against PRIVACY_POLICY_VERSION in this repository's api and ingest base env files
+// The privacy policy version: ours (content/legal/en/privacy/<version>.mdx; the site is
+// English only, web D18) against PRIVACY_POLICY_VERSION in this repository's api and ingest base env files
 // (deploy/k8s/base/{api,ingest}/config.env) and the local stack's docker-compose.yml, which
 // consent is recorded against.
 // content/legal/privacy-versions.json lists every version anyone may have consented to, oldest
@@ -8,7 +8,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const LOCALES = ['en', 'de'];
+export const LOCALES = ['en'];
 export const SERVICES = ['api', 'ingest'];
 const PAGE = /^\d{4}-\d{2}-\d{2}\.mdx$/;
 

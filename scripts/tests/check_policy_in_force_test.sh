@@ -106,7 +106,7 @@ render '"2026-11-02 # x"' '"2026-11-02 # x"' "\"$second\""; bad "an inline comme
 render '"2026-11-31"' '"2026-11-31"' "\"$both\"";   bad "a date that does not exist" "real calendar date"
 render '"2026-12-31"' '"2026-12-31"' "\"$second\""; bad "an unlisted version" "not in"
 render '"2026-11-02"' '"2026-11-02"' "\"$first\"";  bad "web rolled back past the version" "no en page"
-render '"2026-12-01"' '"2026-12-01"' "\"$en_only\""; bad "the German page is missing" "no de page"
+render '"2026-12-01"' '"2026-12-01"' "\"$en_only\""; ok "the English page alone (English only: no German page is needed)"
 render '"2026-10-20"' '"2026-10-20"' "\"$second\""; bad "a newer page is served than the one in force" "serves 2026-11-02"
 render '"2026-10-20"' '"2026-10-20"' "\"$both\"";   bad "a newer page in en and de than the one in force" "serves 2026-12-01\|serves 2026-11-31"
 render '"2026-10-20"' '"2026-10-20"' '"f437747"';   ok "a pin outside this history with the first version"
@@ -140,18 +140,18 @@ render '"2026-10-20"' '"2026-10-20"' "\"$first\"";  ok "an unchanged version in 
 echo '["2026-10-20","2026-11-02","2026-12-01","2026-11-31","2027-01-01","2027-02-01"]' > $L/privacy-versions.json
 page en 2027-01-01; page de 2027-01-01; git add -A; git commit -qm "published 2027-01-01"; pub=$(git rev-parse HEAD | cut -c1-7)
 render '"2027-01-01"' '"2027-01-01"' "\"$pub\""; ok "a change to a published page"
-page en 2027-02-01; page de 2027-02-01 draft; git add -A; git commit -qm "de draft"; dr=$(git rev-parse HEAD | cut -c1-7)
-render '"2027-02-01"' '"2027-02-01"' "\"$dr\""; bad "a change to a page that is a draft in German" "not status: published"
-page de 2027-02-01 "'draft'"; git add -A; git commit -qm "quoted draft"; dq=$(git rev-parse HEAD | cut -c1-7)
+page en 2027-02-01 draft; page de 2027-02-01; git add -A; git commit -qm "en draft"; dr=$(git rev-parse HEAD | cut -c1-7)
+render '"2027-02-01"' '"2027-02-01"' "\"$dr\""; bad "a change to a page that is a draft (a published German page does not count, English only)" "not status: published"
+page en 2027-02-01 "'draft'"; git add -A; git commit -qm "quoted draft"; dq=$(git rev-parse HEAD | cut -c1-7)
 render '"2027-02-01"' '"2027-02-01"' "\"$dq\""; bad "a quoted draft status" "not status: published"
 # the frontmatter is read the way the site reads it: only exactly "published" (after normalising) passes
 n=0
-variant() { # <name> <ok|bad> <printf format of the German page>
+variant() { # <name> <ok|bad> <printf format of the English page>
   n=$((n + 1)); local v; v=$(printf '2028-01-%02d' "$n")
   jq --arg v "$v" '. + [$v]' $L/privacy-versions.json > "$tmp/l.json"; mv "$tmp/l.json" $L/privacy-versions.json
-  page en "$v"
+  mkdir -p "$L/en/privacy"
   # shellcheck disable=SC2059
-  printf -- "$3" > "$L/de/privacy/$v.mdx"; git add -A; git commit -qm "variant $1"
+  printf -- "$3" > "$L/en/privacy/$v.mdx"; git add -A; git commit -qm "variant $1"
   render "\"$v\"" "\"$v\"" "\"$(git rev-parse HEAD | cut -c1-7)\""
   if [ "$2" = ok ]; then ok "$1"; else bad "$1" "not status: published"; fi
 }
@@ -195,8 +195,8 @@ run_cfg 2027-01-01  # the k8s copies equal deploy/run/config.env
 git add -A; git commit -qm "base config.env"; git branch -q -f base HEAD
 render '"2026-10-20"' '"2026-10-20"' "\"$first\""; ok "config.env unchanged"
 for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-02-01\n' > $BC/$s/config.env; done
-bad "config.env moves to a version whose German page is a draft" "config.env changes PRIVACY_POLICY_VERSION"
-page de 2027-02-01; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $BC/$s/config.env; done
+bad "config.env moves to a version whose page is a draft" "config.env changes PRIVACY_POLICY_VERSION"
+page en 2027-02-01; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $BC/$s/config.env; done
 ok "config.env back to what base has"
 rm -f $BC/api/config.env; bad "config.env exists on base but not in this change" "exists on"
 printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $BC/api/config.env
@@ -234,13 +234,13 @@ bad "a published page set back to a draft in place" "cannot go back to a draft"
 git checkout -q -f main
 
 # ---- Cloud Run: deploy/run/config.env (ticket B2) -----------------------------------------------
-# main has the variants of 2028-01 (2028-01-01 published, 2028-01-04's German page a draft), 2027-01-01
+# main has the variants of 2028-01 (2028-01-01 published, 2028-01-04's page a draft), 2027-01-01
 # and 2027-02-01 published, 2026-10-20 a draft. The EKS part passes throughout (an unchanged overlay).
 copies() { mkdir -p $BC/api $BC/ingest; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=%s\n' "$1" > $BC/$s/config.env; done; }
 overlay 2026-10-20; run_cfg 2027-01-01; copies 2027-01-01; git add -A; git commit -qm "the Cloud Run base"; git branch -q -f base HEAD
 BASE=
 render '"2026-10-20"' '"2026-10-20"' "\"$first\""
-ok "deploy/run/config.env at a listed version with both pages, the k8s copies equal it"
+ok "deploy/run/config.env at a listed version with its page, the k8s copies equal it"
 grep -q "Cloud Run: deploy/run/config.env 2027-01-01" "$tmp/out" || fail "the summary names Cloud Run's version: $(cat "$tmp/out")"
 printf 'PRIVACY_POLICY_VERSION="2027-01-01"\n' > $RC; bad "a quoted value" "deploy/run/config.env: PRIVACY_POLICY_VERSION '\"2027-01-01\"' is not a bare"
 printf 'PRIVACY_POLICY_VERSION=2027-01-01 # x\n' > $RC; bad "an inline comment" "is not a bare"
@@ -251,18 +251,20 @@ rm -f $RC; bad "no deploy/run/config.env" "deploy/run/config.env is missing"
 run_cfg 2026-11-31; copies 2026-11-31; bad "a date that does not exist" "real calendar date"
 run_cfg 2029-01-01; copies 2029-01-01; bad "an unlisted version" "2029-01-01 is not in"
 cp $L/privacy-versions.json "$tmp/list.bak"; jq '. + ["2029-01-01"]' "$tmp/list.bak" > $L/privacy-versions.json
-bad "a listed version without its pages" "has no en page"
+bad "a listed version without its page" "has no en page"
 cp "$tmp/list.bak" $L/privacy-versions.json
 run_cfg 2027-01-01; copies 2027-02-01; bad "a k8s copy that differs" "the k8s copy must equal"
 copies 2027-01-01; ok "the copies equal it again"
 # the draft guard on a pull request, without the k8s copies (after D3) so that only Cloud Run's part speaks
 rm -rf $BC; git add -A; git commit -qm "no k8s copies"; git branch -q -f base HEAD; BASE=base
 ok "Cloud Run alone"
-run_cfg 2028-01-04; bad "a change to a version whose German page is a draft" "deploy/run/config.env changes PRIVACY_POLICY_VERSION from 2027-01-01"
+run_cfg 2028-01-04; bad "a change to a version whose page is a draft" "deploy/run/config.env changes PRIVACY_POLICY_VERSION from 2027-01-01"
 run_cfg 2028-01-01; ok "a change to a published version"
 run_cfg 2026-10-20; ok "back to a version listed before the current one (a draft)"
-run_cfg 2027-01-01; page de 2027-01-01 draft; bad "a published text set back to a draft in place" "cannot go back to a draft"
-page de 2027-01-01; ok "published again"
+run_cfg 2027-01-01; page en 2027-01-01 draft; bad "a published text set back to a draft in place" "cannot go back to a draft"
+page en 2027-01-01; ok "published again"
+# English only: a German page is not read any more, a draft there or none at all
+page de 2027-01-01 draft; ok "a German draft beside a published English page is ignored"
 # the PR that introduces deploy/run/config.env: base has none, its api copy is what was published
 rm -f $RC; copies 2027-01-01; git add -A; git commit -qm "before Cloud Run"; git branch -q -f base HEAD
 run_cfg 2028-01-04; bad "introduced at a draft version" "from 2027-01-01 (base's deploy/k8s/base/api/config.env) to 2028-01-04"

@@ -69,7 +69,7 @@ Facts that bear on it:
 **Still open:** the name and postal address (U1, the Impressum, terms §1; section 0), the
 supervisory authority (U4), the review of the legal bases (U3, now also the website's), the
 basis for Supabase access from outside the EU, the mail service (name, where, DPA), the
-Impressum's § 18(2) MStV person, phone replacement, VAT ID and VSBG statement (U6–U8),
+Impressum's § 18(2) MStV person and phone replacement (U6–U7; U8 is answered),
 terms §8–§10 (U9–U11), the feedback route on the support page (S9), whether the old Ireland
 project is deleted (S1), an SMTP provider for Supabase's emails (S2), whether sent `outbox`
 rows are deleted (S5), and the privacy version (section 4).
@@ -85,7 +85,7 @@ rows are deleted (S5), and the privacy version (section 4).
 | U5 | privacy §7 (l. 59) | The email address for privacy requests. |
 | U6 | Impressum "Contact" (en l. 18, de l. 16) | Email, and a second fast way to reach you (e.g. phone). |
 | U7 | Impressum § 18(2) MStV (en l. 22, de l. 20) | Name and address of the person responsible for the content. |
-| U8 | Impressum, German only (de l. 22) | VAT identification number, if you have one; the statement on consumer dispute resolution (§ 36 VSBG), if it applies to you. |
+| U8 | Impressum (en l. 22–28) | **Answered, and ported (2026-11-05, web D18).** Your answers were published in the German Impressum; with the German pages gone they are in the English one, translated without a change of meaning: no VAT identification number ("None."), and the § 36 VSBG statement that RYFT is neither obliged nor willing to take part in proceedings before a consumer arbitration board. |
 | U9 | terms §8 (l. 40) | How the beta ends, and how long before that testers are told. |
 | U10 | terms §9 (l. 44) | The liability clause, reviewed for German law. The draft's note stays true: liability for intent, gross negligence and injury to life, body or health cannot be excluded. |
 | U11 | terms §10 (l. 48) | Governing law and place of jurisdiction. |

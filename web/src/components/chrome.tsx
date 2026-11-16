@@ -1,37 +1,35 @@
-// The frame around every page: skip link, header, footer, language and theme switches.
+// The frame around every page: skip link, header, footer and the theme switch.
 import type { ReactNode } from 'react';
 import { Logo, Lockup } from './Brand';
 import { Container } from './ui';
-import { format, localePath, messages, otherLocale, type Locale } from '@/lib/i18n';
+import { format, localePath, messages, type Locale } from '@/lib/i18n';
 import { BUILD_YEAR } from '@/lib/site';
 import styles from './chrome.module.css';
 
 type ShellProps = {
   locale: Locale;
-  /** This page's path, written as the English path (`/privacy`), for the language switch. */
+  /** This page's path (`/privacy`), for `aria-current` in the navigation. */
   path: string;
-  /** Pages without a translation link to the other language's home instead. */
-  translated?: boolean;
   children: ReactNode;
 };
 
-export function PageShell({ locale, path, translated = true, children }: ShellProps) {
+export function PageShell({ locale, path, children }: ShellProps) {
   const t = messages(locale);
   return (
     <>
       <a className="skip-link" href="#main">
         {t.a11y.skip}
       </a>
-      <Header locale={locale} path={path} translated={translated} />
+      <Header locale={locale} path={path} />
       <main id="main" tabIndex={-1} className={styles.main}>
         {children}
       </main>
-      <Footer locale={locale} path={path} translated={translated} />
+      <Footer locale={locale} path={path} />
     </>
   );
 }
 
-function Header({ locale, path, translated }: Omit<ShellProps, 'children'>) {
+function Header({ locale, path }: Omit<ShellProps, 'children'>) {
   const t = messages(locale);
   const home = localePath(locale, '/');
   return (
@@ -60,13 +58,12 @@ function Header({ locale, path, translated }: Omit<ShellProps, 'children'>) {
             </li>
           </ul>
         </nav>
-        <LanguageSwitch locale={locale} path={path} translated={translated} className={styles.lang} />
       </Container>
     </header>
   );
 }
 
-function Footer({ locale, path, translated }: Omit<ShellProps, 'children'>) {
+function Footer({ locale, path }: Omit<ShellProps, 'children'>) {
   const t = messages(locale);
   const link = (p: string) => localePath(locale, p);
   const items: [string, string][] = [
@@ -95,7 +92,6 @@ function Footer({ locale, path, translated }: Omit<ShellProps, 'children'>) {
           </ul>
         </nav>
         <div className={styles.footerControls}>
-          <LanguageSwitch locale={locale} path={path} translated={translated} withName />
           <ThemeSwitch locale={locale} />
         </div>
         <div className={styles.footerMeta}>
@@ -104,38 +100,6 @@ function Footer({ locale, path, translated }: Omit<ShellProps, 'children'>) {
         </div>
       </Container>
     </footer>
-  );
-}
-
-/** A plain link to this page in the other language (no script, no cookie). */
-export function LanguageSwitch({
-  locale,
-  path,
-  translated = true,
-  withName = false,
-  className,
-}: {
-  locale: Locale;
-  path: string;
-  translated?: boolean;
-  withName?: boolean;
-  className?: string;
-}) {
-  const t = messages(locale);
-  const other = otherLocale(locale);
-  const href = localePath(other, translated ? path : '/');
-  return (
-    <p className={`${styles.language} ${className ?? ''}`}>
-      {withName && (
-        <span className={styles.languageCurrent}>
-          <span className="visually-hidden">{t.a11y.language}: </span>
-          {t.language.name}
-        </span>
-      )}
-      <a href={href} hrefLang={other} lang={other} title={t.language.switchHint}>
-        {t.language.switchLabel}
-      </a>
-    </p>
   );
 }
 

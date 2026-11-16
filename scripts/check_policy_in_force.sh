@@ -10,14 +10,15 @@
 #  - the version is not in web/content/legal/privacy-versions.json,
 #  - the web image's commit does not SERVE the version at /privacy (the rendered web Deployment's
 #    image, or, with web not deployed (D215), the overlay's web pin): the site shows the newest
-#    page per language (web/src/lib/content.ts), so the newest
-#    web/content/legal/{en,de}/privacy/<version>.mdx there must be the version in force. A pin
+#    page (web/src/lib/content.ts), so the newest web/content/legal/en/privacy/<version>.mdx
+#    there must be the version in force (the site is English only, D230; older
+#    commits also carry a German page, which is not checked). A pin
 #    that is not a commit of this history passes only when it is the known foreign pin
 #    f437747 (built in the archived ryft-web repository) AND the version is the first listed
 #    one: that image carries nothing newer. Any other sha must be exactly one commit here,
 #  - given a base ref (a pull request; it must resolve): the version in force, or the one in
-#    base's config.env, changes to a version whose page is not status: published in both
-#    languages (frontmatter read like the site does; only exactly "published" passes). An
+#    base's config.env, changes to a version whose page is not status: published
+#    (frontmatter read like the site does; only exactly "published" passes). An
 #    unchanged draft stays allowed, and so does going back to a version listed before the
 #    one in force now.
 # So rolling web back past a policy version fails until the in-force pin goes back too, and a
@@ -25,10 +26,10 @@
 # Cloud Run (ticket B2): deploy/run/config.env is the version's home there (scripts/cloudrun_render.py
 # hands it to api and ingest). It fails when
 #  - the file is missing, or PRIVACY_POLICY_VERSION is not set exactly once as a bare, real YYYY-MM-DD,
-#  - the version is not listed, or has no en or de page in this tree,
+#  - the version is not listed, or has no (English) page in this tree,
 #  - given a base ref: it changes (from base's deploy/run/config.env, or, on the PR that introduces
 #    the file, from base's deploy/k8s/base/api/config.env) to a version whose page is not published
-#    in both languages (going back to one listed before stays allowed), or base's version had a
+#    (going back to one listed before stays allowed), or base's version had a
 #    published page that this change sets back to a draft,
 #  - a k8s copy (deploy/k8s/base/{api,ingest}/config.env, while the EKS manifests exist) differs from it.
 #   scripts/check_policy_in_force.sh [base-ref]        e.g. origin/main
@@ -147,12 +148,13 @@ resolve_pin() { # <tag>: sets pin_kind (commit|foreign) and pin_full; returns 1 
 resolve_pin "$tag" || err "web is pinned to $tag, which is not exactly one commit of this history and not the known foreign pin $FOREIGN"
 full=$pin_full; tag_kind=$pin_kind
 in_history=; [ "$pin_kind" != commit ] || in_history=1
-# The pages of an image (<kind> <full sha> <lang> <version>). The foreign image carries a draft:
-# nothing in this tree is published for it.
+# The pages of an image (<kind> <full sha> <lang> <version>; the language loop is one entry
+# since the site is English only and stays a loop for the day German comes back). The foreign image carries a
+# draft: nothing in this tree is published for it.
 page_at() { if [ "$1" = commit ]; then git show "$2:web/content/legal/$3/privacy/$4.mdx" 2>/dev/null; fi; }
 page() { page_at "$tag_kind" "$full" "$1" "$2"; }
 if [ -n "$in_history" ]; then
-  for lang in en de; do
+  for lang in en; do
     git cat-file -e "$full:web/content/legal/$lang/privacy/$v.mdx" 2>/dev/null \
       || err "the version in force, $v, has no $lang page in the pinned web image ($tag): web/content/legal/$lang/privacy/$v.mdx is missing there. Pin web to a commit that has it, or set the in-force pin back with it."
     # /privacy serves the newest file (web/src/lib/content.ts listMdx sorts and reverses).
@@ -164,8 +166,8 @@ else
 fi
 
 # Draft guard, on a pull request (a base ref is given). A version may BECOME the one in force, or
-# the published one in base's config.env, only when its page says status: published in both
-# languages. The frontmatter is read the way the site reads it (gray-matter): a BOM, CRLF, quotes
+# the published one in base's config.env, only when its (English) page says status: published.
+# The frontmatter is read the way the site reads it (gray-matter): a BOM, CRLF, quotes
 # on key or value, a trailing comment and spaces after the dashes are all normalised, and anything
 # that is not exactly "published" refuses. A version listed BEFORE the one that is in force now was
 # in force before, so going back to it is allowed (move web and the in-force pin back together).
@@ -201,7 +203,7 @@ if [ -n "$base" ]; then
   fi
   # 1. the version in force changes (the deploy PR, or a hand-made pin)
   if [ -n "$was" ] && [ "$was" != "$v" ] && ! listed_before "$v" "$was"; then
-    for lang in en de; do
+    for lang in en; do
       page "$lang" "$v" | published \
         || err "the version in force would change from $was to $v, and its $lang page in web $tag is not status: published. Publish the text first (the user's legal call), or go back to a version listed before $was."
     done
@@ -214,7 +216,7 @@ if [ -n "$base" ]; then
     [ -f "$f" ] || err "$f exists on $base but not in this change"
     new=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' "$f" | head -1)
     if [ "$old" != "$new" ] && ! listed_before "$new" "$old"; then
-      for lang in en de; do
+      for lang in en; do
         published < "web/content/legal/$lang/privacy/$new.mdx" \
           || err "$f changes PRIVACY_POLICY_VERSION from $old to $new, and the $lang page web/content/legal/$lang/privacy/$new.mdx is not status: published (or missing). A draft version on main blocks every deploy PR until it is published or web is held (scripts/hold.sh add web \"<reason>\")."
       done
@@ -228,7 +230,7 @@ if [ -n "$base" ]; then
   if [ -z "$base_web" ] && printf '%s\n' "$base_overlay" | grep -q 'ghcr.io/timkrebs/ryft/web'; then
     err "$overlay on $base has a ghcr.io/timkrebs/ryft/web entry whose newTag this check cannot read: it cannot tell what web published there. Keep the entry as '- name: ghcr.io/timkrebs/ryft/web' and 'newTag: \"<sha>\"'."
   fi
-  for lang in en de; do
+  for lang in en; do
     bv=$(git show "$base:deploy/k8s/base/api/config.env" 2>/dev/null | sed -n 's/^PRIVACY_POLICY_VERSION=//p' | head -1 || true)
     if [ -n "$bv" ] && git show "$base:web/content/legal/$lang/privacy/$bv.mdx" 2>/dev/null | published \
       && ! published < "web/content/legal/$lang/privacy/$bv.mdx"; then
@@ -238,7 +240,7 @@ if [ -n "$base" ]; then
   if [ -n "$base_web" ] && [ "$base_web" != "$tag" ]; then
     resolve_pin "$base_web" || err "the web pin on $base ($base_web) is not exactly one commit of this history and not $FOREIGN: cannot tell what it published"
     base_kind=$pin_kind; base_full=$pin_full
-    for lang in en de; do
+    for lang in en; do
       page_at "$base_kind" "$base_full" "$lang" "$v" | published || continue
       page "$lang" "$v" | published \
         || err "the $lang page of $v is status: published in the web image on $base ($base_web) but not in the one pinned now ($tag): rolling web back would bring the draft text back under the same version. Publish a new version, or keep web at or after $base_web."
@@ -257,7 +259,7 @@ printf '%s' "$rv" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' \
 python3 -c 'import datetime,sys; datetime.date.fromisoformat(sys.argv[1])' "$rv" 2>/dev/null \
   || err "$run_cfg: PRIVACY_POLICY_VERSION '$rv' is not a real calendar date (the services refuse it at start-up)"
 jq -e --arg v "$rv" 'index($v) != null' "$list" >/dev/null || err "$run_cfg: $rv is not in $list ($(jq -c . "$list"))"
-for lang in en de; do
+for lang in en; do
   [ -f "web/content/legal/$lang/privacy/$rv.mdx" ] \
     || err "$run_cfg: $rv has no $lang page: web/content/legal/$lang/privacy/$rv.mdx is missing (the site serves the text people consent to)"
 done
@@ -266,13 +268,13 @@ if [ -n "$base" ]; then
   if git cat-file -e "$base:$run_cfg" 2>/dev/null; then rsrc=$run_cfg; else rsrc=deploy/k8s/base/api/config.env; fi
   rold=$(git show "$base:$rsrc" 2>/dev/null | sed -n 's/^PRIVACY_POLICY_VERSION=//p' | head -1 || true)
   if [ -n "$rold" ] && [ "$rold" != "$rv" ] && ! listed_before "$rv" "$rold"; then
-    for lang in en de; do
+    for lang in en; do
       published < "web/content/legal/$lang/privacy/$rv.mdx" \
         || err "$run_cfg changes PRIVACY_POLICY_VERSION from $rold (base's $rsrc) to $rv, and the $lang page web/content/legal/$lang/privacy/$rv.mdx is not status: published. Publish the text first (the user's legal call), or go back to a version listed before $rold."
     done
   fi
   if [ -n "$rold" ]; then
-    for lang in en de; do
+    for lang in en; do
       if git show "$base:web/content/legal/$lang/privacy/$rold.mdx" 2>/dev/null | published \
         && ! published < "web/content/legal/$lang/privacy/$rold.mdx"; then
         err "the $lang page of $rold ($rsrc on $base) is status: published there and is not in this change: a published policy text cannot go back to a draft in place. Publish a new version instead."
@@ -286,4 +288,4 @@ for s in api ingest; do
   c=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' "$f" | head -1)
   [ "$c" = "$rv" ] || err "$f has PRIVACY_POLICY_VERSION '$c' and $run_cfg '$rv': the k8s copy must equal $run_cfg (change them in one PR)"
 done
-echo "policy in force: $v (api and ingest agree; web $tag$web_note serves it at /privacy); Cloud Run: $run_cfg $rv (listed, en and de pages, the k8s copies equal it)"
+echo "policy in force: $v (api and ingest agree; web $tag$web_note serves it at /privacy); Cloud Run: $run_cfg $rv (listed, its page, the k8s copies equal it)"

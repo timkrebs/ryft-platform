@@ -17,7 +17,7 @@
     "build": "next build",
     "postbuild": "node scripts/postbuild.mjs && node scripts/csp.mjs && node scripts/check-brand.mjs --out-only",
     "typecheck": "next typegen && tsc --noEmit",
-    "lint": "eslint . && prettier --check . && node scripts/check-brand.mjs && node scripts/check-messages.mjs",
+    "lint": "eslint . && prettier --check . && node scripts/check-brand.mjs",
     "format": "prettier --write .",
     "brand": "node scripts/check-brand.mjs",
     "test": "vitest run",

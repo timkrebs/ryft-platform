@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The privacy policy on the site and PRIVACY_POLICY_VERSION in deploy/run/config.env (this
 // repository; the published version, its home on Cloud Run) must be the same date: consent is
-// recorded against that version, so content/legal/{en,de}/privacy/<version>.mdx must exist and be
+// recorded against that version, so content/legal/en/privacy/<version>.mdx must exist and be
 // the newest, every version in content/legal/privacy-versions.json must keep its page, and the
 // copies in deploy/k8s/base/{api,ingest}/config.env (EKS, until its removal) and the local
 // docker-compose.yml must agree with it. Warns by default; --strict fails (CI, in the manifests job).
@@ -41,9 +41,7 @@ for (const msg of warnings) {
   console.log(gha ? `::warning title=privacy policy version::${msg}` : `warn: ${msg}`);
 }
 if (problems.length === 0) {
-  console.log(
-    `privacy policy: ${version} on the site (en, de) and in ${RUN_CONFIG} (copies: ${checked.source}).`,
-  );
+  console.log(`privacy policy: ${version} on the site and in ${RUN_CONFIG} (copies: ${checked.source}).`);
 } else {
   for (const msg of problems) {
     const level = strict ? 'error' : 'warning';

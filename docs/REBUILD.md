@@ -383,8 +383,9 @@ old demo account stays until you delete it. Meanwhile watch
 sync-to-score p95 is under 120 s. **Worked when:** the score shows within two minutes. **Stop** if a sync gets a 403, or
 days stay pending for more than two minutes.
 
-**Before anyone but you signs in** (testers back, an App Review submission): `https://ryftlab.de/privacy`,
-`/de/privacy` and `/impressum` must load (each `curl -s -o /dev/null -w '%{http_code}\n'` prints `200`). Until a host
+**Before anyone but you signs in** (testers back, an App Review submission): `https://ryftlab.de/privacy`
+and `/impressum` must load (each `curl -s -o /dev/null -w '%{http_code}\n'` prints `200`), and `/de/privacy`, which
+older app builds still link, answers `301` to `/privacy` (web D18; the site is English only). Until a host
 serves them (D215; the optional step below is one way), the app asks for consent to a text nobody can open, and the
 Impressum (§5 DDG) is not available, so open no gate and invite nobody.
 
