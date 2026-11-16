@@ -24,6 +24,16 @@ For the privacy text (the analytics plan's step, not this PR):
 - Whether account deletion removes the PostHog person (Art. 17). If it does, that is a new server-to-PostHog flow and a new secret.
 - How the opt-in is evidenced (Art. 7(1)).
 
-## code-reviewer
+## code-reviewer (2026-11-16, read-only, after main with #189 was merged in)
 
-See below (added after its run).
+One blocker: CI's lint was red. The migration, the contract (`analytics` always present, nullable in the
+snapshot, strict decode of both examples), the merge resolution (main's English-only `privacy_policy_url` row
+kept; changelog rows newest first; D230 before D231), the optional pin in `check_cloudrun.py` and the
+Terraform test all held up.
+
+| # | Finding | Severity | Resolution |
+| --- | --- | --- | --- |
+| 1 | `scripts/pkgmap.sh --check` (lint) fails: the package map's test-file counts are stale (cmd/api 35→36, internal/config 2→3, internal/db 15→16) | blocker | `docs/ARCHITECTURE.md`'s three rows updated to CI's diff, line for line |
+| 2 | The bootstrap runbook still counts 11 secrets: "116 to add" (step 2f, step 4 and its **Stop if**), "11 secrets + 11 accessor bindings", "The 11 containers" (step 5). A rebuild would stop at step 4 | should-fix | 118 to add, 12 + 12 = 24, the running totals, "The 12 containers", and `infra/gcp/README.md`. Step 5 gets `put posthog-project-key`, needed before step 8 once `api.yaml` pins it |
+| 3 | The flag's runbook paragraph lets the operator allow-list testers before the privacy policy in force names PostHog | should-fix | A **Stop if**: the policy in force names PostHog (EU Cloud) as a processor, with the purpose and the opt-in, and *Discard client IP data* is on, with a `curl … \| grep -c PostHog` check. STATUS says the same |
+| 4 | #191 and #192 both append a D-entry after D230 and conflict | nit | Whichever merges second merges main in (D231 before D232) |

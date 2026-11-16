@@ -210,7 +210,7 @@ tfc_var github_repository_owner_id "$OWNER_ID" terraform
 
 # 2f. Connect and plan once (speculative: it proves the plan SA's sign-in).
 terraform -chdir=infra/gcp init                     # connects to ryft-gcp, which 2b made
-terraform -chdir=infra/gcp plan                     # 116 to add (step 4)
+terraform -chdir=infra/gcp plan                     # 118 to add (step 4)
 ```
 
 - **APIs.** Without `--force`, `gcloud services disable` refuses a service that was used in
@@ -268,15 +268,15 @@ rm infra/gcp/apply-1.tfplan
 ```
 
 ```text
-# Apply 1: 116 to add, 0 to change, 0 to destroy.
+# Apply 1: 118 to add, 0 to change, 0 to destroy.
 #   16 APIs + 3 audit configs (Secret Manager, STS, IAM) + 2 service agents                  = 21
 #    8 accounts + 1 token creator + 1 run.developer + 5 actAs + 1 monitoring.viewer          = 16  (37)
 #    1 GitHub pool + 1 provider + 1 workloadIdentityUser                                     =  3  (40)
-#   11 secrets + 11 accessor bindings                                                        = 22  (62)
-#    9 topics + 9 publisher bindings + 10 push subs + 6 dead-letter source bindings + 2 hold = 36  (98)
-#    1 Scheduler job + 1 Artifact Registry + 1 registry writer                               =  3 (101)
-#    1 zone + 12 record sets (CAA, MX, apex TXT, DMARC, 6 CNAME, 2 SRV)                      = 13 (114)
-#    1 log bucket + 1 sink                                                                   =  2 (116)
+#   12 secrets + 12 accessor bindings                                                        = 24  (64)
+#    9 topics + 9 publisher bindings + 10 push subs + 6 dead-letter source bindings + 2 hold = 36 (100)
+#    1 Scheduler job + 1 Artifact Registry + 1 registry writer                               =  3 (103)
+#    1 zone + 12 record sets (CAA, MX, apex TXT, DMARC, 6 CNAME, 2 SRV)                      = 13 (116)
+#    1 log bucket + 1 sink                                                                   =  2 (118)
 ```
 
 Every line is a `+`. Expect one warning: the check `default_log_sink_disabled`, because the
@@ -303,11 +303,11 @@ Pub/Sub's service agent can take a minute to exist. If the apply fails on
 `service-<number>@gcp-sa-pubsub.iam.gserviceaccount.com`, wait, then plan and apply again. The
 new plan holds only what is left.
 
-**Stop if** the plan has any change or destroy, or the add count isn't 116.
+**Stop if** the plan has any change or destroy, or the add count isn't 118.
 
 ### 5. Secret values
 
-The 11 containers exist since step 4. Each value goes in through stdin or a file, never on argv
+The 12 containers exist since step 4. Each value goes in through stdin or a file, never on argv
 and never on screen. Each `add` prints `Created version [N] of the secret [<id>]`. Every `N` must
 be `1`, because `deploy/run` pins version 1. If one isn't, a PR moves that secret's pin in
 `deploy/run` before step 8. For a `db-password-*` secret, that means `migrate.yaml` and the
@@ -334,6 +334,9 @@ gcloud secrets versions add apns-key-p8 --project=ryftlab-prod --data-file="$HOM
 rm "$HOME/Downloads/AuthKey_<APPLE_KEY_ID>.p8" "$HOME/Downloads/AuthKey_<APNS_KEY_ID>.p8"
 # The OTLP token: Grafana Cloud -> Access policies -> a policy on the stack with metrics:write only -> Add token:
 put otlp-token
+# PostHog's project API key (phc_…, never a personal phx_ key), PostHog -> Project settings. Needed
+# before step 8 once deploy/run/api.yaml pins it (D231); while it doesn't, the api serves analytics null:
+put posthog-project-key
 pbcopy < /dev/null                                   # clear the clipboard you pasted from
 ```
 
@@ -3905,6 +3908,13 @@ so a change reaches everyone within that. Rotate the key with
 it is on, `GET /v1/config` → `analytics` is set (GCP → **PostHog's project key**) and the user opted
 in. Testers first, by the allow-list; `{"enabled": false, "rollout_pct": 100}` is the kill switch.
 Nothing on the server checks the flag, so it takes effect at the app's next config.
+
+**Stop if**, before the first account goes on its allow-list, the privacy policy in force (the
+version `GET /v1/config` → `privacy_policy_version` names, published at `https://ryftlab.de/privacy`)
+doesn't name PostHog (EU Cloud) as a processor, with the purpose and the opt-in, or PostHog's project
+doesn't have **Discard client IP data** on. Testers are real people: their events would reach a
+processor the published text doesn't name. A quick look: `curl -s https://ryftlab.de/privacy | grep -c PostHog`
+must not print `0`.
 
 ## Push (APNs)
 

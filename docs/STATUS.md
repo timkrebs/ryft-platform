@@ -81,7 +81,7 @@ Branch `config/analytics` (D231, `docs/work/2026-11-16-analytics-config/`): `GET
 only). The merge deploys the code and the migration; `analytics` stays `null` until your three steps, in this order:
 `terraform -chdir=infra/gcp` plan/apply (2 to add), `put posthog-project-key`, then the one-line pin PR
 (OPERATIONS → GCP → PostHog's project key). Then allow-list testers for `analytics.enabled` once the app ships it
-(OPERATIONS → Feature flags).
+and the privacy policy in force names PostHog (OPERATIONS → Feature flags, its stop line).
 
 ## GCP serverless (2026-11-14)
 

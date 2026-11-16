@@ -79,7 +79,8 @@ else.
 The arithmetic of each count is in the runbook (steps 4, 9, 11 and the stop line).
 
 1. **Apply 1** (`serve = false`, runbook step 4): everything except the invokers, the deployer's
-   bindings on the services and the mappings. 116 to add, 0 to change, 0 to destroy.
+   bindings on the services and the mappings. 118 to add, 0 to change, 0 to destroy (116 before
+   `posthog-project-key`, D231).
 2. **Apply 2** (`serve = true`, step 9, after CI's first deploy at step 8): 13 to add (4 invoker
    bindings, 4 + 1 deployer bindings on the services and the job, 2 mappings, 2 CNAMEs), 1 to
    change (the tick resumes), 1 to destroy (the deployer's project-wide `run.developer`).
