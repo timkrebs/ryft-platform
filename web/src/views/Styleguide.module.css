@@ -104,7 +104,7 @@
 .type-label {
   font-size: var(--type-label);
   font-weight: var(--type-label-weight);
-  text-transform: uppercase;
+  text-transform: var(--label-transform);
   letter-spacing: var(--tracking-label);
 }
 .type-axis {

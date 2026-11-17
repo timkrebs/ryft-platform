@@ -111,7 +111,7 @@
 .tileLabel {
   font-size: var(--type-axis);
   font-weight: var(--type-label-weight);
-  text-transform: uppercase;
+  text-transform: var(--label-transform);
   letter-spacing: var(--tracking-label);
   color: var(--text-secondary);
 }
