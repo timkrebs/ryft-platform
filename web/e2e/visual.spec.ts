@@ -17,6 +17,12 @@ for (const [name, path, status] of SHOTS) {
       await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });
       const res = await page.goto(path, { waitUntil: 'networkidle' });
       expect(res?.status()).toBe(status);
+      // Lazy images load only near the viewport, and a full-page capture doesn't scroll.
+      const lazy = await page.locator('img[loading="lazy"]').all();
+      for (const img of lazy) await img.scrollIntoViewIfNeeded();
+      const loaded = () => page.evaluate(() => Array.from(document.images).every((i) => i.complete));
+      await expect.poll(loaded).toBe(true);
+      await page.evaluate(() => window.scrollTo(0, 0));
       await page.evaluate(() => document.fonts.ready.then(() => true));
       await page.screenshot({ path: info.outputPath(`${name}-${scheme}.png`), fullPage: true });
     });
