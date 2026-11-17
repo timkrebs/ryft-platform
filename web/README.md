@@ -23,7 +23,7 @@ Then, from `web/` (or with the `make web-*` targets from the root: `web-test`, `
 `web-e2e`, `web-hosting`, `web-image`, `web-serve`, `web-tokens`):
 
 ```bash
-npm run fonts      # Satoshi from Fontshare into src/fonts/, verified by SHA-256 (git-ignored)
+npm run fonts      # Satoshi (Light, Regular, Medium, Bold) from Fontshare into src/fonts/, verified by SHA-256 (git-ignored)
 npm run dev        # http://localhost:3000
 npm run build      # static site in out/ (postbuild: runtime removed, CSP hashes, firebase.json, brand check)
 ```
@@ -46,7 +46,8 @@ npm run e2e           # Playwright against a running emulator (BASE_URL=… for 
 npm run check:hosting -- --base http://localhost:8080   # the deploy's live checks, one PASS/FAIL line each
 ```
 
-`firebase.json` is git-ignored: it carries this build's script hashes. Its rules are
+`firebase.json` is git-ignored: it carries this build's script hash (the admin page's; every other
+page runs no script, D20). Its rules are
 `scripts/lib/hosting.mjs` (`tests/hosting.test.ts` pins them; D19 says why they look the way
 they do). The site goes live through CI only (`deploy.yml`, the `site` job, once the repository
 variable `SITE_DEPLOY` is `on`); never `firebase deploy` by hand. `check:hosting` takes
@@ -77,7 +78,7 @@ npm run typecheck && npm run lint && npm test && npm run build
 | --- | --- |
 | `npm run lint` | ESLint, Prettier, the brand check |
 | `npm run brand` | The denylisted brand in every file tracked under `web/`, `out/` and the last commit message (the git hooks in `../.githooks` run it on staged `web/` files and every commit message) |
-| `npm run tokens:check` | `src/styles/tokens.*` against `../../app/Ryft` |
+| `npm run tokens:check` | `src/styles/tokens.*` against `../../app/Ryft` (CI: the app at the commit in `.app-ref`, platform D234) |
 | `npm run licenses:check` | `config/app-packages.json` against the app's `Package.resolved` |
 | `npm run check:policy` | The privacy version against `PRIVACY_POLICY_VERSION` in `../deploy/run/config.env` and its k8s copies (the published version; exact line `PRIVACY_POLICY_VERSION=YYYY-MM-DD`): the page exists, it is the newest, api and ingest agree (warns; `-- --strict` fails, and runs from the repository root as `node web/scripts/check-policy-version.mjs --strict`, Node built-ins only) |
 | `npm test` | Vitest: brand matcher, contrast, mark, messages, legal ports, AASA, science version, CSP, `firebase.json`'s rules, the built site |
@@ -87,7 +88,7 @@ npm run typecheck && npm run lint && npm test && npm run build
 
 | Command | When |
 | --- | --- |
-| `npm run tokens` | A colour set, `Theme.swift` metrics or the type scale changed |
+| `npm run tokens` | A colour set, `Theme.swift` metrics, the type scale or the label style changed (from the app at the commit in `.app-ref`) |
 | `npm run screenshots` | New captures in `../../app/docs/screenshots` |
 | `npm run icons` | The mark or the tokens changed (favicon, touch icon, manifest) |
 | `npm run og` | Copy or tokens of the OG image changed (needs Playwright's Chromium) |
@@ -125,7 +126,7 @@ src/app/(admin)/…     /admin, its own root layout (the operator's page)
 src/admin/            the admin page's script (TypeScript, bundled by esbuild into one inline script)
 src/views/            page bodies
 src/components/       mark, chrome, cards, charts, screenshots, prose
-src/lib/              i18n, metadata, content loading, the mark's geometry, inline scripts
+src/lib/              i18n, metadata, content loading, fonts, the mark's geometry
 src/styles/           tokens.css (generated), globals.css
 content/              science and legal texts (MDX)
 messages/             UI strings (en.json)

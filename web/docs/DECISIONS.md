@@ -20,6 +20,8 @@ Would change if the site grows into many one-off layouts written by several peop
 
 ## D2 — Next renders, but no Next runtime ships (2026-10-20)
 
+_Amended by D20: the theme scripts and `src/lib/inline-scripts.ts` are gone; no page but `/admin` runs a script, and the marketing CSP is `script-src 'none'`._
+
 Next.js (App Router, `output: 'export'`) renders every page to HTML at build time. Then
 `scripts/postbuild.mjs` removes the client runtime: every `<script>` without `data-ryft`,
 the script preloads, the RSC payload files (`*.txt`, `__next.*`) and the JavaScript under
@@ -43,6 +45,8 @@ budget is measured again.
 
 ## D3 — The wordmark uses Satoshi Medium, as in the app (2026-10-20)
 
+_Amended by D20: the app's wordmark is Satoshi Light now, so `--type-wordmark-weight` is 300; the tracking (0.32 em) is `Wordmark.tracking`._
+
 The brief said "Satoshi Bold with the app's letter spacing". The app's `Wordmark`
 (`RyftHeader.swift`) uses `.medium` with tracking `size × 0.32`, and the brand board's
 wordmark is a light geometric cut. The web follows the app: `--type-wordmark-weight` (500)
@@ -50,6 +54,8 @@ and `--tracking-wordmark` (0.32 em) come from the app through `tokens.mjs`. Chan
 app's weight changes the site's on the next `npm run tokens`.
 
 ## D4 — Fonts: static Satoshi files, not preloaded (2026-10-20)
+
+_Amended by D20: Satoshi Light joins them, and a page now fetches three files (Light, Regular, Medium)._
 
 Regular, Medium and Bold WOFF2 exactly as Fontshare supplies them (the ITF FFL forbids
 subsetting and format conversion), pinned by SHA-256 in `scripts/fetch-fonts.mjs`, through
@@ -61,6 +67,8 @@ Emphasis uses Medium (500), as the app does, so no page fetches Bold: two font f
 page kept the LCP at 1.35 s where a third pushed it to 1.5 s (Lighthouse, mobile).
 
 ## D5 — Theme: system by default, a three-way switch in the footer (2026-10-20)
+
+_Superseded by D20: the site is dark-only, like the app; the switch, its scripts and `ryft.theme` are gone._
 
 Dark first (the default without a system preference), light from the light tokens.
 System / Light / Dark like the app's Appearance setting, stored in `localStorage` under
@@ -384,3 +392,74 @@ Would change if the first emulator or live run disagrees with an expectation abo
 header is fixed by making those rules disjoint. If headers do not reach redirects, browsers
 keep the `/de` 301s without D18's one-hour limit. Whether that is acceptable, or the `/de` rules
 become 302s, is then the user's decision.
+
+## D20 — Nocturne: dark-only, Satoshi Light, sentence-case labels (2026-11-17; amends D2, D3, D4, D5)
+
+The app's Nocturne PR 1 (app #112, the app's ADR 0016) gives every colour set one value, sets
+titles and numbers in Satoshi Light, drops the label style's uppercase and tracking, and makes the
+app icon the wordmark (M1). The user decided that the site takes the Nocturne look through the
+tokens, with no design change beyond what they carry. `scripts/tokens.mjs` reads the app at the
+commit in `web/.app-ref` (platform D234; the first pin is app main at #114), which CI checks out.
+
+What the tokens carry now (old → new):
+- **Colours, one value each** (25 sets; `signal` and `on-signal` are new, and nothing on the site
+  uses them yet). Background (and Graphite, on-accent) `#0b0f0e` → `#0a0c0b`; surface (and Slate)
+  `#1a2226` → `#121514`; surface-raised `#263137` → `#2f312f`; text (and Mist) `#e8e7e3` →
+  `#f2f1ec`, secondary 60 → 62 %, tertiary 55 → 48 %; accent (and Teal) `#3fd1b4` → `#63d2b4`;
+  sleep `#8f87f1` → `#9b8af0`; strain `#5b8def` → `#5e8bea`. Warning, alert, sage and the stages keep
+  their dark values.
+- **Type.** Display 56 → 52 pt, number-large 40 → 34, metric 22 → 26, headline 18 → 17, callout
+  14 → 15, label 11 → 13, axis 10 → 11, wordmark 17 → 15. Display, number-large, title, metric and
+  the wordmark are Light (300; they were Medium), the label is Regular (400; it was Medium). Button
+  (16, Medium) and tab (11, Regular) are new.
+- **Labels.** `--tracking-label` 0.1818em → 0em, and a new token, `--label-transform: none`
+  (`tokens.mjs` reads `ryftLabelStyle`'s own body: `uppercase` if it has `.textCase(.uppercase)`
+  again, 0 when it has no `.tracking`). The wordmark keeps 0.32 em, now read from `Wordmark.tracking`.
+- **Metrics.** Seven new keys (neutral, glow and hero tile radii, circle button, minimum hit target,
+  pill height, item spacing). The six the site uses are unchanged.
+
+`tokens.json` keeps `{light, dark}` per colour (the scripts and tests read `.dark`); the two are
+equal. `tokens.css` sets `color-scheme: dark` and has no light block. One would come back only if a
+colour set has a light value again, and then `tests/contrast.test.ts` fails ("dark-only"), so the
+site gets a decision of its own.
+
+**Dark-only (supersedes D5).** With one palette, a System / Light / Dark switch would switch nothing.
+- Removed: the footer's switch (`ThemeSwitch`, its CSS, `theme` and `a11y.theme` in
+  `messages/en.json`), both theme scripts and `src/lib/inline-scripts.ts`, `localStorage['ryft.theme']`,
+  the screenshots' light `<source>`s, and the light `theme-color`. The one `theme-color` is the
+  background token. The footer keeps its three columns; the switch's column is empty.
+- So no page but `/admin` runs a script (amends D2), and the marketing CSP tightens from two hashes
+  to `script-src 'none'`. The postbuild fails when any page but `/admin` carries a `<script>`;
+  `csp.mjs` and `firebase-json.mjs` fail on a marketing hash; `check-hosting.mjs` reads a marketing
+  policy that allows a script as "other". The admin page's policy is unchanged.
+- Nothing is stored in the browser on the marketing pages. `/admin` keeps its `sessionStorage` (D16).
+- The light captures in `public/screenshots/` stay: `scripts/screenshots.mjs` still writes both
+  appearances from the app's captures, and no page loads the light ones. Dropping them is a change
+  to that script.
+- Playwright still runs every page under a dark and a light system setting, and checks that the
+  page stays dark under both (`color-scheme`, the background, the screenshot's source).
+
+**Type (amends D3 and D4).**
+- The wordmark is Satoshi Light, as the app's `Wordmark` (D3 said Medium).
+- Satoshi Light joins Regular, Medium and Bold: the same Fontshare zip and the same ITF FFL
+  (self-hosting allowed, the files git-ignored, no subsetting, no conversion), pinned by SHA-256 in
+  `config/fonts.json`. Bold stays declared, and no page asks for it.
+- **The LCP risk.** Headings and numbers are Light, text is Regular and emphasis Medium, so a page now
+  fetches three font files. D4 measured a third file at 1.35 → 1.5 s against the 1.5 s budget
+  (Lighthouse, mobile). If Lighthouse fails on it, which weights a page uses is a design decision
+  for the user, not a fix inside this change.
+
+**Labels.** Every label takes its case and tracking from the tokens: `Label`, the gauge's and the
+Today tiles' labels, table heads, the lock-up's tagline, the styleguide's sample and the admin page's
+"admin". The app's rule that a surface-raised fill carries text-primary or text-secondary, never
+text-tertiary (its ADR 0016, 2.5), already holds here: the site puts only text-primary on that fill.
+`tests/contrast.test.ts` checks primary and secondary on it.
+
+**Icons keep the mark.** The favicon, touch icons and the OG image are drawn from the mark
+(`src/lib/mark.ts`, geometry unchanged) in the token colours, and need regenerating for the new
+Graphite and Mist (`npm run icons`, `npm run og`; the OG card now takes its weights, the wordmark's
+tracking and the label's case from the tokens). Whether they follow the app's new wordmark icon (M1)
+is the user's decision.
+
+Would change if the app gets an appearance option again (its ADR 0016 says that needs an ADR of its
+own); then the site decides separately whether to follow.

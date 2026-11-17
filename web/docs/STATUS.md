@@ -1,5 +1,22 @@
 # Status — ryftapp.de (web/)
 
+## 2026-11-17 — Nocturne tokens (branch `web/nocturne-tokens`)
+
+D20: the tokens come from the app's Nocturne PR 1 at the commit in `.app-ref` (platform D234). The
+site is dark-only (no theme switch, no script on any page but `/admin`, `script-src 'none'`), titles
+and numbers are Satoshi Light, labels are sentence case without tracking. Locally only
+`make web-tokens` (twice, no diff) and the font fetch ran (`node_modules` was not installed); CI's
+`web-checks` and `web-e2e` are the test bed. Not regenerated yet: the icons, the manifest and the OG
+image (`npm run icons`, `npm run og` need `node_modules`).
+
+| Area | What pins it | Where |
+| --- | --- | --- |
+| Tokens | One value per colour; Typography's new shape (`var size`, Light), the label's case and tracking, `Wordmark.tracking` | `npm run tokens:check` in `web-checks`, `tests/contrast.test.ts` |
+| Dark-only | One `theme-color`, no light palette in the CSS, `color-scheme: dark` under a light system setting, no `localStorage` | `tests/output.test.ts`, `e2e/behaviour.spec.ts`, `e2e/site.spec.ts` |
+| CSP | `script-src 'none'` on every page but `/admin`; postbuild, `csp.mjs` and `firebase-json.mjs` fail on a marketing script | `tests/csp.test.ts`, `tests/hosting.test.ts`, `tests/output.test.ts`, `e2e/routes.spec.ts`, `e2e/admin.spec.ts`, `check-hosting` |
+| Fonts | Satoshi Light pinned; every pinned weight served once | `config/fonts.json`, `tests/output.test.ts` |
+| Screenshots | `/`, `/privacy`, `/support` and a 404, both settings, both projects, as files in `test-results/` | `e2e/visual.spec.ts` |
+
 ## 2026-11-16 — Firebase Hosting (branch `web/firebase-hosting`, C1)
 
 D19: the site is served by Firebase Hosting (project `ryftlab-site`). The build writes

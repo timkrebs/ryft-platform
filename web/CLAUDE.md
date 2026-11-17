@@ -15,15 +15,22 @@ here: read from it, never write there.
   only as data sources ("any watch or ring that writes to Apple Health"). No hardware of
   our own. Enforced by `npm run brand` (pre-commit, commit-msg, `npm run lint`, postbuild,
   CI); rules in `config/brand-denylist.json`. Refer to it as "the denylisted brand".
-- **Tokens come from the app.** Colours, radii, spacing, type scale and motion are
-  generated from `../../app/Ryft` by `npm run tokens` into `src/styles/tokens.{css,json}`.
-  Never hard-code a colour in CSS or components; CI fails when the tokens drift.
+- **Tokens come from the app.** Colours, radii, spacing, type scale (with the label's case and
+  tracking) and motion are generated from `../../app/Ryft` by `npm run tokens` into
+  `src/styles/tokens.{css,json}`, at the commit in `web/.app-ref` (platform D234): CI checks the
+  app out there; regenerate from a checkout at that commit and move the pin in its own PR
+  (`../docs/OPERATIONS.md` → GCP → Deploy, roll back, rotate → The app pin). Never hard-code a
+  colour, a label's case or its tracking in CSS or components; CI fails when the tokens drift.
+  The site is dark-only, like the app (web D20): one value per colour, no light palette, no
+  theme switch.
 - **Static export only.** `output: 'export'`, no API routes, no proxy/middleware, no server
   runtime, no database. Pages render to HTML at build time; the postbuild removes the
-  Next/React runtime (D2 in `docs/DECISIONS.md`), so no client components — the only
-  client JS is `src/lib/inline-scripts.ts`. Every inline script is hashed into the CSP.
+  Next/React runtime (D2 in `docs/DECISIONS.md`), so no client components. No page runs a
+  script except `/admin` (below; web D20): the marketing CSP is `script-src 'none'`, and the
+  postbuild fails when any other page carries a `<script>`.
 - **No tracking.** No cookies, no analytics, no third-party requests (fonts self-hosted,
-  no CDNs), no forms. `localStorage` holds the theme choice and nothing else.
+  no CDNs), no forms. Nothing is stored in the browser: no `localStorage` at all (the theme
+  choice went with web D20), and only `/admin` uses `sessionStorage`.
 - **The one exception: `/admin`** (the operator's page; web D15–D17). It is its own document
   (`src/app/(admin)`, a separate root layout, `noindex`, not linked, not in the sitemap or
   `robots.txt`) with ONE inline hashed script bundled by esbuild from `src/admin` (no framework,
@@ -59,8 +66,11 @@ here: read from it, never write there.
 - **No medical claims.** RYFT is a wellness app, not a medical device; say so near scores.
 - **English only** (web D18). Every UI string in `messages/en.json`; `/de/…` redirects to the
   English page for the app's older builds. German may come back; the views keep `Locale`.
-- **Fonts**: Satoshi WOFF2 files are fetched by `npm run fonts`, verified by hash and never
-  committed (ITF FFL: self-hosting yes, redistribution through repositories no, no subsetting).
+- **Fonts**: Satoshi Light, Regular, Medium and Bold WOFF2 files are fetched by `npm run fonts`,
+  verified by their SHA-256 in `config/fonts.json` and never committed (ITF FFL: self-hosting yes,
+  redistribution through repositories no, no subsetting, no conversion). A page uses Light
+  (titles, numbers), Regular and Medium (emphasis), never Bold: three files against the LCP
+  budget (web D4, D20).
 
 ## Verify before every commit
 From the repository root:
@@ -78,7 +88,7 @@ for `re2`, which the emulator needs for the regex rules (web D19). `firebase.jso
 git-ignored: change `scripts/lib/hosting.mjs`, never the file. The nginx image (`npm run image &&
 npm run serve`, `npm run e2e`) stays until the platform's PR D3 removes it, but is not what ships. Never run `firebase deploy`
 yourself: `deploy.yml` does. The drift checks read the app from `../../app`; `RYFT_APP_DIR` overrides it
-(absolute, or relative to `web/`). Without the app, `tokens:check` and `licenses:check` skip
+(absolute, or relative to `web/`), and CI reads it at the commit in `.app-ref`. Without the app, `tokens:check` and `licenses:check` skip
 outside CI (and fail when `CI` is set); `REQUIRE_SIBLINGS=1` only affects `tests/aasa.test.ts`,
 turning its skip into an error.
 
