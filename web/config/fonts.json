@@ -17,6 +17,10 @@
     "Satoshi_Complete/License/FFL.txt": {
       "name": "FFL.txt",
       "sha256": "145e7fe2429a3336ba215c070ef722000e01348a3e1baaa127e871bb5012f554"
+    },
+    "Satoshi_Complete/Fonts/WEB/fonts/Satoshi-Light.woff2": {
+      "name": "Satoshi-Light.woff2",
+      "sha256": "28bde2ff554acba1eff96f6cf120e226736286e05c90ececdaa3fafececbd55e"
     }
   }
 }

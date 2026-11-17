@@ -1,14 +1,12 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import adminConfig from '../config/admin.json';
 import fonts from '../config/fonts.json';
 import { builtHashes } from '../scripts/lib/csp.mjs';
 import { firebaseJson } from '../scripts/lib/hosting.mjs';
-import { cspHash } from '../scripts/lib/html.mjs';
-import { THEME_INIT, THEME_SWITCH } from '../src/lib/inline-scripts';
+import tokens from '../src/styles/tokens.json';
 
 // Checks on the built site (out/). Skipped before a build unless REQUIRE_OUT=1 (CI).
 const OUT = 'out';
@@ -28,27 +26,33 @@ const isAdminPage = (f: string) => relative(OUT, f) === 'admin.html';
 describe.skipIf(!built)('built site', () => {
   const html = built ? [...files(OUT)].filter((f) => f.endsWith('.html')) : [];
 
-  it('ships no script except our own inline ones', () => {
-    for (const f of html) {
-      const scripts = [...readFileSync(f, 'utf8').matchAll(/<script\b([^>]*)>/g)].map((m) => m[1]);
-      for (const attrs of scripts) {
-        expect(attrs, f).toMatch(/data-ryft/);
-        expect(attrs, f).not.toMatch(/\bsrc=/);
-      }
+  // No page but /admin runs a script (web D20; the admin page is checked on its own below), so
+  // nothing can read an auth callback's URL, and no JavaScript file ships.
+  it('ships no script on any page but /admin, and no JavaScript file', () => {
+    for (const f of html.filter((f) => !isAdminPage(f))) {
+      expect(readFileSync(f, 'utf8'), f).not.toMatch(/<script\b/i);
     }
     expect([...files(OUT)].filter((f) => f.endsWith('.js'))).toEqual([]);
   });
 
-  it('keeps / under the 80 KB gzipped JavaScript budget', () => {
-    const page = readFileSync(join(OUT, 'index.html'), 'utf8');
-    const js = [...page.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('');
-    expect(gzipSync(js).length).toBeLessThan(80 * 1024);
+  it('is dark-only: one theme-color, the background token, and no light palette (web D20)', () => {
+    for (const f of ['index.html', 'privacy.html', '404.html']) {
+      const page = readFileSync(join(OUT, f), 'utf8');
+      const metas = [...page.matchAll(/<meta\b[^>]*\bname="theme-color"[^>]*>/g)].map((m) => m[0]);
+      expect(metas, f).toHaveLength(1);
+      expect(metas[0], f).toContain(`content="${tokens.colors.background.dark}"`);
+      expect(metas[0], f).not.toContain('media=');
+    }
+    const css = [...files(OUT)].filter((f) => f.endsWith('.css')).map((f) => readFileSync(f, 'utf8'));
+    expect(css.join('\n')).toMatch(/color-scheme:\s*dark/);
+    for (const sheet of css) expect(sheet).not.toMatch(/prefers-color-scheme|data-theme/);
   });
 
-  it('serves Satoshi byte-identical to the pinned files', () => {
+  it('serves Satoshi byte-identical to the pinned files, every pinned weight once', () => {
     const pinned = new Set(Object.values(fonts.files).map((f) => f.sha256));
+    const weights = Object.values(fonts.files).filter((f) => f.name.endsWith('.woff2'));
     const served = [...files(OUT)].filter((f) => f.endsWith('.woff2'));
-    expect(served.length).toBe(3);
+    expect(served.length).toBe(weights.length);
     for (const f of served) {
       expect(pinned.has(createHash('sha256').update(readFileSync(f)).digest('hex')), f).toBe(true);
     }
@@ -62,22 +66,12 @@ describe.skipIf(!built)('built site', () => {
     }
   });
 
-  it('runs no script that could read the URL (auth callbacks carry tokens)', () => {
-    // The one exception, narrow (web D15): /admin's own bundle reads its #view from the fragment
-    // and is checked on its own below. Every other page keeps the strict rule.
-    for (const f of html.filter((f) => !isAdminPage(f))) {
-      for (const [, body] of readFileSync(f, 'utf8').matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
-        expect(body, f).not.toMatch(/location|document\.URL|\bhref\b|\bhash\b|\bsearch\b|referrer|history/);
-      }
-    }
-  });
-
-  it('pins the marketing CSP: script-src is exactly the hashes of the two theme scripts', () => {
+  it("pins the marketing CSP: script-src 'none' (web D20)", () => {
     // scripts/csp.mjs hashes every inline data-ryft script it finds, so a new script on any page
     // (or the admin bundle leaking into this policy) would widen it; this fails instead.
     const csp = readFileSync('nginx/csp.conf', 'utf8');
-    const scriptSrc = /script-src ([^;]*);/.exec(csp)![1]!;
-    expect(scriptSrc.split(' ').sort()).toEqual([cspHash(THEME_INIT), cspHash(THEME_SWITCH)].sort());
+    expect(/script-src ([^;]*);/.exec(csp)![1]).toBe("'none'");
+    expect(csp).not.toContain('sha256-');
     expect(csp).toContain("connect-src 'none'");
   });
 
@@ -93,10 +87,9 @@ describe.skipIf(!built)('built site', () => {
       for (const f of otherPages()) expect(readFileSync(f, 'utf8'), f).not.toContain('data-ryft="admin"');
     });
 
-    it('is noindex by meta tag and its own document: no theme scripts, no alternates', () => {
+    it('is noindex by meta tag and its own document: no alternates', () => {
       const p = page();
       expect(p).toMatch(/<meta name="robots" content="noindex, nofollow"/);
-      expect(p).not.toMatch(/data-ryft="theme-/);
       expect(p).not.toMatch(/<link rel="(alternate|canonical)"/);
       expect(p).toContain('<html lang="en"');
     });

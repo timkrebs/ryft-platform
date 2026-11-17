@@ -527,9 +527,10 @@ jobs:
       # The workflows themselves.
       - run: actionlint
       # What actionlint cannot know, read from the parsed YAML (the pinned yq is first on PATH; the
-      # script fails without it): no pull_request_target/workflow_run, only deploy.yml's `deploy` and
-      # `site` name the environment `deploy`, nothing names the old deploy App's key, deploy.yml is
-      # gated by GCP_DEPLOY, never cancelled, has no status function or continue-on-error, scans before
+      # script fails without it): no pull_request_target/workflow_run, only deploy.yml's `deploy` (in
+      # `deploy`) and `site` (in `site`) name an environment, each its own WIF principal set (D233),
+      # nothing names the old deploy App's key, deploy.yml is gated by GCP_DEPLOY, never cancelled,
+      # has no status function or continue-on-error, scans before
       # it signs in and changes Cloud Run only from main's tip, builds the site without a token and
       # deploys it only from main's tip, only this file defines ci-ok (deploy.yml reads that job of
       # this workflow's own run), no external reusable workflow, no `secrets: inherit`, no test hooks
@@ -697,7 +698,9 @@ jobs:
 
   # ryftlab.de (web/): every check of the site. The platform is this checkout; the app
   # repository is checked out next to it (it is public) for the drift checks (tokens, Swift
-  # licences, routes, legal drafts, model version).
+  # licences, routes, legal drafts, model version), at the commit web/.app-ref names, never at
+  # its main (D234): an app merge can't turn platform main red, and a token update is a PR that
+  # moves the pin (docs/OPERATIONS.md -> GCP -> Deploy, roll back, rotate -> The app pin).
   web-checks:
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_web == 'true'
@@ -712,9 +715,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # One line, a full commit SHA and nothing else: a branch or tag would move under the pin.
+      - name: The app's pinned commit (web/.app-ref)
+        id: app-ref
+        run: |
+          ref=$(tr -d '[:space:]' < .app-ref)
+          if ! printf '%s' "$ref" | grep -Eqx '[0-9a-f]{40}'; then
+            echo "::error file=web/.app-ref::not a 40-character lowercase commit SHA"
+            exit 1
+          fi
+          echo "sha=$ref" >> "$GITHUB_OUTPUT"
+          echo "The app at $ref"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: timkrebs/ryft-app
+          ref: ${{ steps.app-ref.outputs.sha }}
           path: app
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

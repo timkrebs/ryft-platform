@@ -72,6 +72,32 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## The site in Nocturne, the app pinned (2026-11-17)
+
+PR #199, branch `web/nocturne-tokens` (D234, web D20, `docs/work/2026-11-17-nocturne-tokens/`). It fixes main,
+which had been red since #194: `web-checks` read the app at its main, and the app's Nocturne PR #112 changed
+`Typography.swift`.
+- **The pin:** `web/.app-ref` = app commit `7358f0c` (main at #114). CI checks the app out there and nowhere else,
+  and a token update is a PR that moves the pin (OPERATIONS → GCP → Deploy, roll back, rotate → The app pin).
+- **The look:**
+  - The tokens are regenerated from Nocturne: `#0A0C0B` ground, `#F2F1EC` ink, the teal `#63D2B4`, signal
+    `#D8FF4F`. Titles and numbers are Satoshi Light (300), labels sentence case without tracking.
+  - Satoshi Light is fetched and pinned like the other weights.
+  - The site is dark-only, like the app: no theme switch, no script on any page but `/admin` (CSP
+    `script-src 'none'`).
+- **Runbook 10a:** `ft()` for zsh, `setopt interactivecomments`, the Admin SDK account (expected; no keys,
+  disabled), the 403 right after `addfirebase`.
+- **Merging** ships the site only while `SITE_DEPLOY` is `on`. The services redeploy unchanged.
+- **Open:**
+  - The favicon, the PNG icons, `site.webmanifest` and `public/og/en.png` still carry the old colours, because
+    `npm run icons`/`og` couldn't run in the session. Run `make web-install`, then `cd web && npm run icons && npm
+    run og`, and commit the result in a small PR.
+  - Whether the site's icons follow the app's new wordmark icon (M1) is the user's call. For now they keep the mark.
+  - The app screenshots on the pages are pre-Nocturne captures, and a new set needs the app's PR 5.
+  - LCP: three font files per page now (web D4 had 1.5 s against a 1.5 s budget). Lighthouse passed in CI.
+  - #196's conflict in OPERATIONS 10a is resolved on its branch (2026-11-17): #196's order (10a.1–3) with `ft()`, the
+    Admin SDK account in the policy check and its "Stop if", and the 403 note.
+
 ## Product analytics config (2026-11-16)
 
 Branch `config/analytics` (D231, `docs/work/2026-11-16-analytics-config/`): `GET /v1/config` → `analytics`
@@ -82,6 +108,13 @@ only). The merge deploys the code and the migration; `analytics` stays `null` un
 `terraform -chdir=infra/gcp` plan/apply (2 to add), `put posthog-project-key`, then the one-line pin PR
 (OPERATIONS → GCP → PostHog's project key). Then allow-list testers for `analytics.enabled` once the app ships it
 and the privacy policy in force names PostHog (OPERATIONS → Feature flags, its stop line).
+
+## Backend modules (2026-11-16)
+
+Branch `deps/backend-2026-11` (D232) takes Dependabot #176's seven updates, pgx v5.12.0 among them, and moves
+go.mod's floor to Go 1.26.0 (the image stays Go 1.27). pgx 5.12 quotes inner whitespace in a text array, which
+Postgres reads the same: `TestExecModeEncoding` pins the new text and `TestPooler` reads it back through the pooler.
+The merge deploys the services as usual; no migration, nothing for you to run. #176 closes itself.
 
 ## The site on Firebase Hosting, C1 (2026-11-16)
 
@@ -106,14 +139,10 @@ PR #194, branch `web/firebase-hosting` (D233, web D19, `docs/work/2026-11-16-fir
     `ryft-deployer` is bound to the `deploy` principal set alone. Your steps before 10f are in OPERATIONS 10a.1–3:
     the environment (10a.1, before the merge), the apply (1/1/1) plus a dispatch, then `site-deployer` on the `site`
     set; 10f at least ten minutes after the apply, re-checking both accounts.
-  - **Main is red since #194's merge (2026-11-16), so nothing deploys:** `web-checks` → `tokens:check` fails with
-    "Typography.swift → size not found". CI checks out `timkrebs/ryft-app` at its `main` (not pinned), and the app's
-    `Ryft/Design/Typography.swift` no longer has the `fileprivate var size: CGFloat {` block `web/scripts/tokens.mjs`
-    reads. The fix is `readType` for the app's new shape (web-engineer) or the app's side (ios-lead). Until it lands,
-    every `deploy.yml` run stops at "wait for ci-ok". 10a.2 needs a green main.
-  - `ci.yml`'s comment above `check_workflows.sh` (`only deploy.yml's deploy and site name the environment deploy`)
-    is stale since the split. It is fixed with the next `ci.yml` change: any `ci.yml` change runs `web-checks`, red
-    until the tokens fix.
+  - Main was red from #194's merge (2026-11-16) until #199 (2026-11-17), which pins the app (D234). 10a.2 needs a green
+    main.
+  - `ci.yml`'s comment above `check_workflows.sh` now names each environment's job (fixed on the split's branch once
+    main was green again).
   - WIF with firebase-tools is checked only at step 10f.
   - C2 must drop `check_policy_in_force.sh`'s EKS half (D233).
   - D3 removes the scripts the removed jobs used and the nginx image.

@@ -88,8 +88,9 @@ const header = (key, value) => ({ key, value });
 const cache = (regex, value) => ({ regex, headers: [header('Cache-Control', value)] });
 
 /**
- * firebase.json. `hashes`: the marketing pages' inline-script hashes; `adminHashes`: the admin
- * page's one; `config`: config/admin.json (the admin policy's connect-src).
+ * firebase.json. `hashes`: the marketing pages' inline-script hashes (none since web D20, so their
+ * policy is script-src 'none'); `adminHashes`: the admin page's one; `config`: config/admin.json
+ * (the admin policy's connect-src).
  */
 export function firebaseJson({ hashes, adminHashes, config }) {
   return {

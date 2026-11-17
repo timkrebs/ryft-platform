@@ -111,14 +111,15 @@
 .tileLabel {
   font-size: var(--type-axis);
   font-weight: var(--type-label-weight);
-  text-transform: uppercase;
+  text-transform: var(--label-transform);
   letter-spacing: var(--tracking-label);
   color: var(--text-secondary);
 }
 
+/* A number under 20 px is Regular, not Light: the app's lightFloor (ADR 0016 §3). */
 .tileValue {
   font-size: var(--type-headline);
-  font-weight: var(--type-metric-weight);
+  font-weight: var(--type-body-weight);
   white-space: nowrap;
 }
 

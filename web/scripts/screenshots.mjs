@@ -4,7 +4,8 @@
 //   public/screenshots/<id>-<scheme>-<width>.{avif,webp}   three widths
 //   public/screenshots/<id>-<scheme>.png                   one fallback
 //   src/data/screenshots.json                              sizes for <Screenshot>
-// Dark captures are shown in dark mode, light ones in light mode. The 1030 × 1500 Preview
+// The site is dark-only (web D20): pages show the dark captures. The light ones are still written
+// (screenshots.json takes its sizes from them) but nothing shows them. The 1030 × 1500 Preview
 // captures carry a canvas artefact top right, so they are cropped to the part a page shows.
 // Output is committed: the build doesn't need ../../app. RYFT_APP_DIR overrides ../../app.
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';

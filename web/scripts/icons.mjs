@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Icons from the mark's geometry (src/lib/mark.ts, the port of RyftMark.swift) in the
-// token colours: like the app icon (dark), a Mist mark on Graphite.
+// token colours: a Mist mark on Graphite, as the app's icon was until Nocturne. The app's
+// icon is now the wordmark (M1, ADR 0016 in the app); the site keeps the mark until the user
+// decides otherwise (web D20).
 //   public/favicon.svg            mark only; Graphite on light tabs, Mist on dark tabs
 //   public/favicon-32.png         the same on Graphite, for browsers without SVG icons
 //   public/apple-touch-icon.png   180 × 180, full bleed (iOS rounds the corners)
@@ -17,8 +19,9 @@ const tokens = JSON.parse(readFileSync(join(ROOT, 'src/styles/tokens.json'), 'ut
 const graphite = tokens.colors.graphite.dark;
 const mist = tokens.colors.mist.dark;
 
-// The app icon's composition (icon-spec.swift): the outer ring's span is 0.963 of the tile,
-// so the tile is OUTER_SPAN / 0.963 box units wide, centred on the mark (negative padding).
+// The orbit icon's composition (the app's icon-spec.swift before M1): the outer ring's span
+// is 0.963 of the tile, so the tile is OUTER_SPAN / 0.963 box units wide, centred on the mark
+// (negative padding).
 const RING_SPAN = 0.963;
 const PADDING = (OUTER_SPAN / RING_SPAN - 100) / 2;
 // Maskable: the whole mark, dots included (they reach 50 from the centre), inside the

@@ -41,8 +41,8 @@
   margin: 0;
   font-size: var(--type-label);
   font-weight: var(--type-label-weight);
-  text-transform: uppercase;
-  /* The lock-up's tagline is tracked twice as wide as a label (BrandLockup). */
-  letter-spacing: calc(2 * var(--tracking-label));
+  /* The lock-up's tagline is a label (BrandLockup: .ryftLabelStyle(), no tracking of its own). */
+  text-transform: var(--label-transform);
+  letter-spacing: var(--tracking-label);
   color: var(--text-secondary);
 }

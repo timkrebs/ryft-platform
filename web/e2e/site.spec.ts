@@ -2,8 +2,9 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import { ALL } from './pages';
 
-// Every page, dark and light: renders, no console errors (CSP
-// violations show up there), no serious or critical axe findings, a screenshot each.
+// Every page under a dark and a light system setting: renders, stays dark in both (the site is
+// dark-only, web D20), no console errors (CSP violations show up there), no serious or critical
+// axe findings, a screenshot each.
 for (const path of ALL) {
   for (const scheme of ['dark', 'light'] as const) {
     test(`${path} (${scheme})`, async ({ page }, info) => {
@@ -17,6 +18,7 @@ for (const path of ALL) {
       await expect(page.locator('h1').first()).toBeVisible();
       expect(await page.locator('html').getAttribute('lang')).toBe('en');
       expect(await page.title()).toMatch(/RYFT/);
+      expect(await page.locator('html').evaluate((e) => getComputedStyle(e).colorScheme)).toBe('dark');
 
       const axe = await new AxeBuilder({ page })
         .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])

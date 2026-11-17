@@ -38,7 +38,10 @@ function* walk(dir) {
   }
 }
 
-/** The marketing policy: scripts only by hash, everything else only from this origin, nothing framed. */
+/**
+ * The marketing policy: scripts only by hash (none since web D20, so script-src 'none'), everything
+ * else only from this origin, nothing framed.
+ */
 export function policy(hashes) {
   return [
     "default-src 'none'",

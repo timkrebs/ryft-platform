@@ -26,8 +26,10 @@
   text-transform: uppercase;
 }
 
+/* A label next to the wordmark: the label's case and tracking, not the wordmark's uppercase. */
 .adm-brand-sub {
   color: var(--text-secondary);
+  text-transform: var(--label-transform);
   letter-spacing: var(--tracking-label);
 }
 

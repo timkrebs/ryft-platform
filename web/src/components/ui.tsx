@@ -1,11 +1,11 @@
 // Small building blocks with the app's shapes (Theme.swift → Metrics): cards (radius 18,
-// padding 18), tiles (radius 16), sections (24 apart), pill buttons, tracked labels.
+// padding 18), tiles (radius 16), sections (24 apart), pill buttons, labels.
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import styles from './ui.module.css';
 
 const cx = (...names: (string | false | undefined)[]) => names.filter(Boolean).join(' ');
 
-/** Small uppercase tracked label (ryftLabelStyle). */
+/** A section or tile label (ryftLabelStyle): its case and tracking come from the tokens. */
 export function Label({
   children,
   as: Tag = 'p',
