@@ -18,9 +18,14 @@ output "github_workload_identity_provider" {
   value       = "${local.github_pool_name}/providers/${google_iam_workload_identity_pool_provider.github.workload_identity_pool_provider_id}"
 }
 
-output "github_principal_set" {
-  description = "The repository's principal set in the GitHub pool: runbook step 10 binds the site's deploy SA to it"
-  value       = local.github_principal_set
+output "deployer_principal_set" {
+  description = "The GitHub pool's principals in the environment deploy: the only member that may become ryft-deployer"
+  value       = local.github_principal_set["deploy"]
+}
+
+output "site_principal_set" {
+  description = "The GitHub pool's principals in the environment site: runbook step 10a binds site-deployer (ryftlab-site) to it, and nothing else"
+  value       = local.github_principal_set["site"]
 }
 
 output "deployer_email" {

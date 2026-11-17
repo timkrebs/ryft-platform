@@ -95,8 +95,8 @@ which had been red since #194: `web-checks` read the app at its main, and the ap
   - Whether the site's icons follow the app's new wordmark icon (M1) is the user's call. For now they keep the mark.
   - The app screenshots on the pages are pre-Nocturne captures, and a new set needs the app's PR 5.
   - LCP: three font files per page now (web D4 had 1.5 s against a 1.5 s budget). Lighthouse passed in CI.
-  - #196 conflicts in OPERATIONS 10a. Keep #196's text, write `ft` for `$FT`, and add `firebase-adminsdk-fbsvc` to its
-    policy check and its "Stop if".
+  - #196's conflict in OPERATIONS 10a is resolved on its branch (2026-11-17): #196's order (10a.1–3) with `ft()`, the
+    Admin SDK account in the policy check and its "Stop if", and the 403 note.
 
 ## Product analytics config (2026-11-16)
 
@@ -139,8 +139,14 @@ PR #194, branch `web/firebase-hosting` (D233, web D19, `docs/work/2026-11-16-fir
   10, 10a–10h): the project, the console's domains, the DNS PR plus apply 3, the certificates, then `SITE_DEPLOY=on`
   and one run by hand.
 - **Open:**
-  - **To decide before 10f:** `site-deployer` and `ryft-deployer` share one WIF principal set, so code in the
-    `site` job could impersonate the services' deployer (D233). The fix is an `infra/gcp` PR plus an apply.
+  - **The WIF split** (D233, branch `infra/wif-split`): the `site` job moves into its own environment `site`, and
+    `ryft-deployer` is bound to the `deploy` principal set alone. Your steps before 10f are in OPERATIONS 10a.1–3:
+    the environment (10a.1, before the merge), the apply (1/1/1) plus a dispatch, then `site-deployer` on the `site`
+    set; 10f at least ten minutes after the apply, re-checking both accounts.
+  - Main was red from #194's merge (2026-11-16) until #199 (2026-11-17), which pins the app (D234). 10a.2 needs a green
+    main.
+  - `ci.yml`'s comment above `check_workflows.sh` now names each environment's job (fixed on the split's branch once
+    main was green again).
   - WIF with firebase-tools is checked only at step 10f.
   - C2 must drop `check_policy_in_force.sh`'s EKS half (D233).
   - D3 removes the scripts the removed jobs used and the nginx image.

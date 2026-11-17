@@ -4,10 +4,11 @@
 # `environment : deploy`, YAML escapes in names and anchors read as GitHub reads them:
 #   1. no workflow triggers on pull_request_target or workflow_run: they run with the base
 #      repository's secrets and token on code a pull request influences;
-#   2. the environment `deploy` (only main may use it, the smoke user's secrets live there, and the
-#      WIF condition of infra/gcp admits only a job in it) is named by exactly two jobs, `deploy` and
-#      `site` in deploy.yml, and RYFT_DEPLOY_APP_KEY (the key of EKS's promote, gone since C1) is named
-#      nowhere (any case: secret names are case-insensitive);
+#   2. an environment is named by exactly two jobs of deploy.yml, each its own: `deploy` runs in
+#      `deploy` (only main may use it, the smoke user's secrets live there, and ryft-deployer binds
+#      only its WIF principal set) and `site` in `site` (main only, no secrets; only site-deployer
+#      binds its principal set, D233), never the other's; and RYFT_DEPLOY_APP_KEY (the key of EKS's
+#      promote, gone since C1) is named nowhere (any case: secret names are case-insensitive);
 #   3. a job-level `uses:` is a workflow of this repository (./.github/workflows/<file>.yml): an
 #      external reusable workflow could name the environment, or run with our secrets;
 #   4. no `secrets: inherit`, and `secrets` is only ever read as `secrets.<NAME>`: not
@@ -63,7 +64,8 @@ import json, re, sys
 fname, base = sys.argv[1], sys.argv[2]
 is_ci = base == "ci.yml"
 is_deploy = base == "deploy.yml"
-ENV_JOBS = {("deploy.yml", "deploy"), ("deploy.yml", "site")}  # the jobs that run in the environment deploy
+# The jobs that run in an environment, and which: each environment is its own WIF principal set (D233).
+ENV_JOBS = {("deploy.yml", "deploy"): "deploy", ("deploy.yml", "site"): "site"}
 raw = sys.stdin.read()
 dups = []
 def pairs(ps):  # yq prints a duplicate key twice; a JSON reader keeps one of them, which one differs between readers
@@ -167,9 +169,9 @@ for jid, job in jobs.items():
         e = job["environment"]
         name = e if isinstance(e, str) else e.get("name") if isinstance(e, dict) else None
         if (base, jid) not in ENV_JOBS:
-            fail(f"job '{jid}' names an environment ({name!r}): only deploy.yml's deploy and site may (the smoke user's secrets and the WIF condition are scoped to it)")
-        elif name != "deploy":
-            fail(f"{jid} must run in the environment 'deploy', not {name!r}")
+            fail(f"job '{jid}' names an environment ({name!r}): only deploy.yml's deploy and site may (the smoke user's secrets and the WIF principal sets are scoped to them)")
+        elif name != ENV_JOBS[(base, jid)]:
+            fail(f"{jid} must run in the environment {ENV_JOBS[(base, jid)]!r}, not {name!r} (each environment is its own WIF principal set, D233)")
     # 8. the job deploy.yml waits for
     if (jid == "ci-ok" or job.get("name") == "ci-ok") and not (is_ci and jid == "ci-ok"):
         fail(f"job '{jid}' is (or is named) ci-ok: only ci.yml's required check may be, deploy.yml waits for that job of ci.yml's run")
@@ -178,9 +180,9 @@ def env_name(job):
     e = job.get("environment") if isinstance(job, dict) else None
     return e if isinstance(e, str) else e.get("name") if isinstance(e, dict) else None
 
-for b, jid in sorted(ENV_JOBS):
-    if base == b and env_name(jobs.get(jid)) != "deploy":
-        fail(f"the {jid} job does not run in `environment: deploy`")
+for (b, jid), env in sorted(ENV_JOBS.items()):
+    if base == b and env_name(jobs.get(jid)) != env:
+        fail(f"the {jid} job does not run in `environment: {env}`")
 
 # 7. deploy.yml
 GATE = re.compile(r"(?<![A-Za-z0-9_.])vars\.GCP_DEPLOY\s*==\s*'on'")
@@ -451,5 +453,5 @@ if [ -f "$dir/ci.yml" ] && [ -f Makefile ]; then
     fail "the golangci-lint version of ci.yml's lint job (${ci_v:-not found}) must equal GOLANGCI_LINT_VERSION in the Makefile (${mk_v:-not found})"
   fi
 fi
-[ "$rc" = 0 ] && echo "workflows: no pull_request_target/workflow_run, no external reusable workflow, no secrets: inherit or dynamic secrets, no test hooks; only deploy.yml's deploy and site name the environment deploy, nothing names the old App key; deploy.yml is gated by GCP_DEPLOY, serialized, waits for ci.yml's ci-ok, has no status function or continue-on-error, scans before it signs in, changes Cloud Run only from main's tip, builds the site without a token and deploys and checks it only from main's tip"
+[ "$rc" = 0 ] && echo "workflows: no pull_request_target/workflow_run, no external reusable workflow, no secrets: inherit or dynamic secrets, no test hooks; only deploy.yml's deploy (in deploy) and site (in site) name an environment, nothing names the old App key; deploy.yml is gated by GCP_DEPLOY, serialized, waits for ci.yml's ci-ok, has no status function or continue-on-error, scans before it signs in, changes Cloud Run only from main's tip, builds the site without a token and deploys and checks it only from main's tip"
 exit "$rc"

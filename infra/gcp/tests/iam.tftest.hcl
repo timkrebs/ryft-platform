@@ -295,11 +295,21 @@ run "wif_condition_by_ids" {
       "assertion.repository_owner_id == '200000002'",
       "assertion.ref == 'refs/heads/main'",
       "assertion.event_name in ['push', 'workflow_dispatch']",
-      "assertion.environment == 'deploy'",
+      "assertion.environment in ['deploy', 'site']",
       "assertion.job_workflow_ref == 'timkrebs/ryft-platform/.github/workflows/deploy.yml@refs/heads/main'",
       "assertion.runner_environment == 'github-hosted'",
     ])
-    error_message = "the condition names repository_id, repository_owner_id, ref, event_name, environment, job_workflow_ref (by ID) and a GitHub-hosted runner"
+    error_message = "the condition names repository_id, repository_owner_id, ref, event_name, the environments deploy and site, job_workflow_ref (by ID) and a GitHub-hosted runner"
+  }
+
+  # D233's split: exactly two environments, each its own principal set; nothing binds the repository's whole set.
+  assert {
+    condition = (
+      length(regexall("assertion\\.environment", google_iam_workload_identity_pool_provider.github.attribute_condition)) == 1 &&
+      google_iam_workload_identity_pool_provider.github.attribute_mapping["attribute.environment"] == "assertion.environment" &&
+      length(regexall("attribute\\.repository_id/", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
+    )
+    error_message = "the condition admits the environments once, the mapping carries environment, and no .tf file names the repository's principal set (attribute.repository_id/…)"
   }
 
   assert {
@@ -325,18 +335,39 @@ run "wif_condition_by_ids" {
     condition = (
       google_service_account_iam_member.deployer_workload_identity.service_account_id == "projects/ryftlab-prod/serviceAccounts/ryft-deployer@ryftlab-prod.iam.gserviceaccount.com" &&
       google_service_account_iam_member.deployer_workload_identity.role == "roles/iam.workloadIdentityUser" &&
-      google_service_account_iam_member.deployer_workload_identity.member == "principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/github/attribute.repository_id/100000001"
+      google_service_account_iam_member.deployer_workload_identity.member == "principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/github/attribute.environment/deploy"
     )
-    error_message = "the deployer is usable by the repository's principal set in the GitHub pool only"
+    error_message = "the deployer is usable by the GitHub pool's environment deploy only (not site, not the whole repository)"
+  }
+
+  # The one binding of this root that lets the pool become an account, replaced without a gap (create_before_destroy).
+  assert {
+    condition = (
+      length(regexall("(?m)^[^#\\n]*roles/iam\\.workloadIdentityUser", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      length(regexall("resource \"google_service_account_iam_member\" \"deployer_workload_identity\" \\{[^}]*\\n\\s*lifecycle\\s*\\{\\s*create_before_destroy\\s*=\\s*true", file("${path.module}/wif.tf"))) == 1
+    )
+    error_message = "deployer_workload_identity is this root's only workloadIdentityUser binding, with its own lifecycle create_before_destroy = true (a deploy is never without its binding)"
+  }
+
+  # attribute.environment/deploy spans the pool, so it is only as narrow as the one provider's condition:
+  # a second provider (another repository's deploy environment) would widen it (D233).
+  assert {
+    condition = (
+      length(regexall("(?m)^resource \"google_iam_workload_identity_pool\" ", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      length(regexall("(?m)^resource \"google_iam_workload_identity_pool_provider\" ", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
+    )
+    error_message = "one pool and one provider in this root: a second provider would admit its own deploy environment into ryft-deployer's set"
   }
 
   assert {
     condition = (
       output.github_workload_identity_provider == "projects/123456789012/locations/global/workloadIdentityPools/github/providers/github-actions" &&
       output.deployer_email == "ryft-deployer@ryftlab-prod.iam.gserviceaccount.com" &&
-      output.github_principal_set == google_service_account_iam_member.deployer_workload_identity.member
+      output.deployer_principal_set == google_service_account_iam_member.deployer_workload_identity.member &&
+      output.site_principal_set == "principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/github/attribute.environment/site" &&
+      output.site_principal_set != output.deployer_principal_set
     )
-    error_message = "the outputs deploy.yml and step 10 use"
+    error_message = "the outputs deploy.yml and step 10a use: the deploy set is the deployer's binding, the site set is another"
   }
 }
 

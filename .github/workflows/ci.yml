@@ -527,9 +527,10 @@ jobs:
       # The workflows themselves.
       - run: actionlint
       # What actionlint cannot know, read from the parsed YAML (the pinned yq is first on PATH; the
-      # script fails without it): no pull_request_target/workflow_run, only deploy.yml's `deploy` and
-      # `site` name the environment `deploy`, nothing names the old deploy App's key, deploy.yml is
-      # gated by GCP_DEPLOY, never cancelled, has no status function or continue-on-error, scans before
+      # script fails without it): no pull_request_target/workflow_run, only deploy.yml's `deploy` (in
+      # `deploy`) and `site` (in `site`) name an environment, each its own WIF principal set (D233),
+      # nothing names the old deploy App's key, deploy.yml is gated by GCP_DEPLOY, never cancelled,
+      # has no status function or continue-on-error, scans before
       # it signs in and changes Cloud Run only from main's tip, builds the site without a token and
       # deploys it only from main's tip, only this file defines ci-ok (deploy.yml reads that job of
       # this workflow's own run), no external reusable workflow, no `secrets: inherit`, no test hooks
