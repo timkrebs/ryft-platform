@@ -72,6 +72,18 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Main red after #198, the workflow test follows the pins (2026-11-17)
+
+#198 (Dependabot: `actions/download-artifact` 7.0.0 → 8.0.2) turned main red at `09b50b4` (run 44117122278).
+`check_workflows_test.sh` named the old pin's line, and `smoke`, which runs it, had been skipped on the PR. While
+`ci-ok` is red, `deploy.yml` deploys nothing. The fix is branch `ci/workflow-test-pins` (D235):
+- The test reads every SHA-pinned step `uses:` of `deploy.yml`'s `deploy`, `site-build` and `site` jobs, and the
+  linter version from the Makefile. It puts each action back on its tag and expects the rule for that step, so a bump
+  no longer touches the test.
+- `manifests`, which every change under `.github/` selects, runs the test too.
+- **Merging** turns main green. `deploy.yml` then deploys the services as usual and the site only if `web/` changed
+  since the live release (it didn't). Nothing for you to run. #200 waits for the green main.
+
 ## ryftlab.de is live on Firebase Hosting (2026-11-17)
 
 Runbook steps 10a–10f are done: the environment `site`, the WIF split (#196) applied, `site-deployer` on the
@@ -85,10 +97,10 @@ Runbook steps 10a–10f are done: the environment `site`, the WIF split (#196) a
     own `X-Frame-Options`, before Hosting.
 
   Branch `web/live-check-hosting` makes `check-hosting.mjs` expect production by default and the emulator under
-  `--emulator`. Every Location must still be a path of this site.
+  `--emulator`. Every Location must still be a path of this site. *#201 merged; its deploy's live check passed 36
+  of 36.*
 - The pages, the AASA, the deep links and www work (the live check's other 32 checks). Apple's CDN is checked at 10g.
-- **Next:** step 10g by hand once that PR is merged and its deploy's live check is green. Then 10h (the app's URLs
-  in App Store Connect).
+- **Next:** step 10g by hand, then 10h (the app's URLs in App Store Connect).
 
 ## The site in Nocturne, the app pinned (2026-11-17)
 

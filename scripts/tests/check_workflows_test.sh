@@ -291,10 +291,27 @@ job_swap "a site concurrency group per commit" "concurrency group \`site\`" site
 # The actions: by SHA, and only these.
 job_swap "a third-party sign-in action in the site" "its only actions are actions/checkout, setup-node and download-artifact" site \
   "      - name: main is still at this commit" "      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093\n      - name: main is still at this commit"
-job_swap "download-artifact by tag" "its only actions" site \
-  "      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0" "      - uses: actions/download-artifact@v7"
 job_swap "actions/cache in site-build" "its only actions are actions/checkout, setup-node and upload-artifact" site-build \
   "      - run: npm ci --no-audit --no-fund" "      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9\n      - run: npm ci --no-audit --no-fund"
+# Every action of deploy, site-build and site back on its tag must fail. The lines are read from
+# deploy.yml as it is pinned today, never written here: Dependabot moves the SHAs (#198 broke main).
+pinned_uses() { # <job>: that job's step lines `uses: <action>@<40 hex>` (first key or not) in the repository's deploy.yml
+  awk -v job="  $1:" '/^  [A-Za-z0-9_-]+:$/ { in_job = ($0 == job) } in_job { print }' "$HERE/.github/workflows/deploy.yml" |
+    grep -E '^      (- |  )uses: [^ @]+@[0-9a-f]{40}( |$)' || true
+}
+for job in deploy site-build site; do
+  found=0
+  # fd 3, not stdin: nothing in the loop body can read the remaining lines away.
+  while IFS= read -r -u 3 line; do
+    found=$((found + 1))
+    prefix=${line%%uses: *}
+    action=${line#*uses: }; action=${action%%@*}
+    tag=${line##*# }; [ "$tag" != "$line" ] || tag=v1  # the version in the pin's comment, else any tag
+    # Both of check_workflows.sh's messages quote the step's `uses: …`, so the failure is this step's.
+    job_swap "$action by tag in $job" "uses: $action@$tag\`" "$job" "$line" "${prefix}uses: $action@$tag"
+  done 3< <(pinned_uses "$job")
+  [ "$found" -gt 0 ] || fail "deploy.yml's job $job pins no action by SHA (the test is stale)"
+done
 # setup-node without a cache in the site (site-build may have one: it has no token).
 job_swap "setup-node with an npm cache in the site" "setup-node without a cache" site "          node-version-file: web/.nvmrc" "          node-version-file: web/.nvmrc\n          cache: npm"
 job_swap "setup-node with a cache path in the site" "setup-node without a cache" site "          node-version-file: web/.nvmrc" "          node-version-file: web/.nvmrc\n          cache-dependency-path: web/package-lock.json"
@@ -555,9 +572,17 @@ fresh; printf 'name: x\non: [push\njobs: {\n' > "$d/x.yml"; run
 fresh; : > "$d/x.yml"; run
 [ "$rc" = 1 ] || fail "an empty workflow must fail (rc=$rc)"
 
-# The linter release of ci.yml's lint job must be the Makefile's (make lint warns on another).
-fresh; sed 's/version: v2\.15\.0/version: v9.9.9/' "$d/ci.yml" > "$d/ci.new" && mv "$d/ci.new" "$d/ci.yml"; run
-expect_fail "a golangci-lint version that differs from the Makefile's" 'GOLANGCI_LINT_VERSION'
+# The linter release of ci.yml's lint job must be the Makefile's (make lint warns on another). The version is
+# read from the Makefile, never written here: a linter bump moves both (D235).
+lint_v=$(sed -n 's/^GOLANGCI_LINT_VERSION := //p' "$HERE/Makefile")
+fresh
+if [ -n "$lint_v" ] && awk -v from="          version: $lint_v" '
+    $0 == from { $0 = "          version: v9.9.9"; hit = 1 } { print } END { exit !hit }' "$d/ci.yml" > "$d/ci.new"; then
+  mv "$d/ci.new" "$d/ci.yml"; run
+  expect_fail "a golangci-lint version that differs from the Makefile's" 'GOLANGCI_LINT_VERSION'
+else
+  fail "ci.yml has no line 'version: $lint_v', the Makefile's GOLANGCI_LINT_VERSION (the test is stale)"
+fi
 
 if [ "$failures" -gt 0 ]; then
   echo "✗ check_workflows_test: $failures case(s) failed" >&2

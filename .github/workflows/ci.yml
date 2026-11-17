@@ -536,6 +536,10 @@ jobs:
       # this workflow's own run), no external reusable workflow, no `secrets: inherit`, no test hooks
       # of the scripts.
       - run: ./scripts/check_workflows.sh
+      # Its own test, here as well as in `smoke` (make test-scripts): it mutates the real workflows, and
+      # `manifests` is the job that every change under .github/ selects. A Dependabot bump of an action
+      # in deploy.yml alone skipped `smoke`, and its stale test first failed on main (#198, D235).
+      - run: bash scripts/tests/check_workflows_test.sh
       # deploy/run (Cloud Run, what deploy.yml applies): config.env lints, every template renders with
       # fake values, and the rendered YAML has design §3's limits, the ingress, account, h2c port and
       # probes per service, the env of ticket-b.md, secrets pinned by number (migrate's equal to the
