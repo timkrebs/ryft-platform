@@ -463,6 +463,8 @@ Graphite and Mist (`npm run icons`, `npm run og`; the OG card now takes its weig
 tracking and the label's case from the tokens). Whether they follow the app's new wordmark icon (M1)
 is the user's decision.
 
+_Superseded by D22._
+
 Would change if the app gets an appearance option again (its ADR 0016 says that needs an ADR of its
 own); then the site decides separately whether to follow.
 
@@ -509,3 +511,63 @@ the browser follows the Location to a page that carries the site's headers.
 
 Would change if Hosting or its front end answers differently: the live check fails, and the new
 expectation is recorded here first.
+
+## D22 — Icons from the app's wordmark icon (M1) (2026-11-17; supersedes D20's "Icons keep the mark")
+
+The user decided on 2026-11-17 that the site takes the app's new icon, M1 (app #112, the app's ADR
+0016): "RYFT" in Satoshi Light on the near-black tile, no mark. It comes from the app at the pin
+(`web/.app-ref` = `7358f0c99b7a6eb544521e87407b7d2c9bc09556`). The icons stop using the orbit mark,
+and nothing else in the design changes beyond the mark and its colours.
+
+**The source is the app's raster, at its largest size.** The app has no vector of M1. Its
+`scripts/icon-spec.swift` and `scripts/render-icon.swift` set the word with CoreText (Satoshi-Light.otf
+at 27.27 % of the tile, 0.02 em tracking, the tile the `Background` colour set, the word
+`TextPrimary`) into `Ryft/Assets.xcassets/AppIcon.appiconset/AppIcon-{Light,Dark,Tinted}.png`: three
+identical, opaque 1024 × 1024 PNGs, and 1024 is the set's only size. `scripts/lib/app-icon.mjs`
+resolves the app as `tokens.mjs` does (`RYFT_APP_DIR`, absolute or relative to `web/`, default
+`../../app`), reads `Contents.json` and takes the largest image (points × scale; on a tie, the entry
+without `appearances`, so `AppIcon-Light.png`). It exits 1 when the set or the file is missing, and
+it never reads a copy. The site doesn't redraw the word from the spec with its own woff2: that would
+be a second rendering (another rasteriser, the woff2 instead of the otf) that can drift from the icon
+the app ships.
+
+- **The icons.** `scripts/icons.mjs` scales the 1024 source with Lanczos (sharp) into
+  `favicon-32.png`, `apple-touch-icon.png` (180, full bleed: iOS rounds it), `icon-192.png`,
+  `icon-512.png` and `icon-maskable-512.png`, all opaque. `site.webmanifest` keeps its shape; its
+  background and theme colour are the tokens' background. The orbit mark's composition constants
+  and the `mark.ts` import are gone from the script.
+- **Maskable.** The script measures the word's ink on the source (every pixel that differs from the
+  tile's colour) and checks the ink box's four corners against the 80 % safe circle (radius 0.4 of
+  the side, 409.6 px on 1024). If they lie inside, the maskable icon is the full-bleed icon. If not,
+  it pads the source evenly with the tile colour until the farthest corner lies inside, and says so.
+  At the pin: _TODO(lead): the ink box, the farthest corner's distance and the result, as
+  `npm run icons` prints them (the session that wrote this could not run it)._
+- **`favicon.svg` is gone.** A raster can't make a vector favicon without converting Satoshi into
+  outlines, and the ITF FFL allows no conversion. A favicon can't load a web font either. The head
+  links `favicon-32.png` and the touch icon, and browsers that took the SVG take the PNG.
+- **The OG card** (`scripts/og.mjs`) shows the app icon where it showed the orbit mark, from the
+  same helper, scaled by sharp (Lanczos) and inlined as data URLs. In the logo row it is a 52 px
+  tile with an iOS-like corner (22.37 % of the side, drawn circular by CSS). The big decoration is a
+  300 px tile, uncropped, on the right, between the card's top and the rule. The script measures
+  the copy's ink in the page and fails when the tile comes closer than 48 px to it or reaches the
+  rule. The tile is the card's own colour, so both tiles carry a 1 px `separator` border. The logo
+  row drops the "RYFT" text next to the tile: the icon already says RYFT, so the two read as the
+  name twice. The layout, the copy and the colours are otherwise unchanged, from the tokens.
+- **The drift check.** `icons.mjs` records the source's app-relative path and SHA-256 in
+  `config/app-icon.json`, and `og.mjs` adds its own (`ogSha256`). `tests/app-icon.test.ts` hashes the
+  app's current largest AppIcon PNG and compares it with the record, so a bump of `.app-ref` that
+  brings another icon fails until `npm run icons` and `npm run og` ran against that commit. Like the
+  mark's drift test, `tokens:check` and `licenses:check`, it skips without the app outside CI and
+  fails when `CI` is set. CI's `web-checks` runs it in its unit tests, with `RYFT_APP_DIR` pointing at
+  the app checked out at `.app-ref`. The same file checks the five PNGs' sizes, that they are opaque,
+  and that `favicon.svg` stays gone.
+
+**The header keeps the orbit mark.** At the pin, the app's `RyftHeader`, `WordmarkLockup` and
+`BrandLockup` (`Ryft/Design/RyftHeader.swift`) still draw the mark next to the wordmark, and
+`src/lib/mark.ts` matches `RyftMark.swift` number for number (`tests/mark.test.ts`). So `Brand.tsx`,
+`Mark.tsx`, `mark.ts`, Home, Science, the charts and the styleguide keep it. Only the icons'
+composition was the old mark. If the user wants the word alone in the header, that is a follow-up in
+`Brand.tsx`.
+
+Would change if the app ships a vector of the icon (the site would take it instead of the raster) or
+its header drops the mark (then the site's header follows, in its own PR).
