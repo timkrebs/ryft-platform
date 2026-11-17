@@ -26,11 +26,17 @@
 .swatch-on-accent {
   background: var(--on-accent);
 }
+.swatch-on-signal {
+  background: var(--on-signal);
+}
 .swatch-sage {
   background: var(--sage);
 }
 .swatch-separator {
   background: var(--separator);
+}
+.swatch-signal {
+  background: var(--signal);
 }
 .swatch-slate {
   background: var(--slate);

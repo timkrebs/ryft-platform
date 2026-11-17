@@ -685,22 +685,34 @@ design §3, api-contract-owner).
 ### 10. The site and the app *(C1, D233)*
 
 Run from the repository root on an up-to-date main, in bash or zsh, as you, logged in to gcloud
-and to Firebase (`npx --yes firebase-tools@$(cat web/.firebase-tools-version) login` once). No
+and to Firebase (`npx --yes firebase-tools@$(cat web/.firebase-tools-version) login` once). In zsh,
+run `setopt interactivecomments` first. Stock zsh doesn't treat `#` as a comment at the prompt, so a
+line like `S=ryftlab-site   # taken? …` fails ("no matches found") and leaves `S` unset. No
 billing account anywhere. Until 10f, `SITE_DEPLOY` is off, and every run of `deploy.yml` shows
 "Site off" and stays green.
 
-**10a. The site project** (after C1's merge: `$FT` reads `web/.firebase-tools-version`, which
-main has only from then on; without it `firebase-tools@` would be whatever is newest):
+**10a. The site project** (after C1's merge: `ft` runs the version in `web/.firebase-tools-version`,
+which main has only from then on; without it `firebase-tools@` would be whatever is newest):
 
 ```bash
-FT="npx --yes firebase-tools@$(cat web/.firebase-tools-version)"
+# A function, not a variable: zsh doesn't word-split an unquoted $FT, so "$FT projects:…" fails there.
+FTV=$(cat web/.firebase-tools-version); ft() { npx --yes "firebase-tools@$FTV" "$@"; }
 S=ryftlab-site                                       # taken? stop: deploy.yml's SITE_PROJECT and SITE_DEPLOYER need a PR first
 gcloud projects create "$S" --name="RYFT site"       # no --organization; never link a billing account
 gcloud billing projects describe "$S" --format='value(billingEnabled)'   # False
 gcloud services enable firebase.googleapis.com firebasehosting.googleapis.com iam.googleapis.com \
   iamcredentials.googleapis.com --project="$S"
-$FT projects:addfirebase "$S"                        # Spark, because there is no billing account
-$FT hosting:sites:list --project "$S"                # one site, ryftlab-site
+ft projects:addfirebase "$S"                         # Spark, because there is no billing account
+ft hosting:sites:list --project "$S"                 # one site, ryftlab-site; a 403 right after addfirebase is IAM
+                                                     # propagation: wait a few minutes, then run it again
+
+# addfirebase also creates the Admin SDK account, firebase-adminsdk-fbsvc, with roles/firebase.sdkAdminServiceAgent
+# and a project-level roles/iam.serviceAccountTokenCreator. The project policy check below lists it too, and that is
+# expected. Nothing of ours uses it: check it has no keys, then disable it.
+ADMIN_SDK_SA=firebase-adminsdk-fbsvc@$S.iam.gserviceaccount.com
+gcloud iam service-accounts keys list --iam-account="$ADMIN_SDK_SA" --project="$S" --managed-by=user   # empty
+gcloud iam service-accounts disable "$ADMIN_SDK_SA" --project="$S"
+gcloud iam service-accounts describe "$ADMIN_SDK_SA" --project="$S" --format='value(disabled)'        # True
 
 # The deploy SA: Hosting only, usable only through the GitHub pool in ryftlab-prod.
 gcloud iam service-accounts create site-deployer --project="$S" --display-name="CI: Firebase Hosting deploys"
@@ -709,15 +721,18 @@ gcloud projects add-iam-policy-binding "$S" --member="serviceAccount:$SITE_SA" \
   --role=roles/firebasehosting.admin --condition=None
 gcloud iam service-accounts add-iam-policy-binding "$SITE_SA" --project="$S" \
   --role=roles/iam.workloadIdentityUser --member="$(terraform -chdir=infra/gcp output -raw github_principal_set)"
-gcloud projects get-iam-policy "$S" --format='table(bindings.role,bindings.members)'  # you as owner, the SA, nothing else
+gcloud projects get-iam-policy "$S" --format='table(bindings.role,bindings.members)'  # you as owner, the SA, fbsvc's two roles, nothing else
 gcloud iam service-accounts get-iam-policy "$SITE_SA" --format=json \
   | jq -r '.bindings[] | .role + " " + (.members | join(" "))'   # workloadIdentityUser: the principalSet of ryftlab-prod's pool github, by repository ID
 gcloud iam service-accounts keys list --iam-account="$SITE_SA" --managed-by=user       # empty
 ```
 
 **Stop if** `billingEnabled` isn't `False`; `addfirebase` asks for a plan or a billing account;
-the project policy names anyone but you and `site-deployer`; the SA's policy names anything but the
-`github` pool of `ryftlab-prod`; or the key list isn't empty.
+the project policy names anyone but you, `site-deployer` and `firebase-adminsdk-fbsvc` (with
+`roles/firebase.sdkAdminServiceAgent` and `roles/iam.serviceAccountTokenCreator` and nothing else);
+`firebase-adminsdk-fbsvc` has a user-managed key (you didn't make one, so find out who did before you
+delete it) or isn't disabled; the SA's policy names anything but the `github` pool of `ryftlab-prod`;
+or the key list isn't empty.
 
 The GitHub pool's condition already pins `deploy.yml` on main and the `deploy` environment, so
 this binding needs only the repository.
@@ -1490,6 +1505,36 @@ AASA or the policy version: roll back. A timeout, a TLS or DNS error, or www alo
 the release: the check runs on every push and doesn't retry, so dispatch again, and look at the
 domain in the console if it persists. Also stop if `firebase deploy` fails for a reason other than
 a missing permission, or if `site` deployed in a run whose summary says superseded.
+
+**The app pin** (D234). The site's drift checks read the app: the tokens, the Swift licences, the
+AASA's paths, the admin config and the mark. CI's `web-checks` checks out `timkrebs/ryft-app` at
+the commit in `web/.app-ref`: one line, a full SHA, nothing else. App merges don't reach platform main
+until a PR moves the pin, and that PR carries what the app's change implies. Nothing moves the pin
+automatically. Move it when the app changed something the site follows (a colour, the type, the
+mark, the wordmark, a Swift package, the AASA's routes), from an up-to-date main (in zsh,
+`setopt interactivecomments` first: the block carries comments):
+
+```bash
+git switch main && git pull --ff-only
+git switch -c web/app-<short sha>
+# The app at that commit, read-only. Not ../app: its branch is whatever the app session is on.
+git clone --quiet https://github.com/timkrebs/ryft-app ~/ryft-app-pin   # once; later: git -C ~/ryft-app-pin fetch --quiet origin
+git -C ~/ryft-app-pin switch --detach <sha>                             # a commit on the app's main
+APP=$HOME/ryft-app-pin
+git -C "$APP" rev-parse HEAD > web/.app-ref
+RYFT_APP_DIR=$APP make web-tokens                       # src/styles/tokens.{css,json}, swatches.css
+RYFT_APP_DIR=$APP make web-test web-build web-e2e       # the build's prebuild also rewrites the Swift licence snapshot
+(cd web && npm run icons && npm run og)                 # only when a colour, the mark or the wordmark moved
+git status --short                                      # web/.app-ref and the files the app's change implies
+git add web && git commit -m "web: the app at <short sha>"
+git push -u origin HEAD
+gh pr create --fill
+gh pr checks --watch                                    # web-checks green: tokens:check and licenses:check against the new pin
+```
+
+**Stop if** `make web-tokens` throws (the app changed a source file's shape: `web/scripts/tokens.mjs`
+needs a change in the same PR), or the diff asks for a design change beyond the tokens (that's the
+user's call, in its own PR). To roll back, revert the bump PR: the pin and its outputs go back together.
 
 ### The €20 stop line
 

@@ -5162,3 +5162,29 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     serve the version in force. Nothing moves that pin any more, so C2's version bump must drop that half (D3 would
     have).
   - D3 removes the leftover scripts and the nginx image.
+
+## D234 — The site's checks read the app at a pinned commit, `web/.app-ref` (head-architect's decision, 2026-11-16; amends D107, web D10)
+
+- **Context:** `web-checks` checked out `timkrebs/ryft-app` at its main. App PR #112 (Nocturne PR 1, the app's ADR
+  0016) changed `Typography.swift`'s shape, so `tokens:check` threw "Typography.swift → size not found". Main has
+  been red since #194, and `deploy.yml` deploys nothing while `ci-ok` is red. A merge in another repository broke
+  this one, with no PR here to review it.
+- **Decision:**
+  - `web/.app-ref` holds one full commit SHA of the app and nothing else. `web-checks` reads it, refuses anything but
+    40 lowercase hex characters (a branch or a tag would move under the pin), and checks the app out at that commit.
+    The value goes through a step output, never into a `run` line.
+  - The first pin is `7358f0c99b7a6eb544521e87407b7d2c9bc09556`, app main at #114 (2026-11-17), the commit the
+    Nocturne tokens were generated from.
+  - Nothing moves the pin automatically. A token update is a PR that moves the pin, regenerates what follows from
+    it and passes the drift checks against the new commit (OPERATIONS → GCP → Deploy, roll back, rotate → The app
+    pin).
+  - Local runs still read whatever `RYFT_APP_DIR` (or `../app`) has checked out. CI's checks against the pin catch
+    outputs made from another commit, so the local tools don't check the pin themselves.
+- **Rejected:**
+  - Dependabot or a scheduled bump. The app's main moves while a design runs over several PRs, and the site
+    follows a design once it's done.
+  - A git submodule. It would pin the same commit, but it adds a checkout mode to every clone, the hooks and the
+    agents' worktrees.
+- **Consequences:** app merges no longer turn platform main red. The site can trail the app by design; that gap
+  is visible as the pin. Every check that reads the app, in CI, sees the same commit: tokens, Swift licences, the
+  AASA's paths, the admin config and the mark.

@@ -140,6 +140,8 @@ test.describe('headers: /admin has its own policy, every other page keeps connec
       const csps = res.headersArray().filter((h) => h.name.toLowerCase() === 'content-security-policy');
       expect(csps, `${path}: one policy`).toHaveLength(1);
       const csp = csps[0]!.value;
+      // The marketing pages run no script at all (web D20).
+      expect(directive(csp, 'script-src'), path).toBe("'none'");
       expect(directive(csp, 'connect-src'), path).toBe("'none'");
       expect(directive(csp, 'img-src'), path).toBe("'self'");
       expect(csp, path).not.toContain('trusted-types ');

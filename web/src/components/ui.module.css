@@ -1,9 +1,10 @@
+/* The app's ryftLabelStyle: size, weight, case and tracking all from the tokens. */
 .label {
   margin: 0;
   font-size: var(--type-label);
   font-weight: var(--type-label-weight);
   line-height: 1.4;
-  text-transform: uppercase;
+  text-transform: var(--label-transform);
   letter-spacing: var(--tracking-label);
 }
 

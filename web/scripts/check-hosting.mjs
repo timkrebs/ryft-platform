@@ -139,8 +139,9 @@ export function sitePath(base, location) {
 }
 
 /**
- * Which of the site's two policies a CSP value is: 'marketing' (scripts by hash, connect-src
- * 'none'), 'admin' (one hash, the Auth API and the admin routes, trusted-types 'none') or 'other'.
+ * Which of the site's two policies a CSP value is: 'marketing' (no script at all: script-src
+ * 'none', connect-src 'none'; web D20), 'admin' (one hash, the Auth API and the admin routes,
+ * trusted-types 'none') or 'other'. A marketing policy that allows any script is 'other'.
  * @param {string} csp
  * @returns {'marketing' | 'admin' | 'other'}
  */
@@ -150,14 +151,14 @@ export function cspKind(csp) {
     const [name, ...rest] = part.trim().split(/\s+/);
     if (name) d.set(name, rest);
   }
-  const scripts = d.get('script-src') ?? [];
-  const hashed = scripts.length > 0 && scripts.every((s) => /^'sha256-[A-Za-z0-9+/=]+'$/.test(s));
-  if (!hashed || csp.includes('unsafe-')) return 'other';
+  if (csp.includes('unsafe-')) return 'other';
+  const scripts = (d.get('script-src') ?? []).join(' ');
   const connect = (d.get('connect-src') ?? []).join(' ');
   const types = (d.get('trusted-types') ?? []).join(' ');
-  if (connect === "'none'" && !d.has('trusted-types')) return 'marketing';
+  if (scripts === "'none'" && connect === "'none'" && !d.has('trusted-types')) return 'marketing';
+  const hash = /^'sha256-[A-Za-z0-9+/=]+'$/.test(scripts);
   const two = /^https:\/\/\S+\/auth\/v1\/ https:\/\/\S+\/v1\/admin\/$/.test(connect);
-  if (two && types === "'none'" && scripts.length === 1) return 'admin';
+  if (hash && two && types === "'none'") return 'admin';
   return 'other';
 }
 

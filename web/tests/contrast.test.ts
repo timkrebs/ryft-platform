@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import tokens from '../src/styles/tokens.json';
 
-// WCAG 2.2 AA against the generated tokens, in both appearances: every text colour the
-// site uses on every surface it sits on reaches 4.5:1; chart and gauge marks reach 3:1.
-type Scheme = 'dark' | 'light';
+// WCAG 2.2 AA against the generated tokens: every text colour the site uses on every surface it
+// sits on reaches 4.5:1; chart and gauge marks reach 3:1. The site is dark-only, like the app (web
+// D20): every colour has one value, so there is one appearance to check.
 type Color = keyof typeof tokens.colors;
 
 function parse(value: string): [number, number, number, number] {
@@ -32,20 +32,23 @@ function luminance([r, g, b]: [number, number, number]) {
   return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
 }
 
-function contrast(fg: Color, bg: Color, scheme: Scheme): number {
-  const back = over(tokens.colors[bg][scheme], tokens.colors.background[scheme]);
+function contrast(fg: Color, bg: Color): number {
+  const back = over(tokens.colors[bg].dark, tokens.colors.background.dark);
   const backHex = `#${back.map((c) => Math.round(c).toString(16).padStart(2, '0')).join('')}`;
-  const front = over(tokens.colors[fg][scheme], backHex);
+  const front = over(tokens.colors[fg].dark, backHex);
   const [l1, l2] = [luminance(front), luminance(back)].sort((x, y) => y - x);
   return (l1 + 0.05) / (l2 + 0.05);
 }
 
+// A surface-raised fill carries text-primary or text-secondary, never text-tertiary (the app's
+// ADR 0016, 2.5: 3.9:1 there), so tertiary is checked on background and surface only.
 const text: [Color, Color][] = [
   ['text-primary', 'background'],
   ['text-primary', 'surface'],
   ['text-primary', 'surface-raised'],
   ['text-secondary', 'background'],
   ['text-secondary', 'surface'],
+  ['text-secondary', 'surface-raised'],
   ['text-tertiary', 'background'],
   ['text-tertiary', 'surface'],
   ['accent', 'background'],
@@ -64,12 +67,18 @@ const marks: [Color, Color][] = [
   ['accent-secondary', 'surface'],
 ];
 
-describe.each(['dark', 'light'] as const)('contrast in %s', (scheme) => {
+describe('the palette', () => {
+  it('is dark-only: every colour has one value (web D20)', () => {
+    for (const [name, value] of Object.entries(tokens.colors)) expect(value.light, name).toBe(value.dark);
+  });
+});
+
+describe('contrast', () => {
   it.each(text)('%s on %s is at least 4.5:1', (fg, bg) => {
-    expect(contrast(fg, bg, scheme)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(fg, bg)).toBeGreaterThanOrEqual(4.5);
   });
 
   it.each(marks)('%s marks on %s are at least 3:1', (fg, bg) => {
-    expect(contrast(fg, bg, scheme)).toBeGreaterThanOrEqual(3);
+    expect(contrast(fg, bg)).toBeGreaterThanOrEqual(3);
   });
 });

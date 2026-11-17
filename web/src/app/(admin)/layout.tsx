@@ -5,9 +5,9 @@ import '@/styles/tokens.css';
 import '@/styles/globals.css';
 import '@/admin/admin.css';
 
-// The operator's page has its own document (web D15): no site header or footer, no theme
-// scripts (the tokens follow the system appearance), and noindex. Its one script is inlined
-// by the page.
+// The operator's page has its own document (web D15): no site header or footer, dark-only like
+// the rest of the site (the tokens have one value per colour, web D20), and noindex. Its one
+// script is inlined by the page.
 export const metadata: Metadata = {
   title: 'RYFT admin',
   robots: { index: false, follow: false },
