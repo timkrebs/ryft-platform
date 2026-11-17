@@ -18,14 +18,13 @@ locals {
   public_services = toset(["api", "ingest"])
   runtime         = toset(["api", "ingest", "scoring", "notify", "migrate"])
 
-  # Account ID => display name. No key for any of them, ever: grafana-reader's one JSON key is made by
-  # hand at runbook step 11 and lives only in Grafana Cloud (D224).
+  # Account ID => display name. No key for any of them, ever (tests/guards.tftest.hcl). grafana-reader,
+  # Grafana Cloud's reader and the one account a key was planned for, went with Grafana Cloud (D236).
   accounts = merge(
     { for s in local.runtime : "ryft-${s}" => "RYFT ${s}: Cloud Run runtime" },
     {
-      "ryft-push"      = "RYFT push and tick tokens (Pub/Sub OIDC)"
-      "ryft-deployer"  = "CI: deploy.yml through GitHub WIF"
-      "grafana-reader" = "Grafana Cloud: Cloud Monitoring, read only"
+      "ryft-push"     = "RYFT push and tick tokens (Pub/Sub OIDC)"
+      "ryft-deployer" = "CI: deploy.yml through GitHub WIF"
     },
   )
   runtime_accounts = toset([for s in local.runtime : "ryft-${s}"])
@@ -57,6 +56,8 @@ locals {
     ))
   }
 
-  # The Grafana-managed rules exist once the data source does (runbook step 11).
-  alerts = var.grafana_datasource_uid != ""
+  # The alerting gate (alerts.tf, runbook step 11): the alert policies and the two channels' data sources
+  # exist once alert_app_channel_name is set. A sensitive value can't drive count, and this boolean says
+  # only whether the name is set, never what it is.
+  alerting = nonsensitive(var.alert_app_channel_name != "")
 }

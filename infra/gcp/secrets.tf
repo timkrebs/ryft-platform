@@ -16,7 +16,10 @@ locals {
     "apple-key-p8"        = ["ryft-api"]
     "apns-key-p8"         = ["ryft-notify"]
     "data-key"            = ["ryft-api"]
-    "otlp-token"          = ["ryft-api", "ryft-ingest", "ryft-scoring", "ryft-notify"]
+    # Unread since D236: deploy/run pins it no more. It stays until no serving revision reads it (an
+    # older revision does not start without it), then goes in its own PR, in two applies, because of
+    # prevent_destroy below (docs/OPERATIONS.md -> GCP, step 11.6).
+    "otlp-token" = ["ryft-api", "ryft-ingest", "ryft-scoring", "ryft-notify"]
     # PostHog's project API key, served to the app by GET /v1/config (D231). Its pin in deploy/run/api.yaml
     # comes after the first version: a revision that reads a missing version does not start.
     "posthog-project-key" = ["ryft-api"]

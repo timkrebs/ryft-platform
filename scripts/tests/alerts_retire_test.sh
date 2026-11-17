@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # make alerts-retire-eks deletes exactly the rule groups the move to Cloud Run left live from EKS days:
-# the groups of the two files alerts-apply loaded there and no longer loads (eks-admission.yaml holds
-# what was ryft.yaml's ryft-admission; admission-intended.yaml is its own namespace), plus ryft-vault,
-# which left ryft.yaml; and none of the groups ryft.yaml holds now, the only file alerts-apply loads
-# (their load replaces them). Read from the files, no tools beyond sed and grep.
+# the groups of the two files loaded there that nothing loads now (eks-admission.yaml holds what was
+# the old rules file's ryft-admission; admission-intended.yaml is its own namespace), plus ryft-vault,
+# which left that file. And the Makefile loads no rule at all: RYFT on Cloud Run alerts from Cloud
+# Monitoring (infra/gcp/alerts.tf, D236). Read from the files, no tools beyond sed and grep.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
 A=$HERE/deploy/grafana/alerts
@@ -18,8 +18,8 @@ groups() {
 }
 flat() { tr '\n' ' ' <<<"$1" | sed 's/ *$//'; }
 
-# The live names are where alerts-apply loaded the groups on EKS: eks-admission.yaml's groups were
-# ryft.yaml's, in namespace ryft, whatever namespace the file names now (mimirtool checks it in a run
+# The live names are where the groups were loaded on EKS: eks-admission.yaml's groups were the old
+# rules file's, in namespace ryft, whatever namespace the file names now (mimirtool checks it in a run
 # of its own); admission-intended.yaml was loaded with its own.
 live=ryft
 want=$({ groups "$A/eks-admission.yaml" "$live"; groups "$A/admission-intended.yaml"; echo "$live/ryft-vault"; } | sort -u)
@@ -27,14 +27,9 @@ have=$(sed -n 's/^EKS_RULE_GROUPS[[:space:]]*:=[[:space:]]*//p' "$HERE/Makefile"
 [ "$(grep -c . <<<"$want")" = 3 ] || fail "fixture: want three leftover groups, the files give [$(flat "$want")]"
 [ "$have" = "$want" ] || fail "EKS_RULE_GROUPS in the Makefile is [$(flat "$have")], want [$(flat "$want")]"
 
-loaded=$(groups "$A/ryft.yaml")
-[ "$(flat "$loaded")" = "ryft/ryft ryft/ryft-pipeline ryft/ryft-ops" ] || fail "ryft.yaml's groups are [$(flat "$loaded")]: update this test and EKS leftovers in docs/OBSERVABILITY.md"
-while read -r g; do
-  ! grep -qxF "$g" <<<"$loaded" || fail "EKS_RULE_GROUPS names $g, which ryft.yaml loads"
-done <<<"$have"
+# The Cloud Run rules went with Grafana Cloud (D236): no file of theirs, no target that loads one.
+[ ! -e "$A/ryft.yaml" ] || fail "deploy/grafana/alerts/ryft.yaml is back: Cloud Run's alerts are infra/gcp/alerts.tf (D236)"
+! grep -q 'rules load' "$HERE/Makefile" || fail "the Makefile loads rules again: $(grep -o 'rules load [^;]*' "$HERE/Makefile")"
+! grep -qE '^alerts-apply:' "$HERE/Makefile" || fail "alerts-apply is back (D236)"
 
-# alerts-apply loads ryft.yaml and nothing else.
-loads=$(grep -o 'rules load [^;]*' "$HERE/Makefile")
-[ "$loads" = "rules load /alerts/ryft.yaml" ] || fail "alerts-apply must load /alerts/ryft.yaml only, has: $loads"
-
-echo "✓ alerts_retire_test: alerts-retire-eks deletes exactly $(flat "$have"), none of ryft.yaml's groups, and alerts-apply loads ryft.yaml only"
+echo "✓ alerts_retire_test: alerts-retire-eks deletes exactly $(flat "$have"), and nothing loads a rule"

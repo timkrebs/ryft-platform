@@ -15,11 +15,3 @@ provider "google-beta" {
   project = var.project_id
   region  = var.region
 }
-
-# Only the Grafana-managed rules (alerts.tf) use this provider. Until the data source exists (runbook
-# step 11) grafana_datasource_uid is empty, nothing uses the provider, and it is configured with
-# nothing at all: applies 1 and 2 need no Grafana token.
-provider "grafana" {
-  url  = local.alerts ? var.grafana_url : null
-  auth = local.alerts ? var.grafana_auth : null
-}

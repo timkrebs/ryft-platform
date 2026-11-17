@@ -11,7 +11,6 @@ mock_provider "google" {
   }
 }
 mock_provider "google-beta" {}
-mock_provider "grafana" {}
 
 override_data {
   target = data.google_project.this

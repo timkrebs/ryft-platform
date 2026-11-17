@@ -1,12 +1,13 @@
 # The EKS cluster's admission alerts (T12-e, D120), moved out of ryft.yaml unchanged with the move to
-# Cloud Run (ticket B2): Cloud Run has no admission policies, so `make alerts-apply` does not load
-# this file. It stays because scripts/admission_intended.sh holds AdmissionBindingMissing's count of
-# bindings to infra/aws/kubernetes' chart, and `make alerts-check` still checks it (promtool,
+# Cloud Run (ticket B2): Cloud Run has no admission policies, so nothing loads this file (ryft.yaml
+# and `make alerts-apply` went with Grafana Cloud, D236). It stays because
+# scripts/admission_intended.sh holds AdmissionBindingMissing's count of bindings to
+# infra/aws/kubernetes' chart, and `make alerts-check` still checks it (promtool,
 # mimirtool, the 20-rule limit) and runs its unit tests (eks-admission.test.yaml), until the EKS
 # removal (D3) deletes it with admission-intended.yaml and the chart. Namespace and group are the
 # live ones, so loading it by hand while EKS still runs changes nothing on the live copy;
 # `make alerts-retire-eks` deletes the live copy (OBSERVABILITY.md → Alerts → EKS leftovers). The
-# namespace is ryft.yaml's too, so mimirtool checks each file in a run of its own (one run refuses a
+# namespace was ryft.yaml's too, so mimirtool checks each file in a run of its own (one run refuses a
 # namespace twice).
 namespace: ryft
 groups:

@@ -1,6 +1,7 @@
-# One account per service and job (D222), the push identity, CI's deployer and Grafana's reader. There
-# is no google_service_account_key anywhere in this root, and there never will be: a key resource puts
-# the private key into the state (tests/guards.tftest.hcl refuses one).
+# One account per service and job (D222), the push identity and CI's deployer. There is no
+# google_service_account_key anywhere in this root, and there never will be: a key resource puts the
+# private key into the state (tests/guards.tftest.hcl refuses one). grafana-reader went with Grafana
+# Cloud (D236): no account outside Google reads this project.
 resource "google_service_account" "this" {
   for_each = local.accounts
 
@@ -32,9 +33,8 @@ resource "google_service_account_iam_member" "pubsub_agent_token_creator" {
 # else.
 #
 # run.developer holds no setIamPolicy, so the deployer can neither make scoring public nor grant
-# itself anything. It may act as the five runtime accounts only (never ryft-push, never
-# grafana-reader), and push to one repository (registry.tf). No IAM-admin role of any kind
-# (tests/iam.tftest.hcl).
+# itself anything. It may act as the five runtime accounts only (never ryft-push), and push to one
+# repository (registry.tf). No IAM-admin role of any kind (tests/iam.tftest.hcl).
 resource "google_project_iam_member" "deployer_run_developer" {
   count = var.serve ? 0 : 1
 
@@ -69,11 +69,4 @@ resource "google_service_account_iam_member" "deployer_act_as" {
   service_account_id = local.sa_id[each.key]
   role               = "roles/iam.serviceAccountUser"
   member             = local.member["ryft-deployer"]
-}
-
-# ---- grafana-reader: metrics only (no data, no logs), for Grafana Cloud's data source (D224) ------
-resource "google_project_iam_member" "grafana_reader" {
-  project = var.project_id
-  role    = "roles/monitoring.viewer"
-  member  = local.member["grafana-reader"]
 }

@@ -33,11 +33,6 @@ output "deployer_email" {
   value       = local.sa["ryft-deployer"]
 }
 
-output "grafana_reader_email" {
-  description = "The account whose one JSON key goes into Grafana Cloud's data source (runbook step 11)"
-  value       = local.sa["grafana-reader"]
-}
-
 output "run_urls" {
   description = "Each service's run.app URL: PUSH_AUDIENCE in deploy/run, the host of its push endpoints"
   value       = local.run_url
@@ -54,6 +49,20 @@ output "gates" {
     serve           = var.serve
     public_invokers = var.public_invokers
     tick_paused     = !local.tick
+  }
+}
+
+output "monitoring" {
+  description = "Cloud Monitoring (D236): whether alerting is on, its policies, the uptime checks and the log-based metrics, by name (runbook step 11)"
+  value = {
+    alerting = local.alerting
+    policies = sort(concat(
+      [for p in google_monitoring_alert_policy.uptime : p.display_name],
+      [for p in google_monitoring_alert_policy.promql : p.display_name],
+    ))
+    uptime_checks = sort(keys(google_monitoring_uptime_check_config.this))
+    log_metrics   = sort([google_logging_metric.ticks.name, google_logging_metric.errors.name])
+    dashboard     = local.dashboard_name
   }
 }
 

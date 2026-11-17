@@ -33,9 +33,9 @@ spec:
           resources:
             limits: { cpu: "1", memory: 512Mi }
           # Started means listening (/health/live), not ready: an instance has to start while the
-          # database is down, so that its ticks push ryft_db_up 0 (DatabaseDown) instead of no instance
-          # and no signal at all, and a start that fails is billed 20 s, not 120. /health/ready stays the
-          # synthetics' target (ApiDown). The same in all four services.
+          # database is down, so that its ticks log result error (Tick missing, D236) instead of no
+          # instance and no signal at all, and a start that fails is billed 20 s, not 120. /health/ready
+          # stays the uptime checks' target (infra/gcp). The same in all four services.
           startupProbe:
             httpGet: { path: /health/live, port: 8080 }
             periodSeconds: 1
@@ -66,9 +66,6 @@ spec:
             - { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }
             - { name: PUSH_SA_EMAIL, value: ryft-push@ryftlab-prod.iam.gserviceaccount.com }
             - { name: PUSH_SA_ID, value: "${PUSH_SA_ID}" }
-            - { name: OTLP_ENDPOINT, value: "${OTLP_ENDPOINT}" }
-            - { name: OTLP_USER, value: "${OTLP_USER}" }
-            - { name: OTLP_TOKEN, valueFrom: { secretKeyRef: { name: otlp-token, key: "1" } } }
             - { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "1" } } }
             - { name: LOG_LEVEL, value: "${LOG_LEVEL}" }
   # Every deploy sends all traffic to the new revision, which also ends a rollback's pin

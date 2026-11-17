@@ -4867,6 +4867,8 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   fresh instance's first sample).
 - **Consequences:** `OBSERVABILITY.md` → The metrics push, Health paths.
 
+_Grafana half superseded by D236._
+
 ## D226 — One budget, made by hand; the €20 stop line is a runbook action (**the user's decision**, 2026-11-14)
 
 - **Decision:** one budget, "RYFT 50 EUR", on the billing account, made by hand and not in Terraform, with rules at
@@ -5312,3 +5314,68 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     twice on main and on PRs that select both jobs.
 - **Consequences:** a Dependabot bump of an action anywhere under `.github/` runs the test on its own PR, and the next
   bump of a pinned action doesn't touch the test.
+
+## D236 — Cloud Monitoring is the only observability; Grafana Cloud out (**the user's decision**, 2026-11-17; supersedes D224's Grafana half)
+
+- **Context:** D224 had Grafana Cloud read Cloud Monitoring through `grafana-reader` (a service-account key) and take
+  the app metrics by OTLP push. Runbook step 11, which would have made the key, the data source, the push, the
+  synthetics and the app rules, never ran: `grafana-reader` exists without a key, `OTLP_ENDPOINT` and `OTLP_USER`
+  were empty, nothing was ever pushed. A second vendor, a key and a stack for a one-person beta weren't worth it.
+- **Decision (the user's):** Grafana Cloud goes for RYFT on GCP; Cloud Monitoring is the only observability. About
+  €6 a month for alerting is fine. Two channels, both made by hand in the console: the email `ryft-timkrebs` and the
+  Google Cloud app's. D224's logs half stays (`ryft-logs`, 14 days).
+- **How (`infra/gcp/monitoring.tf`, `alerts.tf`):**
+  - **Signals:** what Cloud Run and Pub/Sub measure themselves; two log-based counters of lines the services already
+    write, `ryft_ticks` (the `tick` line, label `result`) and `ryft_errors` (`severity>=ERROR`, no label); five uptime
+    checks (the home page, `/privacy`, the AASA always; api's and ingest's `/health/ready` only while they're
+    public), every 300 s from three locations; the dashboard "RYFT · Overview". **No label carries an IP, a user id,
+    an email or a message id** (`tests/monitoring.tftest.hcl` pins the label set).
+  - **Five conditions, one policy each** (the cap is a test: a sixth is a decision and a price): (1) uptime
+    `check_passed`, `REDUCE_COUNT_FALSE` by check and host over 1200 s `> 1`, held 600 s; (2) api's or ingest's 5xx
+    share over 10 min `> 0.02` and at least 3 5xx, held 600 s; (3) a service with no `result="ok"` tick in 45 min,
+    an absent series included, only while the tick runs; (4) a dead-letter hold subscription holds a message; (5) an
+    event subscription's oldest unacked message is older than 900 s. The subscriptions come from the topology's
+    tfvars, not from a pattern. **Why (5), the lead's pick of the free fifth slot:** scoring and notify have no
+    public 5xx condition and no uptime check, and (4) fires only after 20 failed deliveries with backoff. A consumer
+    that is down, failing or saturated shows first as an event that ages. SyncSlow and Saturated (`alerts.tf`
+    before D236) became dashboard panels instead.
+  - **Channels** are data sources, never resources. The app channel's display name is personal data: a sensitive
+    variable `alert_app_channel_name` (default `""`), set only in the HCP workspace's UI. Not ephemeral: a data
+    source's argument can't take an ephemeral value. `local.alerting = nonsensitive(var.alert_app_channel_name !=
+    "")` is the gate (the boolean shows only whether it is set): off, no channel is read and no policy exists; the
+    metrics, checks and dashboard are free and stay.
+  - **App metrics from logs**, not by pushing the registry to Google (`telemetry.googleapis.com`: a token client,
+    resource attributes, a role, unverifiable here) or writing `timeSeries.create` from Go (the most code, a write
+    role, a series per instance). The log-based metrics need no Go change and no role and carry the two signals the
+    policies need. The OTLP code stays, dormant.
+- **Cost a month** (prices not verified here): reading A, $1.50 a condition: **$7.50**. Reading B, possibly from May
+  2026, $0.10 a condition and $0.35 per million time series returned: $0.50 + at most about 0.6 M series ≈ **$0.70**.
+  Uptime: 5 × 3 × 12 × 730 = 131,400 executions (free up to 1 M). The log-based metrics: at most about 4 MB of
+  points (150 MiB free). The dashboard: free.
+- **Lost** (no alert, nothing reads the app registry on Cloud Run): TextRefusedByDatabase, NoSync, the APNs and push
+  alerts, NewFeedback, the admin alerts, OutboxStuck, the www redirect and probe-flapping checks. The rest map onto
+  the five or onto panels (`OBSERVABILITY.md` → What D236 dropped). The admin alerts were the lost-phone detection
+  (`AdminWebUsed`): an admin sign-in you didn't make is now noticed only by reading the audit or the `admin_actor`
+  lines (OPERATIONS → the admin page).
+- **Removed:** the `grafana` provider, its resources, variables and mocks; `grafana-reader` and its
+  `monitoring.viewer` (two destroys, no data); `deploy/grafana/synthetics`, `scripts/synthetics.sh`,
+  `synthetics_re2.go`, their test, `make synthetics-*` and CI's steps; `deploy/grafana/alerts/ryft.yaml`, its tests
+  and `make alerts-apply`; `OTLP_*` in `deploy/run` and `config.env` (`cloudrun_render.py` now refuses the keys).
+- **Kept:** the secret `otlp-token` and its accessor, until no serving revision reads it: a rollback to an older
+  revision needs it. Its removal is a PR of its own in two applies, because of `prevent_destroy` (runbook GCP 11.6).
+  Until D3: `eks-admission.yaml` and its test, `admission-intended.yaml`, `admission_intended.sh`,
+  `check_rule_groups.sh`, `make alerts-check` and `alerts-retire-eks`, the `k8s-monitoring` collector, the stack.
+- **The lead's design, changed:** the 5xx condition got a floor of 3 (one failed uptime request at night is no
+  outage); the subscriptions are derived, not matched; the apply SA needs four Monitoring roles, granted by hand
+  (11.2); Error Reporting isn't turned on here (its API isn't on the keep list, it doesn't read the `panic` line's
+  `stack` key, its retention is unchecked against the privacy text), so 11.5 makes enabling it the user's decision,
+  in a PR of its own; the
+  stack can go only once EKS stops sending (D3), and the app rule groups still live in its ruler go by hand (11.7).
+- **Unchecked:** both price readings and the free uptime quota; that `increase()` over the log-based DELTA counter
+  answers after the first counted tick; the app channel's delivery (11.4 tests it).
+- **Privacy:** no new processor (Monitoring is Google's, like Cloud Run and Logging). The metrics are counts by
+  service and result; alerts name policies, services, subscriptions and checks. The dashboard's logs panel reads
+  `ryft-logs` with the reader's own log permissions, and only the services' stdout and stderr: Cloud Run's request
+  log has ERROR entries for every 5xx, with the caller's IP. For RYFT on GCP, C2 need not name Grafana.
+- **Consequences:** `OBSERVABILITY.md` → Cloud Monitoring; `OPERATIONS.md` → GCP → 11 and When an alert fires;
+  `infra/gcp/README.md`.

@@ -7,7 +7,6 @@ mock_provider "google" {
   }
 }
 mock_provider "google-beta" {}
-mock_provider "grafana" {}
 
 override_data {
   target = data.google_project.this
@@ -45,9 +44,19 @@ run "the_accounts" {
 
   assert {
     condition = toset(keys(google_service_account.this)) == toset([
-      "ryft-api", "ryft-ingest", "ryft-scoring", "ryft-notify", "ryft-migrate", "ryft-push", "ryft-deployer", "grafana-reader",
+      "ryft-api", "ryft-ingest", "ryft-scoring", "ryft-notify", "ryft-migrate", "ryft-push", "ryft-deployer",
     ])
-    error_message = "five runtime accounts, ryft-push, ryft-deployer and grafana-reader, nothing else"
+    error_message = "five runtime accounts, ryft-push and ryft-deployer, nothing else (grafana-reader went with Grafana Cloud, D236)"
+  }
+
+  # No account for anything outside Google, and no project-level role for anyone but the deployer before
+  # apply 2 (code lines; a comment may name grafana-reader to say it is gone).
+  assert {
+    condition = (
+      length(regexall("(?m)^[^#\\n]*grafana", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0 &&
+      length(regexall("(?m)^\\s*resource\\s+\"google_project_iam_member\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
+    )
+    error_message = "no grafana in any code line, and one project-level member resource (the deployer's run.developer before apply 2)"
   }
 
   assert {
@@ -138,10 +147,7 @@ run "secret_accessors_exactly" {
   }
 
   assert {
-    condition = alltrue(concat(
-      [for b in google_project_iam_member.deployer_run_developer : b.role != "roles/secretmanager.secretAccessor"],
-      [google_project_iam_member.grafana_reader.role != "roles/secretmanager.secretAccessor"],
-    ))
+    condition     = alltrue([for b in google_project_iam_member.deployer_run_developer : b.role != "roles/secretmanager.secretAccessor"])
     error_message = "no project-level secretAccessor"
   }
 }
@@ -232,7 +238,7 @@ run "deployer_holds_no_iam_admin_role" {
         b.role == "roles/iam.serviceAccountUser" && b.member == "serviceAccount:ryft-deployer@ryftlab-prod.iam.gserviceaccount.com"
       ])
     )
-    error_message = "actAs on the five runtime accounts, never on ryft-push or grafana-reader"
+    error_message = "actAs on the five runtime accounts, never on ryft-push"
   }
 
   assert {
@@ -274,15 +280,6 @@ run "deployer_holds_no_iam_admin_role" {
       ) : can(regex("(?i)admin|owner|editor|iam\\.securityReviewer|tokenCreator|workloadIdentityUser|run\\.invoker", r))
     ])
     error_message = "no admin, owner, editor, token or invoker role for the deployer"
-  }
-
-  assert {
-    condition = (
-      google_project_iam_member.grafana_reader.role == "roles/monitoring.viewer" &&
-      google_project_iam_member.grafana_reader.member == "serviceAccount:grafana-reader@ryftlab-prod.iam.gserviceaccount.com" &&
-      length(regexall("(?m)^[^#\\n]*member\\[\"grafana-reader\"\\]", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
-    )
-    error_message = "grafana-reader holds monitoring.viewer and nothing else"
   }
 }
 

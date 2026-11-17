@@ -11,10 +11,6 @@ terraform {
       source  = "hashicorp/google-beta"
       version = "~> 8.11"
     }
-    grafana = {
-      source  = "grafana/grafana"
-      version = "~> 4.55"
-    }
   }
 
   # State and runs in HCP Terraform, org ryft-lab (D216, D223): CLI-driven, remote execution. The

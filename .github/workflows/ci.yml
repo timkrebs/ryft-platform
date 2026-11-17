@@ -133,13 +133,10 @@ jobs:
               - 'web/**'
               - 'docs/SCORING.md'
               - '.github/workflows/ci.yml'
-            # The alert rules and the synthetic checks; the checks' body markers are read from
-            # the site's own sources (the policy text and the AASA).
+            # The EKS cluster's alert rules, until D3 (RYFT on Cloud Run alerts from Cloud
+            # Monitoring, infra/gcp, D236).
             monitoring:
               - 'deploy/grafana/**'
-              - 'scripts/synthetics.sh'
-              - 'scripts/synthetics_re2.go'
-              - 'scripts/tests/synthetics_test.sh'
               # the committed actions of the admission bindings (a step-change PR edits only the values)
               - 'infra/aws/kubernetes/admission-values.yaml'
               - 'infra/aws/kubernetes/charts/admission-policy/values.yaml'
@@ -147,8 +144,6 @@ jobs:
               - 'scripts/tests/admission_intended_test.sh'
               - 'scripts/check_rule_groups.sh'
               - 'scripts/tests/check_rule_groups_test.sh'
-              - 'web/content/legal/**'
-              - 'web/public/.well-known/**'
               - 'Makefile'
               - '.github/workflows/ci.yml'
             # The scoring golden files and their PR guard (D149).
@@ -679,8 +674,9 @@ jobs:
           cache: false
       - run: make argocd-luatest
 
-  # Alert rules as code (promtool check and unit tests, mimirtool check) and the synthetic
-  # checks of ryftlab.de (offline validation, RE2, markers against the site's sources).
+  # The EKS cluster's alert rules as code (promtool check and unit tests, mimirtool check), until
+  # D3. The synthetic checks went with Grafana Cloud (D236): Cloud Monitoring's uptime checks are
+  # infra/gcp's, tested by its terraform job.
   monitoring:
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_monitoring == 'true'
@@ -690,13 +686,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: backend/go.mod
-          cache: false
       - run: make alerts-check CONTAINER=docker
-      - run: ./scripts/synthetics.sh check
-      - run: bash scripts/tests/synthetics_test.sh
       - run: bash scripts/tests/admission_intended_test.sh
       - run: bash scripts/tests/check_rule_groups_test.sh
 

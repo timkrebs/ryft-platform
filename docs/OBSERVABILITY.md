@@ -1,88 +1,165 @@
 # RYFT — observability
 
-On Cloud Run nothing scrapes the services and they have no metrics port: each instance
-**pushes** its Prometheus registry to Grafana Cloud by OTLP at the end of each tick and once on
-SIGTERM (**The OTLP push** below, D224). Without Cloud Run (compose) each service serves
+RYFT on Cloud Run has one observability: **Cloud Monitoring** (D236, which supersedes D224's
+Grafana half). Nothing scrapes the services and nothing is pushed: what Google measures itself
+(Cloud Run, Pub/Sub), two log-based metrics counted from lines the services already write, uptime
+checks from outside, the dashboard "RYFT · Overview" and five alert policies, all in `infra/gcp`
+(**Cloud Monitoring** below). Logs are JSON (`slog`) on stdout, in Cloud Logging's bucket
+`ryft-logs` for 14 days (**Logs** below). Without Cloud Run (compose) each service serves
 `GET /metrics` on its own port, **9090** (`METRICS_PORT`, no auth), apart from the API and
-probe port 8080, and pushes nothing. The probes are `/health/live` and `/health/ready`
-(**Health paths** below). Logs are JSON (`slog`) on stdout: Cloud Logging on Cloud Run; see
-**Logs** below.
+probe port 8080. The probes are `/health/live` and `/health/ready` (**Health paths** below).
+The sections on Grafana Cloud, the collector and Vault are **EKS leftovers until D3**: the
+cluster's, not Cloud Run's.
 
-## The OTLP push (Cloud Run)
+## Cloud Monitoring (Cloud Run, D236)
 
-**When.** At the end of every `POST /internal/tick` (the Scheduler job `ryft-tick`, every 15
-minutes): the tick's final step, after `ryft_ticks_total` and the steps' gauges are set and
-before the `204`, within 10 s (`FinallyBudget`), so the push carries this tick's counts. And
-once on SIGTERM, after the HTTP step of the shutdown, within its budget. Never in between: with
-request-based billing an instance has no CPU outside a request, so a timer would not run. An
-instance that handles no tick pushes once, when it stops. Each push sends the cumulative values,
-so a failed one loses resolution, not counts: the next tick sends them again.
+Everything here is `infra/gcp`: `monitoring.tf` (the log-based metrics, the uptime checks, the
+dashboard; free at RYFT's volume, so always there) and `alerts.tf` (the five policies; only once
+the workspace variable `alert_app_channel_name` is set, runbook GCP step 11.1). The user applies
+it (OPERATIONS → GCP → 11).
 
-**What.** One request per push: `POST <OTLP_ENDPOINT>/v1/metrics`, OTLP/HTTP with JSON encoding
-(`Content-Type: application/json`, gzipped), basic auth `OTLP_USER:OTLP_TOKEN`. It carries every
-series of the registry: the `ryft_*` metrics below and Go's `go_*` and `process_*`. Counters are
-cumulative monotonic sums, gauges (and untyped values) gauges, histograms explicit-bucket
-histograms, summaries summaries; cumulative points start at the process start. Names are sent as
-the registry has them, without a unit and without an instrumentation scope, so they arrive in
-Mimir unchanged: `ryft_ticks_total` (one `_total`), `ryft_http_request_duration_seconds_bucket`.
-Why that encoding gives those names, and what is not yet checked against Grafana Cloud:
-`internal/metrics` (package doc, "Names").
+**What is measured, and by whom.**
 
-**Labels.** The resource is `service.namespace="ryft"`, `service.name="<svc>"` and
-`service.instance.id` (16 random hex digits, new for every process: one per Cloud Run instance).
-Grafana Cloud makes them `job="ryft/<svc>"` and `instance="<id>"` on every series, and one
-`target_info` series per instance. The series' own labels follow unchanged (one with an empty
-value is left out, as Prometheus does). The rules select `job`, never `namespace` (the cluster's
-label, gone with EKS).
+| Source | Series (PromQL name) | Labels used | Read by |
+| --- | --- | --- | --- |
+| Cloud Run | `run_googleapis_com:request_count` | `service_name`, `response_code_class`, `response_code` | policy 2, the dashboard |
+| Cloud Run | `run_googleapis_com:request_latencies_bucket`, `run_googleapis_com:container_instance_count` | `service_name`, `le`, `state` | the dashboard |
+| Pub/Sub | `pubsub_googleapis_com:subscription_num_undelivered_messages`, `…_oldest_unacked_message_age` | `subscription_id` | policies 4 and 5, the dashboard |
+| Uptime checks | `monitoring.googleapis.com/uptime_check/check_passed`, `…/time_until_ssl_cert_expires` | `check_id`, `checker_location` | policy 1, the dashboard |
+| Log-based | `logging_googleapis_com:user_ryft_ticks` | `result` (ours), `service_name` (the resource's) | policy 3, the dashboard |
+| Log-based | `logging_googleapis_com:user_ryft_errors` | `service_name` (the resource's) | the dashboard |
 
-**Configuration** (`deploy/run/config.env`, the secret `otlp-token`; `config.LoadOTLP`):
+### The log-based metrics
 
-| Variable | Value |
+Two counters (`DELTA`, `INT64`) of lines the services already write: no Go change, nothing pushed.
+Both read only the services' own stream on Cloud Run (`resource.type="cloud_run_revision"`, the
+`run.googleapis.com/stdout` log, and for errors `stderr` too), never Cloud Run's request log. **No
+label may carry an IP, a user id, an email or a message id**: `ryft_ticks` has one label of its
+own, `result`, a closed set (`tests/monitoring.tftest.hcl` pins it); the service is the resource's
+`service_name`.
+
+- **`ryft_ticks`**: one per `POST /internal/tick` a service handled, from the line `tick`
+  (`internal/events/pubsub/tick.go`: `result` `ok` or `error`, with `message_id` and `took`, which
+  stay in the log). It is logged at `info`, so a `LOG_LEVEL` above `info` silences it and policy 3
+  fires for every service.
+- **`ryft_errors`**: every line at `severity>=ERROR`, panics included (the line `panic` with its
+  `stack`). A panel, no policy (the cap of five).
+
+A counter writes no point for a minute without a matching line, so "no tick" is an absent series:
+policy 3 names every service and asks for each. A log-based metric counts from its creation on,
+not back, so the tick policy may open once at the first apply and closes within the hour (runbook
+GCP 11.3).
+
+### The uptime checks
+
+Every 5 minutes from exactly three locations (`EUROPE`, Belgium; `USA_IOWA`; `USA_VIRGINIA`: the
+fewest Google takes, and `USA` alone would be three more), a 10-second timeout, `GET` over validated
+TLS, exactly `200`, no redirect followed.
+
+| Check | URL | Passes when | Exists |
+| --- | --- | --- | --- |
+| `ryft-site-home` | `https://ryftlab.de/` | 200 | always |
+| `ryft-site-privacy` | `https://ryftlab.de/privacy` | 200 | always |
+| `ryft-site-aasa` | `https://ryftlab.de/.well-known/apple-app-site-association` | 200, the body holds `M77SKHKG63.dev.timkrebs.ryft` | always |
+| `ryft-api-ready` | `https://api.ryftlab.de/health/ready` | 200 (the database behind it) | while api and ingest are public (`serve` and no stop line) |
+| `ryft-ingest-ready` | `https://ingest.ryftlab.de/health/ready` | 200 | the same |
+
+5 checks × 3 locations × 12 runs an hour × 730 hours = **131,400 executions a month**, under the
+free million (the brief's figure, not checked here). The privacy page has no body marker: its text
+changes with C2. `www.ryftlab.de` has no check (its redirect is Hosting's own).
+
+### The dashboard "RYFT · Overview"
+
+`google_monitoring_dashboard.overview`, two tiles a row: requests per second, 5xx per second, p95
+latency and instances, each by service; 429s by service (what Saturated paged on); ticks per hour
+by service and result; the oldest unacked event and the undelivered events per event subscription;
+the dead letters held per hold subscription; ERROR lines per hour by service; uptime (the share of
+locations passing) and the certificate's days left, by check; and a logs panel of the services'
+`severity>=ERROR` lines from `ryft-logs`. ingest's p95 is what SyncSlow paged on (10 s).
+
+### The alert policies
+
+Five conditions, one policy each, to both channels: the email `ryft-timkrebs` and the Google Cloud
+app's (made by hand; the app channel's display name is personal data, so it is a sensitive
+workspace variable and in no file). Five is the cap (`tests/monitoring.tftest.hcl`): each condition
+has a price, and a sixth is a decision. Each policy's documentation is its first look; the table
+with the commands is OPERATIONS → GCP → When an alert fires.
+
+| # | Policy | Query and threshold | Evaluated, held | Severity |
+| --- | --- | --- | --- | --- |
+| 1 | RYFT · Uptime check failing | `uptime_check/check_passed`, `ALIGN_NEXT_OLDER` over 1200 s, `REDUCE_COUNT_FALSE` by `check_id` and host, `> 1` (2 of 3 locations failing): a classic threshold, as Google's console writes it, because `check_passed` is a BOOL | 600 s | critical |
+| 2 | RYFT · 5xx over 2 % (api, ingest) | `sum by (service_name)` of `rate(request_count{5xx}[10m]) / rate(request_count[10m]) > 0.02`, and at least 3 5xx in the 10 minutes (one failed request among a night's uptime checks is no outage) | every 60 s, 600 s | critical |
+| 3 | RYFT · Tick missing | each of api, ingest, scoring, notify (`label_replace(vector(1), …)`) `unless` it has `increase(user_ryft_ticks{result="ok"}[45m]) > 0`: no ok tick in three ticks, an absent series included. Only while the tick runs (not under `serve = false` or the stop line) | every 300 s, 300 s | critical |
+| 4 | RYFT · Dead letters held | `max by (subscription_id) (num_undelivered_messages{the hold subscriptions}) > 0` | every 300 s, 300 s | warning |
+| 5 | RYFT · Event backlog over 15 minutes | `max by (subscription_id) (oldest_unacked_message_age{the event subscriptions}) > 900`: a consumer that is down or fails every push, before its 20 attempts run out and policy 4 fires | every 300 s, 300 s | warning |
+
+The subscriptions are named from the topology (`pubsub.auto.tfvars.json`), so a new consumer is in
+4 and 5 without an edit. Incidents close when the query returns nothing, or 30 minutes after their
+data stops. A disabled channel is `checks.tf`'s `alert_channels_enabled` warning.
+
+### What D236 dropped, and what covers it
+
+The app rules (`deploy/grafana/alerts/ryft.yaml`, never loaded on Cloud Run) and Grafana's five
+Cloud Monitoring rules went with Grafana Cloud:
+
+| Was | Now |
 | --- | --- |
-| `OTLP_ENDPOINT` | `https://otlp-gateway-<zone>.grafana.net/otlp` exactly: the stack's OpenTelemetry page. https, lower case, no port, no userinfo, query or fragment, the path `/otlp` (the push adds `/v1/metrics`). Only Grafana's gateways (`otlp-gateway-*.grafana.net`), not any name under `grafana.net`: a stack's own `<name>.grafana.net` is named by whoever creates it, and the token goes with every push |
-| `OTLP_USER` | the stack's instance ID, digits |
-| `OTLP_TOKEN` | the `otlp-token` secret: an access policy token with `metrics:write` only. Printable ASCII, at least 16 characters; surrounding whitespace (a secret file's newline) is trimmed |
+| ApiDown, SiteDown | policy 1 |
+| HTTP5xxRatio, AuthUnavailable on `/v1` (its `503`) | policy 2; on a push or tick, Pub/Sub retries the `503` (policies 3 and 5) |
+| TickMissing, DatabaseDown (a tick's db step fails: `result` error), OutboxBacklog and PublishFailing (the tick's sweep fails), InviteEmailPurgeFailing, AccountDeletionIncomplete (the reconcile is a tick step) | policy 3 |
+| DeadLetters, DeadLetterPublishFailing (the push fails, Pub/Sub dead-letters it) | policy 4, before it policy 5 |
+| PushBacklog, SyncToScoreSlow, ScoringErrors (scoring's 5xx keep events unacked) | policy 5 |
+| Panics | the `ryft_errors` panel and the logs panel; a panic that ends the process is a 5xx (policy 2) or a backlog (policy 5) |
+| SyncSlow, Saturated, RateLimited | panels (p95, 429s) |
+| SiteCertificateExpiring | the certificate panel; a certificate that lapses fails TLS, which every check validates (policy 1) |
+| **Lost**: TextRefusedByDatabase, NoSync, APNsFailing, PushFailing, APNsRejectsOurKey, NewFeedback, AdminUnauthorized, AdminWebUsed, SiteProbeFlapping, SiteWwwRedirectBroken, SyntheticsMissing (nothing to miss), OutboxStuck (the outbox queries in OPERATIONS) | nothing; each was an app metric that nothing reads on Cloud Run now |
 
-`OTLP_ENDPOINT` and `OTLP_USER` both empty means **no push**, and the token is then ignored
-(Cloud Run injects `otlp-token` into every service either way): the services start without
-metrics, and `TickMissing` fires once the rules are loaded. One without the other, another host
-or path, a user that is not digits, or a missing or malformed token stops the start (exit 1,
-like any configuration error; the error names the variable). No error quotes the values, so a
-token pasted into the wrong variable stays out of the log.
+### Error Reporting
 
-**Failures.** A push is one request and is never retried in a loop. Its error (`otlp push: HTTP
-<status>: <the first line of the answer, at most 200 bytes>`, or the transport's error; the token
-and the basic auth value are replaced by `[token]`) is logged once by the caller: the tick's
-`tick: the final step failed`, or the shutdown's step line. A push the gateway accepts but whose
-answer reports rejected points (OTLP's partial success: out of order, too old, a limit) logs
-`metrics push: points rejected` at warn, with `rejected` and `err`. Two pushes of one instance
-never overlap (the second waits, within its own budget), so a series' samples arrive in order.
-All four services failing at once is `TickMissing` for all four (Alerts below).
+Free, but not on by this root. Its API (`clouderrorreporting.googleapis.com`) is not on the keep
+list (`project.tf`); it groups only errors whose stack trace is in a field it knows (`message`,
+`stack_trace`, `exception`), and the services' `panic` line has it in `stack`; and where and how
+long it keeps error events is not checked against the privacy text's 14 days in the EU. Runbook GCP
+11.5 turns its notifications on only where the API is already on; anything else is a PR (the keep
+list, the line's key) and a privacy check.
 
-**Series.** Every instance is a new set of series (`instance`), and with min instances 0 most
-live minutes. An api instance that served the usual routes holds a few hundred series (the HTTP
-histograms per route dominate), scoring and notify fewer, plus about 50 `go_*`/`process_*` each.
-The free tier's 10k active series leave room for some dozens of instances in a window.
+### Cost (a month)
 
-**Check after the first push** (runbook step 11, Explore): `count by (job) (ryft_ticks_total)`
-lists the four `ryft/<svc>` jobs; `{__name__=~".+_total_total"}` and
-`{__name__=~"ryft_.+_(seconds|bytes)_(seconds|bytes).*"}` are empty (no suffix added twice);
-`ryft_http_request_duration_seconds_bucket` has an `le` label. If Grafana Cloud adds labels of its
-own (`service_name`, `otel_scope_name`, …) nothing breaks: the rules aggregate by the labels they
-name. If a name differs, the encoding in `internal/metrics` is what to change, not the rules.
+| Item | Price | RYFT |
+| --- | --- | --- |
+| Alert conditions, reading A (the brief's: $1.50 a condition) | $1.50 × 5 | **$7.50** (about €6.50–7) |
+| Alert conditions, reading B (possibly from May 2026: $0.10 a condition, $0.35 per million time series returned; not verified here) | $0.10 × 5 + series | $0.50 + about $0.21 = **about $0.70** |
+| Time series returned (reading B) | at most: 5xx 43,800 evaluations × 6 series, ticks 8,760 × 4, holds 8,760 × 2, backlog 8,760 × 6, uptime 43,800 × 5 | about 0.6 million, at most |
+| Uptime check executions | free up to 1 million (not verified here) | 131,400: $0 |
+| Log-based metrics (chargeable ingestion, 150 MiB free) | 8 bytes a point | at most about 4 MB (every series, every minute; in practice far less): $0 |
+| Dashboard | free | $0 |
+
+Before D236 the same was free in Grafana Cloud's tier. The delta is $7.50 (reading A) or about
+$0.70 (reading B) a month; the user accepted about €6 (2026-11-17).
+
+### The OTLP push (dormant)
+
+The services can still push their Prometheus registry by OTLP at the end of each tick and on
+SIGTERM (`internal/metrics`, `config.LoadOTLP`, D224), but nothing sets `OTLP_ENDPOINT` and
+`OTLP_USER` any more (`deploy/run` dropped them with D236; `cloudrun_render.py` refuses them), so
+no service pushes. Pushing to Google instead (telemetry.googleapis.com) would need a token client,
+resource attributes, an IAM role and a format nobody could verify here; writing `timeSeries.create`
+would be the most code. The log-based metrics give the two signals that matter for nothing. The
+secret `otlp-token` stays until no serving revision reads it (runbook GCP 11.6). The `ryft_*`
+metrics below are what a push would carry, and what compose serves on `:9090`.
 
 ## Health paths
 
 | Path | Same handler as | Answers | Used by |
 | --- | --- | --- | --- |
 | `GET /health/live` | `/healthz` | `200 {"status":"ok"}` while the process runs, from the moment it listens | Cloud Run's **startup probe** (every 1 s, 20 tries) and liveness probe (`deploy/run/<svc>.yaml`) |
-| `GET /health/ready` | `/readyz` | `200 {"status":"ready"}` when the service's checks pass (the database, and where it has one the signing keys); else `503` | the synthetics (`ryft-api-ready`, `ryft-ingest-ready`), the smoke, the runbook |
+| `GET /health/ready` | `/readyz` | `200 {"status":"ready"}` when the service's checks pass (the database, and where it has one the signing keys); else `503` | the uptime checks (`ryft-api-ready`, `ryft-ingest-ready`, D236), the smoke, the runbook |
 
 Cloud Run cannot route some paths that end in `z` (Google answers its own `404` for `/healthz`,
 design §3), hence the pair; `/healthz` and `/readyz` stay for compose. A service listens before
 it opens its database pool, so `/health/live` answers `200` at once and the ready paths `503`
-until the start is done: an instance starts during a database outage, and its tick reports
-`ryft_db_up` 0 (`DatabaseDown`) instead of no instance and no signal.
+until the start is done: an instance starts during a database outage, and its tick logs `result`
+error (policy 3, Tick missing) instead of no instance and no signal.
 
 On Cloud Run (`K_SERVICE` set) both ready paths answer a **generic** `503 {"error":"not ready"}`
 (no `Retry-After`; the path is public on api and ingest, so no dependency's error is shown), log
@@ -92,8 +169,9 @@ Without `K_SERVICE` the ready paths keep today's body, the failing check named (
 
 ## Collection: Grafana Cloud
 
-This section is the EKS cluster's collector, until D3 removes the cluster; the services on Cloud
-Run push instead (above), and the scrape annotations below do not exist there.
+*EKS leftover until D3.* This section is the EKS cluster's collector, until D3 removes the
+cluster; the services on Cloud Run are observed by Cloud Monitoring instead (above, D236), and the
+scrape annotations below do not exist there.
 
 Metrics go to Grafana Cloud (free tier; D51). The collector is Grafana's
 `k8s-monitoring` chart (`deploy/monitoring/k8s-monitoring.yaml`, `make
@@ -149,10 +227,9 @@ pods' readiness and their service-registration labels). Both run on
 Cloud through a pipeline of the chart's, off until the Loki details are in Vault (**Logs → Vault's
 logs** below).
 
-Alert rules: `deploy/grafana/alerts/ryft.yaml`, the rule set of RYFT on Cloud Run (its metrics
-arrive by OTLP push, not through this collector), checked and loaded with `make alerts-check` /
-`make alerts-apply`; the EKS-coupled rules left are in `eks-admission.yaml` (checked, not loaded);
-see **Alerts** below.
+Alert rules: RYFT on Cloud Run alerts from Cloud Monitoring (D236, above). The EKS-coupled rules
+left are in `eks-admission.yaml`, checked with `make alerts-check` and not loaded; see **Alerts**
+below.
 
 **The SDK injector stays out of `ryft-*`.** `telemetryServices.sdkInjector` deploys a
 mutating webhook (`mpod-v1.beyla.grafana.com`, pods on CREATE, `failurePolicy: Ignore`)
@@ -218,7 +295,8 @@ Monitoring policy, realm: the stack), and everything in the namespace uses it:
   pipeline profiles).
 
 The policy page is authoritative (**to verify** the scope names there). Do not widen this token
-for anything else: the alert rules token and the Synthetic Monitoring token are separate. It
+for anything else: the alert rules token is separate (the Synthetic Monitoring token went with
+D236). It
 survived the decommission only if nobody revoked it. So before infra/vault's first apply, check
 in Grafana Cloud → the stack → Access policies → the Kubernetes Monitoring policy that the token
 in `service_secrets.monitoring.GC_TOKEN` is still listed (by its name; never paste the value). If
@@ -257,56 +335,20 @@ new collectors with their pipelines (remove the destroyed cluster's collectors t
 `vault`, is a stop: uninstall the release, fix the pipeline, and send a Loki delete request
 before going on.
 
-### Synthetic Monitoring: the site from outside
+### Synthetic Monitoring (gone, D236)
 
-Nothing inside the cluster sees what a visitor, the App Review team or Apple's AASA
-fetch sees, so Grafana Cloud's Synthetic Monitoring (free tier) checks `ryftlab.de` from
-two public EU probes every 5 minutes, and the readiness endpoint (`/health/ready`) of the two
-public services on Cloud Run (`api.ryftlab.de`, `ingest.ryftlab.de`) every 10 minutes. The definitions are code,
-`deploy/grafana/synthetics/ryftlab.json`; `make synthetics-check` validates them
-offline, `make synthetics-apply` upserts them by `job` through the SM API
-(`SM_API_URL`, `SM_ACCESS_TOKEN`; OPERATIONS → Monitoring). The results are ordinary
-metrics in the stack's Prometheus, so the same ruler evaluates the alerts.
-
-| `job` | `instance` (the URL) | Passes when |
-| --- | --- | --- |
-| `ryft-site-home` | `https://ryftlab.de/` | 200, `text/html` |
-| `ryft-site-privacy` | `https://ryftlab.de/privacy` | 200, `text/html`, the body holds `Art. 9(2)(a) GDPR` (only the real policy has it) |
-| `ryft-site-aasa` | `https://ryftlab.de/.well-known/apple-app-site-association` | 200 with no redirect, `application/json`, the body holds `M77SKHKG63.dev.timkrebs.ryft` |
-| `ryft-site-www-redirect` | `https://www.ryftlab.de/` | 301 (or 308) whose `Location` is `https://ryftlab.de/`, not followed |
-| `ryft-api-ready` | `https://api.ryftlab.de/health/ready` | exactly 200, no redirect followed; every 10 min |
-| `ryft-ingest-ready` | `https://ingest.ryftlab.de/health/ready` | exactly 200, no redirect followed; every 10 min |
-
-Every check also fails when TLS fails. Metrics (labels `job`, `instance`, `probe`):
-`probe_success` (1 or 0 per run), `probe_ssl_earliest_cert_expiry` (Unix seconds; the
-served certificate, so `www` is covered as well), `probe_duration_seconds`,
-`probe_http_status_code`. The alerts are `SiteDown`, `SiteProbeFlapping`,
-`SiteWwwRedirectBroken`, `SiteCertificateExpiring`, `ApiDown` (the two service checks) and
-`SyntheticsMissing` (Alerts below). A service check reads `/health/ready`, the readiness
-endpoint with the database behind it, so it fails when the service cannot start or answer, its
-domain mapping or certificate is wrong, or the database is gone. It is not the startup probe:
-`deploy/run/<svc>.yaml` starts an instance on `/health/live` (20 s at most), so an instance
-starts during a database outage and its tick reports `ryft_db_up` 0 (`DatabaseDown`) instead of
-no instance and no signal. ApiDown has SiteDown's shape, every result of two runs from every
-probe failed: SiteDown's 10 minutes are two of its 5-minute runs, and with checks every 10
-minutes ApiDown's window is 20 minutes, so one failed run (a cold start slower than the
-10-second timeout, min instances 0) does not page. `scripts/synthetics.sh` pins those two
-targets and their status code.
-The SM agent republishes a run's last result about every 2 minutes, so a 5-minute check
-yields roughly three samples per run and a 10-minute check five; the windows (10 minutes for
-"every probe", 30 minutes and 0.8 for "flapping") count whole runs either way.
-
-**Budget.** The free tier includes 100k API test executions a month (grafana.com/pricing →
-Synthetics API Testing); an execution is one test run in one probe location per minute
-of run time. 4 site checks × 2 probes × 8,640 runs (every 5 min, 30 days) = 69,120, plus
-2 service checks × 2 probes × 4,320 runs (every 10 min) = 17,280: 86,400, about 86 %,
-assuming a run under a minute (they take under a second); `make synthetics-check`
-prints the figure and refuses a definition above the limit. A third probe would be
-129,600, and the service checks every 5 minutes 103,680: both over. The privacy marker is a sentence of the policy text; if a policy
-revision drops it, `SiteDown` fires after the deploy, and the fix is the regexp in the
-JSON (`make synthetics-apply`), not the page.
+Grafana Cloud's Synthetic Monitoring (`deploy/grafana/synthetics/ryftlab.json`,
+`scripts/synthetics.sh`, `make synthetics-check|apply`) and its `Site*`, `ApiDown` and
+`SyntheticsMissing` rules went with D236. The site and api's and ingest's readiness are Cloud
+Monitoring's uptime checks now (**Cloud Monitoring → The uptime checks**, above). Its definitions
+and their budget are in git before D236.
 
 ## Metrics
+
+The services' own Prometheus registry. On Cloud Run nothing reads it since D236 (no push, no
+scrape; **The OTLP push (dormant)** above): compose serves it on `:9090`, and the EKS cluster's
+collector scraped it. Alert names below are the app rules' and EKS's, gone with D236 where
+**Alerts** says so.
 
 | Metric | Type | Labels | Service | Meaning |
 | --- | --- | --- | --- | --- |
@@ -389,6 +431,9 @@ JSON (`make synthetics-apply`), not the page.
 | `go_*`, `process_*` | | | all | Go runtime and process collectors; on Cloud Run pushed with the rest (about 50 series per instance). |
 
 ## Grafana dashboard — panel list
+
+*EKS leftover until D3:* the cluster's Grafana dashboard. Cloud Run's is "RYFT · Overview" in
+Cloud Monitoring (**Cloud Monitoring → The dashboard**, above).
 
 Variables: `$namespace`, a regex (default `ryft-.*`, the per-service namespaces). All rates over `[5m]` unless noted.
 
@@ -517,157 +562,53 @@ in-cluster Postgres of `local-postgres`, `postgres_exporter` with a read-only ro
 
 ## Alerts
 
-The rules are code: `deploy/grafana/alerts/ryft.yaml` (Prometheus format, D85), with unit
-tests in `ryft.test.yaml`: the rule set of RYFT on Cloud Run (design §6), on the services' own
-metrics (**The OTLP push** above; what that means for the rules below) and the synthetics. `make alerts-check` runs
-`scripts/check_rule_groups.sh`, `promtool check rules`, `promtool test rules` (`ryft.test.yaml`
-and `eks-admission.test.yaml`) and `mimirtool rules check` (in containers) over `ryft.yaml`,
-`eks-admission.yaml` and `admission-intended.yaml`; `make alerts-apply` loads **`ryft.yaml`
-only** into the stack's ruler with `GRAFANA_PROM_URL`, `GRAFANA_PROM_USER` and
-`GRAFANA_RULES_TOKEN` (an access policy token with `rules:read` and `rules:write`). Load it at
-runbook step 11 (OPERATIONS → GCP), once the services push (`OTLP_ENDPOINT` and `OTLP_USER` in
-`deploy/run/config.env`, deployed): before that, `TickMissing` fires for all four services and
-`NoSync` after six hours, as they should. What Cloud Run and Pub/Sub measure themselves (5xx,
-latency, 429s, backlog, dead letters) is not in this file but in `infra/gcp` (**On Cloud
-Monitoring** below). The owner's stack takes at most
-**20 rules per group** (alerts and recording rules alike); a larger group makes the ruler
-refuse the whole load (`per-user rules per rule group limit (limit: 20 actual: 39) exceeded`
-for group `ryft`, 2026-11-05) and nothing is written. So `ryft.yaml` splits its rules by
-theme into `ryft` (the services: panics, text, rate limits, auth, database, ticks),
-`ryft-pipeline` (Pub/Sub publishing, the outbox, scoring, sync) and `ryft-ops` (push, accounts
-and the beta, the synthetics). Keep a group at 18 or fewer and open a new one by theme
-when it grows: `make alerts-check` runs `scripts/check_rule_groups.sh` first, which fails
-above 20 (promtool and mimirtool do not know the limit). A load replaces each group it names
-whole and leaves groups it does not name alone, so moving an alert between groups in the
-file is safe, but a renamed or dropped group stays live until it is deleted in Grafana Cloud
-(Alerting → Alert rules) or with `mimirtool rules delete` (`make alerts-retire-eks` for the
-EKS groups, **EKS leftovers** below). Routing is the operator's, in
-Grafana Cloud → Alerting: a contact point with email and the Grafana mobile app, and a
-notification policy for `severity` `critical`, `warning` and `info` (feedback).
+**RYFT on Cloud Run** alerts from Cloud Monitoring only: the five policies of `infra/gcp/alerts.tf`
+(**Cloud Monitoring → The alert policies**, above; first looks in OPERATIONS → GCP → When an alert
+fires). The app rules that stood here (`deploy/grafana/alerts/ryft.yaml`, its tests
+`ryft.test.yaml`, `make alerts-apply`) were never loaded on Cloud Run and went with D236, and so did
+Grafana's five rules on Cloud Monitoring (`grafana-reader`); what each paged on and what covers it
+now: **Cloud Monitoring → What D236 dropped**. Their expressions are in git before D236.
 
-### What the rules can see (OTLP push)
-
-Nothing scrapes the services on Cloud Run. They push their `ryft_*` metrics to Grafana Cloud's
-OTLP gateway (design §6) at the end of each tick (`/internal/tick`, Scheduler job `ryft-tick`,
-every 15 minutes) and on SIGTERM, with `job="ryft/<svc>"` (the resource's
-`service.namespace`/`service.name`) and `instance` (one `service.instance.id` per Cloud Run
-instance). So a series has a sample every 15 minutes at best, an instance that handles no tick
-pushes once (when it stops), and every instance is a new series. The rules are written for that:
-
-- **Gauges** are read with `last_over_time(...[30m])`, never as an instant vector (a pushed
-  sample is stale after 5 minutes): `DatabaseDown`, `OutboxBacklog`, `OutboxStuck`.
-- **Counters** need two samples of one series for `increase()`, so every window is 30 minutes
-  or more. A counter only one push ever saw (a short-lived instance, its count since start) is
-  caught by the **new-series term**, `last_over_time(x[30m]) unless last_over_time(x[1h] offset
-  30m)`: a series with a sample in the last 30 minutes and none in the hour before. Most counter
-  alerts are `increase(...) > 0 or <new series> > 0`; `RateLimited` and `AdminUnauthorized`
-  add the two before the threshold. The rules that compare counts over a window `w`
-  (`SyncToScoreSlow` per `le`, `APNsFailing`, `InviteEmailPurgeFailing`) take, per series, the
-  new-series term over that window, `last_over_time(x[w]) unless last_over_time(x[1h] offset w)`
-  (an instance first seen inside the window counts with all it counted), or else
-  `increase(x[w])`, and sum those: with min instances 0 most instances live minutes, push once or
-  twice and never show an increase of their own.
-- **Absence is a signal.** Without ticks there is no outbox relay, no rescoring pass, no push and
-  no `ryft_db_up`, and the other rules go quiet. `TickMissing` starts from one series per service
-  (`label_replace(vector(1), "job", "ryft/<svc>", "", "")`) and drops a service only while its
-  tick counter rose, so a service that pushes nothing at all fires too: no tick arrives
-  (Scheduler, the `tick-<svc>` subscription), no instance starts (the revision, or a process that
-  does not listen while the database refuses it), or the ticks run and the OTLP push fails (all
-  four at once, and `ryft_db_up` gone with them). `NoSync` reads the newest
-  `ryft_last_sync_timestamp_seconds` any ingest instance pushed in six hours, and
-  `absent_over_time` covers six hours without one. Per-tester staleness is a dashboard panel,
-  not a page: one tester on holiday is no incident.
-- **Known holes.** A goroutine panic ends the process (exit 2) before any push, so `Panics` sees
-  handler and event-handler panics but not that one: Cloud Logging's `msg="panic"` line and the
-  instance's exit show it. Three properties of the services the rules rely on (ticket A): the
-  process listens (`/health/live`, the startup probe) before it reaches the database, so an
-  instance starts during an outage and its tick pushes `ryft_db_up` 0; an instance that never ran
-  a tick does not push `ryft_db_up` 0
-  (`DatabaseDown` takes the `max` per service, so one such instance does not page), and
-  `ryft_outbox_oldest_seconds` counts due rows only (a deferred notification is no backlog).
-- **The tests** (`ryft.test.yaml`) feed one sample every 15 minutes, for long-lived,
-  short-lived and quiet instances. Prometheus 3's ranges are left-open (a sample exactly at a
-  window's start is outside it), and the eval times account for it.
-
-| Alert | Severity | Fires when | First look |
-| --- | --- | --- | --- |
-| Panics | critical | a handler (`ryft_http_panics_total`), an event handler (`ryft_event_handler_panics_total`) or a service's own goroutine (`ryft_goroutine_panics_total`) panicked: an increase over an hour or a new series, per `job`. Terms joined with `or`, so a counter without series hides none of the others | the `msg="panic"` line with the stack in Cloud Logging (`task` or `route` names where); OPERATIONS → A panic (Panics) |
-| TextRefusedByDatabase | warning | Postgres refused a request's text (SQLSTATE 22021/22P05) in the last hour, per `job` and route (`ryft_http_text_refused_total{at="database"}`; a route's first refusal in an instance included) | The client got a `422` and nothing was logged (it used to be a logged `500`). Either a path the checks miss — a handler reading text without `httpx.ReadJSON`, a raw field `normalizeRaw` does not reach, a URL value outside `WithRoutes` — or a server-side bug writing bad text (a string cut inside a UTF-8 sequence). Reproduce on that route against a throwaway database (the `err` is not logged), then close the gap in `internal/httpx` with a test. |
-| RateLimited | warning | more than 1,800 requests (one a second) refused by the app's limits in 30 min, held 15 min | which class (`ryft_rate_limited_total{class}`), the logs; a 429 of Cloud Run itself is `Saturated` |
-| AuthUnavailable | critical | `jwks_unavailable` (no signing keys, or an unknown key id while the last fetch failed: no answer, another status than 200, a body that is not a key set, or no key set within the fetch's time; a client that hangs up mid-fetch does not count, D184) or `internal` (the user lookup, or the admin allow-list check, failed) in 30 min, held 15 min. `jwks_refresh_limited` is left out: a token with an unknown key id inside the refresh limit, which anyone can send | Supabase status, `ryft_db_up` |
-| DatabaseDown | critical | the last `ryft_db_up` of every instance of a service that pushed in 30 min is 0 (its ticks cannot ping Supabase), held 20 min | Supabase status and pooler, `ECIRCUITBREAKER` after failed logins, a password pin that differs from the role's (`scripts/rotate_db_password.sh`; OPERATIONS → GCP) |
-| TickMissing | critical | a service counted no tick (`ryft_ticks_total`) for 45 min, three runs of `ryft-tick`; a service with no series at all included | Three causes (OPERATIONS → GCP). The ticks: Cloud Scheduler → `ryft-tick` (its last runs), the subscription `tick-<svc>`, the service's request log for `/internal/tick`. No instance starts: the latest revision's conditions and startup log (a process that does not listen while the database refuses it, `DatabaseDown`'s causes; a bad revision). The OTLP push: the ticks are in the request log but nothing arrives (all four fire, `count by (job) (ryft_db_up)` is empty in Explore): `OTLP_ENDPOINT` and `OTLP_USER` in `deploy/run/config.env`, the `otlp-token` pin, the services' logs around the push, Grafana Cloud's ingestion |
-| DeadLetterPublishFailing | critical | not even the dead-letter publish worked (an hour, or a new series) | Cloud Logging has the event; the DLQ topic's publisher binding |
-| OutboxBacklog | warning | a due outbox event has waited over 30 min for Pub/Sub (`ryft_outbox_oldest_seconds`, per `publisher`), held 15 min: the publish after the request and two tick passes failed (D101); nothing is lost, scores wait | the publisher's `outbox relay` log lines, Pub/Sub's status, `TickMissing` (the relay runs on the tick) |
-| OutboxStuck | warning | an outbox row was set aside: at once when Pub/Sub refused it for good (by a flush or a sweep: a key no topic takes, a missing topic or binding, 400/403/404/413), or after 50 failed sends of the tick's sweep (only a sweep counts one, so about 12 h of an outage) | its `last_error` (`rejected, set aside: …` for a refusal); OPERATIONS → Dead letters and the outbox (the queries, the bulk release once the cause is fixed) |
-| PublishFailing | warning | sends to Pub/Sub failed in 30 min, held 15 min | the topic and the publisher's role; the outbox keeps the events (OutboxBacklog follows) |
-| SyncToScoreSlow | warning | p95 from sync to score over 2 min, over an hour (per `le`: a scoring instance first seen in the hour with all it counted, any other with its increase), held 30 min | scoring's latency and instance count, `PushBacklog`, a large backfill |
-| ScoringErrors | warning | days failed to score in 30 min, held 15 min | scoring's logs |
-| NoSync | warning | no sync from anyone for 6 h (the newest any ingest instance pushed), or no push of it at all in 6 h, held 15 min | the app's background refresh, ingest; per tester: the panel below |
-| APNsFailing | warning | > 10 % of APNs requests fail over an hour (≥ 5; 410 does not count; a notify instance first seen in the hour with all it counted) | `status`: 400 = a token sent to the wrong environment, 403 = the key |
-| PushFailing | warning | a notification reached no device (an hour, or a new series) | the same |
-| APNsRejectsOurKey | critical | APNs answered 403 | `APNS_KEY_ID` (`deploy/run/config.env`), `APNS_TEAM_ID`, the `apns-key-p8` pin in `deploy/run/notify.yaml` |
-| AccountDeletionIncomplete | warning | a deleted account kept its Supabase sign-in or Apple grant | the reconciler's log, the keys |
-| NewFeedback | info | a tester sent feedback | `scripts/beta_report.sh feedback` |
-| AdminUnauthorized | warning | more than 20 `/v1/admin` requests with a bad bearer (`result="unauthorized"`) in 30 min. The api never sees a guessed password (that is Supabase Auth: Supabase → Logs → Auth). `mfa_required` is deliberately in neither admin alert | the api's `admin auth rejected` lines (`reason`: `missing`, `not_a_token`, `expired`, `signature`, `not_admin`, `not_allowed`, …) and the access lines' `code`; `ryft_rate_limited_total{class="admin_ip"}`; OPERATIONS → Beta → Admin sign-in |
-| AdminWebUsed | info | an operator's token (the admin page) passed the bearer check in the last hour (`ryft_admin_authorized_total{actor="user"}`) | `GET /v1/admin/audit` (`actor.kind` `user`) shows who and what; not you: delete the `admin_accounts` row at once (OPERATIONS → Beta → Admin sign-in → Lost phone) |
-| InviteEmailPurgeFailing | warning | the job that clears bound invite emails failed 3 times in 3 hours (`ryft_invite_email_purge_total{result="error"}`; an api instance first seen in the 3 hours with all it counted, since each pass may run on a fresh one) | the api's `invite email purge failed` line (the cause); the database; until it runs, addresses of people who only asked for an invite stay longer than the privacy text says |
-| ApiDown | critical | `https://api.ryftlab.de/health/ready` or `https://ingest.ryftlab.de/health/ready` fails (not exactly 200, or TLS) from every probe for 20 min, two runs in a row (SiteDown's shape; one failed run does not page; Synthetic Monitoring above) | OPERATIONS → GCP: the service's latest revision and its logs, the domain mapping and its certificate, `DatabaseDown` |
-| SiteDown | critical | the home page, `/privacy` or the AASA fails from every probe for 10 min (status, content type or body marker, not only "down") | OPERATIONS → Apex site → When a synthetic alert fires |
-| SiteProbeFlapping | warning | one probe fails twice or more in 30 min while another gets through (left out for 30 min after SiteDown's condition held; failures that only overlap between probes do not suppress it) | the same: which probe, which URL, the edge's rate limit |
-| SiteWwwRedirectBroken | warning | `www.ryftlab.de` does not answer a redirect to the apex from any probe, 10 min | the `www-to-apex` Middleware, the Ingress hosts |
-| SiteCertificateExpiring | warning | the served certificate (apex or www) expires in < 14 days, 1 h | `kubectl -n ryft-web get certificate ryftlab-de-tls`, cert-manager's events (CertificateExpiring is the inside view of the same certificate) |
-| SyntheticsMissing | warning | no `probe_success` for one of the six jobs (the four `ryft-site-*`, `ryft-api-ready`, `ryft-ingest-ready`) for about 25 min (10 min window + 15 min; label `job`) | the SM app: that check present and enabled, the execution limit; re-apply the checks (OPERATIONS → Monitoring) |
-
-### On Cloud Monitoring (infra/gcp)
-
-What Cloud Run and Pub/Sub measure themselves is read where it is, through Grafana's Google Cloud
-Monitoring data source (`grafana-reader`, D224): five Grafana-managed rules in
-`infra/gcp/alerts.tf` (folder "RYFT GCP (infra/gcp)", the source of the thresholds), evaluated
-every 5 minutes (each evaluation is a Monitoring API read) and routed by the same `severity`
-label. Terraform owns them, not `make alerts-apply`, and they exist only once
-`grafana_datasource_uid` is set (runbook step 11). None repeats a rule of `ryft.yaml`.
-
-| Alert | Severity | Fires when | First look | Was |
-| --- | --- | --- | --- | --- |
-| HTTP5xxRatio | critical | more than 2 % of api or ingest requests answer 5xx (Cloud Run's own, no instance or a timeout, included), 10 min | Logs Explorer: `resource.type="cloud_run_revision"`, the service, `httpRequest.status>=500` | the app-metric rule of the same name |
-| SyncSlow | warning | ingest's p95 request latency over 10 s, 15 min (Cloud Run's latencies have no path: ticks and health checks are in it, the sync dominates) | Cloud Run → ingest → Metrics (latency, instances); Supabase's pooler | the app-metric rule of the same name |
-| DeadLetters | warning | a `dlq-*-hold` subscription holds a letter, 5 min | `scripts/dlq.sh list`; the last error is in the consumer's log, by `messageId` | DeadLetters, RabbitMQDeadLetters |
-| PushBacklog | warning | the oldest unacked message of a scoring or notify subscription is over 15 min old, 5 min | the consumer's request log (429, 5xx), its max instances, then DeadLetters | RabbitMQBacklog |
-| Saturated | warning | Cloud Run answered 429 (no instance free at max instances; on api and ingest it can be the app's limiter, `RateLimited`), 5 min | Logs Explorer: Cloud Run's 429 says no available instance, the app's has its JSON body | new |
+**The EKS cluster's rules** are what is left in `deploy/grafana/alerts`, EKS leftovers until D3:
+`eks-admission.yaml` (with `eks-admission.test.yaml`) and `admission-intended.yaml`. `make
+alerts-check` runs `scripts/check_rule_groups.sh`, `promtool check rules`, `promtool test rules`
+and `mimirtool rules check` (in containers) over them; nothing loads them. Grafana Cloud's ruler
+takes at most **20 rules per group**, which `check_rule_groups.sh` holds them to.
 
 ### EKS leftovers
 
-The move to Cloud Run (ticket B2) took every rule that reads the cluster out of `ryft.yaml`:
+The move to Cloud Run (ticket B2) took every rule that reads the cluster out of `ryft.yaml`, and
+D236 removed `ryft.yaml` itself:
 
 - **Moved, not loaded.** Group `ryft-admission` (the `Admission*` alerts and their two recording
   rules) is in `deploy/grafana/alerts/eks-admission.yaml` (namespace `ryft`), its tests in
   `eks-admission.test.yaml`. `make alerts-check` still checks and tests it, because
   `scripts/admission_intended.sh` reads it and generates `admission-intended.yaml` (group
   `ryft-admission-intended`, namespace `ryft-admission`) from the bindings' committed actions;
-  `make alerts-apply` loads neither. Both go with the cluster (D3). **Admission** below
-  describes them.
+  nothing loads either (`make alerts-apply` went with D236). Both go with the cluster (D3).
+  **Admission** below describes them.
 - **Removed.** Group `ryft-vault` (RYFT on GCP keeps its secrets in Secret Manager; **Vault**
   below describes the copy still live), and from the other groups PodRestarting, ServiceExited,
   DatabaseFlapping, CertificateExpiring, RabbitMQBacklog, RabbitMQDeadLetters, RabbitMQAlarm,
   RabbitMQNodeDown, AMQPDisconnected, EventsUnroutable and the four `Argo*` alerts (no pods,
-  broker or Argo CD on Cloud Run), and the app-metric HTTP5xxRatio, SyncSlow and DeadLetters
-  (Cloud Monitoring's, above). Their expressions are in git before B2.
-- **Live copies.** On EKS, `make alerts-apply` loaded two files: `ryft.yaml` (namespace `ryft`,
-  groups `ryft`, `ryft-pipeline`, `ryft-ops`, `ryft-admission` and `ryft-vault`; `git show
-  origin/main:deploy/grafana/alerts/ryft.yaml` before B2) and `admission-intended.yaml`
-  (namespace `ryft-admission`, group `ryft-admission-intended`). Now it loads `ryft.yaml` only, with
-  `ryft`, `ryft-pipeline` and `ryft-ops`; that load replaces those three whole, so the EKS rules
-  that were in them (PodRestarting, RabbitMQ\*, Argo\*) end with it. A load never deletes a group
-  it does not name, so exactly three groups stay live as last loaded, firing on the cluster as
-  long as it runs: `ryft/ryft-admission` and `ryft/ryft-vault` (in `ryft.yaml` then, not now) and
-  `ryft-admission/ryft-admission-intended` (the file `alerts-apply` no longer loads). Once nothing
-  serves from EKS (runbook step 11, after the site moved at step 10; at the latest with D3),
-  `make alerts-retire-eks` deletes exactly those three (`EKS_RULE_GROUPS` in the Makefile,
-  `mimirtool rules delete` with the variables of `alerts-apply`;
-  `scripts/tests/alerts_retire_test.sh` holds the list to the files). It tries every group: one
-  that is already gone is reported, the others are still deleted, and the exit is 1, so check
-  Alerting → Alert rules then.
+  broker or Argo CD on Cloud Run), and the app-metric HTTP5xxRatio, SyncSlow and DeadLetters.
+  With D236 the rest of `ryft.yaml` (groups `ryft`, `ryft-pipeline`, `ryft-ops`: the app-metric
+  rules on the OTLP push) and its tests went too; **Cloud Monitoring** above says what replaced
+  them and what nothing replaces. Their expressions are in git before D236.
+- **Live copies.** On EKS, `make alerts-apply` loaded `ryft.yaml` (namespace `ryft`, groups
+  `ryft`, `ryft-pipeline`, `ryft-ops`, `ryft-admission` and `ryft-vault`) and
+  `admission-intended.yaml` (namespace `ryft-admission`, group `ryft-admission-intended`). A
+  load never deleted a group it did not name, and since D236 nothing loads at all, so six groups
+  stay live in the stack's ruler as last loaded: `ryft/ryft`, `ryft/ryft-pipeline` and
+  `ryft/ryft-ops` (the app rules: with no push since the move they see no series; nothing
+  replaces those groups any more), and `ryft/ryft-admission`, `ryft/ryft-vault` and
+  `ryft-admission/ryft-admission-intended` (firing on the cluster as long as it runs). Once
+  nothing serves from EKS (after the site moved at GCP step 10; at the latest with D3),
+  `make alerts-retire-eks` deletes the last three (`EKS_RULE_GROUPS` in the Makefile,
+  `mimirtool rules delete`; `scripts/tests/alerts_retire_test.sh` holds the list to the files).
+  It tries every group: one that is already gone is reported, the others are still deleted, and
+  the exit is 1, so check Alerting → Alert rules then. The first three go by hand in Alerting →
+  Alert rules, or with the stack itself (GCP step 11.7).
 
 ### Admission
 
@@ -785,8 +726,8 @@ Collection above) of the in-cluster Vault (D207). Properties that are deliberate
   and new pods that never start carry no labels at all. Only the snapshot half holds through
   that, so a Vault down for a week keeps paging only if a snapshot has succeeded: the first
   snapshot, taken by hand right after the init and infra/vault's apply (OPERATIONS → Vault
-  metrics (once)), is a precondition of these alerts, not an extra, and comes before
-  `make alerts-apply`. If Vault in fact writes `vault-initialized=true` at start for an
+  metrics (once)), is a precondition of these alerts, not an extra, and came before the rules
+  were loaded (`make alerts-apply`, gone with D236). If Vault in fact writes `vault-initialized=true` at start for an
   initialised storage (the kind drill decides), the label half holds through a sealed restart
   too; the rules are right either way. While one pod is sealed the other two keep the label, so
   `VaultSealed` keeps firing however long the unseal takes (a test keeps one pod sealed for eight
@@ -953,13 +894,13 @@ logs has the Insights queries.
 | `serve` | `task` (`http`), `err` | the HTTP server returned an error before the shutdown: it stops the service (exit 1). The consumer and timer tiers (`consume`, `job`, `background`) are gone: events are pushes and timers are the tick (D218, D219) |
 | `metrics server` | `err` | the `/metrics` port could not be bound or its server failed (compose); the service runs on without it |
 | `panic` | `task` (a server), `check` (a ready check: `db`, `auth`) or `step` (a tick step), `panic`, `stack` | a server's panic: counted in `ryft_goroutine_panics_total`, the service shuts down in order and exits 2. A check's: counted there too, the service runs on. A tick step's: counted in `ryft_http_panics_total` (`route="POST /internal/tick"`), the tick goes on with its next step |
-| `tick` | `result` (`ok`, `error`), `message_id`, `took` | one per tick handled (`ryft_ticks_total`) |
+| `tick` | `result` (`ok`, `error`), `message_id`, `took` | one per tick handled (`ryft_ticks_total`). On Cloud Run the log-based metric `ryft_ticks` counts these lines by `result` alone (D236; policy 3, Tick missing): renaming the message or the key, or changing its values, is a change to `infra/gcp/monitoring.tf` too |
 | `tick: step failed` | `step`, `err`, `took` | a step returned an error or panicked; the tick goes on. `step` is a closed set: `db ping`, `outbox sweep`, `scoring pass`, `stale check`, `account reconcile`, `invite settings`, `invite email purge`, `finally` |
 | `tick: the budget is spent, step skipped` | `step`, `budget` | the tick's budget (45 s; scoring 240 s) ended before that step began |
-| `tick: the final step failed` | `err` | the metrics push at the end of the tick failed: `otlp push: HTTP <status>: …` or the transport's error (The OTLP push above) |
+| `tick: the final step failed` | `err` | the metrics push at the end of the tick failed: `otlp push: HTTP <status>: …` or the transport's error (only with the push configured, which nothing committed does: The OTLP push (dormant) above) |
 | `tick: the previous one still runs, skipping this one` | `message_id` | a tick arrived while one runs in this instance (`result="overlap"`) |
 | `tick: not a push envelope`, `tick: not a tick` | `status` (`400`, `413`, `415`); `message_id`, `key` (cut) | a request to `/internal/tick` with a valid token that is not Pub/Sub's tick message: not an envelope, or a `ryft-key` other than `tick` (`400`) |
-| `metrics push: points rejected` | `rejected`, `err` | warn: the gateway accepted a push but refused some of its points (out of order, too old, a limit) |
+| `metrics push: points rejected` | `rejected`, `err` | warn: the gateway accepted a push but refused some of its points (out of order, too old, a limit; only with the push configured) |
 | `shutting down` | `reason` (`signal`, `task`, `start`), `task`, `err` | the shutdown began; `err` is one line, cut |
 | `shutdown step` | `step` (`drain`, `http`, `pool`, `metrics`), `dur_ms`, `err` | one per step, at info; at warn with `err` when it failed or overran its bound. The `consumers`, `jobs`, `relay` and `broker` steps are gone with their tiers (D219) |
 | `shut down` | `dur_ms`, `exit` (0, 1, 2) | the shutdown is over; `exit` is the process's exit code |

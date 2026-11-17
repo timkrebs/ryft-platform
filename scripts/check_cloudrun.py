@@ -13,7 +13,7 @@ renderer deploy.yml uses), parses the result with yq (mikefarah v4) and asserts,
   - ingress all on api and ingest, internal on scoring and notify; the service account
     ryft-<svc>@ryftlab-prod.iam.gserviceaccount.com; one port, h2c 8080; the startup and the liveness
     probe both on /health/live, the startup probe within 30 s (an instance must start while the
-    database is down, so its tick reports ryft_db_up 0; /health/ready is the synthetics' target);
+    database is down, so its tick logs result error; /health/ready is the uptime checks' target);
     all traffic to the latest revision;
   - the env exactly as ticket-b.md's tables (names and the values the renderer builds; api may add the
     pin of posthog-project-key, D231), every secret pinned by a version number (never latest), each
@@ -53,7 +53,7 @@ MIGRATE = dict(timeout=600, memory="512Mi")
 # Plain env per file: the fixed values; None means "the renderer's value" (compared below).
 SHARED = {"GCP_PROJECT": PROJECT, "PUBSUB_ENDPOINT": "https://europe-west1-pubsub.googleapis.com",
           "PUSH_AUDIENCE": None, "PUSH_SA_EMAIL": f"ryft-push@{PROJECT}.iam.gserviceaccount.com",
-          "PUSH_SA_ID": None, "OTLP_ENDPOINT": None, "OTLP_USER": None, "LOG_LEVEL": None, "DATABASE_URL": None}
+          "PUSH_SA_ID": None, "LOG_LEVEL": None, "DATABASE_URL": None}
 PUBLIC = {"AUTH_MODE": "supabase", "SUPABASE_PROJECT_REF": None, "PRIVACY_POLICY_VERSION": None,
           "PRIVACY_POLICY_URL": "https://ryftlab.de/privacy"}
 PLAIN = {
@@ -64,14 +64,14 @@ PLAIN = {
     "notify": {**SHARED, "APNS_TOPIC": "dev.timkrebs.ryft", "APNS_KEY_ID": None, "APNS_TEAM_ID": "M77SKHKG63"},
     "migrate": {"DATABASE_URL": None, "LOG_LEVEL": None},
 }
-# Secret env per file: env name -> Secret Manager secret (ticket-b.md → Secrets).
+# Secret env per file: env name -> Secret Manager secret (ticket-b.md → Secrets). OTLP_TOKEN went with
+# Grafana Cloud (D236): no file pins otlp-token any more.
 SECRET_ENV = {
     "api": {"PGPASSWORD": "db-password-api", "SUPABASE_SERVICE_ROLE_KEY": "supabase-secret-key",
-            "ADMIN_API_KEY": "admin-api-key", "APPLE_KEY_P8": "apple-key-p8", "DATA_ENCRYPTION_KEY": "data-key",
-            "OTLP_TOKEN": "otlp-token"},
-    "ingest": {"PGPASSWORD": "db-password-ingest", "OTLP_TOKEN": "otlp-token"},
-    "scoring": {"PGPASSWORD": "db-password-scoring", "OTLP_TOKEN": "otlp-token"},
-    "notify": {"PGPASSWORD": "db-password-notify", "APNS_KEY_P8": "apns-key-p8", "OTLP_TOKEN": "otlp-token"},
+            "ADMIN_API_KEY": "admin-api-key", "APPLE_KEY_P8": "apple-key-p8", "DATA_ENCRYPTION_KEY": "data-key"},
+    "ingest": {"PGPASSWORD": "db-password-ingest"},
+    "scoring": {"PGPASSWORD": "db-password-scoring"},
+    "notify": {"PGPASSWORD": "db-password-notify", "APNS_KEY_P8": "apns-key-p8"},
     "migrate": {"PGPASSWORD": "db-password-owner", **{f"DB_PASSWORD_{s.upper()}": f"db-password-{s}" for s in SERVICES}},
 }
 # Secret env a file may hold or leave out (env name -> secret), checked like the rest when present.
@@ -79,6 +79,7 @@ SECRET_ENV = {
 # version, because a revision that reads a missing version does not start and the deploy goes red.
 OPTIONAL_SECRET_ENV = {"api": {"POSTHOG_PROJECT_KEY": "posthog-project-key"}}
 # The only service accounts that can access each secret (ticket-b.md, the accessor table; infra/gcp/secrets.tf).
+# otlp-token stays until its own removal PR (docs/OPERATIONS.md → GCP, step 11.6): unread, still bound.
 ACCESSORS = {**{f"db-password-{s}": {s, "migrate"} for s in SERVICES}, "db-password-owner": {"migrate"},
              "supabase-secret-key": {"api"}, "admin-api-key": {"api"}, "apple-key-p8": {"api"},
              "apns-key-p8": {"notify"}, "data-key": {"api"}, "otlp-token": set(SERVICES),
@@ -118,8 +119,7 @@ def fakes(committed):
     digits = "".join(str(i % 10) for i in range(1, 22))
     v = {"GCP_PROJECT_NUMBER": digits[:12], "PUSH_SA_ID": digits, "SUPABASE_PROJECT_REF": "q" * 20,
          "SUPABASE_POOLER_HOST": "aws-0-eu-central-1.pooler.supabase.com", "APPLE_KEY_ID": "A" * 10,
-         "APNS_KEY_ID": "N" * 10, "OTLP_ENDPOINT": "https://otlp-gateway-prod-eu-west-2.grafana.net/otlp",
-         "OTLP_USER": digits[:7], "LOG_LEVEL": "info"}
+         "APNS_KEY_ID": "N" * 10, "LOG_LEVEL": "info"}
     m = re.search(r"^PRIVACY_POLICY_VERSION=(.*)$", committed, re.M)
     v["PRIVACY_POLICY_VERSION"] = m.group(1) if m else "2026-01-01"
     return v
