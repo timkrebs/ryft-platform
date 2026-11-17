@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Satoshi from Fontshare (ITF Free Font License, the same files the app uses). The
+// Satoshi from Fontshare (ITF Free Font License, the same family the app uses): Light,
+// Regular, Medium and Bold, as listed in config/fonts.json. The
 // licence allows self-hosting on our own site but not redistributing the files through
 // a repository, so they are git-ignored and fetched here, at build time. The licence also
 // forbids subsetting and format conversion: the WOFF2 files are used exactly as supplied,
@@ -50,7 +51,8 @@ for (const [entry, [name, hash]] of Object.entries(PINS)) {
     fail(`${entry} changed upstream (sha256 ${actual}); check the licence, then update config/fonts.json`);
   writeFileSync(join(DEST, name), data);
 }
-console.log(`fonts: Satoshi Regular, Medium, Bold and the licence in src/fonts/ (verified).`);
+const weights = Object.values(PINS).flatMap(([name]) => /^Satoshi-(\w+)\.woff2$/.exec(name)?.[1] ?? []);
+console.log(`fonts: Satoshi ${weights.join(', ')} and the licence in src/fonts/ (verified).`);
 
 function fail(message) {
   console.error(`fonts: ${message}`);
