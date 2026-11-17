@@ -1646,11 +1646,11 @@ domain in the console if it persists. Also stop if `firebase deploy` fails for a
 a missing permission, or if `site` deployed in a run whose summary says superseded.
 
 **The app pin** (D234). The site's drift checks read the app: the tokens, the Swift licences, the
-AASA's paths, the admin config and the mark. CI's `web-checks` checks out `timkrebs/ryft-app` at
+AASA's paths, the admin config, the mark and the icon. CI's `web-checks` checks out `timkrebs/ryft-app` at
 the commit in `web/.app-ref`: one line, a full SHA, nothing else. App merges don't reach platform main
 until a PR moves the pin, and that PR carries what the app's change implies. Nothing moves the pin
 automatically. Move it when the app changed something the site follows (a colour, the type, the
-mark, the wordmark, a Swift package, the AASA's routes), from an up-to-date main (in zsh,
+mark, the wordmark, the app icon, a Swift package, the AASA's routes), from an up-to-date main (in zsh,
 `setopt interactivecomments` first: the block carries comments):
 
 ```bash
@@ -1662,18 +1662,21 @@ git -C ~/ryft-app-pin switch --detach <sha>                             # a comm
 APP=$HOME/ryft-app-pin
 git -C "$APP" rev-parse HEAD > web/.app-ref
 RYFT_APP_DIR=$APP make web-tokens                       # src/styles/tokens.{css,json}, swatches.css
+# When the app icon or a colour moved (web D22; the icon test fails until both ran; the OG card needs the fonts):
+(cd web && npm run fonts -- --if-missing && RYFT_APP_DIR=$APP npm run icons && RYFT_APP_DIR=$APP npm run og)
 RYFT_APP_DIR=$APP make web-test web-build web-e2e       # the build's prebuild also rewrites the Swift licence snapshot
-(cd web && npm run icons && npm run og)                 # only when a colour, the mark or the wordmark moved
 git status --short                                      # web/.app-ref and the files the app's change implies
 git add web && git commit -m "web: the app at <short sha>"
 git push -u origin HEAD
 gh pr create --fill
-gh pr checks --watch                                    # web-checks green: tokens:check and licenses:check against the new pin
+gh pr checks --watch                                    # web-checks green: tokens:check, licenses:check and the icon test against the new pin
 ```
 
 **Stop if** `make web-tokens` throws (the app changed a source file's shape: `web/scripts/tokens.mjs`
-needs a change in the same PR), or the diff asks for a design change beyond the tokens (that's the
-user's call, in its own PR). To roll back, revert the bump PR: the pin and its outputs go back together.
+needs a change in the same PR), if `npm run icons` or `npm run og` exits 1 (the icon's tile isn't one
+colour or isn't the tokens' background, its word reaches the edge, or the OG card's tile meets the
+copy: the icon's design moved, which is the user's call; web D22), or the diff asks for a design change
+beyond the tokens (that's the user's call, in its own PR). To roll back, revert the bump PR: the pin and its outputs go back together.
 
 ### The €20 stop line
 

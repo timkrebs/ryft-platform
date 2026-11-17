@@ -82,7 +82,7 @@ npm run typecheck && npm run lint && npm test && npm run build
 | `npm run tokens:check` | `src/styles/tokens.*` against `../../app/Ryft` (CI: the app at the commit in `.app-ref`, platform D234) |
 | `npm run licenses:check` | `config/app-packages.json` against the app's `Package.resolved` |
 | `npm run check:policy` | The privacy version against `PRIVACY_POLICY_VERSION` in `../deploy/run/config.env` and its k8s copies (the published version; exact line `PRIVACY_POLICY_VERSION=YYYY-MM-DD`): the page exists, it is the newest, api and ingest agree (warns; `-- --strict` fails, and runs from the repository root as `node web/scripts/check-policy-version.mjs --strict`, Node built-ins only) |
-| `npm test` | Vitest: brand matcher, contrast, mark, messages, legal ports, AASA, science version, CSP, `firebase.json`'s rules, the built site |
+| `npm test` | Vitest: brand matcher, contrast, mark, messages, legal ports, AASA, the app icon (`config/app-icon.json` against the app's `AppIcon.appiconset`), science version, CSP, `firebase.json`'s rules, the built site |
 | `npm run e2e:hosting` | The Hosting emulator: Playwright (every page, axe, routes, headers), `check:hosting`, links, Lighthouse |
 
 ## Regenerating from the app
@@ -91,8 +91,8 @@ npm run typecheck && npm run lint && npm test && npm run build
 | --- | --- |
 | `npm run tokens` | A colour set, `Theme.swift` metrics, the type scale or the label style changed (from the app at the commit in `.app-ref`) |
 | `npm run screenshots` | New captures in `../../app/docs/screenshots` |
-| `npm run icons` | The mark or the tokens changed (favicon, touch icon, manifest) |
-| `npm run og` | Copy or tokens of the OG image changed (needs Playwright's Chromium) |
+| `npm run icons` | The app's icon or the tokens changed (favicon, touch icons, manifest, `config/app-icon.json`; from the app's `AppIcon.appiconset`, D22) |
+| `npm run og` | The OG image's copy, the tokens or the app's icon changed (needs Playwright's Chromium) |
 | `npm run licenses -- --sync` | The app's Swift packages changed |
 | `npm run brand:report` | Refresh `docs/BRAND_CHECK.md` for the app, this repository outside `web/`, and the shared docs |
 

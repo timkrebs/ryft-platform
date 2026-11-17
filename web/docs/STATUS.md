@@ -1,5 +1,9 @@
 # Status — ryftapp.de (web/)
 
+## 2026-11-17 — Icons from the app (branch `web/app-icon`)
+
+D22: the favicon, touch icons, manifest icons and the OG card come from the app's icon (M1, the largest PNG of its AppIcon set at `.app-ref`); `favicon.svg` is gone, the header keeps the mark, and `tests/app-icon.test.ts` fails when the app's icon moves until `npm run icons` and `npm run og` ran.
+
 ## 2026-11-17 — Nocturne tokens (branch `web/nocturne-tokens`)
 
 D20: the tokens come from the app's Nocturne PR 1 at the commit in `.app-ref` (platform D234). The

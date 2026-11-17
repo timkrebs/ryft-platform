@@ -88,8 +88,8 @@ for `re2`, which the emulator needs for the regex rules (web D19). `firebase.jso
 git-ignored: change `scripts/lib/hosting.mjs`, never the file. The nginx image (`npm run image &&
 npm run serve`, `npm run e2e`) stays until the platform's PR D3 removes it, but is not what ships. Never run `firebase deploy`
 yourself: `deploy.yml` does. The drift checks read the app from `../../app`; `RYFT_APP_DIR` overrides it
-(absolute, or relative to `web/`), and CI reads it at the commit in `.app-ref`. Without the app, `tokens:check` and `licenses:check` skip
-outside CI (and fail when `CI` is set); `REQUIRE_SIBLINGS=1` only affects `tests/aasa.test.ts`,
+(absolute, or relative to `web/`), and CI reads it at the commit in `.app-ref`. Without the app, `tokens:check`, `licenses:check` and the
+app icon's drift test (`tests/app-icon.test.ts`, web D22) skip outside CI (and fail when `CI` is set); `REQUIRE_SIBLINGS=1` only affects `tests/aasa.test.ts`,
 turning its skip into an error.
 
 ## Git: branches and pull requests (never push to `main`)
