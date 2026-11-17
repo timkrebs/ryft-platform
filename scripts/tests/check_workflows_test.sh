@@ -291,10 +291,24 @@ job_swap "a site concurrency group per commit" "concurrency group \`site\`" site
 # The actions: by SHA, and only these.
 job_swap "a third-party sign-in action in the site" "its only actions are actions/checkout, setup-node and download-artifact" site \
   "      - name: main is still at this commit" "      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093\n      - name: main is still at this commit"
-job_swap "download-artifact by tag" "its only actions" site \
-  "      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0" "      - uses: actions/download-artifact@v7"
 job_swap "actions/cache in site-build" "its only actions are actions/checkout, setup-node and upload-artifact" site-build \
   "      - run: npm ci --no-audit --no-fund" "      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9\n      - run: npm ci --no-audit --no-fund"
+# Every action of deploy, site-build and site back on its tag must fail. The lines are read from
+# deploy.yml as it is pinned today, never written here: Dependabot moves the SHAs (#198 broke main).
+pinned_uses() { # <job>: that job's `- uses: <action>@<40 hex>` lines in the repository's deploy.yml
+  awk -v job="  $1:" '/^  [A-Za-z0-9_-]+:$/ { in_job = ($0 == job) } in_job && /^      - uses: / { print }' \
+    "$HERE/.github/workflows/deploy.yml" | grep -E '^      - uses: [^ @]+@[0-9a-f]{40}( |$)' || true
+}
+for job in deploy site-build site; do
+  found=0
+  while IFS= read -r line; do
+    found=$((found + 1))
+    action=${line#      - uses: }; action=${action%%@*}
+    tag=${line##*# }; [ "$tag" != "$line" ] || tag=v1  # the version in the pin's comment, else any tag
+    job_swap "$action by tag in $job" "by SHA" "$job" "$line" "      - uses: $action@$tag"
+  done < <(pinned_uses "$job")
+  [ "$found" -gt 0 ] || fail "deploy.yml's job $job pins no action by SHA (the test is stale)"
+done
 # setup-node without a cache in the site (site-build may have one: it has no token).
 job_swap "setup-node with an npm cache in the site" "setup-node without a cache" site "          node-version-file: web/.nvmrc" "          node-version-file: web/.nvmrc\n          cache: npm"
 job_swap "setup-node with a cache path in the site" "setup-node without a cache" site "          node-version-file: web/.nvmrc" "          node-version-file: web/.nvmrc\n          cache-dependency-path: web/package-lock.json"

@@ -5285,3 +5285,29 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
 - **Consequences:** app merges no longer turn platform main red. The site can trail the app by design; that gap
   is visible as the pin. Every check that reads the app, in CI, sees the same commit: tokens, Swift licences, the
   AASA's paths, the admin config and the mark.
+
+## D235 — The workflow checks' test reads the pins, and `manifests` runs it on every `.github/` change (2026-11-17)
+
+- **Context:**
+  - #198 (Dependabot: `actions/download-artifact` 7.0.0 → 8.0.2 in `deploy.yml`) was green on its PR. Main went red
+    at `09b50b4` (run 44117122278): `scripts/tests/check_workflows_test.sh` named the old pin's line verbatim, and
+    `job_swap` didn't find it ("the test is stale"). `deploy.yml` deploys nothing while `ci-ok` is red.
+  - On the PR, `changes` didn't select `smoke`, the job that runs `make test-scripts`. Its filter has `ci.yml` and
+    `scripts/**`, but not `deploy.yml`. Main was the first to run the test.
+- **Decision:**
+  - The test writes no pin of the repository's workflows. For each of `deploy.yml`'s `deploy`, `site-build` and
+    `site` jobs, it reads every SHA-pinned `- uses:` line from `deploy.yml` as it is. It swaps each one for the same
+    action on its tag (the version in the pin's comment) and expects "by SHA". A job with no pinned line fails as
+    stale.
+  - `manifests` runs `bash scripts/tests/check_workflows_test.sh` right after `./scripts/check_workflows.sh`. Its
+    filter has `.github/**` and `scripts/**`, so every change to a workflow, to the script or to its test runs the
+    test on the PR. `manifests` already installs the pinned yq the test needs.
+- **The selection rule:** a script test that reads the repository's real workflows runs in `manifests`, not only in
+  `smoke`. Today that is `check_workflows_test.sh` alone; the others build fixtures of their own.
+- **Rejected:**
+  - Adding `.github/workflows/**` to `smoke`'s filter. That costs the compose stack, about 7½ minutes, for every
+    action bump, to run one test that needs only yq.
+  - Keeping the test only in `manifests`. `make test-scripts` stays the whole suite locally, so `smoke` runs it too:
+    twice on main and on PRs that select both jobs.
+- **Consequences:** a Dependabot bump of an action anywhere under `.github/` runs the test on its own PR, and the next
+  bump of a pinned action doesn't touch the test.
