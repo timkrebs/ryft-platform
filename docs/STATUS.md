@@ -72,6 +72,32 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## The site in Nocturne, the app pinned (2026-11-17)
+
+PR #199, branch `web/nocturne-tokens` (D234, web D20, `docs/work/2026-11-17-nocturne-tokens/`). It fixes main,
+which had been red since #194: `web-checks` read the app at its main, and the app's Nocturne PR #112 changed
+`Typography.swift`.
+- **The pin:** `web/.app-ref` = app commit `7358f0c` (main at #114). CI checks the app out there and nowhere else,
+  and a token update is a PR that moves the pin (OPERATIONS → GCP → Deploy, roll back, rotate → The app pin).
+- **The look:**
+  - The tokens are regenerated from Nocturne: `#0A0C0B` ground, `#F2F1EC` ink, the teal `#63D2B4`, signal
+    `#D8FF4F`. Titles and numbers are Satoshi Light (300), labels sentence case without tracking.
+  - Satoshi Light is fetched and pinned like the other weights.
+  - The site is dark-only, like the app: no theme switch, no script on any page but `/admin` (CSP
+    `script-src 'none'`).
+- **Runbook 10a:** `ft()` for zsh, `setopt interactivecomments`, the Admin SDK account (expected; no keys,
+  disabled), the 403 right after `addfirebase`.
+- **Merging** ships the site only while `SITE_DEPLOY` is `on`. The services redeploy unchanged.
+- **Open:**
+  - The favicon, the PNG icons, `site.webmanifest` and `public/og/en.png` still carry the old colours, because
+    `npm run icons`/`og` couldn't run in the session. Run `make web-install`, then `cd web && npm run icons && npm
+    run og`, and commit the result in a small PR.
+  - Whether the site's icons follow the app's new wordmark icon (M1) is the user's call. For now they keep the mark.
+  - The app screenshots on the pages are pre-Nocturne captures, and a new set needs the app's PR 5.
+  - LCP: three font files per page now (web D4 had 1.5 s against a 1.5 s budget). Lighthouse passed in CI.
+  - #196 conflicts in OPERATIONS 10a. Keep #196's text, write `ft` for `$FT`, and add `firebase-adminsdk-fbsvc` to its
+    policy check and its "Stop if".
+
 ## Product analytics config (2026-11-16)
 
 Branch `config/analytics` (D231, `docs/work/2026-11-16-analytics-config/`): `GET /v1/config` → `analytics`

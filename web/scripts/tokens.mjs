@@ -169,10 +169,11 @@ function readMotion(theme) {
 }
 
 function readType(typography, header) {
-  // SwiftUI's Font.Weight → CSS font-weight.
+  // SwiftUI's Font.Weight → CSS font-weight. The app draws .thin and .ultraLight in Satoshi-Light
+  // (RyftFonts.postScriptName), so they are 300 here too.
   const CSS_WEIGHTS = {
-    ultraLight: 200,
-    thin: 100,
+    ultraLight: 300,
+    thin: 300,
     light: 300,
     regular: 400,
     medium: 500,
@@ -207,6 +208,13 @@ function readType(typography, header) {
   const label = body(typography, 'func ryftLabelStyle', 'Typography.swift → ryftLabelStyle');
   const labelTracking = /\.tracking\(([\d.]+)\)/.exec(label);
   const labelCase = /\.textCase\(\.(\w+)\)/.exec(label);
+  // A modifier the two patterns can't read (a computed tracking, kerning) would otherwise become 0 or none.
+  if ((label.includes('.tracking(') && !labelTracking) || label.includes('.kerning(')) {
+    throw new Error("tokens: ryftLabelStyle → a tracking or kerning tokens.mjs can't read");
+  }
+  if (label.includes('.textCase(') && !labelCase) {
+    throw new Error("tokens: ryftLabelStyle → a .textCase tokens.mjs can't read");
+  }
   if (labelCase && !(labelCase[1] in CSS_TEXT_CASE)) {
     throw new Error(`tokens: ryftLabelStyle → .textCase(.${labelCase[1]}) has no CSS text-transform`);
   }
@@ -215,9 +223,18 @@ function readType(typography, header) {
   const wordmarkTracking = /static let tracking: CGFloat = ([\d.]+)/.exec(wordmark);
   if (!wordmarkTracking) throw new Error('tokens: RyftHeader.swift → Wordmark.tracking not found');
 
+  // Every declared style has a size and a weight, and nothing else does: a block cut short or a
+  // case the patterns skip would otherwise drop a role silently.
+  const styles = body(typography, 'enum RyftTextStyle', 'Typography.swift → RyftTextStyle');
+  const declared = [...styles.matchAll(/^ {4}case (\w+)$/gm)].map(([, c]) => kebab(c));
+  for (const name of new Set([...declared, ...Object.keys(sizes), ...Object.keys(weights)])) {
+    if (!declared.includes(name) || !(name in sizes) || !(name in weights)) {
+      throw new Error(`tokens: Typography.swift → ${name} is not declared with a size and a weight`);
+    }
+  }
+
   const scale = {};
   for (const [name, pt] of Object.entries(sizes)) {
-    if (!(name in weights)) throw new Error(`tokens: Typography.swift → weight has no case for ${name}`);
     scale[name] = { pt, rem: +(pt / 16).toFixed(4), weight: weights[name] };
   }
   return {

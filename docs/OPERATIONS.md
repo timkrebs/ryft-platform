@@ -685,7 +685,9 @@ design §3, api-contract-owner).
 ### 10. The site and the app *(C1, D233)*
 
 Run from the repository root on an up-to-date main, in bash or zsh, as you, logged in to gcloud
-and to Firebase (`npx --yes firebase-tools@$(cat web/.firebase-tools-version) login` once). No
+and to Firebase (`npx --yes firebase-tools@$(cat web/.firebase-tools-version) login` once). In zsh,
+run `setopt interactivecomments` first. Stock zsh doesn't treat `#` as a comment at the prompt, so a
+line like `S=ryftlab-site   # taken? …` fails ("no matches found") and leaves `S` unset. No
 billing account anywhere. Until 10f, `SITE_DEPLOY` is off, and every run of `deploy.yml` shows
 "Site off" and stays green.
 
@@ -719,15 +721,18 @@ gcloud projects add-iam-policy-binding "$S" --member="serviceAccount:$SITE_SA" \
   --role=roles/firebasehosting.admin --condition=None
 gcloud iam service-accounts add-iam-policy-binding "$SITE_SA" --project="$S" \
   --role=roles/iam.workloadIdentityUser --member="$(terraform -chdir=infra/gcp output -raw github_principal_set)"
-gcloud projects get-iam-policy "$S" --format='table(bindings.role,bindings.members)'  # you as owner, the SA, nothing else
+gcloud projects get-iam-policy "$S" --format='table(bindings.role,bindings.members)'  # you as owner, the SA, fbsvc's two roles, nothing else
 gcloud iam service-accounts get-iam-policy "$SITE_SA" --format=json \
   | jq -r '.bindings[] | .role + " " + (.members | join(" "))'   # workloadIdentityUser: the principalSet of ryftlab-prod's pool github, by repository ID
 gcloud iam service-accounts keys list --iam-account="$SITE_SA" --managed-by=user       # empty
 ```
 
 **Stop if** `billingEnabled` isn't `False`; `addfirebase` asks for a plan or a billing account;
-the project policy names anyone but you and `site-deployer`; the SA's policy names anything but the
-`github` pool of `ryftlab-prod`; or the key list isn't empty.
+the project policy names anyone but you, `site-deployer` and `firebase-adminsdk-fbsvc` (with
+`roles/firebase.sdkAdminServiceAgent` and `roles/iam.serviceAccountTokenCreator` and nothing else);
+`firebase-adminsdk-fbsvc` has a user-managed key (you didn't make one, so find out who did before you
+delete it) or isn't disabled; the SA's policy names anything but the `github` pool of `ryftlab-prod`;
+or the key list isn't empty.
 
 The GitHub pool's condition already pins `deploy.yml` on main and the `deploy` environment, so
 this binding needs only the repository.
@@ -741,11 +746,6 @@ its dependencies, which npx resolves at run time. The fix is a small `infra/gcp`
   `attribute.environment/site`.
 
 It wasn't in C1's scope.
-
-**Expected in the project policy, besides you and `site-deployer`:** `firebase-adminsdk-fbsvc` with
-`roles/firebase.sdkAdminServiceAgent` and `roles/iam.serviceAccountTokenCreator` (from `addfirebase`).
-It is no reason to stop, as long as it has no user-managed key and `describe` says it is disabled.
-**Stop if** it has a key: you didn't make one, so find out who did before you delete it.
 
 **10b. Two console settings** (Firebase console → `ryftlab-site`):
 - Hosting → the site's menu → **release storage settings**: keep the 10 newest releases. On Spark
@@ -1511,7 +1511,8 @@ AASA's paths, the admin config and the mark. CI's `web-checks` checks out `timkr
 the commit in `web/.app-ref`: one line, a full SHA, nothing else. App merges don't reach platform main
 until a PR moves the pin, and that PR carries what the app's change implies. Nothing moves the pin
 automatically. Move it when the app changed something the site follows (a colour, the type, the
-mark, the wordmark, a Swift package, the AASA's routes), from an up-to-date main:
+mark, the wordmark, a Swift package, the AASA's routes), from an up-to-date main (in zsh,
+`setopt interactivecomments` first: the block carries comments):
 
 ```bash
 git switch main && git pull --ff-only
