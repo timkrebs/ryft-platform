@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import {
@@ -27,6 +27,24 @@ function app(images: Entry[], files = images.map((i) => i.filename).filter(Boole
   return dir;
 }
 const dark = [{ appearance: 'luminosity', value: 'dark' }];
+
+describe('appDir() finds the app', () => {
+  const web = resolve(import.meta.dirname, '..');
+
+  it('takes --app <dir> or --app=<dir> over RYFT_APP_DIR, and ../../app without either', () => {
+    expect(appDir({ RYFT_APP_DIR: '/env' }, ['--app', '/flag'])).toBe('/flag');
+    expect(appDir({ RYFT_APP_DIR: '/env' }, ['--app=/flag'])).toBe('/flag');
+    expect(appDir({ RYFT_APP_DIR: '/env' }, [])).toBe('/env');
+    expect(appDir({}, ['--app', 'rel'])).toBe(join(web, 'rel'));
+    expect(appDir({}, [])).toBe(resolve(web, '../../app'));
+  });
+
+  it('fails on --app without a directory', () => {
+    expect(() => appDir({}, ['--app'])).toThrow(/--app needs a directory/);
+    expect(() => appDir({}, ['--app', '--other'])).toThrow(/--app needs a directory/);
+    expect(() => appDir({}, ['--app='])).toThrow(/--app needs a directory/);
+  });
+});
 
 describe('appIcon() picks the source', () => {
   it('takes the largest image, in pixels (points × scale)', () => {
@@ -77,6 +95,16 @@ describe('the icons in public/', () => {
   it('has no SVG favicon: the source is a raster, and a favicon can’t load the font', () => {
     expect(existsSync('public/favicon.svg')).toBe(false);
   });
+
+  // A pin bump that moves the background reaches the tokens (make web-tokens), but the manifest
+  // only through `npm run icons`, which also fails when the icon's tile is another colour.
+  it('site.webmanifest carries the tokens’ background', () => {
+    const tokens = JSON.parse(readFileSync('src/styles/tokens.json', 'utf8'));
+    const manifest = JSON.parse(readFileSync('public/site.webmanifest', 'utf8'));
+    const fix = 'run `npm run icons` with RYFT_APP_DIR at web/.app-ref';
+    expect(manifest.background_color, fix).toBe(tokens.colors.background.dark);
+    expect(manifest.theme_color, fix).toBe(tokens.colors.background.dark);
+  });
 });
 
 describe('config/app-icon.json', () => {
@@ -92,15 +120,17 @@ describe('config/app-icon.json', () => {
   // ../../app by default): skipped without it, an error in CI, which checks the app out at the
   // commit in web/.app-ref. A pin bump that brings another icon fails here until `npm run icons`
   // and `npm run og` ran against that commit.
-  const present = hasAppIconSet();
+  // The environment only: never the test runner's own argv.
+  const dir = appDir(process.env, []);
+  const present = hasAppIconSet(dir);
   if (!present && process.env.CI) {
     it('finds the app’s icon', () => {
-      throw new Error(`${join(appDir(), APP_ICON_SET)} not found (set RYFT_APP_DIR).`);
+      throw new Error(`${join(dir, APP_ICON_SET)} not found (set RYFT_APP_DIR).`);
     });
     return;
   }
   it.skipIf(!present)('matches the app’s largest icon', () => {
-    const icon = appIcon();
+    const icon = appIcon(dir);
     const fix = 'run `npm run icons` and `npm run og` with RYFT_APP_DIR at web/.app-ref';
     expect(record.path, `the app's largest icon is another file: ${fix}`).toBe(icon.path);
     expect(record.sha256, `the app's icon changed: ${fix}`).toBe(icon.sha256);

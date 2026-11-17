@@ -59,6 +59,13 @@ if (x1 <= x0 || x0 === 0 || y0 === 0 || x1 === side || y1 === side) {
   fail(`no ink, or ink at the tile's edge (${x0}..${x1} × ${y0}..${y1}): the tile isn't one colour.`);
 }
 const hex = `#${tile.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+// The tile is the app's Background, so it equals the tokens' background (D22). Another colour means
+// the icon's design or the tokens moved without the other: the user's call, not this script's.
+if (hex !== background.toLowerCase()) {
+  fail(
+    `the tile is ${hex}, the tokens' background ${background}: run make web-tokens at the same pin, or ask.`,
+  );
+}
 const centre = side / 2;
 const corners = [x0, x1].flatMap((x) => [y0, y1].map((y) => Math.hypot(x - centre, y - centre)));
 const farthest = Math.max(...corners);

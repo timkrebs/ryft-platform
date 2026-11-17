@@ -18,6 +18,10 @@ export const APP_ICON_SET = 'Ryft/Assets.xcassets/AppIcon.appiconset';
 /** What the committed icons and OG card were drawn from. */
 export const RECORD_PATH = join(WEB, 'config/app-icon.json');
 
+/**
+ * @param {Record<string, string | undefined>} [env]
+ * @param {string[]} [argv] the script's arguments
+ */
 export function appDir(env = process.env, argv = process.argv.slice(2)) {
   const i = argv.findIndex((a) => a === '--app' || a.startsWith('--app='));
   let flag;

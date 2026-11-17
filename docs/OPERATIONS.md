@@ -1673,8 +1673,10 @@ gh pr checks --watch                                    # web-checks green: toke
 ```
 
 **Stop if** `make web-tokens` throws (the app changed a source file's shape: `web/scripts/tokens.mjs`
-needs a change in the same PR), or the diff asks for a design change beyond the tokens (that's the
-user's call, in its own PR). To roll back, revert the bump PR: the pin and its outputs go back together.
+needs a change in the same PR), if `npm run icons` or `npm run og` exits 1 (the icon's tile isn't one
+colour or isn't the tokens' background, its word reaches the edge, or the OG card's tile meets the
+copy: the icon's design moved, which is the user's call; web D22), or the diff asks for a design change
+beyond the tokens (that's the user's call, in its own PR). To roll back, revert the bump PR: the pin and its outputs go back together.
 
 ### The €20 stop line
 

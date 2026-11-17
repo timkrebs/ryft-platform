@@ -463,7 +463,7 @@ Graphite and Mist (`npm run icons`, `npm run og`; the OG card now takes its weig
 tracking and the label's case from the tokens). Whether they follow the app's new wordmark icon (M1)
 is the user's decision.
 
-_Superseded by D22._
+_This paragraph ("Icons keep the mark") is superseded by D22; the rest of D20 stands._
 
 Would change if the app gets an appearance option again (its ADR 0016 says that needs an ADR of its
 own); then the site decides separately whether to follow.
