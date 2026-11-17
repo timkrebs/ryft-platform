@@ -1,17 +1,21 @@
 #!/usr/bin/env node
 // Design tokens from the app, the single source of truth:
-//   ../../app/Ryft/Assets.xcassets/*.colorset   → colours (any = light, dark)
-//   ../../app/Ryft/Design/Theme.swift           → radii, padding, spacing, hairline, motion
-//   ../../app/Ryft/Design/Typography.swift      → type scale (pt → rem), weights, label tracking
-//   ../../app/Ryft/Design/RyftHeader.swift      → wordmark tracking
-// Writes src/styles/tokens.css (custom properties, dark first, light via the system
-// setting or [data-theme]), src/styles/tokens.json (the same values for scripts) and
+//   ../../app/Ryft/Assets.xcassets/*.colorset   → colours (one universal value each since
+//                                                  Nocturne; a "dark" entry, if a set has one, wins)
+//   ../../app/Ryft/Design/Theme.swift           → Metrics (radii, padding, spacing, sizes), motion
+//   ../../app/Ryft/Design/Typography.swift      → type scale (pt → rem), weights, and the label's
+//                                                  tracking and case (ryftLabelStyle's own body)
+//   ../../app/Ryft/Design/RyftHeader.swift      → the wordmark's tracking (Wordmark.tracking, em)
+// Writes src/styles/tokens.css (custom properties; dark-only like the app, web D20, so a light
+// block appears only if a colour set has a light value of its own), src/styles/tokens.json (the
+// same values for scripts; every colour as {light, dark}, equal when the set has one value) and
 // src/styles/swatches.css (one class per colour, for /styleguide without inline styles).
 //
 //   node scripts/tokens.mjs          regenerate
 //   node scripts/tokens.mjs --check  exit 1 when the committed files differ (CI)
 //
-// RYFT_APP_DIR overrides ../../app.
+// RYFT_APP_DIR overrides ../../app. CI checks the app out at the commit in web/.app-ref (platform
+// D234) and runs --check there, so regenerate from a checkout at that commit.
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
@@ -33,7 +37,8 @@ if (!existsSync(join(APP, 'Ryft/Assets.xcassets'))) {
 }
 
 const tokens = {
-  source: 'app/Ryft (Assets.xcassets, Design/Theme.swift, Design/Typography.swift, Design/RyftHeader.swift)',
+  source:
+    'app/Ryft at the commit in web/.app-ref (Assets.xcassets, Design/Theme.swift, Design/Typography.swift, Design/RyftHeader.swift)',
   colors: readColors(join(APP, 'Ryft/Assets.xcassets')),
   metrics: readMetrics(readFileSync(join(APP, 'Ryft/Design/Theme.swift'), 'utf8')),
   motion: readMotion(readFileSync(join(APP, 'Ryft/Design/Theme.swift'), 'utf8')),
@@ -91,9 +96,10 @@ function readColors(catalog) {
       const luminosity = appearances.find((a) => a.appearance === 'luminosity')?.value;
       const value = cssColor(entry.color, `${set}`);
       if (luminosity === 'dark') dark = value;
-      else light = value; // "any" and "light" are the light appearance
+      else light = value; // the universal value ("any"; "light" if a set ever has one)
     }
     if (!light) throw new Error(`tokens: ${set} has no universal colour`);
+    // One value (every set since Nocturne, ADR 0016 in the app): light and dark are the same.
     colors[name] = { light, dark: dark ?? light };
   }
   return colors;
@@ -163,38 +169,62 @@ function readMotion(theme) {
 }
 
 function readType(typography, header) {
+  // SwiftUI's Font.Weight → CSS font-weight.
+  const CSS_WEIGHTS = {
+    ultraLight: 200,
+    thin: 100,
+    light: 300,
+    regular: 400,
+    medium: 500,
+    semibold: 600,
+    bold: 700,
+    heavy: 800,
+    black: 900,
+  };
+  // SwiftUI's textCase → CSS text-transform. No .textCase in the label style: the text as written.
+  const CSS_TEXT_CASE = { uppercase: 'uppercase', lowercase: 'lowercase' };
+
   const sizes = {};
-  const sizeBlock = between(
-    typography,
-    'fileprivate var size: CGFloat {',
-    '}\n    }',
-    'Typography.swift → size',
-  );
+  // `var size: CGFloat {` (Nocturne) or `fileprivate var size: CGFloat {` (before): both contain it.
+  const sizeBlock = between(typography, 'var size: CGFloat {', '}\n    }', 'Typography.swift → size');
   for (const [, cases, value] of sizeBlock.matchAll(/case ((?:\.\w+(?:, )?)+): return ([\d.]+)/g)) {
     for (const c of cases.split(', ')) sizes[kebab(c.slice(1))] = +value;
   }
   const weights = {};
   const weightBlock = between(
     typography,
-    'fileprivate var weight: Font.Weight {',
+    'var weight: Font.Weight {',
     '}\n    }',
     'Typography.swift → weight',
   );
-  const css = { regular: 400, medium: 500, semibold: 600, bold: 700 };
   for (const [, cases, w] of weightBlock.matchAll(/case ((?:\.\w+(?:, )?)+): return \.(\w+)/g)) {
-    for (const c of cases.split(', ')) weights[kebab(c.slice(1))] = css[w] ?? 400;
+    if (!(w in CSS_WEIGHTS)) throw new Error(`tokens: Typography.swift → weight .${w} has no CSS weight`);
+    for (const c of cases.split(', ')) weights[kebab(c.slice(1))] = CSS_WEIGHTS[w];
   }
-  const labelTracking = typography.match(/func ryftLabelStyle[\s\S]*?\.tracking\(([\d.]+)\)/);
-  const wordmarkTracking = header.match(/struct Wordmark[\s\S]*?\.tracking\(size \* ([\d.]+)\)/);
-  if (!labelTracking || !wordmarkTracking) throw new Error('tokens: label or wordmark tracking not found');
+  if (!sizes.label) throw new Error('tokens: Typography.swift → size has no label');
+
+  // The label style's own body only: tracking in points (none = 0) and its case (none = as written).
+  const label = body(typography, 'func ryftLabelStyle', 'Typography.swift → ryftLabelStyle');
+  const labelTracking = /\.tracking\(([\d.]+)\)/.exec(label);
+  const labelCase = /\.textCase\(\.(\w+)\)/.exec(label);
+  if (labelCase && !(labelCase[1] in CSS_TEXT_CASE)) {
+    throw new Error(`tokens: ryftLabelStyle → .textCase(.${labelCase[1]}) has no CSS text-transform`);
+  }
+  // The wordmark's tracking, already in em: `static let tracking: CGFloat = 0.32` in struct Wordmark.
+  const wordmark = body(header, 'struct Wordmark', 'RyftHeader.swift → Wordmark');
+  const wordmarkTracking = /static let tracking: CGFloat = ([\d.]+)/.exec(wordmark);
+  if (!wordmarkTracking) throw new Error('tokens: RyftHeader.swift → Wordmark.tracking not found');
+
   const scale = {};
   for (const [name, pt] of Object.entries(sizes)) {
-    scale[name] = { pt, rem: +(pt / 16).toFixed(4), weight: weights[name] ?? 400 };
+    if (!(name in weights)) throw new Error(`tokens: Typography.swift → weight has no case for ${name}`);
+    scale[name] = { pt, rem: +(pt / 16).toFixed(4), weight: weights[name] };
   }
   return {
     scale,
     // Tracking in em: points ÷ the label size, and the wordmark's factor as is.
-    labelTrackingEm: +(+labelTracking[1] / sizes.label).toFixed(4),
+    labelTrackingEm: labelTracking ? +(+labelTracking[1] / sizes.label).toFixed(4) : 0,
+    labelTransform: labelCase ? CSS_TEXT_CASE[labelCase[1]] : 'none',
     wordmarkTrackingEm: +wordmarkTracking[1],
   };
 }
@@ -204,6 +234,19 @@ function between(text, start, end, where) {
   const j = i < 0 ? -1 : text.indexOf(end, i + start.length);
   if (i < 0 || j < 0) throw new Error(`tokens: ${where} not found`);
   return text.slice(i + start.length, j);
+}
+
+/** The body of the declaration that starts at `start`: from its first `{` to the matching `}`. */
+function body(text, start, where) {
+  const i = text.indexOf(start);
+  const open = i < 0 ? -1 : text.indexOf('{', i + start.length);
+  if (open < 0) throw new Error(`tokens: ${where} not found`);
+  let depth = 0;
+  for (let j = open; j < text.length; j++) {
+    if (text[j] === '{') depth++;
+    else if (text[j] === '}' && --depth === 0) return text.slice(open + 1, j);
+  }
+  throw new Error(`tokens: ${where} has no closing brace`);
 }
 
 function kebab(name) {
@@ -217,18 +260,16 @@ function kebab(name) {
 
 function renderCss({ colors, metrics, motion, type }) {
   const names = Object.keys(colors);
-  const fixed = names.filter((n) => colors[n].light === colors[n].dark);
   const flipping = names.filter((n) => colors[n].light !== colors[n].dark);
-  const dark = names.map((n) => `  --${n}: ${colors[n].dark};`);
-  const light = (indent) => flipping.map((n) => `${indent}--${n}: ${colors[n].light};`);
   const lines = [
-    '/* Generated by scripts/tokens.mjs from the app (app/Ryft). Do not edit: run `npm run tokens`. */',
-    `/* ${fixed.length} brand colours are the same in both appearances; ${flipping.length} flip. */`,
+    '/* Generated by scripts/tokens.mjs from the app (app/Ryft at the commit in web/.app-ref). Do not edit: run `npm run tokens`. */',
+    flipping.length
+      ? `/* ${names.length - flipping.length} colour sets have one value; ${flipping.length} have a light one, used under a light system setting. */`
+      : `/* Dark-only, like the app (web D20): each of the ${names.length} colour sets has one value. */`,
     '',
-    "/* Dark first: the app's primary look, and the default without a system preference. */",
     ':root {',
     '  color-scheme: dark;',
-    ...dark,
+    ...names.map((n) => `  --${n}: ${colors[n].dark};`),
     '',
     ...Object.entries(metrics).map(([k, v]) => `  --${k}: ${v}px;`),
     '',
@@ -238,22 +279,24 @@ function renderCss({ colors, metrics, motion, type }) {
       `  --type-${k}: ${v.rem}rem; /* ${v.pt} pt */`,
       `  --type-${k}-weight: ${v.weight};`,
     ]),
+    // The label style (ryftLabelStyle): its tracking and its case.
     `  --tracking-label: ${type.labelTrackingEm}em;`,
+    `  --label-transform: ${type.labelTransform};`,
     `  --tracking-wordmark: ${type.wordmarkTrackingEm}em;`,
     '}',
     '',
-    ":root[data-theme='light'] {",
-    '  color-scheme: light;',
-    ...light('  '),
-    '}',
-    '',
-    '@media (prefers-color-scheme: light) {',
-    "  :root:not([data-theme='dark']) {",
-    '    color-scheme: light;',
-    ...light('    '),
-    '  }',
-    '}',
-    '',
+    // Only if a colour set has a light value of its own again (not since Nocturne).
+    ...(flipping.length
+      ? [
+          '@media (prefers-color-scheme: light) {',
+          '  :root {',
+          '    color-scheme: light;',
+          ...flipping.map((n) => `    --${n}: ${colors[n].light};`),
+          '  }',
+          '}',
+          '',
+        ]
+      : []),
   ];
   return lines.join('\n');
 }
