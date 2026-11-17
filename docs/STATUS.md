@@ -108,6 +108,10 @@ only). The merge deploys the code and the migration; `analytics` stays `null` un
 `terraform -chdir=infra/gcp` plan/apply (2 to add), `put posthog-project-key`, then the one-line pin PR
 (OPERATIONS → GCP → PostHog's project key). Then allow-list testers for `analytics.enabled` once the app ships it
 and the privacy policy in force names PostHog (OPERATIONS → Feature flags, its stop line).
+- **2026-11-16:** #191 is merged, and version 1 of `posthog-project-key` exists and is enabled (`phc_`). The pin is
+  on branch `deploy/posthog-pin`, one line in `deploy/run/api.yaml`. Its merge deploys the api with the key. The
+  checks after it (OPERATIONS → PostHog's project key, step 3) are the `analytics configured` log line, the
+  revision's secret ref, and `GET /v1/config` as the smoke user, which prints the key's prefix and length only.
 
 ## Backend modules (2026-11-16)
 

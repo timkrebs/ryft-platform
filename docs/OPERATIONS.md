@@ -1399,7 +1399,7 @@ the deploy goes red at api. In this order:
 3. The pin, a PR of one line. If `put` printed another number than 1, pin that one.
 
    ```bash
-   git fetch origin && git switch -c deploy/posthog-key-pin origin/main
+   git fetch origin && git switch -c deploy/posthog-pin origin/main
    # deploy/run/api.yaml: right after the OTLP_TOKEN line, with its indentation, add
    #   - { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "1" } } }
    make cloudrun-check
@@ -1414,6 +1414,21 @@ the deploy goes red at api. In this order:
    gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="api" AND jsonPayload.message="analytics"' \
      --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=1h --limit=1 \
      --format='value(timestamp,jsonPayload.configured)'      # True
+   # The service's template pins the version, so every new revision gets it (names only, never the
+   # value; after a rollback the serving revision can be an older one, which /v1/config below shows):
+   gcloud run services describe api --region=europe-west1 --project=ryftlab-prod --format=json \
+     | jq -c '.spec.template.spec.containers[0].env[] | select(.name == "POSTHOG_PROJECT_KEY") | .valueFrom.secretKeyRef'   # {"key":"1","name":"posthog-project-key"}
+   # GET /v1/config as the smoke user. It prints the shape of `analytics`: the host, the key's
+   # prefix and its length, never the key. The password and the token go through stdin.
+   read -r "?Smoke user's email: " SMOKE_EMAIL; read -rs "?Its password: " SMOKE_PASSWORD; echo
+   read -r "?Supabase anon key (Project settings -> API): " SUPABASE_ANON_KEY
+   TOKEN=$(E="$SMOKE_EMAIL" P="$SMOKE_PASSWORD" jq -n '{email: env.E, password: env.P}' \
+     | curl -fsS -X POST "https://$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env).supabase.co/auth/v1/token?grant_type=password" \
+         -H "apikey: $SUPABASE_ANON_KEY" -H 'Content-Type: application/json' --data-binary @- | jq -r .access_token)
+   printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -fsS -H @- https://api.ryftlab.de/v1/config \
+     | jq -c '.analytics | if . == null then "null" else {host, key: (.project_key | .[0:4] + "… " + (length | tostring) + " chars")} end'
+   #   {"host":"https://eu.i.posthog.com","key":"phc_… <n> chars"}; "null" means the revision has no key
+   unset SMOKE_EMAIL SMOKE_PASSWORD SUPABASE_ANON_KEY TOKEN
    ```
 
 A new key moves as **Another secret's pin** above (api only). To turn analytics off at once, use the
