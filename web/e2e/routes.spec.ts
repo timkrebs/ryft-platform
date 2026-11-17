@@ -101,8 +101,8 @@ test.describe('routes the app depends on', () => {
   test('an auth callback with tokens runs no script that reads them', async ({ page }) => {
     await page.goto('/auth/callback?code=abc#access_token=secret&refresh_token=secret');
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Open this in RYFT');
-    const scripts = await page.locator('script').allTextContents();
-    for (const s of scripts) expect(s).not.toMatch(/location|href|hash|search/);
+    // No script at all (web D20), so nothing on the page can read them.
+    expect(await page.locator('script').count()).toBe(0);
     expect(await page.locator('a[href*="secret"]').count()).toBe(0);
   });
 
@@ -168,7 +168,8 @@ test.describe('routes the app depends on', () => {
   test('security headers and the CSP on pages and errors', async ({ request }) => {
     for (const path of ['/', '/privacy', '/nope', '/auth/callback']) {
       const h = (await request.get(path)).headers();
-      expect(h['content-security-policy'], path).toMatch(/script-src 'sha256-[^']+'/);
+      // No page but /admin runs a script (web D20).
+      expect(h['content-security-policy'], path).toContain("script-src 'none';");
       expect(h['content-security-policy'], path).not.toContain('unsafe-inline');
       expect(h['strict-transport-security'], path).toContain('max-age=31536000');
       expect(h['x-content-type-options'], path).toBe('nosniff');

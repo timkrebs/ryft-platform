@@ -33,7 +33,8 @@ type Hosting = {
 };
 type FirebaseJson = { hosting: Hosting; emulators: unknown };
 
-const HASHES = ["'sha256-bWFya2V0aW5nLTE='", "'sha256-bWFya2V0aW5nLTI='"];
+// The marketing pages run no script (web D20), so they have no hashes: script-src 'none'.
+const HASHES: string[] = [];
 const ADMIN_HASHES = ["'sha256-YWRtaW4='"];
 const MARKETING = policy(HASHES);
 const ADMIN = adminPolicy(ADMIN_HASHES, config);
@@ -461,9 +462,12 @@ describe('check-hosting.mjs', () => {
   });
 
   it('tells the two policies apart', () => {
+    expect(MARKETING).toContain("script-src 'none';");
     expect(cspKind(MARKETING)).toBe('marketing');
     expect(cspKind(ADMIN)).toBe('admin');
-    expect(cspKind(policy([]))).toBe('other');
+    // The marketing pages run no script (web D20): a policy that lets one run is not theirs.
+    expect(cspKind(policy(["'sha256-bWFya2V0aW5nLTE='"]))).toBe('other');
+    expect(cspKind(adminPolicy([], config))).toBe('other');
     expect(cspKind("default-src 'self'; script-src 'unsafe-inline'")).toBe('other');
     expect(cspKind(`${MARKETING}; trusted-types 'none'`)).toBe('other');
   });

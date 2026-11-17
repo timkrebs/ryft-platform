@@ -10,15 +10,15 @@ import {
   policy,
 } from '../scripts/lib/csp.mjs';
 import { cspHash, inlineScripts, stripRuntime } from '../scripts/lib/html.mjs';
-import { THEME_INIT, THEME_SWITCH } from '../src/lib/inline-scripts';
 
+// The admin bundle stands in for "our" script: since web D20 it is the only one the site has.
+const ADMIN_JS = 'document.title="admin"';
 const page = `<!DOCTYPE html><html><head>
-<script data-ryft="theme-init">${THEME_INIT}</script>
 <script src="/_next/static/chunks/a.js" async=""></script>
 <link rel="preload" as="script" fetchPriority="low" href="/_next/static/chunks/b.js"/>
 </head><body><p>Hi</p>
 <script>self.__next_f=self.__next_f||[]</script>
-<script data-ryft="theme-switch">${THEME_SWITCH}</script>
+<script data-ryft="admin">${ADMIN_JS}</script>
 </body></html>`;
 
 describe('postbuild and CSP', () => {
@@ -27,7 +27,12 @@ describe('postbuild and CSP', () => {
     expect(removed).toBe(3);
     expect(html).not.toContain('__next_f');
     expect(html).not.toContain('/_next/static/chunks/');
-    expect(inlineScripts(html).map((s) => s.body)).toEqual([THEME_INIT, THEME_SWITCH]);
+    expect(inlineScripts(html).map((s) => s.body)).toEqual([ADMIN_JS]);
+  });
+
+  it('leaves a page without our scripts with no script at all', () => {
+    const { html } = stripRuntime(page.replace(/<script data-ryft[\s\S]*?<\/script>/, ''));
+    expect(html).not.toMatch(/<script\b/);
   });
 
   it('hashes a script body the way browsers do (SHA-256, base64, exact bytes)', () => {
@@ -37,21 +42,23 @@ describe('postbuild and CSP', () => {
   });
 
   it('collects one hash per distinct script', () => {
-    expect(hashesOf([THEME_INIT, THEME_SWITCH, THEME_INIT])).toHaveLength(2);
+    expect(hashesOf(['a()', 'b()', 'a()'])).toHaveLength(2);
   });
 
-  it('allows no inline script without a hash and nothing from other origins', () => {
-    const p = policy(hashesOf([THEME_INIT]));
-    expect(p).toContain("script-src 'sha256-");
+  it("allows no script on the marketing pages (script-src 'none', web D20) and nothing from other origins", () => {
+    const p = policy([]);
+    expect(p).toContain("script-src 'none';");
+    expect(p).not.toContain('sha256-');
     expect(p).not.toContain('unsafe-inline');
     expect(p).not.toContain('unsafe-eval');
     expect(p).toContain("style-src 'self'");
     expect(p).toContain("frame-ancestors 'none'");
-    expect(policy([])).toContain("script-src 'none'");
+    // A hash, if a page ever had a script again, would be the only way in.
+    expect(policy(hashesOf(['a()']))).toContain("script-src 'sha256-");
   });
 
   it('writes an nginx directive that sends the header on every status', () => {
-    const snippet = nginxSnippet(hashesOf([THEME_INIT]), 1);
+    const snippet = nginxSnippet([], 1);
     expect(snippet).toMatch(/^add_header Content-Security-Policy ".*" always;$/m);
     expect(snippet.split('"')).toHaveLength(3);
   });
@@ -60,8 +67,7 @@ describe('postbuild and CSP', () => {
 // The admin page has its own policy (web D15). The marketing pages keep connect-src 'none'
 // and must not learn the admin script's hash or the Supabase host.
 describe('the two policies', () => {
-  const ADMIN_JS = 'document.title="admin"';
-  const marketing = policy(hashesOf([THEME_INIT, THEME_SWITCH]));
+  const marketing = policy([]);
   const admin = adminPolicy(hashesOf([ADMIN_JS]), config);
   const directive = (p: string, name: string) =>
     p
@@ -69,7 +75,8 @@ describe('the two policies', () => {
       .find((d) => d.startsWith(`${name} `))
       ?.slice(name.length + 1);
 
-  it('keeps connect-src none, no data: and no admin hash or origin on the marketing pages', () => {
+  it('keeps script-src and connect-src none, no data: and no admin hash or origin on the marketing pages', () => {
+    expect(directive(marketing, 'script-src')).toBe("'none'");
     expect(directive(marketing, 'connect-src')).toBe("'none'");
     expect(directive(marketing, 'img-src')).toBe("'self'");
     expect(marketing).not.toContain(cspHash(ADMIN_JS));

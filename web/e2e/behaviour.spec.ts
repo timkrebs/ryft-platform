@@ -3,22 +3,33 @@ import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import matter from 'gray-matter';
 
-test('the theme switch overrides the system and is remembered, without a cookie', async ({
+// The background token, and as the browser reports it: "#0a0c0b" → "rgb(10, 12, 11)".
+const TOKENS = JSON.parse(readFileSync(join(process.cwd(), 'src', 'styles', 'tokens.json'), 'utf8'));
+const BACKGROUND_HEX: string = TOKENS.colors.background.dark;
+const channels = [1, 3, 5].map((i) => Number.parseInt(BACKGROUND_HEX.slice(i, i + 2), 16));
+const BACKGROUND = `rgb(${channels.join(', ')})`;
+
+// Dark-only, like the app (web D20): a light system setting changes nothing, there is no switch,
+// and nothing is stored.
+test('the site stays dark under a light system setting, with no switch and nothing stored', async ({
   page,
   context,
 }) => {
-  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.emulateMedia({ colorScheme: 'light' });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Light' }).click();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await page.reload();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await expect(page.getByRole('button', { name: 'Light' })).toHaveAttribute('aria-pressed', 'true');
+  const html = page.locator('html');
+  await expect(html).not.toHaveAttribute('data-theme', /./);
+  expect(await html.evaluate((e) => getComputedStyle(e).colorScheme)).toBe('dark');
+  expect(await page.locator('body').evaluate((e) => getComputedStyle(e).backgroundColor)).toBe(BACKGROUND);
+  const themeColor = page.locator('meta[name="theme-color"]');
+  await expect(themeColor).toHaveCount(1);
+  await expect(themeColor).toHaveAttribute('content', BACKGROUND_HEX);
+  await expect(page.locator('[data-theme-switch], [data-theme-option]')).toHaveCount(0);
+  await expect(page.locator('script')).toHaveCount(0);
   const img = page.locator('#scores picture img').first();
   await img.scrollIntoViewIfNeeded();
-  await expect.poll(() => img.evaluate((i: HTMLImageElement) => i.currentSrc)).toContain('-light-');
-  await page.getByRole('button', { name: 'System' }).click();
-  await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
+  await expect.poll(() => img.evaluate((i: HTMLImageElement) => i.currentSrc)).toContain('-dark-');
+  expect(await page.evaluate(() => localStorage.length)).toBe(0);
   expect(await context.cookies()).toEqual([]);
 });
 
@@ -29,8 +40,6 @@ test('the FAQ opens without JavaScript', async ({ browser }) => {
   const first = page.locator('#faq details').first();
   await first.locator('summary').click();
   await expect(first).toHaveAttribute('open', '');
-  // Without JavaScript the theme switch stays hidden: no control that can't work.
-  await expect(page.locator('[data-theme-switch]')).toBeHidden();
   await context.close();
 });
 

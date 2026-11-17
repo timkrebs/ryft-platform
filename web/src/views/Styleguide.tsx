@@ -58,10 +58,7 @@ export function StyleguidePage() {
               <li key={name} className={styles.swatch}>
                 <span className={`${styles.chip} swatch-${name}`} aria-hidden="true" />
                 <span className={styles.swatchName}>--{name}</span>
-                <span className={styles.swatchValue}>
-                  dark {value.dark}
-                  {value.light !== value.dark && <> · light {value.light}</>}
-                </span>
+                <span className={styles.swatchValue}>{value.dark}</span>
               </li>
             ))}
           </ul>

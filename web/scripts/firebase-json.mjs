@@ -22,6 +22,8 @@ function main() {
   if (adminPages !== 1 || adminHashes.length !== 1) {
     fail(`firebase-json: ${ADMIN_PAGE} must exist and carry exactly one inline script.`);
   }
+  // The marketing pages run no script (web D20): their policy stays script-src 'none'.
+  if (hashes.length) fail(`firebase-json: ${hashes.length} script hash(es) on the marketing pages, not 0.`);
   if (!existsSync(join(out, '.well-known/apple-app-site-association'))) {
     fail('firebase-json: out/.well-known/apple-app-site-association is missing.');
   }
@@ -29,7 +31,7 @@ function main() {
   const json = firebaseJson({ hashes, adminHashes, config });
   writeFileSync(join(ROOT, 'firebase.json'), `${JSON.stringify(json, null, 2)}\n`);
   console.log(
-    `firebase-json: ${json.hosting.headers.length} header rules; ${hashes.length} script hash(es) on ${pages} pages, 1 on ${ADMIN_PAGE} → firebase.json.`,
+    `firebase-json: ${json.hosting.headers.length} header rules; no script on ${pages} pages, 1 on ${ADMIN_PAGE} → firebase.json.`,
   );
 }
 

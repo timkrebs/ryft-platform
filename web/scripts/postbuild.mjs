@@ -6,10 +6,12 @@
 //   1. every <script> without `data-ryft` and every script preload is removed from the HTML;
 //   2. the RSC payload files (*.txt next to each page, __next.*) are deleted;
 //   3. JavaScript under _next/ is deleted (nothing references it any more);
-//   4. the check fails if anything still points at a removed file.
-// What stays: the HTML, CSS and fonts under _next/static, public/, our two inline
-// scripts (src/lib/inline-scripts.ts) and, on /admin only, the admin bundle
-// (src/admin, web D15); scripts/csp.mjs hashes them into the CSPs.
+//   4. the check fails if anything still points at a removed file, or if any page but /admin
+//      has a script.
+// What stays: the HTML, CSS and fonts under _next/static, public/ and, on /admin only, the
+// admin bundle (src/admin, web D15), the one script left (the theme scripts went with the
+// light palette, web D20). scripts/csp.mjs hashes it into the admin page's CSP; every other
+// page runs no script (script-src 'none').
 import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { inlineScripts, stripRuntime } from './lib/html.mjs';
@@ -65,8 +67,8 @@ for (const file of walk(OUT)) {
   }
   if (/<script(?![^>]*data-ryft)/.test(html))
     broken.push(`${relative(OUT, file)} still has a runtime script`);
-  // The one exception to "only the theme scripts" (web D15): /admin carries its own bundle, as
-  // exactly one script, and no other page may carry it.
+  // No page runs a script (web D20), with one exception (web D15): /admin carries its own
+  // bundle, as exactly one script, and no other page may carry it.
   const own = [...html.matchAll(/<script\b[^>]*\bdata-ryft="admin"[^>]*>/g)].length;
   const all = inlineScripts(html).length;
   if (relative(OUT, file) === 'admin.html') {
@@ -74,6 +76,8 @@ for (const file of walk(OUT)) {
       broken.push(`admin.html must have exactly one script, data-ryft="admin" (${own} / ${all})`);
   } else if (own > 0) {
     broken.push(`${relative(OUT, file)} carries the admin script`);
+  } else if (/<script\b/i.test(html)) {
+    broken.push(`${relative(OUT, file)} has a script; only /admin runs one (web D20)`);
   }
 }
 if (!existsSync(join(OUT, 'admin.html'))) broken.push('admin.html is missing');
