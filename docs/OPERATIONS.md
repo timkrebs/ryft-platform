@@ -800,14 +800,17 @@ gcloud iam service-accounts keys list --iam-account="$ADMIN_SDK_SA" --project="$
 gcloud iam service-accounts disable "$ADMIN_SDK_SA" --project="$S"
 gcloud iam service-accounts describe "$ADMIN_SDK_SA" --project="$S" --format='value(disabled)'        # True
 
-# The deploy SA: Hosting only, usable only through the GitHub pool in ryftlab-prod.
+# The deploy SA: Hosting, and reading whether its API is on; usable only through the GitHub pool in ryftlab-prod.
 gcloud iam service-accounts create site-deployer --project="$S" --display-name="CI: Firebase Hosting deploys"
 SITE_SA=site-deployer@$S.iam.gserviceaccount.com
 gcloud projects add-iam-policy-binding "$S" --member="serviceAccount:$SITE_SA" \
   --role=roles/firebasehosting.admin --condition=None
+# firebase deploy reads whether the Hosting API is on (serviceusage services.get); without this a 403 (10f).
+gcloud projects add-iam-policy-binding "$S" --member="serviceAccount:$SITE_SA" \
+  --role=roles/serviceusage.serviceUsageConsumer --condition=None
 gcloud iam service-accounts add-iam-policy-binding "$SITE_SA" --project="$S" \
   --role=roles/iam.workloadIdentityUser --member="$(terraform -chdir=infra/gcp output -raw site_principal_set)"
-gcloud projects get-iam-policy "$S" --format='table(bindings.role,bindings.members)'  # you as owner, the SA, fbsvc's two roles, nothing else
+gcloud projects get-iam-policy "$S" --format='table(bindings.role,bindings.members)'  # you as owner, the SA's two roles, fbsvc's two roles, nothing else
 gcloud iam service-accounts get-iam-policy "$SITE_SA" --project="$S" --format=json \
   | jq -r '.bindings[] | .role + " " + (.members | join(" "))'
 #   roles/iam.workloadIdentityUser principalSet://iam.googleapis.com/projects/<n>/locations/global/workloadIdentityPools/github/attribute.environment/site
@@ -832,7 +835,8 @@ gcloud iam service-accounts get-iam-policy "$SITE_SA" --project="$S" --format=js
 **Stop if** any of these:
 - `billingEnabled` isn't `False`;
 - `addfirebase` asks for a plan or a billing account;
-- the project policy names anyone but you, `site-deployer` and `firebase-adminsdk-fbsvc` (with
+- the project policy names anyone but you, `site-deployer` (with `roles/firebasehosting.admin` and
+  `roles/serviceusage.serviceUsageConsumer` and nothing else) and `firebase-adminsdk-fbsvc` (with
   `roles/firebase.sdkAdminServiceAgent` and `roles/iam.serviceAccountTokenCreator` and nothing else);
 - `firebase-adminsdk-fbsvc` has a user-managed key (you didn't make one, so find out who did before
   you delete it), or `describe` doesn't say it is disabled;
@@ -925,9 +929,13 @@ A run by hand deploys the services from main's tip too, with the smoke (as on ev
   or the job's environment isn't `site`. Set `SITE_DEPLOY` off. Never bind it to the `deploy` set
   or the repository's set.
 - `firebase deploy` names a missing permission: add only that role to `site-deployer` on
-  `ryftlab-site` (for example `roles/serviceusage.serviceUsageConsumer`), then dispatch again.
-- It refuses the credentials themselves (the `external_account` file of WIF): that is *unchecked*
-  until this run. Set `SITE_DEPLOY` off and report it; the fix is a change in `deploy.yml`.
+  `ryftlab-site`, then dispatch again.
+  - Found on the first deploy (2026-11-17, run 44101115872): a 403 on
+    `serviceusage…/services/firebasehosting.googleapis.com` (`services.get`) is
+    `roles/serviceusage.serviceUsageConsumer`. 10a.3 grants it now, so a new project doesn't hit it.
+- It refuses the credentials themselves (the `external_account` file of WIF; they worked on the
+  first deploy, 2026-11-17, run 44101115872). Set `SITE_DEPLOY` off and report it; the fix is a
+  change in `deploy.yml`.
 - The live check fails: the new release is live. Read its FAIL lines; if the site is broken, roll
   back (GCP → Deploy, roll back, rotate → The site).
 
@@ -941,7 +949,7 @@ for p in /privacy /impressum /terms /support; do
 done
 curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" https://ryftlab.de/de/privacy   # 301 …/privacy (web D18)
 curl -sI https://ryftlab.de/.well-known/apple-app-site-association           # 200, content-type: application/json, no location
-curl -sI 'https://ryftlab.de//evil.example/' | grep -i '^location' || echo 'no location'   # no location, or /evil.example on ryftlab.de (web D19 d); never //evil.example or another host
+curl -sI 'https://ryftlab.de//evil.example/' | grep -i '^location' || echo 'no location'   # Google's front end: 307 /evil.example/ (web D21); never //evil.example, /\… or another host
 curl -sI https://www.ryftlab.de/privacy | grep -i '^location'                # https://ryftlab.de/privacy
 curl -sI https://ryftlab.de/admin | grep -ci '^content-security-policy'      # 1
 ```
@@ -1593,8 +1601,10 @@ hold; runbook step 10 sets it to `on`. Its jobs, in every run:
     of `web/.firebase-tools-version`. It runs from `site-build`'s artifact, unpacked beside the
     checkout. The artifact must hold `firebase.json` and `out/` and nothing else, with no links.
   - **The live check:** `web/scripts/check-hosting.mjs` against `https://ryftlab.de` and
-    `https://www.ryftlab.de` with `PRIVACY_POLICY_VERSION` from `deploy/run/config.env`. It runs the
-    emulator's assertions of `web-e2e`, live, on every run from main's tip, deployed or unchanged.
+    `https://www.ryftlab.de` with `PRIVACY_POLICY_VERSION` from `deploy/run/config.env`. It runs
+    `web-e2e`'s assertions with production's expectations (`web-e2e` passes `--emulator`; the two
+    differ on the admin redirects and on `//`, web D21), on every run from main's tip, deployed or
+    unchanged.
 
 A run by hand always deploys the site, except while the services are held (**The hold**, above). Use
 one after `SUPPORT_EMAIL` or `TESTFLIGHT_URL` changed,

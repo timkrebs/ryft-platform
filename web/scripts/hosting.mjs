@@ -12,8 +12,9 @@
 //
 //   node scripts/hosting.mjs exec     the emulator around `checks` (npm run e2e:hosting, make web-e2e)
 //   node scripts/hosting.mjs serve    the emulator until Ctrl-C (npm run hosting, make web-hosting)
-//   node scripts/hosting.mjs checks   Playwright, check-hosting.mjs, links and Lighthouse against
-//                                     the running emulator: all four run, exit 1 if any failed
+//   node scripts/hosting.mjs checks   Playwright, check-hosting.mjs (with --emulator: the emulator's
+//                                     expectations, web D21), links and Lighthouse against the
+//                                     running emulator: all four run, exit 1 if any failed
 //   node scripts/hosting.mjs version  the pinned firebase-tools version
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -42,7 +43,7 @@ if (cmd === 'version') {
 } else if (cmd === 'checks') {
   const steps = [
     ['Playwright', 'npx', ['--no', 'playwright', 'test']],
-    ['check-hosting', process.execPath, ['scripts/check-hosting.mjs', '--base', BASE]],
+    ['check-hosting', process.execPath, ['scripts/check-hosting.mjs', '--base', BASE, '--emulator']],
     ['links', 'npm', ['run', 'links']],
     ['Lighthouse', 'npm', ['run', 'lighthouse']],
   ];

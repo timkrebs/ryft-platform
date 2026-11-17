@@ -5252,6 +5252,13 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     serve the version in force. Nothing moves that pin any more, so C2's version bump must drop that half (D3 would
     have).
   - D3 removes the leftover scripts and the nginx image.
+- **Amended 2026-11-17 (the first deploy, run 44101115872, step 10f):**
+  - firebase-tools takes WIF's `external_account` credentials.
+  - `roles/firebasehosting.admin` isn't enough. `firebase deploy` also reads whether the Hosting API is on
+    (serviceusage `services.get`), so `site-deployer` also has `roles/serviceusage.serviceUsageConsumer`, and
+    nothing else (OPERATIONS 10a.3).
+  - Live Hosting differs from the emulator on the admin redirects and on `//`, so `check-hosting.mjs` expects
+    production by default and the emulator under `--emulator` (web D21).
 
 ## D234 — The site's checks read the app at a pinned commit, `web/.app-ref` (head-architect's decision, 2026-11-16; amends D107, web D10)
 
