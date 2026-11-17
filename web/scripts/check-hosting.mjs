@@ -281,9 +281,8 @@ export function slashWant(path, { emulator = false } = {}) {
 
 /**
  * The privacy version a /privacy page shows: the "Version {version}" line (messages/en.json →
- * legal.version, rendered by src/views/Legal.tsx), the first one on the page. Not the synthetics'
- * marker (deploy/grafana/synthetics: a sentence of the text), which says the page is up, not which
- * version it is.
+ * legal.version, rendered by src/views/Legal.tsx), the first one on the page: which version is in
+ * force, not merely that the page is up (that is the ryft-site-privacy uptime check, platform D236).
  * @param {string} html
  * @returns {string | null}
  */

@@ -97,7 +97,7 @@ resource "google_logging_metric" "errors" {
 
 # ---- the uptime checks: the site and the two public services from outside --------------------------
 # Every 5 minutes from three locations, 10 s each, TLS validated, exactly 200, no redirect accepted.
-# 5 checks x 3 locations x 8,760 runs a year / 12 = 131,400 executions a month (5 x 3 x 12 x 730), under
+# 5 checks x 3 locations x 8,760 runs a month per location (12 an hour x 730 hours) = 131,400 executions, under
 # the free million (D236 -> Cost). /health/ready is the readiness path, the database behind it
 # (OBSERVABILITY -> Health paths), never the startup probe's /health/live.
 resource "google_monitoring_uptime_check_config" "this" {
@@ -212,6 +212,22 @@ locals {
   )
 }
 
+locals {
+  # A tile's position. The Monitoring API leaves a zero xPos or yPos out of what it returns, and the
+  # provider's diff ignores only keys the config lacks, so a zero is never written: else every plan
+  # would show the dashboard changed (runbook 11.3's second plan says "No changes").
+  # Two 24-wide tiles per row, 16 high; the logs panel (index n) spans the row below the last.
+  tile_xy = { for i in range(length(local.dashboard_widgets) + 1) : i => (
+    i < length(local.dashboard_widgets)
+    ? { x = (i % 2) * 24, y = floor(i / 2) * 16 }
+    : { x = 0, y = ceil(length(local.dashboard_widgets) / 2) * 16 }
+  ) }
+  tile_at = { for i, p in local.tile_xy : i => merge(
+    p.x == 0 ? {} : { xPos = p.x },
+    p.y == 0 ? {} : { yPos = p.y },
+  ) }
+}
+
 resource "google_monitoring_dashboard" "overview" {
   project = var.project_id
 
@@ -220,27 +236,25 @@ resource "google_monitoring_dashboard" "overview" {
     mosaicLayout = {
       columns = 48
       tiles = concat(
-        [for i, w in local.dashboard_widgets : {
-          xPos   = (i % 2) * 24
-          yPos   = floor(i / 2) * 16
+        [for i, w in local.dashboard_widgets : merge(local.tile_at[i], {
           width  = 24
           height = 16
           widget = w
-        }],
-        # The services' ERROR lines themselves, from ryft-logs (every log is there, logging.tf).
-        [{
-          xPos   = 0
-          yPos   = ceil(length(local.dashboard_widgets) / 2) * 16
+        })],
+        # The services' own ERROR lines, from ryft-logs (every log is there, logging.tf). Only stdout and
+        # stderr: Cloud Run's request log (run.googleapis.com/requests) has ERROR entries for every 5xx,
+        # and they carry the caller's IP, the URL and the user agent.
+        [merge(local.tile_at[length(local.dashboard_widgets)], {
           width  = 48
           height = 20
           widget = {
-            title = "ERROR lines (Cloud Run)"
+            title = "ERROR lines (the services' own)"
             logsPanel = {
-              filter        = "resource.type=\"cloud_run_revision\"\nseverity>=ERROR"
+              filter        = "resource.type=\"cloud_run_revision\"\n(${local.log_stdout} OR ${local.log_stderr})\nseverity>=ERROR"
               resourceNames = ["projects/${var.project_id}/locations/${google_logging_project_bucket_config.ryft_logs.location}/buckets/${google_logging_project_bucket_config.ryft_logs.bucket_id}/views/_AllLogs"]
             }
           }
-        }],
+        })],
       )
     }
   })

@@ -58,7 +58,8 @@ locals {
         look     = "Logs Explorer: resource.type=\"cloud_run_revision\" resource.labels.service_name=\"<service>\" httpRequest.status>=500; then the service's ERROR lines (dashboard RYFT · Overview)."
       }
 
-      # A letter waits in a DLQ hold subscription: an event a consumer failed on five times.
+      # A letter waits in a DLQ hold subscription: an event a consumer failed on 20 times
+      # (local.max_delivery_attempts, pubsub.tf).
       "dead-letters" = {
         name     = "RYFT · Dead letters held"
         severity = "WARNING"

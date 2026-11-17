@@ -5335,7 +5335,10 @@ _Grafana half superseded by D236._
     share over 10 min `> 0.02` and at least 3 5xx, held 600 s; (3) a service with no `result="ok"` tick in 45 min,
     an absent series included, only while the tick runs; (4) a dead-letter hold subscription holds a message; (5) an
     event subscription's oldest unacked message is older than 900 s. The subscriptions come from the topology's
-    tfvars, not from a pattern.
+    tfvars, not from a pattern. **Why (5), the lead's pick of the free fifth slot:** scoring and notify have no
+    public 5xx condition and no uptime check, and (4) fires only after 20 failed deliveries with backoff. A consumer
+    that is down, failing or saturated shows first as an event that ages. SyncSlow and Saturated (`alerts.tf`
+    before D236) became dashboard panels instead.
   - **Channels** are data sources, never resources. The app channel's display name is personal data: a sensitive
     variable `alert_app_channel_name` (default `""`), set only in the HCP workspace's UI. Not ephemeral: a data
     source's argument can't take an ephemeral value. `local.alerting = nonsensitive(var.alert_app_channel_name !=
@@ -5351,7 +5354,9 @@ _Grafana half superseded by D236._
   points (150 MiB free). The dashboard: free.
 - **Lost** (no alert, nothing reads the app registry on Cloud Run): TextRefusedByDatabase, NoSync, the APNs and push
   alerts, NewFeedback, the admin alerts, OutboxStuck, the www redirect and probe-flapping checks. The rest map onto
-  the five or onto panels (`OBSERVABILITY.md` → What D236 dropped).
+  the five or onto panels (`OBSERVABILITY.md` → What D236 dropped). The admin alerts were the lost-phone detection
+  (`AdminWebUsed`): an admin sign-in you didn't make is now noticed only by reading the audit or the `admin_actor`
+  lines (OPERATIONS → the admin page).
 - **Removed:** the `grafana` provider, its resources, variables and mocks; `grafana-reader` and its
   `monitoring.viewer` (two destroys, no data); `deploy/grafana/synthetics`, `scripts/synthetics.sh`,
   `synthetics_re2.go`, their test, `make synthetics-*` and CI's steps; `deploy/grafana/alerts/ryft.yaml`, its tests
@@ -5363,12 +5368,14 @@ _Grafana half superseded by D236._
 - **The lead's design, changed:** the 5xx condition got a floor of 3 (one failed uptime request at night is no
   outage); the subscriptions are derived, not matched; the apply SA needs four Monitoring roles, granted by hand
   (11.2); Error Reporting isn't turned on here (its API isn't on the keep list, it doesn't read the `panic` line's
-  `stack` key, its retention is unchecked against the privacy text), so 11.5 only uses it where it already runs; the
+  `stack` key, its retention is unchecked against the privacy text), so 11.5 makes enabling it the user's decision,
+  in a PR of its own; the
   stack can go only once EKS stops sending (D3), and the app rule groups still live in its ruler go by hand (11.7).
 - **Unchecked:** both price readings and the free uptime quota; that `increase()` over the log-based DELTA counter
   answers after the first counted tick; the app channel's delivery (11.4 tests it).
 - **Privacy:** no new processor (Monitoring is Google's, like Cloud Run and Logging). The metrics are counts by
   service and result; alerts name policies, services, subscriptions and checks. The dashboard's logs panel reads
-  `ryft-logs` with the reader's own log permissions. For RYFT on GCP, C2 need not name Grafana.
+  `ryft-logs` with the reader's own log permissions, and only the services' stdout and stderr: Cloud Run's request
+  log has ERROR entries for every 5xx, with the caller's IP. For RYFT on GCP, C2 need not name Grafana.
 - **Consequences:** `OBSERVABILITY.md` → Cloud Monitoring; `OPERATIONS.md` → GCP → 11 and When an alert fires;
   `infra/gcp/README.md`.

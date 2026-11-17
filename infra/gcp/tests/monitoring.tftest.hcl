@@ -434,9 +434,36 @@ run "the_dashboard" {
     condition = (
       jsondecode(google_monitoring_dashboard.overview.dashboard_json).mosaicLayout.columns == 48 &&
       length(jsondecode(google_monitoring_dashboard.overview.dashboard_json).mosaicLayout.tiles) == 13 &&
-      alltrue([for t in jsondecode(google_monitoring_dashboard.overview.dashboard_json).mosaicLayout.tiles : t.xPos + t.width <= 48])
+      alltrue([for t in jsondecode(google_monitoring_dashboard.overview.dashboard_json).mosaicLayout.tiles : try(t.xPos, 0) + t.width <= 48])
     )
     error_message = "the dashboard: 13 tiles on 48 columns, none past the edge"
+  }
+
+  # The API drops a zero position from what it returns; one written in the config would show the
+  # dashboard changed at every plan.
+  assert {
+    condition = alltrue([
+      for t in jsondecode(google_monitoring_dashboard.overview.dashboard_json).mosaicLayout.tiles :
+      try(t.xPos, 1) != 0 && try(t.yPos, 1) != 0
+    ])
+    error_message = "no tile writes xPos = 0 or yPos = 0 (the API leaves zeros out: a perpetual diff)"
+  }
+
+  assert {
+    condition = (
+      [for t in jsondecode(google_monitoring_dashboard.overview.dashboard_json).mosaicLayout.tiles : [try(t.xPos, 0), try(t.yPos, 0)]]
+      == [[0, 0], [24, 0], [0, 16], [24, 16], [0, 32], [24, 32], [0, 48], [24, 48], [0, 64], [24, 64], [0, 80], [24, 80], [0, 96]]
+    )
+    error_message = "two tiles a row, then the logs panel on its own row"
+  }
+
+  # The AASA check matches the app id the site serves (web/public/.well-known).
+  assert {
+    condition = strcontains(
+      file("${path.module}/../../web/public/.well-known/apple-app-site-association"),
+      "\"${one(google_monitoring_uptime_check_config.this["ryft-site-aasa"].content_matchers).content}\"",
+    )
+    error_message = "the AASA check's content is the app id in web/public/.well-known/apple-app-site-association"
   }
 
   assert {
@@ -445,11 +472,11 @@ run "the_dashboard" {
         for t in jsondecode(google_monitoring_dashboard.overview.dashboard_json).mosaicLayout.tiles :
         [t.widget.logsPanel.filter, t.widget.logsPanel.resourceNames] if can(t.widget.logsPanel)
         ] == [[
-          "resource.type=\"cloud_run_revision\"\nseverity>=ERROR",
+          "resource.type=\"cloud_run_revision\"\n(logName=\"projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout\" OR logName=\"projects/ryftlab-prod/logs/run.googleapis.com%2Fstderr\")\nseverity>=ERROR",
           ["projects/ryftlab-prod/locations/europe-west1/buckets/ryft-logs/views/_AllLogs"],
       ]]
     )
-    error_message = "one logs panel of ERROR lines, read from ryft-logs"
+    error_message = "one logs panel of the services' own ERROR lines (not Cloud Run's request log, which has IPs), read from ryft-logs"
   }
 
   assert {

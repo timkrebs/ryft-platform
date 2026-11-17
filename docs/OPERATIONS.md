@@ -374,7 +374,7 @@ APFS: FileVault protects the freed blocks (D211).
 ```bash
 for s in $(gcloud secrets list --project=ryftlab-prod --format='value(name.basename())'); do
   echo "$s $(gcloud secrets versions list "$s" --project=ryftlab-prod --format='value(name.basename(),state)' | tr '\n' ' ')"
-done                                                # 11 lines, each one version: 1 ENABLED (on a rebuild since D236, otlp-token without one)
+done                                                # 12 lines, each one version: 1 ENABLED (on a rebuild since D236, otlp-token's line has none)
 ```
 
 **Stop if** the data key's fingerprint differs or its length isn't 32. Then use D211's fallback:
@@ -988,8 +988,13 @@ after 11.4. 11.7 deletes what is left in Grafana Cloud.
 
 **11.1 The app channel's name, a workspace variable.** Monitoring → Alerting → **Edit notification
 channels** → Mobile Devices: the Google Cloud app's channel, by its display name, written here as
-`<the app channel's name>`. It is personal data. It goes into HCP Terraform's UI and nowhere else:
-never into a file, a script, a command line, a commit or a chat.
+`<the app channel's name>`. It is personal data. You type it into HCP Terraform's UI and nowhere
+else: never into a file, a script, a command line, a commit or a chat. Terraform keeps it in the
+workspace's state as the data source's argument (as it keeps the email channel's address), and the
+state is readable only by the workspace's members. One way out remains: when the app channel's
+data source fails (no channel or two with that name, 11.2's stop rule), **the provider's error
+quotes the name**, unmasked, in the run's log. Never copy or paste that error; report it as "the app
+channel's data source failed".
 
 1. app.terraform.io → organization `ryft-lab` → Workspaces → `ryft-gcp` → **Variables** →
    Workspace variables → **+ Add variable**.
@@ -1050,7 +1055,8 @@ nothing reads as it.
 
 **Stop if** the counts are not your gate's line above; anything changes, or anything else is
 destroyed; a channel's data source fails (no channel, or more than one, with that name: 11.1's
-value must match exactly one channel, and the email channel must be named `ryft-timkrebs`); a 403
+value must match exactly one channel, and the email channel must be named `ryft-timkrebs`; the app
+channel's error quotes its name, so don't paste it anywhere, 11.1); a 403
 on `monitoring.*` (the four roles above); or `grafana-reader` has a key (delete it with
 `gcloud iam service-accounts keys delete`, then find out who made it).
 
@@ -1110,11 +1116,17 @@ Error Reporting API, which is not on step 2a's keep list (`project.tf`, pinned b
 the page) → tick the `ryft-timkrebs` email and the app channel → **Save**: you then hear of each new
 error group and of each resolved one that comes back.
 
-**Stop if** the page asks to enable the API. Don't: that is an API outside the keep list (a PR to
-`project.tf`), Error Reporting keeps its error events on its own terms, which the privacy text's 14
-days in the EU may not cover (C2), and it groups only errors whose stack trace is in a field it
-knows (`message`, `stack_trace`, `exception`), while the services' `panic` line has it in `stack`
-(D236). The `ryft_errors` panel and the dashboard's logs panel show every ERROR line meanwhile.
+**Stop if** the page asks to enable the API. Enabling it is your decision, not a click on the way.
+Three things speak against it today (D236):
+- it is an API outside the keep list, so it needs a PR to `project.tf`;
+- Error Reporting keeps its error events on its own terms, which the privacy text's 14 days in the
+  EU may not cover, so C2 would have to say so;
+- it groups only errors whose stack trace is in a field it knows (`message`, `stack_trace`,
+  `exception`), and the services' `panic` line has it in `stack`, so panics wouldn't group.
+
+If you want it anyway, say so and it gets its own PR: the API in `project.tf`, the privacy check,
+and the panic line's field. Until then, the `ryft_errors` panel and the dashboard's logs panel show
+every ERROR line.
 
 **11.6 `otlp-token`, in a PR of its own** *(after 11.4, and after a deploy of this PR's revisions)*.
 No revision of this PR reads the secret, but every older one does, and a revision whose secret is
@@ -3948,11 +3960,18 @@ For key callers (scripts, `make smoke-prod`) three small things change: more tha
 second from one address now get `429`, the `401` text is `admin key or admin sign-in required`,
 and the scheme `bearer` in lower case is accepted. Granting access is two statements in the
 SQL editor, as the owner, by id; they are one trust domain (the Supabase project owner), and the
-row exists so that revoking takes effect at once, not so that two parties must agree. **Before the
-first row, run `make alerts-apply`** (the user's step; it needs `GRAFANA_PROM_URL`,
-`GRAFANA_PROM_USER` and `GRAFANA_RULES_TOKEN`): alert rules reach Grafana only through that manual
-apply, and `AdminWebUsed` is how a use you did not make is noticed (the lost-phone detection), so
-the token path must not be opened before it is loaded.
+row exists so that revoking takes effect at once, not so that two parties must agree. **No alert
+notices an admin sign-in any more** (D236): `AdminWebUsed` (the lost-phone detection) and
+`AdminUnauthorized` were app-metric rules in Grafana Cloud, which is gone, and Cloud Monitoring has
+five conditions, none of them this. So a use you didn't make is noticed only by looking. After any
+session, and weekly while a row exists, read the audit (`GET /v1/admin/audit`, `actor.kind` `user`)
+or Logs Explorer on `ryft-logs`:
+
+```text
+resource.type="cloud_run_revision" resource.labels.service_name="api" jsonPayload.admin_actor:"user:"
+```
+
+Every line there that isn't yours is the lost-phone case (below).
 
 ```sql
 update auth.users set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"admin"}'::jsonb where id = '<admin uuid>';
@@ -3975,7 +3994,8 @@ the first 8 hex digits). The audit (`GET /v1/admin/audit`) names the actor: `act
 
 **Setting up the operator account (once, in this order).** Before step 1 the Supabase project must be set as
 SUPABASE.md → checklist says for the admin page (Data API off, TOTP on, maximum enrolled factors 1, *Confirm
-email* and *Secure email change* on), and `make alerts-apply` must have run (above).
+email* and *Secure email change* on). Read the paragraph above about noticing a use first: since D236 no
+alert does.
 
 1. **A dedicated admin account:** Supabase → Authentication → Users → *Add user*, an address used for nothing
    else and **not** your Apple ID address (Supabase links identities of the same verified email, so an app sign-in
@@ -4062,10 +4082,11 @@ it is recorded).
 no-store`, `/` keeps `connect-src 'none'`, the api rolled with `ADMIN_WEB_ORIGINS` (`"web_origins":1`, the `OPTIONS`
 preflight `204` with `access-control-allow-origin: https://ryftlab.de`), and the operator's sign-in on the page worked.
 
-**Alerts.** `AdminUnauthorized` (warning): more than 20 requests with a bad bearer in 10 minutes,
-a scanner or a stale or foreign token; read the `admin auth rejected` lines. The api never sees a
-guessed password, that is Supabase Auth: read Supabase → Logs → Auth for sign-in attacks.
-`AdminWebUsed` (info): the page was used; if it was not you, act (below). A real operator refused
+**Alerts.** None since D236 (the two below were Grafana rules, gone with it; the log lines they
+counted remain, so read them in Logs Explorer). `AdminUnauthorized` was more than 20 requests with
+a bad bearer in 10 minutes, a scanner or a stale or foreign token: the `admin auth rejected` lines.
+The api never sees a guessed password, that is Supabase Auth: read Supabase → Logs → Auth for
+sign-in attacks. `AdminWebUsed` was the page being used; if it was not you, act (below). A real operator refused
 for want of a fresh second factor (`mfa_required`) is deliberately in neither alert; it is in the
 audit (`actor.kind` `user`, status `403`) and in CloudWatch. A `503` on an admin route with a token
 means the api could not complete the check: a signing-key fetch that failed or took longer than a
