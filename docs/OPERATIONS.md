@@ -79,7 +79,7 @@ on Pub/Sub and Cloud Run.
 | 8 | First deploy | A merged, steps 5 and 7 done |
 | 9 | Apply 2: invokers and mappings, then `make smoke-supabase` | step 8 |
 | 10 | The site and the app | waits for C1 |
-| 11 | Observability | B merged for a–e. f (the OTLP half) after step 9. g–j (synthetics, the app rules, the EKS groups, the routing proof) wait for step 10 (C1) as well |
+| 11 | Observability on Cloud Monitoring (D236) | the PR "observability on Cloud Monitoring" merged; step 10 done (the site's uptime checks). 11.6 waits for 11.4, 11.7 for D3 if EKS still sends to Grafana Cloud |
 | 12–14 | Old org: retire Route 53, AWS and the old workspaces | after step 10, with D1, D2, D3 |
 | 15 | Testers | step 10 done, C2 in force |
 
@@ -179,13 +179,19 @@ for r in roles/run.admin roles/pubsub.admin roles/cloudscheduler.admin roles/sec
          roles/serviceusage.serviceUsageAdmin; do
   gcloud projects add-iam-policy-binding "$P" --member="serviceAccount:$APPLY_SA" --role="$r" --condition=None
 done
+# Cloud Monitoring's (D236; on ryftlab-prod granted at step 11.2): the uptime checks, the dashboard, the
+# alert policies, and reading the two notification channels.
+for r in roles/monitoring.uptimeCheckConfigEditor roles/monitoring.dashboardEditor \
+         roles/monitoring.alertPolicyEditor roles/monitoring.notificationChannelViewer; do
+  gcloud projects add-iam-policy-binding "$P" --member="serviceAccount:$APPLY_SA" --role="$r" --condition=None
+done
 PS=principalSet://iam.googleapis.com/projects/$PN/locations/global/workloadIdentityPools/$POOL
 gcloud iam service-accounts add-iam-policy-binding "$PLAN_SA" --project="$P" \
   --role=roles/iam.workloadIdentityUser --member="$PS/attribute.terraform_run_phase/plan"
 gcloud iam service-accounts add-iam-policy-binding "$APPLY_SA" --project="$P" \
   --role=roles/iam.workloadIdentityUser --member="$PS/attribute.terraform_run_phase/apply"
 gcloud projects get-iam-policy "$P" --flatten='bindings[].members' --filter="bindings.members:$APPLY_SA" \
-  --format='value(bindings.role)'                   # the twelve roles above, never roles/owner
+  --format='value(bindings.role)'                   # the sixteen roles above, never roles/owner
 
 # 2e. The workspace's variables (none sensitive; each prints 201, a 422 means the key exists: change it in the UI).
 tfc_var() {  # tfc_var KEY VALUE [env|terraform]
@@ -203,14 +209,12 @@ read -r REPO_ID OWNER_ID < <(gh api repos/timkrebs/ryft-platform --jq '"\(.id) \
 echo "$REPO_ID $OWNER_ID"                           # two numbers
 tfc_var github_repository_id "$REPO_ID" terraform
 tfc_var github_repository_owner_id "$OWNER_ID" terraform
-# From step 11, not now (the data source must exist first):
-#   tfc_var grafana_url https://<stack>.grafana.net terraform
-#   tfc_var grafana_datasource_uid '<the data source UID>' terraform
-# grafana_auth, the Grafana token, is sensitive: the workspace UI only (step 11c), never here, never on argv.
+# From step 11, not now: alert_app_channel_name, the Google Cloud app channel's name, is personal data and
+# sensitive: the workspace UI only (step 11.1), never here, never on argv.
 
 # 2f. Connect and plan once (speculative: it proves the plan SA's sign-in).
 terraform -chdir=infra/gcp init                     # connects to ryft-gcp, which 2b made
-terraform -chdir=infra/gcp plan                     # 118 to add (step 4)
+terraform -chdir=infra/gcp plan                     # 122 to add (step 4)
 ```
 
 - **APIs.** Without `--force`, `gcloud services disable` refuses a service that was used in
@@ -268,16 +272,21 @@ rm infra/gcp/apply-1.tfplan
 ```
 
 ```text
-# Apply 1: 118 to add, 0 to change, 0 to destroy.
+# Apply 1: 122 to add, 0 to change, 0 to destroy (on a rebuild today; the first apply 1 was 118, with
+# grafana-reader and its monitoring.viewer and without D236's 6).
 #   16 APIs + 3 audit configs (Secret Manager, STS, IAM) + 2 service agents                  = 21
-#    8 accounts + 1 token creator + 1 run.developer + 5 actAs + 1 monitoring.viewer          = 16  (37)
-#    1 GitHub pool + 1 provider + 1 workloadIdentityUser                                     =  3  (40)
-#   12 secrets + 12 accessor bindings                                                        = 24  (64)
-#    9 topics + 9 publisher bindings + 10 push subs + 6 dead-letter source bindings + 2 hold = 36 (100)
-#    1 Scheduler job + 1 Artifact Registry + 1 registry writer                               =  3 (103)
-#    1 zone + 12 record sets (CAA, MX, apex TXT, DMARC, 6 CNAME, 2 SRV)                      = 13 (116)
-#    1 log bucket + 1 sink                                                                   =  2 (118)
+#    7 accounts + 1 token creator + 1 run.developer + 5 actAs                                = 14  (35)
+#    1 GitHub pool + 1 provider + 1 workloadIdentityUser                                     =  3  (38)
+#   12 secrets + 12 accessor bindings                                                        = 24  (62)
+#    9 topics + 9 publisher bindings + 10 push subs + 6 dead-letter source bindings + 2 hold = 36  (98)
+#    1 Scheduler job + 1 Artifact Registry + 1 registry writer                               =  3 (101)
+#    1 zone + 12 record sets (CAA, MX, apex TXT, DMARC, 6 CNAME, 2 SRV)                      = 13 (114)
+#    1 log bucket + 1 sink                                                                   =  2 (116)
+#    2 log-based metrics + 3 uptime checks (the site's) + 1 dashboard (D236)                 =  6 (122)
 ```
+
+The site's uptime checks fail until step 10 serves it. Nothing pages: no alert policy exists before
+step 11.1's variable.
 
 Every line is a `+`. Expect one warning: the check `default_log_sink_disabled`, because the
 `_Default` sink is still on. No change to the bootstrap: the pool `hcp-terraform`, the two
@@ -303,7 +312,7 @@ Pub/Sub's service agent can take a minute to exist. If the apply fails on
 `service-<number>@gcp-sa-pubsub.iam.gserviceaccount.com`, wait, then plan and apply again. The
 new plan holds only what is left.
 
-**Stop if** the plan has any change or destroy, or the add count isn't 118.
+**Stop if** the plan has any change or destroy, or the add count isn't 122.
 
 ### 5. Secret values
 
@@ -332,8 +341,6 @@ put admin-api-key
 gcloud secrets versions add apple-key-p8 --project=ryftlab-prod --data-file="$HOME/Downloads/AuthKey_<APPLE_KEY_ID>.p8"
 gcloud secrets versions add apns-key-p8 --project=ryftlab-prod --data-file="$HOME/Downloads/AuthKey_<APNS_KEY_ID>.p8"
 rm "$HOME/Downloads/AuthKey_<APPLE_KEY_ID>.p8" "$HOME/Downloads/AuthKey_<APNS_KEY_ID>.p8"
-# The OTLP token: Grafana Cloud -> Access policies -> a policy on the stack with metrics:write only -> Add token:
-put otlp-token
 # PostHog's project API key (phc_…, never a personal phx_ key), PostHog -> Project settings. Needed
 # before step 8 once deploy/run/api.yaml pins it (D231); while it doesn't, the api serves analytics null:
 put posthog-project-key
@@ -347,8 +354,8 @@ the pin in `deploy/run` (step 5's first paragraph). Then disable the wrong versi
 
 - `db-password-owner`: if 1Password lacks the value, reset it in Supabase → Database →
   Settings. Nothing else uses it while EKS is down.
-- `otlp-token` must hold a value now, even though step 11 turns the push on. Every service pins
-  version 1, and a revision whose secret version is missing doesn't start.
+- `otlp-token` gets no value any more: no revision pins it since D236 (it held one on
+  ryftlab-prod, which every revision before D236 reads; step 11.6 removes it).
 
 The data key, design §5.3 steps 3–5. Use the version `add` prints. If it isn't `1`, the pin
 in `deploy/run/api.yaml` moves too.
@@ -367,7 +374,7 @@ APFS: FileVault protects the freed blocks (D211).
 ```bash
 for s in $(gcloud secrets list --project=ryftlab-prod --format='value(name.basename())'); do
   echo "$s $(gcloud secrets versions list "$s" --project=ryftlab-prod --format='value(name.basename(),state)' | tr '\n' ' ')"
-done                                                # 11 lines, each one version: 1 ENABLED
+done                                                # 11 lines, each one version: 1 ENABLED (on a rebuild since D236, otlp-token without one)
 ```
 
 **Stop if** the data key's fingerprint differs or its length isn't 32. Then use D211's fallback:
@@ -552,10 +559,11 @@ rm infra/gcp/apply-2.tfplan
 ```
 
 ```text
-# Apply 2: 13 to add, 1 to change, 1 to destroy.
+# Apply 2: 15 to add, 1 to change, 1 to destroy (13 to add before D236).
 #   4 run.invoker bindings, one per service (api, ingest, scoring, notify)                   =  4
 #   + 4 run.developer for ryft-deployer on the services + 1 on the job migrate               =  5  (9)
-#   + 2 domain mappings (api., ingest.ryftlab.de) + 2 CNAME record sets (from the mappings)  =  4 (13)  to add
+#   + 2 domain mappings (api., ingest.ryftlab.de) + 2 CNAME record sets (from the mappings)  =  4 (13)
+#   + 2 uptime checks (ryft-api-ready, ryft-ingest-ready; D236)                              =  2 (15)  to add
 #   ryft-tick: paused true -> false                                                          =  1       to change
 #   ryft-deployer's project-wide run.developer (google_project_iam_member...[0])             =  1       to destroy
 ```
@@ -674,9 +682,9 @@ unset SMOKE_PASSWORD
 
 Undo apply 2 with a PR that sets `serve = false`, the hold set before its merge (as above). Its
 apply: 1 to add (the deployer's project-wide `run.developer` again), 1 to change (the tick
-paused), 13 to destroy (step 9's 13), nothing stateful.
+paused), 15 to destroy (step 9's 15; 16 with alerting on, the tick policy too), nothing stateful.
 
-**Stop if** the plan isn't exactly the 13 adds, the tick and the one destroy above; a
+**Stop if** the plan isn't exactly the 15 adds, the tick and the one destroy above; a
 certificate is still pending after 24 hours (then design §1's fallback, which you decide); the
 dispatched run fails (a permission error on `run.*`: the fallback above, nothing else; any other
 failure: **A normal deploy** below); or the 413 isn't ours (then a contract change, a 31 MiB cap:
@@ -963,138 +971,198 @@ Store Connect's privacy, support and marketing URLs move to `https://ryftlab.de/
 12). Check the AASA's team ID. The Sign in with Apple return URL stays Supabase's. Until here, only
 you sign in. Testers wait for C2 in force (step 15).
 
-### 11. Observability
+### 11. Observability on Cloud Monitoring *(D236)*
 
-The parts run in this order, each once what it waits for is done:
-- **a–e need only B merged.** The reader key, the data source, the Grafana variables, the
-  Grafana-managed rules (quiet until the services serve: no data counts as OK) and the key list.
-- **f comes after step 9.** The OTLP half: the services push their metrics at each tick.
-- **g–j wait for step 10 (C1) as well.** g, the synthetics: the four site checks in
-  `deploy/grafana/synthetics/ryftlab.json` are enabled, and fail until the site serves. h, the app
-  rules: loaded any earlier, TickMissing would page until f's ticks arrive, and SyntheticsMissing
-  until g's checks report. i, the EKS groups: once nothing serves from EKS. j, the routing proof,
-  needs both kinds of rule loaded.
+Cloud Monitoring is RYFT's only observability (D236, which supersedes D224's Grafana half): what
+Google measures itself (Cloud Run, Pub/Sub), two log-based metrics counted from lines the services
+already write, five uptime checks, the dashboard "RYFT · Overview" and five alert policies, all in
+`infra/gcp` (`monitoring.tf`, `alerts.tf`). The policies notify two channels you made by hand in
+the console: the email `ryft-timkrebs` and the Google Cloud app's. What each policy means and its
+first look: **When an alert fires**, below; the whole picture: OBSERVABILITY → Cloud Monitoring.
+The Grafana steps that stood here (the reader key, the data source, the OTLP push, the synthetics,
+the app rules) never ran, and are gone with D236.
 
-**a. The reader key** *(B)*, the one JSON key RYFT has (design §5.2). It is made by hand, never
-in Terraform:
+The parts run in this order, 11.1 to 11.5 in one sitting, once the PR "infra: observability on
+Cloud Monitoring; Grafana Cloud out" is merged and step 10 serves the site. 11.6 is a PR of its own
+after 11.4. 11.7 deletes what is left in Grafana Cloud.
+
+**11.1 The app channel's name, a workspace variable.** Monitoring → Alerting → **Edit notification
+channels** → Mobile Devices: the Google Cloud app's channel, by its display name, written here as
+`<the app channel's name>`. It is personal data. It goes into HCP Terraform's UI and nowhere else:
+never into a file, a script, a command line, a commit or a chat.
+
+1. app.terraform.io → organization `ryft-lab` → Workspaces → `ryft-gcp` → **Variables** →
+   Workspace variables → **+ Add variable**.
+2. Variable category **Terraform variable**. Key `alert_app_channel_name`. Value `<the app
+   channel's name>`, exactly as the console shows it (case and spaces count). **HCL** off.
+   **Sensitive** on. Description: `The Google Cloud app's notification channel (D236)`.
+3. **Add variable**. The list shows the key with its value hidden ("Sensitive - write only").
+
+While Email in the same console page lists `ryft-timkrebs`, the email channel needs nothing here:
+`alerts.tf` names it.
+
+**Stop if** the variable shows its value (Sensitive off): delete it and add it again with Sensitive
+on, before any plan.
+
+**11.2 The plan.** First the apply account's four Monitoring roles, once (step 2d grants them on a
+new project; `infra/gcp/README.md` → Variables):
 
 ```bash
-d=$(mktemp -d)                                      # 0700
-gcloud iam service-accounts keys create "$d/grafana-reader.json" \
-  --iam-account=grafana-reader@ryftlab-prod.iam.gserviceaccount.com
+P=ryftlab-prod; APPLY_SA=hcp-terraform-apply@$P.iam.gserviceaccount.com
+for r in roles/monitoring.uptimeCheckConfigEditor roles/monitoring.dashboardEditor \
+         roles/monitoring.alertPolicyEditor roles/monitoring.notificationChannelViewer; do
+  gcloud projects add-iam-policy-binding "$P" --member="serviceAccount:$APPLY_SA" --role="$r" --condition=None
+done
+gcloud projects get-iam-policy "$P" --flatten='bindings[].members' --filter="bindings.members:$APPLY_SA" \
+  --format='value(bindings.role)'                   # the sixteen roles of step 2d, never roles/owner
+for sa in $(gcloud iam service-accounts list --project="$P" --format='value(email)'); do
+  echo "$sa $(gcloud iam service-accounts keys list --iam-account="$sa" --managed-by=user --format='value(name)' | wc -l)"
+done                                                # every account 0, grafana-reader included
 ```
 
-**b. The data source** *(B)*. Grafana Cloud → Connections → Add new connection → Google Cloud
-Monitoring → Add new data source. Set Authentication to Google JWT File, upload
-`$d/grafana-reader.json`, and set Default project to `ryftlab-prod`. Save & test. Then:
+Then, from main:
 
 ```bash
-rm -r "$d"
-```
-
-Its UID is the last part of the data source page's URL (`…/connections/datasources/edit/<uid>`).
-
-**c. The Grafana variables** *(B)*. Paste step 2's `API=…` line, `tfc_auth`, the `WS_ID=…` line and
-`tfc_var` again first:
-
-```bash
-tfc_var grafana_url https://<stack>.grafana.net terraform
-tfc_var grafana_datasource_uid '<uid>' terraform
-```
-
-Then the token. Grafana → Administration → Users and access → Service accounts → Add service
-account `terraform-ryft-gcp` with the role Editor → Add service account token. Then HCP
-Terraform → ryft-lab → ryft-gcp → Variables → Add variable → Terraform variable: key
-`grafana_auth`, the token as its value, **Sensitive** on. Never set it in a script or on argv.
-
-**d. The Grafana-managed rules' apply** *(B)*:
-
-```bash
-terraform -chdir=infra/gcp plan -out=grafana.tfplan
-terraform -chdir=infra/gcp apply grafana.tfplan
-rm infra/gcp/grafana.tfplan
+git switch main && git pull
+terraform -chdir=infra/gcp plan -out=monitoring.tfplan
 ```
 
 ```text
-# Step 11's apply: 2 to add, 0 to change, 0 to destroy.
-#   1 folder (grafana_folder.gcp[0], "RYFT GCP (infra/gcp)")
-#   + 1 rule group (grafana_rule_group.gcp[0], ryft-gcp: the five rules)                    = 2 to add
+# Step 11's plan (serve = true, public_invokers = true, the variable set): 13 to add, 0 to change, 2 to destroy.
+#   read: data.google_monitoring_notification_channel.email[0] (ryft-timkrebs) and .app[0]
+#   2 log-based metrics (ryft_ticks, ryft_errors)                                             =  2
+#   + 5 uptime checks (ryft-site-home, ryft-site-privacy, ryft-site-aasa, ryft-api-ready,
+#     ryft-ingest-ready)                                                                      =  5  (7)
+#   + 1 dashboard (RYFT · Overview)                                                           =  1  (8)
+#   + 1 uptime policy + 4 PromQL policies (5xx, tick missing, dead letters, event backlog)    =  5 (13)  to add
+#   google_service_account.this["grafana-reader"]
+#   + google_project_iam_member.grafana_reader (roles/monitoring.viewer)                      =  2       to destroy
+# The variable empty (the gate off): 8 to add, 0 to change, 2 to destroy; no channel read, no policy.
+# Under the stop line (public_invokers = false): 10 to add with the gate on, 6 with it off (no
+# ryft-api-ready, no ryft-ingest-ready, no tick policy); the same 2 to destroy.
 ```
 
-There is no change to anything in GCP. Grafana → Alerting → Alert rules → folder "RYFT GCP
-(infra/gcp)" then holds HTTP5xxRatio, SyncSlow, DeadLetters, PushBacklog and Saturated.
+The app channel's display name shows as `(sensitive value)`. Outputs: `grafana_reader_email` goes,
+`monitoring` comes. No change to the secrets (`otlp-token` and its accessor stay, 11.6), the
+invoker bindings, the topics and subscriptions, the log bucket and sink, the zone, the WIF pool or
+the deployer. The two destroys hold no data: `grafana-reader` never had a key (the loop above), and
+nothing reads as it.
 
-**e. The key list** *(B)*:
+**Stop if** the counts are not your gate's line above; anything changes, or anything else is
+destroyed; a channel's data source fails (no channel, or more than one, with that name: 11.1's
+value must match exactly one channel, and the email channel must be named `ryft-timkrebs`); a 403
+on `monitoring.*` (the four roles above); or `grafana-reader` has a key (delete it with
+`gcloud iam service-accounts keys delete`, then find out who made it).
+
+**11.3 The apply.**
 
 ```bash
-for sa in $(gcloud iam service-accounts list --project=ryftlab-prod --format='value(email)'); do
-  echo "$sa $(gcloud iam service-accounts keys list --iam-account="$sa" --managed-by=user --format='value(name)' | wc -l)"
-done                                                 # grafana-reader 1, every other account 0
+terraform -chdir=infra/gcp apply monitoring.tfplan
+rm infra/gcp/monitoring.tfplan
+terraform -chdir=infra/gcp output monitoring        # alerting true, the 5 policies, the 5 checks, the 2 metrics
+terraform -chdir=infra/gcp plan                     # No changes
 ```
 
-**f. The OTLP half** *(after step 9)*. Open a config PR that sets `OTLP_ENDPOINT` and
-`OTLP_USER` in `deploy/run/config.env`, both at once (Grafana Cloud → the stack → OpenTelemetry:
-the endpoint and the instance ID). The endpoint must be exactly
-`https://otlp-gateway-<zone>.grafana.net/otlp`, without `/v1/metrics`, and the user is digits;
-anything else ends the start (`otlp config`, D224), so the deploy's revision doesn't get ready.
-The token is step 5's `otlp-token` (at least 16 characters). The merge deploys. Within
-30 minutes, Explore (the Prometheus data source) shows `count by (job) (ryft_db_up)` and
-`count by (job) (ryft_ticks_total)` with the same four series each: `ryft/api`, `ryft/ingest`,
-`ryft/scoring`, `ryft/notify`.
+Monitoring → Uptime checks lists the five; each is green within 10 minutes (two runs from each of
+the three locations). Monitoring → Dashboards → **RYFT · Overview** shows requests, instances and the
+backlog at once; the ticks and the ERROR lines fill in from now on.
 
-**g. Synthetics** *(waits for step 10, C1)*. Run `make synthetics-apply` as in **Synthetic
-Monitoring, once**. It upserts all six checks of `ryftlab.json`: the four site checks and
-`api.` and `ingest.ryftlab.de/health/ready`. Within 10 minutes each is green in Synthetics →
-Checks, and `count(probe_success{job=~"ryft-.*"})` in Explore is 12 (six jobs, two probes).
+**"RYFT · Tick missing" may open once, by design.** A log-based metric counts from its creation,
+not back, so until the first tick after the apply has been counted (up to 15 minutes, two ticks if
+the query wants two points, plus Monitoring's lag) no service has an ok tick: one incident, all four
+services, on both channels. It closes within the hour (the first counted ticks, then 5 minutes
+held), which also proves the metric counts the tick lines that go to `ryft-logs`.
 
-**h. The app rules** *(waits for f and g)*: `make alerts-apply` (OBSERVABILITY → Alerts). First
-check both queries of f (four jobs each) and g's 12. Without them TickMissing (critical) and
-SyntheticsMissing page as soon as the rules load.
+**Stop if** the second plan isn't "No changes" (a dashboard that differs at every plan is a bug of
+this PR's JSON: report it); a check isn't green after 15 minutes (the check's page names the
+location and the answer); or "Tick missing" is still open 90 minutes after the apply. Then Logs
+Explorer: `jsonPayload.message="tick"` must show a line per service every 15 minutes. Lines there
+but an empty ticks panel on the dashboard: the metric doesn't see them; stop, and report it.
+
+**11.4 A test alert on both channels.** One message to a dead-letter topic: the hold subscription
+holds it, and "RYFT · Dead letters held" fires within 10 to 15 minutes (evaluated every 5 minutes,
+held 5; Pub/Sub's metrics lag 2 to 4 minutes):
 
 ```bash
-export GRAFANA_PROM_URL=https://prometheus-prod-<NN>-<region>.grafana.net GRAFANA_PROM_USER=<instance id>
-( read -rs GRAFANA_RULES_TOKEN; export GRAFANA_RULES_TOKEN; make alerts-apply )
+CLOUDSDK_API_ENDPOINT_OVERRIDES_PUBSUB=https://europe-west1-pubsub.googleapis.com/ \
+  gcloud pubsub topics publish ryft-dlq-notify --project=ryftlab-prod --message='runbook step 11.4: a test, not an event'
 ```
 
-The load replaces the groups `ryft`, `ryft-pipeline` and `ryft-ops` (namespace `ryft`) whole.
-
-**i. The EKS groups** *(after step 10: nothing serves from EKS)*. A load never deletes a group,
-so three groups that no file loads any more stay live as last loaded from EKS days:
-`ryft-admission` and `ryft-vault` (namespace `ryft`, once in `ryft.yaml`), and
-`ryft-admission-intended` (namespace `ryft-admission`, from `admission-intended.yaml`, which the
-old `alerts-apply` loaded too). Delete each one that is listed:
+Both the email to `ryft-timkrebs` and a push on the Google Cloud app name the policy and
+`dlq-notify-hold`. Then clear it:
 
 ```bash
-IMG=$(sed -n 's/^MIMIRTOOL_IMAGE := //p' Makefile); C=$(command -v docker || command -v podman)
-( read -rs MIMIR_API_KEY; export MIMIR_API_KEY       # the rules token: not echoed, not on argv
-  mt() { "$C" run --rm -e MIMIR_ADDRESS="$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$GRAFANA_PROM_USER" -e MIMIR_API_KEY "$IMG" "$@"; }
-  mt rules list                                      # what is live
-  mt rules delete ryft ryft-admission                # only if listed
-  mt rules delete ryft ryft-vault                    # only if listed
-  mt rules delete ryft-admission ryft-admission-intended   # only if listed
-  mt rules list )                                    # namespace ryft: ryft, ryft-pipeline, ryft-ops; no ryft-admission namespace
+scripts/dlq.sh --project ryftlab-prod list           # dlq-notify-hold: the one test letter
+scripts/dlq.sh --project ryftlab-prod purge notify   # type PURGE
 ```
 
-`make alerts-retire-eks` deletes the same three. It tries every one, reports a group that is already
-gone, and then exits 1, so a second run is red by design.
+Monitoring → Alerting → Incidents: the incident closes within 15 minutes, and both channels get the
+closing notice.
 
-**j. The routing proof and one test alert** *(after h)*. A Grafana-managed rule and a ruler rule
-can reach different Alertmanagers, so prove both paths. Grafana → Alerting → Alert rules:
-1. Folder "RYFT GCP (infra/gcp)" → HTTP5xxRatio → Edit → Configure notifications → **Preview
-   routing**. It must end at your contact point.
-2. Namespace `ryft`, group `ryft` → TickMissing → **Preview routing** the same way. It must end at
-   the same contact point. Where the rule's page offers no preview: Alerting → Notification
-   policies, choose the Alertmanager the ruler sends to at the top, then Search by matchers
-   `severity=critical`. The matching policy must name your contact point.
-3. Close both without saving. Then Alerting → Contact points → yours → Test. It must reach your
-   phone.
+**Stop if** a channel gets nothing within 20 minutes (Monitoring → Alerting → the incident: opened
+but not delivered is the channel; Edit notification channels → its row → **Send test
+notification**); `list` shows another letter than yours (then it is a real one: **Dead letters
+and the outbox**, before the purge); or the incident is still open 20 minutes after the purge.
 
-**Stop if** there is no `ryft_db_up` or `ryft_ticks_total` from any service after 30 minutes (f):
-the ticks aren't arriving. Check
-`gcloud scheduler jobs describe ryft-tick --location=europe-west1 --project=ryftlab-prod --format='value(state,lastAttemptTime,status)'`
-and the `tick-*` subscriptions. Also stop if the key list shows any key besides grafana-reader's
-one; h's queries don't show four jobs and 12 series (don't load the rules); `mt rules list` still
-shows any of the three groups; or either preview ends anywhere but your contact point.
+**11.5 Error Reporting's notifications** (free). Console → **Error Reporting**. It needs the
+Error Reporting API, which is not on step 2a's keep list (`project.tf`, pinned by
+`tests/guards.tftest.hcl`). Where the page shows error groups, **Configure notifications** (top of
+the page) → tick the `ryft-timkrebs` email and the app channel → **Save**: you then hear of each new
+error group and of each resolved one that comes back.
+
+**Stop if** the page asks to enable the API. Don't: that is an API outside the keep list (a PR to
+`project.tf`), Error Reporting keeps its error events on its own terms, which the privacy text's 14
+days in the EU may not cover (C2), and it groups only errors whose stack trace is in a field it
+knows (`message`, `stack_trace`, `exception`), while the services' `panic` line has it in `stack`
+(D236). The `ryft_errors` panel and the dashboard's logs panel show every ERROR line meanwhile.
+
+**11.6 `otlp-token`, in a PR of its own** *(after 11.4, and after a deploy of this PR's revisions)*.
+No revision of this PR reads the secret, but every older one does, and a revision whose secret is
+gone doesn't start: a rollback to one (**Deploy, roll back, rotate**) needs it. So first, no
+revision that can still serve may read it:
+
+```bash
+for s in api ingest scoring notify; do
+  gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod \
+    --format='value(status.traffic[].revisionName)'                     # the revisions serving
+done
+for s in api ingest scoring notify; do
+  for r in $(gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod --format='value(status.traffic[].revisionName)'); do
+    echo "$s $r $(gcloud run revisions describe "$r" --region=europe-west1 --project=ryftlab-prod --format=json | grep -c otlp-token)"
+  done
+done                                                                    # every line ends in 0
+```
+
+Then the PR. `prevent_destroy` stops a plain removal, so it takes two applies:
+1. **PR 1:** `otlp-token` leaves `local.secret_accessors` (`secrets.tf`); a `moved` block puts its
+   container into a new `google_secret_manager_secret.retired["otlp-token"]` without
+   `prevent_destroy`, and its accessor into `…_iam_binding.retired["otlp-token"]`;
+   `tests/iam.tftest.hcl` and `guards.tftest.hcl` follow (12 → 11, two secret blocks for one).
+   Plan and apply: 0 to add, 0 to change, 0 to destroy, 2 moved.
+2. **PR 2:** both `retired` resources and the `moved` blocks go; `scripts/check_cloudrun.py`'s
+   `ACCESSORS` loses `otlp-token`. Plan and apply: 0 to add, 0 to change, 2 to destroy (the
+   container, every version with it, and its binding).
+
+**Stop if** any serving revision reads `otlp-token`; PR 1's plan adds or destroys anything; PR 2's
+plan destroys anything but those two. Rolling back past this PR after PR 2 needs the secret back
+(a new container and a version: step 5's `put`).
+
+**11.7 Grafana Cloud, the rest.** What RYFT on GCP had there: nothing live (11a–j never ran). So:
+1. HCP Terraform → `ryft-gcp` → Variables: delete `grafana_url`, `grafana_datasource_uid` and
+   `grafana_auth` where listed. Until then each plan warns of an undeclared variable.
+2. Grafana Cloud → the stack → Administration → Users and access → Service accounts and Cloud
+   access policies: delete every token made for RYFT on GCP (`terraform-ryft-gcp`, an OTLP
+   `metrics:write` token, an SM access token). Testing & synthetics → Synthetics → Checks: delete
+   any `ryft-*` check. Alerting → Alert rules: the groups `ryft/ryft`, `ryft/ryft-pipeline` and
+   `ryft/ryft-ops` (the app rules last loaded from EKS; nothing loads or replaces them since D236,
+   and with no push they see no series) can go now, by hand; the three of `make alerts-retire-eks`
+   (OBSERVABILITY → Alerts → EKS leftovers) once nothing serves from EKS.
+3. The stack itself, at grafana.com → My Account → the stack → **Delete**, only once nothing sends
+   to it: the EKS cluster's `k8s-monitoring` collector and Vault's logs do until D3 (EKS → Monitoring
+   (Grafana Cloud)). Deleting it takes its alert rules along, `make alerts-retire-eks` included.
+
+**Stop if** the stack's usage (grafana.com → the stack → Usage) still shows metrics or logs coming
+in: keep the stack, and do 3 with D3.
 
 ### 12. E, old org: Route 53
 
@@ -1184,7 +1252,7 @@ main only), and only while the repository variable `GCP_DEPLOY` is `on`. One run
    replace`, then `execute --wait`. If it fails, the run stops and no service rolls.
 7. `gcloud run services replace` for scoring, notify, ingest, api, in that order. Each waits until
    its new revision is ready. The startup probe is `/health/live` (`/health/ready` stays the
-   synthetics' target), so ready means the process serves, not that it reaches the database.
+   uptime checks' target), so ready means the process serves, not that it reaches the database.
 8. `make smoke-prod`. It is what catches a revision with a broken database config. Only a manual
    run with `smoke` off skips it.
 
@@ -1297,8 +1365,9 @@ gh run view <run id> -R "$R" --log-failed                # after a red run: the 
 git fetch origin && git rev-parse --short=7 origin/main  # the newest deploying run's "Images (<tag>)"
 ```
 
-Then run step 8's services loop (four ready revisions, the summary's), and watch HTTP5xxRatio,
-ApiDown and PushBacklog for 30 minutes. What each outcome leaves:
+Then run step 8's services loop (four ready revisions, the summary's), and watch "RYFT · 5xx over
+2 %", "RYFT · Uptime check failing" and "RYFT · Event backlog over 15 minutes" (Monitoring →
+Alerting; the dashboard RYFT · Overview) for 30 minutes. What each outcome leaves:
 - Green as "superseded": nothing rolled (its images may be pushed). No failure: the newer run,
   for main's head, deploys.
 - `ci-ok` red or late: nothing deployed. Red is fixed by a new commit, which deploys itself.
@@ -1478,8 +1547,8 @@ git push -u origin HEAD && gh pr create --fill -R timkrebs/ryft-platform
 
 The merge's deploy rolls api onto N+1. `migrate` doesn't read it. The old key works until api's
 new revision serves. After a day, disable N as in step 5.
-- `supabase-secret-key` moves the same way (api only). `otlp-token` is pinned in all four
-  services: move the four lines in one commit.
+- `supabase-secret-key` moves the same way (api only). `otlp-token` is pinned nowhere since D236
+  (step 11.6 removes it): never rotate it.
 - A new `.p8` comes with a new key ID. Change `APPLE_KEY_ID` or `APNS_KEY_ID` in `config.env` in
   the same commit.
 - `db-password-owner` is `migrate`'s own login, pinned by hand in `migrate.yaml`. Set the hold,
@@ -1521,7 +1590,7 @@ the deploy goes red at api. In this order:
 
    ```bash
    git fetch origin && git switch -c deploy/posthog-pin origin/main
-   # deploy/run/api.yaml: right after the OTLP_TOKEN line, with its indentation, add
+   # deploy/run/api.yaml: right after the PUSH_SA_ID line, with its indentation, add
    #   - { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "1" } } }
    make cloudrun-check
    bash scripts/tests/check_cloudrun_test.sh                 # CI's smoke job runs it on a deploy/run change
@@ -1688,7 +1757,8 @@ done
 gcloud scheduler jobs pause ryft-tick --location=europe-west1 --project=ryftlab-prod
 ```
 
-api and ingest then answer 403 to everyone: the app fails, and ApiDown fires. scoring and notify
+api and ingest then answer 403 to everyone: the app fails, and "RYFT · Uptime check failing" fires
+for `ryft-api-ready` and `ryft-ingest-ready` until the apply below removes both checks. scoring and notify
 still drain what Pub/Sub holds. The tick stops, and with it everything that only a tick runs:
 each service's outbox sweep (rows an inline flush missed wait, and published rows are no longer
 deleted after 7 days), scoring's pass, notify's stale check and its deferred pushes, and api's
@@ -1708,23 +1778,27 @@ terraform -chdir=infra/gcp apply stop.tfplan
 rm infra/gcp/stop.tfplan
 ```
 
-Expected: no changes. Terraform reports api's and ingest's invoker bindings (without `allUsers`)
-and the tick's pause as changes outside Terraform. If the gcloud commands haven't taken effect:
+Expected: 0 to add, 0 to change, 2 to destroy (3 with alerting on): the uptime checks
+`ryft-api-ready` and `ryft-ingest-ready`, and with alerting on the policy "RYFT · Tick missing"
+(D236: nothing to check on hosts nobody may call, no tick to miss). Terraform reports api's and
+ingest's invoker bindings (without `allUsers`) and the tick's pause as changes outside Terraform.
+If the gcloud commands haven't taken effect:
 
 ```text
-# The stop line: 0 to add, 3 to change, 0 to destroy.
+# The stop line: 0 to add, 3 to change, 2 to destroy (3 with alerting on).
 #   2 run.invoker bindings (api, ingest): members lose allUsers, keep ryft-push               =  2
 #   + ryft-tick: paused false -> true                                                         =  1 (3) to change
+#   2 uptime checks (ryft-api-ready, ryft-ingest-ready) [+ the policy RYFT · Tick missing]    =  2 (3) to destroy
 ```
 
-Anything else, a destroy above all: stop. scoring's and notify's bindings, the mappings and the
-deployer's bindings don't change.
+Any other destroy: stop. None of these destroys is stateful. scoring's and notify's bindings, the
+mappings, the deployer's bindings and the site's checks don't change.
 
 Find the cause in the billing report (Billing → Reports, group by SKU) before undoing either.
 The undo is a PR with `public_invokers = true`. Its apply puts `allUsers` back into api's and
-ingest's bindings and resumes the tick: 0 to add, 3 to change (2 bindings + the tick), 0 to
-destroy. Then delete the hold and run `deploy.yml` by hand with the smoke on (step 9's
-commands).
+ingest's bindings and resumes the tick: 2 to add (the two checks; 3 with alerting on, the tick
+policy), 3 to change (2 bindings + the tick), 0 to destroy. Then delete the hold and run
+`deploy.yml` by hand with the smoke on (step 9's commands).
 
 **While the tick is paused**, run one by hand at least once a day, so no email outlives its 30
 days and no failed deletion waits more than a day. Publish one tick message. Each service's tick
@@ -1751,8 +1825,8 @@ Pub/Sub from its push subscription to the consumer's dead-letter topic, `ryft-dl
 `ryft-dlq-notify`, with the `CloudPubSubDeadLetterSource*` attributes added. An event the consumer can
 never handle (its data doesn't decode, or its `ryft-key` isn't the push path's) is filed there by the
 consumer itself, with `ryft-error`, and acked. The hold subscriptions `dlq-scoring-hold` and
-`dlq-notify-hold` keep each letter **14 days**; then Pub/Sub drops it. `DeadLetters` fires while one
-holds a letter. The cause is in the consumer's log (`handle event failed`, its `err`), around the
+`dlq-notify-hold` keep each letter **14 days**; then Pub/Sub drops it. "RYFT · Dead letters held"
+fires while one holds a letter. The cause is in the consumer's log (`handle event failed`, its `err`), around the
 letter's time.
 
 `scripts/dlq.sh` runs `gcloud` as you, in the project you name: `--project` has no default, and no call
@@ -1767,13 +1841,15 @@ scripts/dlq.sh --project ryftlab-prod purge notify       # notify's: a push hour
 
 `list` and `show` pull without acking and hand the letters back at once, so nothing moves. One pass
 returns at most 1000 letters, and may return fewer than the subscription holds. The count is the hold
-subscription's `num_undelivered_messages` in Monitoring (the `DeadLetters` value). Against compose's
+subscription's `num_undelivered_messages` in Monitoring (the dead-letter policy's value; the
+dashboard's "Dead letters held"). Against compose's
 emulator: `PUBSUB_EMULATOR_HOST=localhost:8085 scripts/dlq.sh --project ryft-local list`.
 
 **Before a replay**, all of these:
 
 1. The cause is fixed and deployed: the `deploy.yml` run of the fix is green, and no hold is set.
-2. `PushBacklog` is quiet for the consumer, so the replay doesn't queue behind a backlog.
+2. "RYFT · Event backlog over 15 minutes" is quiet for the consumer, so the replay doesn't queue
+   behind a backlog.
 3. `list` shows the letters you expect (count, keys, one cause in the log). `show` a few.
 4. Start with `replay scoring 1`, watch it (below), then the rest.
 
@@ -1785,8 +1861,8 @@ handles it as a redelivery (`events.Redelivered`, logged as `handling a replayed
 scoring letter re-scores the days after its days and finishes what its failed attempts left half-done
 (D112). It gets its 20 attempts again. If it fails them, it is back in the hold subscription and `list`
 shows `"replayed_before": true`. That takes about 10 minutes under push backoff, longer under the retry
-policy (design §2.2). Call it done when `list` is empty 30 minutes later and
-`ryft_events_handled_total{result="retry"}` is flat.
+policy (design §2.2). Call it done when `list` is empty 30 minutes later and the consumer's 5xx
+(the dashboard's "5xx per second") are flat.
 
 **Which letters are replayed** (D150). Only the keys the consumer handles: scoring `ingested`,
 `session.completed`; notify `scored`, `session.scored`, `refresh`. The script reads them from
@@ -1845,16 +1921,38 @@ UPDATE outbox SET attempts = 0 WHERE published_at IS NULL AND attempts >= 50 AND
 ```
 
 A row is published inline after the commit that wrote it. What that misses (a Pub/Sub error, an
-instance gone) goes with the next tick's sweep, every 15 minutes. A backlog is `OutboxBacklog`. A row
-set aside (refused by Pub/Sub at once, or after 50 failed tick sweeps; `last_error` says which) is
-`OutboxStuck`, usually a key without its topic: a topology change that isn't applied yet
-(`infra/gcp`).
+instance gone) goes with the next tick's sweep, every 15 minutes. A sweep that fails makes its tick
+`result` error, so a lasting backlog is "RYFT · Tick missing" (D236; the app metrics' OutboxBacklog
+and OutboxStuck went with Grafana Cloud). A row set aside (refused by Pub/Sub at once, or after 50
+failed tick sweeps; `last_error` says which) raises no alert: the queries above find it. It is
+usually a key without its topic: a topology change that isn't applied yet (`infra/gcp`).
 
 An account deletion deletes the user's outbox rows, but `outbox` has no foreign key to `users`, so
 a row written just after the deletion stays. One is a deferral of notify's (an event it held for
 quiet hours while the account went), another a row of scoring's. Its body is the user's id and a
 day (and a session id). When it is due it is published, and its consumer drops it because the user
 is gone. The tick's clean deletes it 7 days after it was published.
+
+### When an alert fires
+
+Cloud Monitoring's five policies (`infra/gcp/alerts.tf`, D236) reach the email `ryft-timkrebs`
+and the Google Cloud app. Each notification links its incident (Monitoring → Alerting →
+Incidents), which names the series that crossed: the check, the service or the subscription. The
+dashboard **RYFT · Overview** has the context of all five. An incident closes by itself once its
+query returns nothing, or 30 minutes after its data stops.
+
+| Policy | Fires when | First look |
+| --- | --- | --- |
+| RYFT · Uptime check failing (critical) | a check fails from 2 of its 3 locations for 10 minutes | the check's page (which location, which status or TLS error). `ryft-site-*`: Firebase Hosting and the `site` job of `deploy.yml` (Deploy, roll back, rotate → The site). `ryft-api-ready`, `ryft-ingest-ready`: the service's revisions and its log; `/health/ready` is the database behind it, so Supabase's status next |
+| RYFT · 5xx over 2 % (api, ingest) (critical) | 5xx above 2 % of a service's requests over 10 minutes, at least 3, held 10 minutes | Logs Explorer: `resource.type="cloud_run_revision" resource.labels.service_name="<service>" httpRequest.status>=500`, then the service's ERROR lines (the dashboard's logs panel). A deploy just before: roll back (Deploy, roll back, rotate) |
+| RYFT · Tick missing (critical; only while the tick runs) | a service without a tick of `result` ok for 45 minutes (three ticks), held 5 | Logs Explorer `jsonPayload.message="tick"` for the service: `result` error and its `err` name the step (the outbox sweep, the purges, the reconcile, a database that is down). No line at all: the Scheduler job `ryft-tick` (`gcloud scheduler jobs describe ryft-tick --location=europe-west1 --project=ryftlab-prod`), then the subscription `tick-<service>`. A `LOG_LEVEL` above `info` silences the line, and this policy with it |
+| RYFT · Dead letters held (warning) | a hold subscription (`dlq-*-hold`) holds a letter, held 5 minutes | `scripts/dlq.sh --project ryftlab-prod list`, the cause in the consumer's log by `messageId` (**Dead letters and the outbox**) |
+| RYFT · Event backlog over 15 minutes (warning) | an event subscription's oldest unacked event is over 15 minutes old, held 5 | the consumer's request log (429, 5xx) and its max instances; it dead-letters after 20 attempts, and then the policy above fires |
+
+What no policy covers since D236 (OBSERVABILITY → Cloud Monitoring → What D236 dropped): a slow
+sync (ingest's p95 panel), 429s (their panel), APNs, feedback and admin events, the www redirect and
+the certificate's days left (its panel; Google renews it, and a failed renewal fails TLS, which the
+uptime checks see).
 
 ## EKS (api.ryftlab.de)
 
@@ -4316,6 +4414,11 @@ time, OPERATIONS → RabbitMQ → A node drain).
 
 ## Monitoring (Grafana Cloud)
 
+*EKS leftover until D3 (D236).* RYFT on GCP is observed by Cloud Monitoring only (**GCP → 11.
+Observability on Cloud Monitoring**). What follows is the EKS cluster's collector, which still sends
+to Grafana Cloud until D3 removes the cluster; `make alerts-apply`, `make synthetics-apply` and
+`scripts/synthetics.sh` are gone, so the steps that name them are history.
+
 The collector is Grafana's `k8s-monitoring` chart with the onboarding's preset, in
 namespace `monitoring`: the collectors `alloy-daemonset` and `alloy-deployment`,
 node-exporter, kube-state-metrics, Beyla, Kepler, OpenCost and k8s-manifest-tail, as the
@@ -4346,13 +4449,9 @@ and the collector comes **after** Vault (its token is in Vault):
    - In the Fleet Management pipelines for pod logs, exclude namespaces matching
      `ryft-.*|vault`; RYFT's logs go to CloudWatch, and Vault's stay out (Beyla skips `vault`
      too). Both are checked before the install (**Fleet exclusions of vault**, below).
-   - Load the alert rules: `make alerts-apply` (OBSERVABILITY → Alerts), then a contact
-     point (email and the Grafana mobile app) and a notification policy for
-     `severity` `critical`, `warning` and `info`. If the load fails with
-     `per-user rules per rule group limit (limit: 20 actual: N) exceeded`, a group holds more
-     than the stack's 20 rules and nothing was loaded: split it in `ryft.yaml` (OBSERVABILITY
-     → Alerts; `make alerts-check` catches this before the load) and run it again from main.
-   - Create the external site checks (**Synthetic Monitoring, once**, below).
+   - *(History: `make alerts-apply` loaded `ryft.yaml` here, then a contact point and a
+     notification policy by `severity`. Both files and the target are gone with D236; the
+     EKS groups still live in the stack are `make alerts-retire-eks`'s.)*
    - Remove collectors that no longer report from Fleet Management → Collectors (the
      destroyed cluster's, 2026-11-10; the single `alloy` collector before 2026-10-19).
    - Check that the cluster appears in Kubernetes Monitoring, that
@@ -4366,59 +4465,10 @@ that opt in by annotation (no RYFT pod does). Its configuration comes from Grafa
 Cloud. Access to the Grafana stack is therefore access to the cluster's telemetry: keep
 the stack's members to yourself.
 
-**Synthetic Monitoring, once** (the site from outside; OBSERVABILITY → Synthetic
-Monitoring). The checks are code (`deploy/grafana/synthetics/ryftlab.json`); the token is
-yours and is never committed or put in a chat:
-
-1. Grafana Cloud → your stack → Testing & synthetics → Synthetics. The first visit asks
-   to initialise it; do. This enables the service and creates the stack's SM tenant.
-2. **The API URL** is the *Backend address* of the stack's region (the HTTP API; not the
-   "API server URL" column, which is gRPC). Our stack is `prod-eu-west-2`, so it is
-   `https://synthetic-monitoring-api-eu-west-2.grafana.net` (not a secret; the Config page of
-   the Synthetics app and Grafana's docs, Synthetic Monitoring → Set up → Private probes,
-   list it per region). The script accepts only
-   `https://synthetic-monitoring-api-<region>.grafana.net`.
-3. **The token** is tenant-wide: it can create, change and delete every check of the
-   stack. Prefer one per session. In the same Config page, Access tokens → *Generate access
-   token* (an SM token, not a Cloud access policy token and not the alert rules token).
-   Enter it in a subshell so it dies with it and stays out of your shell history:
-
-   ```bash
-   export SM_API_URL=https://synthetic-monitoring-api-eu-west-2.grafana.net
-   scripts/synthetics.sh check                          # offline
-   ( read -rs SM_ACCESS_TOKEN; export SM_ACCESS_TOKEN
-     scripts/synthetics.sh probes                       # the probe names on offer
-     SYNTHETICS_DRY_RUN=1 scripts/synthetics.sh apply   # the field diff, no writes
-     make synthetics-apply )
-   ```
-
-   Afterwards delete the token in Config → Access tokens; the checks run without it (only
-   the apply needs one). If you keep one, rotate it every few months.
-4. The file asks for the probes `Frankfurt` and `Amsterdam`; `probes` shows the names the
-   stack has. If one is missing or offline (apply refuses an offline probe), edit `probes`
-   in the JSON (two EU locations; a third would exceed the free tier, see the budget in
-   OBSERVABILITY). `check` also asserts each body marker against the site's own sources
-   (the AASA file, the newest English privacy text), so a policy rewording or an app ID
-   change fails in its PR; fix the regexp in that PR.
-5. The apply adds or updates the four checks by job name, leaves other checks alone and
-   skips a check that already matches, so running it again changes nothing.
-6. In Synthetics → Checks, each of the four should turn green within two runs (10
-   minutes). In Explore (the Prometheus data source) `probe_success{job=~"ryft-site-.*"}`
-   returns eight series (four jobs, two probes), and `probe_ssl_earliest_cert_expiry` the
-   certificate's expiry.
-7. `make alerts-apply` loads the five `Site*`/`Synthetics*` rules (OBSERVABILITY →
-   Alerts); the contact point and notification policy from above already route them by
-   `severity`.
-8. Prove the path once: set the AASA check's `validStatusCodes` to `[404]` in the JSON,
-   apply (as in 3), and within about 15 minutes `SiteDown` for the AASA should reach your
-   phone (two failed runs from each probe). Put `[200]` back and apply again; do not commit
-   the experiment.
-
-The free tier is "limited to" 100k API test executions a month (grafana.com/pricing); at
-69k there is room for a few ad-hoc checks, not for a third probe. If a check ever stops
-reporting, `SyntheticsMissing` (one alert per job) is the alert. Menu names in Grafana's
-app move now and then: what you need is the Config page of the Synthetics app, which
-shows the backend address and the access tokens.
+**Synthetic Monitoring** is gone (D236): `deploy/grafana/synthetics/`, `scripts/synthetics.sh`,
+its `make` targets and its `Site*`/`Synthetics*` rules were removed. The site and api's and
+ingest's readiness are Cloud Monitoring's uptime checks (`infra/gcp/monitoring.tf`). Checks left
+in the stack's Synthetics app are deleted at **GCP → 11.7**.
 
 ### Fleet exclusions of vault
 
@@ -6161,8 +6211,8 @@ when the month is forecast to exceed it.
 **Not deployed since the rebuild of 2026-11 (D215):** `overlays/eks` does not list the web unit, so
 `ryftlab.de` and `www` have no address, no certificate and no AASA. The image is still built and pinned,
 and the checks below hold once it is back: `docs/REBUILD.md` → **Optional: the web pod for the legal pages**.
-Until then the Synthetic Monitoring checks stay unapplied (deleted in Grafana Cloud) and the `ryft-site`
-rules have no data.
+The site is on Firebase Hosting now (C1, **GCP → Deploy, roll back, rotate → The site**); Cloud
+Monitoring's uptime checks watch it (D236).
 
 `https://ryftlab.de` is the **web** image group (D106, D107):
 `ghcr.io/timkrebs/ryft/web:<short-sha>`, built from **`web/`** in this repository by `ci`
@@ -6226,8 +6276,11 @@ curl -s https://app-site-association.cdn-apple.com/a/v1/ryftlab.de          # Ap
 
 ### When a synthetic alert fires
 
-The checks run from outside every 5 minutes from two probes (OBSERVABILITY → Synthetic
-Monitoring). First look, read-only; the `job` label names the check:
+*(EKS-era history: Grafana's Synthetic Monitoring, its `Site*` rules and `make synthetics-apply`
+are gone with D236. The site's checks are Cloud Monitoring's uptime checks now, and the first
+look when one fails is **GCP → When an alert fires**. The commands below still help read the
+site from outside.)* The checks ran from outside every 5 minutes from two probes. First look,
+read-only; the `job` label named the check:
 
 ```bash
 # what the probes see, the way they see it (no redirects followed)
