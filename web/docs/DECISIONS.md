@@ -525,7 +525,7 @@ at 27.27 % of the tile, 0.02 em tracking, the tile the `Background` colour set, 
 `TextPrimary`) into `Ryft/Assets.xcassets/AppIcon.appiconset/AppIcon-{Light,Dark,Tinted}.png`: three
 identical, opaque 1024 × 1024 PNGs, and 1024 is the set's only size. `scripts/lib/app-icon.mjs`
 resolves the app as `tokens.mjs` does (`RYFT_APP_DIR`, absolute or relative to `web/`, default
-`../../app`), reads `Contents.json` and takes the largest image (points × scale; on a tie, the entry
+`../../app`; `npm run icons -- --app <dir>` and the same for `og` override it), reads `Contents.json` and takes the largest image (points × scale; on a tie, the entry
 without `appearances`, so `AppIcon-Light.png`). It exits 1 when the set or the file is missing, and
 it never reads a copy. The site doesn't redraw the word from the spec with its own woff2: that would
 be a second rendering (another rasteriser, the woff2 instead of the otf) that can drift from the icon
@@ -540,8 +540,9 @@ the app ships.
   tile's colour) and checks the ink box's four corners against the 80 % safe circle (radius 0.4 of
   the side, 409.6 px on 1024). If they lie inside, the maskable icon is the full-bleed icon. If not,
   it pads the source evenly with the tile colour until the farthest corner lies inside, and says so.
-  At the pin: _TODO(lead): the ink box, the farthest corner's distance and the result, as
-  `npm run icons` prints them (the session that wrote this could not run it)._
+  At the pin the ink is x 209..815, y 412..611 (606 × 199 px). Its farthest corner is 319.1 px from
+  the centre, 31.2 % of the side, so it sits 90.5 px inside the circle. The maskable icon is the
+  full-bleed icon, with no padding. The tile is `#0a0c0b`, the tokens' background.
 - **`favicon.svg` is gone.** A raster can't make a vector favicon without converting Satoshi into
   outlines, and the ITF FFL allows no conversion. A favicon can't load a web font either. The head
   links `favicon-32.png` and the touch icon, and browsers that took the SVG take the PNG.

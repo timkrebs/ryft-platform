@@ -119,10 +119,9 @@ which had been red since #194: `web-checks` read the app at its main, and the ap
   disabled), the 403 right after `addfirebase`.
 - **Merging** ships the site only while `SITE_DEPLOY` is `on`. The services redeploy unchanged.
 - **Open:**
-  - The favicon, the PNG icons, `site.webmanifest` and `public/og/en.png` still carry the old colours, because
-    `npm run icons`/`og` couldn't run in the session. Run `make web-install`, then `cd web && npm run icons && npm
-    run og`, and commit the result in a small PR.
-  - Whether the site's icons follow the app's new wordmark icon (M1) is the user's call. For now they keep the mark.
+  - The icons: done on 2026-11-17 (web D22). The favicon, touch and manifest icons and the OG card come from the
+    app's wordmark icon (M1) at the pin, and `favicon.svg` is gone. The header keeps the orbit mark, as the app's
+    header does.
   - The app screenshots on the pages are pre-Nocturne captures, and a new set needs the app's PR 5.
   - LCP: three font files per page now (web D4 had 1.5 s against a 1.5 s budget). Lighthouse passed in CI.
   - #196's conflict in OPERATIONS 10a is resolved on its branch (2026-11-17): #196's order (10a.1–3) with `ft()`, the

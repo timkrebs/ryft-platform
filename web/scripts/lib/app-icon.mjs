@@ -2,8 +2,10 @@
 // it, never from a copy. scripts/icons.mjs and scripts/og.mjs draw from it, and
 // tests/app-icon.test.ts compares it with config/app-icon.json (the drift check).
 //
-// The app is RYFT_APP_DIR (absolute, or relative to web/), ../../app by default, as in
-// scripts/tokens.mjs. CI checks it out at the commit in web/.app-ref.
+// The app is `--app <dir>` (or `--app=<dir>`) on the script's command line, else RYFT_APP_DIR,
+// as in scripts/tokens.mjs; either absolute or relative to web/, ../../app by default. CI checks
+// it out at the commit in web/.app-ref. The flag lets `npm run icons -- --app <dir>` name the app
+// without an environment prefix.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -16,8 +18,14 @@ export const APP_ICON_SET = 'Ryft/Assets.xcassets/AppIcon.appiconset';
 /** What the committed icons and OG card were drawn from. */
 export const RECORD_PATH = join(WEB, 'config/app-icon.json');
 
-export function appDir(env = process.env) {
-  return resolve(WEB, env.RYFT_APP_DIR ?? '../../app');
+export function appDir(env = process.env, argv = process.argv.slice(2)) {
+  const i = argv.findIndex((a) => a === '--app' || a.startsWith('--app='));
+  let flag;
+  if (i >= 0) {
+    flag = argv[i] === '--app' ? argv[i + 1] : argv[i].slice('--app='.length);
+    if (!flag || flag.startsWith('-')) throw new Error('app-icon: --app needs a directory.');
+  }
+  return resolve(WEB, flag ?? env.RYFT_APP_DIR ?? '../../app');
 }
 
 /** Whether the app's set is there at all (the test skips without it outside CI). */
