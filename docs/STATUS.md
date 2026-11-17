@@ -109,6 +109,13 @@ only). The merge deploys the code and the migration; `analytics` stays `null` un
 (OPERATIONS → GCP → PostHog's project key). Then allow-list testers for `analytics.enabled` once the app ships it
 and the privacy policy in force names PostHog (OPERATIONS → Feature flags, its stop line).
 
+## Backend modules (2026-11-16)
+
+Branch `deps/backend-2026-11` (D232) takes Dependabot #176's seven updates, pgx v5.12.0 among them, and moves
+go.mod's floor to Go 1.26.0 (the image stays Go 1.27). pgx 5.12 quotes inner whitespace in a text array, which
+Postgres reads the same: `TestExecModeEncoding` pins the new text and `TestPooler` reads it back through the pooler.
+The merge deploys the services as usual; no migration, nothing for you to run. #176 closes itself.
+
 ## The site on Firebase Hosting, C1 (2026-11-16)
 
 PR #194, branch `web/firebase-hosting` (D233, web D19, `docs/work/2026-11-16-firebase-hosting/`):

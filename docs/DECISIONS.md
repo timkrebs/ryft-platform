@@ -4994,6 +4994,8 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   `toolchain` line lags until a hand edit. CI then tests one patch behind what ships, and govulncheck still judges
   the image. Trivy on go.mod also sees test-only modules, which the images don't contain, so it is a little stricter
   than the gate.
+- **Amended by D232:** go.mod's floor moves to 1.26.0 (client_golang v1.25.0 and x/sync v0.23.0 need it), so the GODEBUG
+  defaults are 1.26's. The image and the `toolchain` line stay Go 1.27.
 
 ## D230 — The site is English only: the privacy guards read the English page, `/de/…` is a 301 (amends D78, D107)
 
@@ -5060,6 +5062,62 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
   The kill switch is the flag (the app's next config, within six hours). This changes no privacy text: naming PostHog
   there is a step of the analytics plan, not of this PR. Nothing is sent until the flag, the key and the opt-in are
   all there.
+
+## D232 — pgx 5.12's text arrays are taken as they are; go.mod's floor moves to Go 1.26.0 (amends D229)
+
+- **Context:** Dependabot #176 bumps the backend's minor and patch modules: pgx v5.9.2 → v5.12.0, client_golang
+  v1.25.0, client_model v0.6.3, x/sync v0.23.0, x/time v0.15.0, jwkset v0.11.4, keyfunc/v3 v3.9.1. It failed one test,
+  `internal/db` `TestExecModeEncoding/[]string,_quoted_where_needed`. In `exec` mode (D221, Supavisor in transaction
+  mode) a `[]string` goes out as a text array literal, so its text is what the server parses.
+- **Cause:** pgx 5.12's `quoteArrayElementIfNeeded` quotes an element that holds whitespace anywhere, or the
+  type's delimiter. 5.9.2 quoted whitespace only at either end. So `b c` now goes out as `"b c"`. Postgres's
+  `array_in` reads both as the same element, and the text quoting was already correct for `""`, `NULL`, `{`, `}`,
+  `,`, `"` and `\`. The change only adds quotes Postgres accepts. It doesn't change which values reach a query.
+- **Decision:** take all 7 updates.
+  - `TestExecModeEncoding` pins 5.12's text: `{a,"b c","","NULL"," x","{,}"}`, plus a case for tab, quote and
+    backslash.
+  - `store`'s `TestPooler` (CI's pooler job, `make pooler-check`) reads every one of those forms back through the
+    pooler, inner whitespace and the delimiter included (`pull-up bar` among them).
+  - No Dependabot `ignore`.
+  - The login doesn't change (`go doc` on 5.12's `pgconn.Config`): `MaxProtocolVersion` and `MinProtocolVersion`
+    still default to 3.0, and `ChannelBinding` to `prefer` (D229). The new `SSLCertMode` defaults to `allow`, and we
+    hold no client certificate. `RequireAuth` empty accepts every method. `TestPoolConfigHooks` still finds no
+    startup parameter. CI's pooler runs without TLS, so the Supavisor login over TLS is first proved by the
+    deploy's `make smoke-prod`. The startup probe is `/health/live`, so a revision that can't log in still takes
+    the traffic and answers 503. If the smoke fails, roll back by traffic (OPERATIONS → GCP → Deploy, roll back,
+    rotate), then revert.
+- **The `[]string` parameters in production:**
+  - `queueDays` (`unnest($2::text[])`, on every sync, import, fold and recompute) and `PendingAmong`: dates.
+  - The journal's `array_position($n::text[], category)`: `model.BehaviorCategories`.
+  - Exercises' `primary_muscles`, `secondary_muscles` and `equipment` (the store's INSERT/UPDATE, and migrate's
+    upsert of the built-in catalogue).
+  - Feedback's `request_ids`.
+  - `ReplacePRs` (`kind = ANY`).
+  - The fold's `source = ANY`, on every sync with workouts: HealthKit source names such as `Tim’s Apple Watch`.
+  - migrate's seed slugs and role names.
+  - Three of them carry inner spaces, so their text on the wire changes: the fold's sources (on the hot path),
+    `equipment` (1 to 40 characters) and `request_ids` (1 to 64). The values Postgres reads don't change, and
+    `TestPooler` reads a source-shaped and an equipment-shaped element back through the pooler.
+- **go.mod's floor moves from 1.25.0 to 1.26.0.** client_golang v1.25.0, x/sync v0.23.0, x/sys, x/text and
+  prometheus/common require Go 1.26. D229 said the floor moves when we choose it; this is the choice. The image stays
+  `golang:1.27-alpine` and the `toolchain` line stays go1.27.4, so only the GODEBUG defaults move:
+  - `cryptocustomrand`: crypto ignores a custom random reader. Every key and signature in the code and tests uses
+    `crypto/rand.Reader`.
+  - `tlssecpmlkem`: the SecP256r1/384r1 ML-KEM hybrids join the TLS key exchanges a client offers (Supabase, Pub/Sub,
+    APNs, PostHog). The server still picks one it supports.
+  - `urlstrictcolons`: `url.Parse` refuses a second colon in an unbracketed host. Every URL we parse has one host and
+    at most one port (the DSN, OTLP, Pub/Sub, the config's https checks).
+  - `httpservecontentmaxranges`: caps the ranges `http.ServeContent` serves. The services don't call it.
+- **Alternatives:**
+  - The other six, with pgx held at 5.9.2 by an `ignore` for `>=5.12`. Rejected: the encoding is correct, and holding
+    pgx means missing its next security fix. pgx had two security releases in 2026 (5.9.0 and 5.9.2, D229).
+  - Testing for semantics alone (round trip only, no pinned text). Rejected: the pin is what told us pgx changed what
+    it sends through the pooler. Keeping it costs one line per pgx change.
+  - Holding the floor at 1.25.0 by holding the five modules. Rejected: it holds the Prometheus client and x/sys
+    back for a GODEBUG delta that touches nothing we do.
+- **Consequences:** the next pgx release that changes a text encoding fails `TestExecModeEncoding` again, as it
+  should. Check the new text against Postgres's input rules and `TestPooler`, then re-pin. A module that needs Go 1.27
+  moves the floor again, with its own GODEBUG list. There's no date to look again: nothing is held back.
 
 ## D233 — The site on Firebase Hosting: deployed by `deploy.yml` behind `SITE_DEPLOY`; CI loses the EKS jobs (C1; amends D107, D223, D225)
 

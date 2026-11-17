@@ -188,7 +188,11 @@ func TestPooler(t *testing.T) {
 	text := `it's "q" \ ü`
 	at := time.Date(2026, 11, 15, 6, 30, 15, 123456000, time.FixedZone("CET", 3600))
 	doc := `{"kind": "hr", "n": [1, 2.5, null], "ok": true}`
-	texts := []string{"a", "b c", "", "NULL", " x"}
+	// Every form pgx quotes in a text[] (internal/db's TestExecModeEncoding pins its text): Postgres must
+	// read each back as it was sent, inner whitespace and the delimiter included (pgx 5.12, D232). The
+	// last two are what the fold's source = ANY gets on every sync and an exercise's equipment.
+	texts := []string{"a", "b c", "", "NULL", " x", "{,}", "tab\there", `q"uote`, `back\slash`,
+		"Tim’s Apple Watch", "pull-up bar"}
 	tenth := 0.1
 	f := tenth + 0.2
 	// What the float8 must read back as: f itself with extra_float_digits >= 1; with 0 or less, f at
