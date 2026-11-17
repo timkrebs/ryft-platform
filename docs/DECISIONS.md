@@ -5296,9 +5296,10 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     `scripts/**`, but not `deploy.yml`. Main was the first to run the test.
 - **Decision:**
   - The test writes no pin of the repository's workflows. For each of `deploy.yml`'s `deploy`, `site-build` and
-    `site` jobs, it reads every SHA-pinned `- uses:` line from `deploy.yml` as it is. It swaps each one for the same
-    action on its tag (the version in the pin's comment) and expects "by SHA". A job with no pinned line fails as
-    stale.
+    `site` jobs, it reads every SHA-pinned step `uses:` from `deploy.yml` as it is. It swaps each one for the same
+    action on its tag (the version in the pin's comment) and expects `check_workflows.sh`'s message for that step's
+    `uses:`. A job with no pinned line fails as stale. The lint job's golangci-lint version is read from the
+    Makefile's `GOLANGCI_LINT_VERSION` the same way.
   - `manifests` runs `bash scripts/tests/check_workflows_test.sh` right after `./scripts/check_workflows.sh`. Its
     filter has `.github/**` and `scripts/**`, so every change to a workflow, to the script or to its test runs the
     test on the PR. `manifests` already installs the pinned yq the test needs.
