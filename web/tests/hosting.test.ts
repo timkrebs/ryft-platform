@@ -4,9 +4,11 @@ import config from '../config/admin.json';
 import {
   cspKind,
   parseArgs,
+  redirectWant,
   responseProblems,
   shownVersion,
   sitePath,
+  slashWant,
   values,
 } from '../scripts/check-hosting.mjs';
 import { adminPolicy, policy } from '../scripts/lib/csp.mjs';
@@ -405,12 +407,28 @@ describe('check-hosting.mjs', () => {
     return { status, headers, body: Buffer.from(status === 404 ? 'Page not found' : '<html>') };
   }
 
+  /** Google's front end's 307 (web D21): the Location, if any, and X-Frame-Options: SAMEORIGIN only. */
+  function front(location?: string): Raw {
+    const headers: [string, string][] = [['x-frame-options', 'SAMEORIGIN']];
+    if (location !== undefined) headers.unshift(['location', location]);
+    return { status: 307, headers, body: Buffer.alloc(0) };
+  }
+  // run()'s two "//" probes, which the front end answers live.
+  const EVIL: Want = {
+    status: [301, 307, 404],
+    location: ['/evil.example', '/evil.example/'],
+    csp: 'marketing',
+    frontEnd: true,
+  };
+  const X: Want = { status: [301, 307, 404], location: ['/x/', '/x'], csp: 'marketing', frontEnd: true };
+
   it('reads its flags', () => {
     expect(parseArgs(['--base', 'https://ryftlab.de/'])).toEqual({
       base: 'https://ryftlab.de',
       www: '',
       policyVersion: '',
       appleCdn: false,
+      emulator: false,
       help: false,
     });
     const all = parseArgs([
@@ -426,6 +444,7 @@ describe('check-hosting.mjs', () => {
       www: 'https://www.ryftlab.de',
       policyVersion: '2026-10-26',
       appleCdn: true,
+      emulator: false,
       help: false,
     });
     for (const bad of [
@@ -439,6 +458,13 @@ describe('check-hosting.mjs', () => {
     ]) {
       expect(() => parseArgs(bad), bad.join(' ')).toThrow();
     }
+  });
+
+  it('reads --emulator, and expects production without it (web D21)', () => {
+    expect(parseArgs(['--base', 'https://ryftlab.de']).emulator).toBe(false);
+    expect(parseArgs(['--base', 'http://localhost:8080', '--emulator']).emulator).toBe(true);
+    expect(parseArgs(['--emulator', '--base=http://localhost:8080']).emulator).toBe(true);
+    expect(() => parseArgs(['--base', 'http://localhost:8080', '--emulator=no'])).toThrow();
   });
 
   it('accepts a Location on this site only', () => {
@@ -505,6 +531,83 @@ describe('check-hosting.mjs', () => {
     expect(check(twice, { status: [200], csp: 'marketing' })).toEqual(['2 × Strict-Transport-Security']);
     const page = { ...response(404), body: Buffer.from('<h1>404</h1>') };
     expect(check(page, { status: [404], csp: 'marketing' })).toEqual(["not the site's 404 page"]);
+  });
+
+  it('takes the front end\'s 307 on "//" in production only (web D21)', () => {
+    expect(slashWant('//evil.example/')).toEqual(EVIL);
+    expect(slashWant('/x//')).toEqual(X);
+    // --emulator: what it expected before web D21, exactly.
+    expect(slashWant('//evil.example/', { emulator: true })).toEqual({
+      status: [301, 404],
+      location: ['/evil.example'],
+      csp: 'marketing',
+    });
+    expect(slashWant('/x//', { emulator: true })).toEqual({
+      status: [301, 404],
+      location: ['/x/', '/x'],
+      csp: 'marketing',
+    });
+    expect(check(front('/evil.example/'), slashWant('//evil.example/', { emulator: true }))).toEqual([
+      'status 307',
+      'Location /evil.example/, not /evil.example',
+      'X-Frame-Options: SAMEORIGIN',
+    ]);
+  });
+
+  it("passes the front end's 307 on the two // probes (web D21)", () => {
+    expect(check(front('/evil.example/'), EVIL)).toEqual([]);
+    expect(check(front('/x/'), X)).toEqual([]);
+  });
+
+  it("fails the front end's 307 unless its one Location is a listed path of this site", () => {
+    for (const bad of ['//evil.example', '//evil.example/', '/\\evil.example', 'https://evil.example/']) {
+      expect(check(front(bad), EVIL), bad).toContain(`Location ${JSON.stringify(bad)} leaves the site`);
+    }
+    expect(check(front(), EVIL)).toEqual(['0 Location headers']);
+    expect(check(front('/elsewhere'), EVIL)).toEqual([
+      'Location /elsewhere, not /evil.example or /evil.example/',
+    ]);
+    const twice = front('/evil.example/');
+    twice.headers.push(['location', '/evil.example']);
+    expect(check(twice, EVIL)).toEqual(['2 Location headers']);
+  });
+
+  it('fails a 307 the probe does not allow, and frontEnd relaxes nothing but a 307', () => {
+    const plain: Want = { status: EVIL.status, location: EVIL.location, csp: 'marketing' };
+    expect(check(front('/evil.example/'), plain)).toEqual(['X-Frame-Options: SAMEORIGIN']);
+    expect(check(front('/evil.example/'), { ...EVIL, status: [301, 404] })).toEqual(['status 307']);
+    const moved = { ...front('/evil.example'), status: 301 };
+    expect(check(moved, EVIL)).toEqual(['X-Frame-Options: SAMEORIGIN']);
+    // A header sent twice still fails, front end or not.
+    const doubled = front('/evil.example/');
+    doubled.headers.push(['x-frame-options', 'DENY']);
+    expect(check(doubled, EVIL)).toEqual(['2 × X-Frame-Options']);
+  });
+
+  it("wants /admin's headers on the admin redirects live (web D21)", () => {
+    const to: [string, string] = ['location', '/admin'];
+    const robots: [string, string] = ['x-robots-tag', 'noindex, nofollow'];
+    const live = redirectWant('/admin');
+    expect(live).toEqual({ status: [301], location: ['/admin'], csp: 'admin', robots: true });
+    expect(check(response(301, [to, robots], ADMIN), live)).toEqual([]);
+    expect(check(response(301, [to, robots]), live)).toEqual(['the marketing CSP, not the admin one']);
+    expect(check(response(301, [to], ADMIN), live)).toEqual(['X-Robots-Tag: []']);
+    // Every other redirect: the marketing CSP, in both modes.
+    for (const emulator of [false, true]) {
+      const want = redirectWant('/privacy', { emulator });
+      expect(want).toEqual({ status: [301], location: ['/privacy'], csp: 'marketing' });
+    }
+  });
+
+  it("accepts the emulator's admin redirects under --emulator", () => {
+    const to: [string, string] = ['location', '/admin'];
+    const emulator = redirectWant('/admin', { emulator: true });
+    expect(emulator).toEqual({ status: [301], location: ['/admin'], csp: 'marketing' });
+    // /admin.html's 301 (cleanUrls): the marketing headers, 8 of 8.
+    expect(check(response(301, [to]), emulator)).toEqual([]);
+    // /admin/'s 301 (a redirects rule): no headers at all.
+    const bare: Raw = { status: 301, headers: [to], body: Buffer.alloc(0) };
+    expect(check(bare, emulator)).toEqual([]);
   });
 
   it('reads the version /privacy shows', () => {

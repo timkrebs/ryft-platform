@@ -310,7 +310,7 @@ after every deploy.
   so the result doesn't depend on how Hosting merges rules.
   - Observed: exactly one CSP on every response. The admin policy is on `/admin` only, and the
     marketing one is on `/`, `/privacy`, the 404s, `/administrator`, `/adm`, `/admin.html`'s 301,
-    the AASA and the app links.
+    the AASA and the app links. (Live, `/admin.html`'s 301 has the admin one: web D21.)
   - Observed: `/%61dmin` → 200 with the **marketing** CSP. The emulator matches headers against
     the path as sent and finds files by the decoded path, so `admin.html` is served there under
     the stricter policy. Its script is blocked, the page does nothing, and nothing is widened.
@@ -325,14 +325,16 @@ after every deploy.
   - Observed: **the `redirects` rules' 301s carry no header rules** (0 of 8 security headers,
     no Cache-Control). That covers #156's trailing slash, `/de`, `/de/…` and `/admin/`.
   - Observed: **`cleanUrls`' 301s carry all of them** (`/privacy.html`, `/admin.html`: 8 of 8
-    and the path's Cache-Control).
+    and the path's Cache-Control). (Live, `/admin.html`'s and `/admin/`'s 301s carry `/admin`'s
+    headers: web D21.)
   - nginx sent them on every redirect. A bare 301 carries no content, so it's accepted. The
     tests allow none, fail on two, and `check-hosting` reports the count live.
   - One cost: the hour's Cache-Control meant for the `/de` 301s (D18) doesn't reach them. A
     browser may keep a 301 that has no Cache-Control for good. If German comes back under `/de`,
     visitors who followed one of these redirects may keep landing on the English page until their
     cache clears. Live Hosting may differ; `check-hosting` shows it.
-- **(d) `//`, `/\` and `%5C`.** Observed: no Location ever left the site.
+- **(d) `//`, `/\` and `%5C`.** Observed: no Location ever left the site. (Live, Google's front
+  end answers `//` first: web D21.)
   - `/privacy/` → `/privacy`.
   - `/%5Cevil.example/`, `/de/%5Cevil.example`, `/a/%5Cevil.example/`, `/%2F%2Fevil.example/`
     and `/de//evil.example` → 404.
@@ -463,3 +465,47 @@ is the user's decision.
 
 Would change if the app gets an appearance option again (its ADR 0016 says that needs an ADR of its
 own); then the site decides separately whether to follow.
+
+## D21 — check-hosting expects production; the emulator's answers need `--emulator` (2026-11-17; amends D19)
+
+The first live check after a deploy (`deploy.yml`'s `site` job, run 44101115872, 2026-11-17)
+failed 4 of its 36 checks. All four were expectations taken from the emulator (the firebase-tools
+of `.firebase-tools-version`, D19's observations). Live Hosting answers differently in two places:
+- **The admin redirects.** Live, `/admin.html` and `/admin/` → 301 `/admin` carry `/admin`'s
+  headers: the admin CSP, `X-Robots-Tag: noindex, nofollow`, `X-Frame-Options: DENY`. On the
+  emulator, `/admin.html`'s 301 (cleanUrls) carries the marketing headers, 8 of 8, and `/admin/`'s
+  (a `redirects` rule) none (D19 (a), (c)).
+- **`//`.** Live, Google's front end answers `/x//` and `//evil.example/` before Hosting does: 307
+  to `/x/` and to `/evil.example/`, with `X-Frame-Options: SAMEORIGIN` and no CSP. The emulator
+  answers 301 or 404 (D19 (d)).
+
+The decision:
+- `e2e/hosting.spec.ts` pins the emulator, because that is what CI can run. Its tests are
+  unchanged; a comment at those paths points here.
+- `scripts/check-hosting.mjs` pins production by default: `deploy.yml`'s live check runs it without
+  a flag. With `--emulator` it pins the emulator: `scripts/hosting.mjs exec` (`npm run e2e:hosting`)
+  passes it.
+- The mode changes two things, and `--emulator` keeps exactly what was expected before:
+  - `redirectWant()` gives a 301 to `/admin` the admin CSP and `X-Robots-Tag` live, and the
+    marketing CSP with `--emulator`. Every other redirect wants the marketing CSP in both modes.
+  - `slashWant()` lets the two `//` probes take 301, 307 or 404 live, with Location `/x/` or
+    `/evil.example/` added, and sets `frontEnd`. With `--emulator` they take 301 or 404, as
+    before.
+- On a 307 under `frontEnd`, `responseProblems()` doesn't check the CSP's kind or the shared
+  headers' values. A 307 on any other probe fails, as before. The `%5C` probes are unchanged.
+
+Why nothing is weakened:
+- The admin redirects get `/admin`'s own policy and `X-Robots-Tag`, as `/admin` does. A 301 has no
+  content for a CSP to govern; what the check is for, one CSP and never two, still holds. The live
+  check requires their `X-Robots-Tag`, and a CSP there must be the admin one (on a redirect, as
+  before, a header may be missing but never doubled).
+- A front-end 307 must still have its status in the list and exactly one Location. That Location
+  must be a path of this site (`sitePath`: one `/`, then neither `/` nor `\`, no host, no other
+  origin) and one of the listed ones. A header sent twice still fails.
+
+The residual risk: on a front-end 307 the header values aren't checked. Its `X-Frame-Options` is
+`SAMEORIGIN`, not `DENY`, and it has no CSP. These are redirects with nothing of the site in them;
+the browser follows the Location to a page that carries the site's headers.
+
+Would change if Hosting or its front end answers differently: the live check fails, and the new
+expectation is recorded here first.

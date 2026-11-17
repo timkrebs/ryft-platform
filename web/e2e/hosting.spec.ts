@@ -35,6 +35,8 @@ const CLASSES: [string, string][] = [
   ['/privacy', 'no-cache'],
   ['/privacy/2026-10-26', PAGES],
   ['/admin', NO_STORE],
+  // These two pin the emulator (the marketing headers or none); live Hosting gives the admin
+  // redirects /admin's headers (web D21).
   ['/admin/', PAGES],
   ['/admin.html', PAGES],
   ['/administrator', PAGES],
@@ -112,6 +114,7 @@ test('(d) /privacy/ → /privacy; //, /\\ and %5C never become a Location', asyn
   // path → the Locations allowed instead of a 404: what the trailing-slash or /de rule makes of the
   // path as sent, or with "//" merged into "/" (if the emulator merges before the rules run).
   const CASES: [string, string[]][] = [
+    // These two pin the emulator; live, Google's front end answers them first, with a 307 (web D21).
     ['/x//', ['/x/', '/x']],
     ['//evil.example/', ['/evil.example']],
     ['/de//evil.example', ['/evil.example']],

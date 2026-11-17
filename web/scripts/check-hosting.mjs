@@ -1,21 +1,29 @@
 #!/usr/bin/env node
 // The site as Firebase Hosting serves it (web D19): runbook step 10's assertions (docs/OPERATIONS.md
-// → GCP → 10, design §8). Run against the Hosting emulator in CI (npm run e2e:hosting), against
-// https://ryftlab.de after every deploy (deploy.yml, `site`) and by hand at step 10.
+// → GCP → 10, design §8). Run against https://ryftlab.de after every deploy (deploy.yml, `site`)
+// and by hand at step 10, and against the Hosting emulator in CI (npm run e2e:hosting, --emulator).
+//
+// Production's expectations are the default; the emulator's need --emulator, because the two answer
+// differently (web D21). Live, /admin.html's and /admin/'s 301s carry /admin's headers (the admin
+// CSP, X-Robots-Tag); the emulator gives them the marketing headers or none (redirectWant). And
+// live, Google's front end answers "//" before Hosting, with a 307 and headers of its own; the two
+// "//" probes take it in production only (slashWant, frontEnd), and only to a path of this site.
 //
 //   node web/scripts/check-hosting.mjs --base <origin> [--www <origin>]
-//                                      [--policy-version YYYY-MM-DD] [--apple-cdn]
+//                                      [--policy-version YYYY-MM-DD] [--apple-cdn] [--emulator]
 //
 //   --base            the site: http://localhost:8080, https://ryftlab.de
 //   --www             another host whose /privacy must redirect to <base>/privacy
 //   --policy-version  the privacy version /privacy must show (its "Version …" line)
 //   --apple-cdn       Apple's CDN must hold the AASA <base> serves (a public https base only)
+//   --emulator        expect the Hosting emulator's answers, not production's (web D21)
 //
 // One PASS or FAIL line per check, exit 1 if any failed, 2 on a usage error. Node built-ins only:
 // every request goes out through node:http(s) with the path exactly as written (no URL parser, so
 // "//" and "%5C" reach the server as they are), and headers are counted from res.rawHeaders, so a
 // header sent twice counts twice. On a 3xx the security headers may be missing (whether Hosting
-// adds them there is one of D19's points), but never doubled; the PASS line says what came.
+// adds them there is one of D19's points), but never doubled; the PASS line says what came. On
+// the front end's 307 (frontEnd) their values are not checked either.
 import { existsSync, readFileSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
@@ -34,6 +42,9 @@ import { CACHE, SHARED_HEADERS } from './lib/hosting.mjs';
  * @property {RegExp} [type] the one Content-Type
  * @property {boolean} [robots] X-Robots-Tag "noindex, nofollow" (else none)
  * @property {Buffer} [body] the exact body
+ * @property {boolean} [frontEnd] Google's front end may answer before Hosting (web D21): on a 307
+ *   the CSP kind and the shared headers' values are not checked (it sends X-Frame-Options:
+ *   SAMEORIGIN only); its status, its one Location and that Location's path still are
  */
 
 const WEB = fileURLToPath(new URL('..', import.meta.url));
@@ -42,17 +53,19 @@ const HTML = /^text\/html(?:;\s*charset=utf-8)?$/i;
 const JSON_TYPE = /^application\/json(?:;\s*charset=utf-8)?$/i;
 const APPLE_CDN = 'https://app-site-association.cdn-apple.com';
 const USAGE =
-  'usage: node web/scripts/check-hosting.mjs --base <origin> [--www <origin>] [--policy-version YYYY-MM-DD] [--apple-cdn]';
+  'usage: node web/scripts/check-hosting.mjs --base <origin> [--www <origin>] [--policy-version YYYY-MM-DD] [--apple-cdn] [--emulator]\n' +
+  "  production's expectations by default; --emulator: the Hosting emulator's (web D21)";
 
 /** The command line, or an Error. Origins lose one trailing slash. */
 export function parseArgs(argv) {
-  const opts = { base: '', www: '', policyVersion: '', appleCdn: false, help: false };
+  const opts = { base: '', www: '', policyVersion: '', appleCdn: false, emulator: false, help: false };
   const names = { '--base': 'base', '--www': 'www', '--policy-version': 'policyVersion' };
   for (let i = 0; i < argv.length; i++) {
     const [flag, inline] = argv[i].split(/=(.*)/s);
     let value = inline;
     if (flag === '--help' || flag === '-h') opts.help = true;
     else if (flag === '--apple-cdn' && value === undefined) opts.appleCdn = true;
+    else if (flag === '--emulator' && value === undefined) opts.emulator = true;
     else if (Object.hasOwn(names, flag)) {
       if (value === undefined) value = argv[++i];
       if (value === undefined || value.startsWith('--')) throw new Error(`${flag} needs a value`);
@@ -189,15 +202,20 @@ export function responseProblems(base, res, want) {
   const count = (name, n) => {
     if (n > 1 || (n === 0 && !redirect)) problems.push(`${n} × ${name}`);
   };
+  // web D21: live, Google's front end answers "//" before Hosting, a 307 with X-Frame-Options:
+  // SAMEORIGIN only. Where the probe allows it (frontEnd), those header values are not Hosting's
+  // and are not checked (Cache-Control's never is on a 3xx). The Location checks above still
+  // apply, and a header sent twice still fails.
+  const front = Boolean(want.frontEnd) && res.status === 307;
   const csp = values(res, 'content-security-policy');
   count('Content-Security-Policy', csp.length);
-  if (csp.length === 1 && cspKind(csp[0]) !== want.csp) {
+  if (!front && csp.length === 1 && cspKind(csp[0]) !== want.csp) {
     problems.push(`the ${cspKind(csp[0])} CSP, not the ${want.csp} one`);
   }
   for (const { key, value } of SHARED_HEADERS) {
     const got = values(res, key.toLowerCase());
     count(key, got.length);
-    if (got.length === 1 && got[0] !== value) problems.push(`${key}: ${got[0]}`);
+    if (!front && got.length === 1 && got[0] !== value) problems.push(`${key}: ${got[0]}`);
   }
   const cache = values(res, 'cache-control');
   count('Cache-Control', cache.length);
@@ -219,6 +237,46 @@ export function responseProblems(base, res, want) {
   }
   if (want.body && !res.body.equals(want.body)) problems.push('a different body');
   return problems;
+}
+
+/**
+ * The want for a 301 to `to` (run()'s redirect table). Live, a 301 to /admin (/admin.html, /admin/)
+ * carries /admin's headers: the admin CSP and X-Robots-Tag. The emulator gives it the marketing
+ * headers (cleanUrls' 301) or none (a `redirects` rule's), so --emulator expects the marketing
+ * CSP there (web D21). Every other redirect carries the marketing CSP, or none, in both.
+ * @param {string} to
+ * @param {{ emulator?: boolean }} [mode]
+ * @returns {Want}
+ */
+export function redirectWant(to, { emulator = false } = {}) {
+  if (to === '/admin' && !emulator) return { status: [301], location: [to], csp: 'admin', robots: true };
+  return { status: [301], location: [to], csp: 'marketing' };
+}
+
+/** run()'s two "//" probes: what Hosting may answer (D19 (d)), and Google's front end live (web D21). */
+const SLASHES = {
+  '/x//': { hosting: ['/x/', '/x'], front: '/x/' },
+  '//evil.example/': { hosting: ['/evil.example'], front: '/evil.example/' },
+};
+
+/**
+ * The want for one of the two "//" probes. Hosting (the emulator, D19 (d)) answers 301 to a path of
+ * this site, or 404. Live, Google's front end answers before Hosting: 307 to the path with one "/",
+ * with headers of its own, so production's want also takes that 307 (frontEnd). --emulator keeps
+ * 301 or 404 (web D21).
+ * @param {'/x//' | '//evil.example/'} path
+ * @param {{ emulator?: boolean }} [mode]
+ * @returns {Want}
+ */
+export function slashWant(path, { emulator = false } = {}) {
+  const { hosting, front } = SLASHES[path];
+  if (emulator) return { status: [301, 404], location: hosting, csp: 'marketing' };
+  return {
+    status: [301, 307, 404],
+    location: [...new Set([...hosting, front])],
+    csp: 'marketing',
+    frontEnd: true,
+  };
 }
 
 /**
@@ -280,7 +338,7 @@ function summary(res) {
 }
 
 /** Every check; returns the number that failed. */
-export async function run({ base, www, policyVersion, appleCdn }) {
+export async function run({ base, www, policyVersion, appleCdn, emulator = false }) {
   let total = 0;
   let failed = 0;
   const report = (ok, name, detail) => {
@@ -294,7 +352,7 @@ export async function run({ base, www, policyVersion, appleCdn }) {
     report(problems.length === 0, name, problems.length ? problems.join('; ') : summary(res));
     return res;
   };
-  console.log(`check-hosting: ${base}`);
+  console.log(`check-hosting: ${base}, ${emulator ? "the emulator's" : "production's"} expectations`);
 
   // The pages the app and App Store Connect link to, and the operator's page.
   for (const [path, cache] of [
@@ -314,7 +372,8 @@ export async function run({ base, www, policyVersion, appleCdn }) {
     robots: true,
   });
 
-  // Redirects: #156's trailing slash, the old German URLs (web D18), cleanUrls' .html.
+  // Redirects: #156's trailing slash, the old German URLs (web D18), cleanUrls' .html. What the
+  // admin ones carry differs live and on the emulator (redirectWant, web D21).
   const redirects = [
     ['/de', '/'],
     ['/de/', '/de'],
@@ -327,7 +386,7 @@ export async function run({ base, www, policyVersion, appleCdn }) {
   const oldest = oldestPrivacyVersion();
   if (oldest) redirects.push([`/de/privacy/${oldest}`, `/privacy/${oldest}`]);
   for (const [from, to] of redirects) {
-    await probe(`${from} → 301 ${to}`, from, { status: [301], location: [to], csp: 'marketing' });
+    await probe(`${from} → 301 ${to}`, from, redirectWant(to, { emulator }));
   }
   // A query string may stay or go (D19 records which); the path may not change.
   for (const [from, to] of [
@@ -338,15 +397,14 @@ export async function run({ base, www, policyVersion, appleCdn }) {
     await probe(`${from} → 301 ${to}, with or without ?x=1`, from, want);
   }
 
-  // Nothing leaves the site. The %5C paths are 404s; "//" may be merged into "/" first, and then
-  // the trailing-slash rule answers with a path of this site.
-  for (const [path, status, location] of [
-    ['/x//', [301, 404], ['/x/', '/x']],
-    ['//evil.example/', [301, 404], ['/evil.example']],
-    ['/%5Cevil.example/', [404], []],
-    ['/de/%5Cevil.example', [404], []],
-  ]) {
-    await probe(`${path} stays on the site`, path, { status, location, csp: 'marketing' });
+  // Nothing leaves the site. "//" may be merged into "/" first, and then the trailing-slash rule
+  // answers with a path of this site, or it is a 404; live, Google's front end answers first
+  // (slashWant, web D21). The %5C paths are 404s.
+  for (const path of Object.keys(SLASHES)) {
+    await probe(`${path} stays on the site`, path, slashWant(path, { emulator }));
+  }
+  for (const path of ['/%5Cevil.example/', '/de/%5Cevil.example']) {
+    await probe(`${path} stays on the site`, path, { status: [404], location: [], csp: 'marketing' });
   }
   await probe('an unknown path is the 404 page', '/no-such-page', {
     status: [404],

@@ -763,7 +763,8 @@ jobs:
   # (web/out) and web/firebase.json and runs the brand check on the output; `npm run e2e:hosting`
   # starts the Hosting emulator of the pinned firebase-tools (web/.firebase-tools-version) on
   # http://localhost:8080 and runs Playwright (every page, light + dark, routes, headers, axe),
-  # scripts/check-hosting.mjs (the assertions deploy.yml's `site` job repeats against ryftlab.de),
+  # scripts/check-hosting.mjs --emulator (deploy.yml's `site` job runs it against ryftlab.de with
+  # production's expectations; they differ on the admin redirects and on "//", web D21),
   # the links and Lighthouse (mobile; LCP < 1.5 s, < 80 KB JS) against it; any failure is exit 1.
   # No image and no container: Hosting serves the files themselves.
   web-e2e:

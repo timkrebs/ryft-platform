@@ -72,6 +72,24 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## ryftlab.de is live on Firebase Hosting (2026-11-17)
+
+Runbook steps 10a–10f are done: the environment `site`, the WIF split (#196) applied, `site-deployer` on the
+`site` set, the domains and certificates, `SITE_DEPLOY` on. Run 44101115872 deployed the site.
+- **The first try** hit a 403 on serviceusage's `services.get`. `site-deployer` now also has
+  `roles/serviceusage.serviceUsageConsumer`, and 10a.3 grants it from the start.
+- **The live check** failed 4 of 36 checks, all expectations built against the emulator (web D21):
+  - `/admin.html` and `/admin/` get `/admin`'s headers live (the admin CSP, `noindex`). The emulator gives them the
+    marketing headers or none.
+  - `/x//` and `//evil.example/` are answered by Google's front end, a 307 to `/x/` and `/evil.example/` with its
+    own `X-Frame-Options`, before Hosting.
+
+  Branch `web/live-check-hosting` makes `check-hosting.mjs` expect production by default and the emulator under
+  `--emulator`. Every Location must still be a path of this site.
+- The pages, the AASA, the deep links and www work (the live check's other 32 checks). Apple's CDN is checked at 10g.
+- **Next:** step 10g by hand once that PR is merged and its deploy's live check is green. Then 10h (the app's URLs
+  in App Store Connect).
+
 ## The site in Nocturne, the app pinned (2026-11-17)
 
 PR #199, branch `web/nocturne-tokens` (D234, web D20, `docs/work/2026-11-17-nocturne-tokens/`). It fixes main,
@@ -142,12 +160,14 @@ PR #194, branch `web/firebase-hosting` (D233, web D19, `docs/work/2026-11-16-fir
   - **The WIF split** (D233, branch `infra/wif-split`): the `site` job moves into its own environment `site`, and
     `ryft-deployer` is bound to the `deploy` principal set alone. Your steps before 10f are in OPERATIONS 10a.1–3:
     the environment (10a.1, before the merge), the apply (1/1/1) plus a dispatch, then `site-deployer` on the `site`
-    set; 10f at least ten minutes after the apply, re-checking both accounts.
+    set; 10f at least ten minutes after the apply, re-checking both accounts. *Done 2026-11-17: #196 merged and
+    applied, 10a–10f done (see "ryftlab.de is live" above).*
   - Main was red from #194's merge (2026-11-16) until #199 (2026-11-17), which pins the app (D234). 10a.2 needs a green
     main.
   - `ci.yml`'s comment above `check_workflows.sh` now names each environment's job (fixed on the split's branch once
     main was green again).
-  - WIF with firebase-tools is checked only at step 10f.
+  - WIF with firebase-tools is checked only at step 10f. *It works (run 44101115872, 2026-11-17); it also needed
+    `roles/serviceusage.serviceUsageConsumer` (D233's amendment).*
   - C2 must drop `check_policy_in_force.sh`'s EKS half (D233).
   - D3 removes the scripts the removed jobs used and the nginx image.
 

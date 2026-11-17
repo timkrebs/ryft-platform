@@ -43,7 +43,7 @@ project is `demo-ryft`, so no login and no Google project is involved. Build fir
 npm run e2e:hosting   # the emulator around Playwright, check:hosting, links and Lighthouse; exit 1 if any failed
 npm run hosting       # the emulator until Ctrl-C
 npm run e2e           # Playwright against a running emulator (BASE_URL=… for another origin)
-npm run check:hosting -- --base http://localhost:8080   # the deploy's live checks, one PASS/FAIL line each
+npm run check:hosting -- --base http://localhost:8080 --emulator   # the deploy's live checks, the emulator's answers (D21)
 ```
 
 `firebase.json` is git-ignored: it carries this build's script hash (the admin page's; every other
@@ -51,8 +51,9 @@ page runs no script, D20). Its rules are
 `scripts/lib/hosting.mjs` (`tests/hosting.test.ts` pins them; D19 says why they look the way
 they do). The site goes live through CI only (`deploy.yml`, the `site` job, once the repository
 variable `SITE_DEPLOY` is `on`); never `firebase deploy` by hand. `check:hosting` takes
-`--base` (required), `--www <origin>`, `--policy-version YYYY-MM-DD` and `--apple-cdn`, and runs
-from the repository root too (`node web/scripts/check-hosting.mjs`, Node built-ins only).
+`--base` (required), `--www <origin>`, `--policy-version YYYY-MM-DD`, `--apple-cdn` and
+`--emulator` (the emulator's answers; production's are the default, D21), and runs from the
+repository root too (`node web/scripts/check-hosting.mjs`, Node built-ins only).
 
 The nginx image stays until the platform's PR D3 removes it (design §10), and is no longer what ships: `npm run image` (docker or podman →
 `ryft-web:local`), `npm run serve` (http://localhost:8080), `npm run serve:stop`.
