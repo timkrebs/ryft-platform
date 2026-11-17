@@ -72,41 +72,18 @@ variable "public_invokers" {
   default     = true
 }
 
-# ---- Grafana Cloud: the Grafana-managed rules on Cloud Monitoring (alerts.tf, runbook step 11) ------
+# ---- Cloud Monitoring's alerting (alerts.tf, runbook step 11): the gate -----------------------------
 
-variable "grafana_url" {
-  description = "The Grafana Cloud stack's URL, https://<stack>.grafana.net"
+# The display name of the notification channel for the Google Cloud mobile app, which the user made by
+# hand. It is personal data, so it is never in a file, a test, a doc or a commit: a workspace variable
+# of ryft-gcp (category terraform, Sensitive on, runbook step 11.1). Sensitive, not
+# ephemeral: the channel's data source reads it, and a data source can't take an ephemeral value.
+# Empty (the default): no alert policy exists and no channel is read (local.alerting).
+variable "alert_app_channel_name" {
+  description = "The display name of the Google Cloud app's notification channel (runbook step 11.1): a sensitive workspace variable only. Empty: no alert policy, no channel read"
   type        = string
   default     = ""
-
-  validation {
-    condition     = var.grafana_url == "" || can(regex("^https://[a-z0-9.-]+$", var.grafana_url))
-    error_message = "grafana_url must be the stack's https URL without a path, or empty."
-  }
-}
-
-variable "grafana_datasource_uid" {
-  description = "The UID of the Google Cloud Monitoring data source made at runbook step 11. Empty: no rules, no Grafana token needed"
-  type        = string
-  default     = ""
-
-  validation {
-    condition     = can(regex("^[A-Za-z0-9_-]{0,40}$", var.grafana_datasource_uid))
-    error_message = "grafana_datasource_uid must be a Grafana UID (letters, digits, - and _, at most 40)."
-  }
-
-  validation {
-    condition     = var.grafana_datasource_uid == "" || var.grafana_url != ""
-    error_message = "grafana_datasource_uid needs grafana_url as well."
-  }
-}
-
-variable "grafana_auth" {
-  description = "A Grafana service account token (alert rules write). Set in the workspace UI only, as sensitive; needed from step 11"
-  type        = string
-  default     = null
   sensitive   = true
-  ephemeral   = true
 }
 
 # ---- the Pub/Sub topology: pubsub.auto.tfvars.json, written by cmd/pubsub-topology (design 2.1) ------

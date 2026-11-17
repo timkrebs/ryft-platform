@@ -103,8 +103,7 @@ printf -v s '%10s' ''; akey=${s// /A}; nkey=${s// /N}
   printf '%s\n' "PRIVACY_POLICY_VERSION=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' "$HERE/deploy/run/config.env")" LOG_LEVEL=info
   printf 'GCP_PROJECT_NUMBER=7%011d\nPUSH_SA_ID=1%020d\n' 0 0
   printf '%s\n' "SUPABASE_PROJECT_REF=$ref" SUPABASE_POOLER_HOST=aws-0-eu-central-1.pooler.supabase.com \
-    "APPLE_KEY_ID=$akey" "APNS_KEY_ID=$nkey" OTLP_ENDPOINT=https://otlp-gateway-prod-eu-west-2.grafana.net/otlp
-  printf 'OTLP_USER=9%05d\n' 0
+    "APPLE_KEY_ID=$akey" "APNS_KEY_ID=$nkey"
 } > "$d/config.env"
 ok "config.env filled in"
 
@@ -142,7 +141,7 @@ bad "notify on HTTP/1" "ports must be exactly"
 add ingest.yaml 'containerPort' '- { name: metrics, containerPort: 9090 }'
 bad "ingest with two ports" "ports must be exactly"
 # The startup probe waits for the port (/health/live), not the database: an instance starts during a
-# database outage and its tick reports ryft_db_up 0. /health/ready is the synthetics' target.
+# database outage and its tick logs result error. /health/ready is the uptime checks' target.
 edit_next api.yaml 'startupProbe:' '/health/live' '/health/ready'
 bad "api's startup probe on /health/ready" "api.yaml startupProbe: httpGet must be {path: /health/live, port: 8080}"
 edit_next ingest.yaml 'startupProbe:' '/health/live' '/health/ready'
@@ -199,6 +198,12 @@ edit scoring.yaml 'name: db-password-scoring,' 'db-password-scoring' 'db-passwor
 bad "scoring with api's password" "PGPASSWORD reads secret db-password-api, want db-password-scoring"
 add migrate.yaml 'name: LOG_LEVEL,' '- { name: OTLP_TOKEN, valueFrom: { secretKeyRef: { name: otlp-token, key: "1" } } }'
 bad "migrate with the OTLP token" "migrate reads otlp-token, which only api, ingest, notify, scoring can access"
+# The OTLP pins went with Grafana Cloud (D236): the token is in no service's table any more, and the
+# plain pair in no env table (otlp-token itself stays until its own PR, runbook GCP step 11.6).
+add scoring.yaml 'name: LOG_LEVEL,' '- { name: OTLP_TOKEN, valueFrom: { secretKeyRef: { name: otlp-token, key: "1" } } }'
+bad "scoring with the OTLP token again" "OTLP_TOKEN from otlp-token is not in ticket-b.md's secret table for scoring"
+add api.yaml 'name: LOG_LEVEL,' '- { name: OTLP_ENDPOINT, value: "" }'
+bad "api with OTLP_ENDPOINT again" "OTLP_ENDPOINT is not in ticket-b.md's env table for api"
 add ingest.yaml 'name: LOG_LEVEL,' '- { name: DATA_ENCRYPTION_KEY, valueFrom: { secretKeyRef: { name: data-key, key: "1" } } }'
 bad "ingest with the data key" "ingest reads data-key, which only api can access"
 add api.yaml 'name: LOG_LEVEL,' '- { name: OWNER_PASSWORD, valueFrom: { secretKeyRef: { name: db-password-owner, key: "1" } } }'
@@ -209,18 +214,18 @@ nopin() { if grep -qF 'name: POSTHOG_PROJECT_KEY,' "$d/api.yaml"; then drop api.
 nopin
 ok "api without the PostHog key's pin"
 nopin
-add api.yaml 'name: OTLP_TOKEN,' '- { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "1" } } }'
+add api.yaml 'name: PUSH_SA_ID,' '- { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "1" } } }'
 ok "api with the PostHog key pinned at 1"
 nopin
-add api.yaml 'name: OTLP_TOKEN,' '- { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "latest" } } }'
+add api.yaml 'name: PUSH_SA_ID,' '- { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "latest" } } }'
 bad "the PostHog key at latest" "pins posthog-project-key at 'latest'"
 nopin
-add api.yaml 'name: OTLP_TOKEN,' '- { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: admin-api-key, key: "1" } } }'
+add api.yaml 'name: PUSH_SA_ID,' '- { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: admin-api-key, key: "1" } } }'
 bad "the PostHog key from another secret" "POSTHOG_PROJECT_KEY reads secret admin-api-key, want posthog-project-key"
 nopin
-add api.yaml 'name: OTLP_TOKEN,' '- { name: POSTHOG_PROJECT_KEY, value: "phc_inline" }'
+add api.yaml 'name: PUSH_SA_ID,' '- { name: POSTHOG_PROJECT_KEY, value: "phc_inline" }'
 bad "the PostHog key as a plain value" "POSTHOG_PROJECT_KEY is not in ticket-b.md's env table for api"
-add ingest.yaml 'name: OTLP_TOKEN,' '- { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "1" } } }'
+add ingest.yaml 'name: PUSH_SA_ID,' '- { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "1" } } }'
 bad "ingest with the PostHog key" "ingest reads posthog-project-key, which only api can access"
 # design §4: migrate's pin of a role equals the service's own.
 pinkey migrate.yaml db-password-api "key: \"$(( $(pin_of api.yaml db-password-api) + 1 ))\""

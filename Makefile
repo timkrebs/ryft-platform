@@ -8,7 +8,7 @@ GOLANGCI_LINT_VERSION := v2.15.0
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: k8s-context k8s-context-local test check-api-doc test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod pooler-check session-state-check cloudrun-check alerts-check alerts-apply alerts-retire-eks synthetics-check synthetics-apply check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate argocd-luatest monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-hosting web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check topology-check
+.PHONY: k8s-context k8s-context-local test check-api-doc test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod pooler-check session-state-check cloudrun-check alerts-check alerts-retire-eks check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate argocd-luatest monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-hosting web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check topology-check
 
 test:
 	cd backend && go vet ./... && go test ./...
@@ -250,34 +250,35 @@ k8s-delete-local: k8s-context-local
 # are skipped (kubeconform has no schema for them): the only ones are the vendored
 # operators', which SHA256SUMS pins.
 KUBECONFORM_CRDS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
-# Alert rules as code (deploy/grafana/alerts, D85): promtool checks the rules and runs
-# their unit tests; mimirtool loads them into Grafana Cloud's ruler. Containers, so
-# neither tool has to be installed.
+# The EKS cluster's alert rules (deploy/grafana/alerts, D85), EKS leftovers until D3: promtool checks
+# the rules and runs their unit tests, mimirtool checks them as Grafana Cloud's ruler would. Containers,
+# so neither tool has to be installed. RYFT on Cloud Run alerts from Cloud Monitoring (infra/gcp/alerts.tf,
+# D236): ryft.yaml, the Cloud Run rules alerts-apply loaded, went with Grafana Cloud, and so did
+# alerts-apply; nothing here loads a rule any more.
 # Pinned by digest (the index, all platforms); the tags are prom/prometheus:v3.5.0 and
-# grafana/mimirtool:2.16.0. alerts-apply hands the rules token to mimirtool.
+# grafana/mimirtool:2.16.0.
 # scripts/check_rule_groups.sh holds every group to Grafana Cloud's 20 rules (neither tool knows it).
-# ryft.yaml is RYFT on Cloud Run, the only file alerts-apply loads. eks-admission.yaml and
-# admission-intended.yaml are the EKS cluster's admission rules, checked here (with their tests) until
-# the EKS removal (D3) and never loaded; alerts-retire-eks deletes their live copies and the old Vault
-# group once EKS is gone (docs/OBSERVABILITY.md → Alerts → EKS leftovers). mimirtool checks each file in
-# a run of its own: eks-admission.yaml keeps the live namespace ryft, ryft.yaml's (loaded by hand it
-# replaces the live group, never a copy beside it), and one mimirtool run refuses a namespace twice.
+# eks-admission.yaml and admission-intended.yaml are the EKS cluster's admission rules, checked here
+# (with their tests) until the EKS removal (D3) and never loaded; alerts-retire-eks deletes their live
+# copies and the old Vault group once EKS is gone (docs/OBSERVABILITY.md → Alerts → EKS leftovers).
+# mimirtool checks each file in a run of its own: eks-admission.yaml keeps the live namespace ryft, and
+# one mimirtool run refuses a namespace twice.
 PROMTOOL_IMAGE := docker.io/prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
 MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool@sha256:f172fbe57ff63694a9b284f745e271deeb8eb782b97a3e3de9abaf07d45d276c
-ALERT_FILES := ryft eks-admission admission-intended
-# The groups alerts-apply loaded on EKS and no longer loads, as namespace/group: ryft-admission and
-# ryft-vault were in ryft.yaml (namespace ryft) and are not any more; ryft-admission-intended is
-# admission-intended.yaml's (namespace ryft-admission), which alerts-apply loaded next to ryft.yaml.
-# scripts/tests/alerts_retire_test.sh holds this list to the files.
+ALERT_FILES := eks-admission admission-intended
+# The groups loaded on EKS that nothing loads any more, as namespace/group: ryft-admission and
+# ryft-vault were in the old rules file (namespace ryft); ryft-admission-intended is
+# admission-intended.yaml's (namespace ryft-admission). scripts/tests/alerts_retire_test.sh holds this
+# list to the files.
 EKS_RULE_GROUPS := ryft/ryft-admission ryft/ryft-vault ryft-admission/ryft-admission-intended
 alerts-check:
 	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; chmod 755 "$$d"; \
 	scripts/admission_intended.sh --check; \
 	scripts/check_rule_groups.sh $(foreach f,$(ALERT_FILES),deploy/grafana/alerts/$(f).yaml); \
 	for f in $(ALERT_FILES); do sed '/^namespace:/d' "deploy/grafana/alerts/$$f.yaml" > "$$d/$$f.rules.yaml"; done; \
-	cp deploy/grafana/alerts/ryft.test.yaml deploy/grafana/alerts/eks-admission.test.yaml "$$d/"; chmod a+r "$$d"/*; \
+	cp deploy/grafana/alerts/eks-admission.test.yaml "$$d/"; chmod a+r "$$d"/*; \
 	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules $(foreach f,$(ALERT_FILES),/rules/$(f).rules.yaml); \
-	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/ryft.test.yaml /rules/eks-admission.test.yaml; \
+	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/eks-admission.test.yaml; \
 	for f in $(ALERT_FILES); do \
 	  $(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/$$f.yaml || exit 1; \
 	done
@@ -333,18 +334,10 @@ golden-update:
 	@: "$${RYFT_TEST_POSTGRES_URL:?a throwaway Postgres server, e.g. postgres://postgres:<password>@localhost:5432/postgres}"
 	cd backend && RYFT_GOLDEN_UPDATE=$(or $(GOLDEN_MODE),1) go test ./internal/scoring/ -run '^TestGoldenScores$$' -count=1 -v
 
-alerts-apply: alerts-check
-	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-<NN>-<region>.grafana.net}" \
-	   "$${GRAFANA_PROM_USER:?the Prometheus instance id of the Grafana stack, a number}" \
-	   "$${GRAFANA_RULES_TOKEN:?an access policy token with rules:read and rules:write}"
-	MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" $(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro \
-	  -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY \
-	  $(MIMIRTOOL_IMAGE) rules load /alerts/ryft.yaml
-
-# Once nothing serves from EKS (runbook step 11, after step 10; at the latest with D3): delete the
-# EKS_RULE_GROUPS above, which are live as last loaded and which no load replaces (a load never
-# deletes a group it does not name). Each group is tried: one that is already gone is reported and
-# the others are still deleted; the exit is 1 then, so look at Alerting → Alert rules.
+# Once nothing serves from EKS (at the latest with D3), while the Grafana Cloud stack still exists:
+# delete the EKS_RULE_GROUPS above, which are live as last loaded. Not needed if the stack itself goes
+# first (runbook GCP step 11.7: its rules go with it). Each group is tried: one that is already gone
+# is reported and the others are still deleted; the exit is 1 then, so look at Alerting → Alert rules.
 alerts-retire-eks:
 	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-<NN>-<region>.grafana.net}" \
 	   "$${GRAFANA_PROM_USER:?the Prometheus instance id of the Grafana stack, a number}" \
@@ -356,15 +349,6 @@ alerts-retire-eks:
 	    $(MIMIRTOOL_IMAGE) rules delete "$${g%%/*}" "$${g#*/}" \
 	    || { echo "  $$g was not deleted (already gone, or the token): see Alerting → Alert rules" >&2; rc=1; }; \
 	done; exit $$rc
-
-# External checks of ryftlab.de in Grafana Cloud Synthetic Monitoring (deploy/grafana/synthetics).
-# synthetics-check validates the definitions offline; synthetics-apply upserts them by job name
-# through the SM API (SM_API_URL, SM_ACCESS_TOKEN; docs/OPERATIONS.md -> Monitoring).
-synthetics-check:
-	@./scripts/synthetics.sh check
-
-synthetics-apply:
-	@./scripts/synthetics.sh apply
 
 k8s-validate:
 	@set -e; export GIT_ALLOW_PROTOCOL=file; out=$$(mktemp); gen=; \

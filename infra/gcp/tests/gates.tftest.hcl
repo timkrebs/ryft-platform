@@ -15,7 +15,6 @@ mock_provider "google" {
   }
 }
 mock_provider "google-beta" {}
-mock_provider "grafana" {}
 
 override_data {
   target = data.google_project.this
@@ -269,60 +268,4 @@ run "invokers_only_through_the_binding" {
     )
     error_message = "run.invoker only in google_cloud_run_v2_service_iam_binding.invoker; no Cloud Run IAM policy resource, no v1 Cloud Run IAM resource"
   }
-}
-
-# The Grafana-managed rules exist only once the data source UID is set (runbook step 11).
-run "no_grafana_rules_before_step_11" {
-  command = plan
-
-  assert {
-    condition     = length(grafana_folder.gcp) == 0 && length(grafana_rule_group.gcp) == 0
-    error_message = "no Grafana resource (and so no Grafana token) before the data source exists"
-  }
-}
-
-run "grafana_rules_at_step_11" {
-  command = plan
-
-  variables {
-    grafana_url            = "https://example.grafana.net"
-    grafana_datasource_uid = "cloud-monitoring"
-  }
-
-  assert {
-    condition = (
-      length(grafana_folder.gcp) == 1 &&
-      grafana_rule_group.gcp[0].interval_seconds == 300 &&
-      toset([for r in grafana_rule_group.gcp[0].rule : r.name]) == toset(["HTTP5xxRatio", "SyncSlow", "DeadLetters", "PushBacklog", "Saturated"])
-    )
-    error_message = "one group, evaluated every 5 minutes, with the five Cloud Monitoring rules"
-  }
-
-  assert {
-    condition = alltrue([
-      for r in grafana_rule_group.gcp[0].rule :
-      r.condition == "C" && contains(["critical", "warning"], r.labels["severity"]) &&
-      [for d in r.data : d.datasource_uid] == ["cloud-monitoring", "__expr__", "__expr__"] &&
-      jsondecode(r.data[0].model).queryType == "promQL" && jsondecode(r.data[0].model).promQLQuery.projectName == "ryftlab-prod"
-    ])
-    error_message = "every rule queries the Cloud Monitoring data source in ryftlab-prod, then reduces and thresholds"
-  }
-
-  assert {
-    condition = alltrue([
-      for r in grafana_rule_group.gcp[0].rule :
-      !can(regex("ryft_[a-z_]+", jsondecode(r.data[0].model).promQLQuery.expr))
-    ])
-    error_message = "no app metric here: ryft_* rules live in deploy/grafana/alerts"
-  }
-}
-
-run "rejects_a_datasource_without_a_grafana_url" {
-  command = plan
-
-  variables {
-    grafana_datasource_uid = "cloud-monitoring"
-  }
-
-  expect_failures = [var.grafana_datasource_uid]
 }

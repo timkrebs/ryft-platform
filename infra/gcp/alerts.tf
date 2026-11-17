@@ -1,176 +1,186 @@
-# The Grafana-managed rules on Cloud Monitoring's metrics (design 6): what the platform reports, read
-# where it is through the Google Cloud Monitoring data source (grafana-reader, D224). The app's own
-# ryft_* rules stay Prometheus rules in deploy/grafana/alerts (make alerts-apply); none is repeated here.
+# Cloud Monitoring's alert policies (D236): five conditions, one policy each, all to both channels. The
+# cap is five (tests/monitoring.tftest.hcl): every condition has a monthly price (D236 -> Cost), and a
+# sixth needs a decision, not a line here.
 #
-# Gated: nothing exists until grafana_datasource_uid is set (runbook step 11), so applies 1 and 2 need
-# no Grafana token. Evaluated every 5 minutes, not every minute: every evaluation is a Monitoring API
-# read (design 6). Queries are PromQL on Google's metric names (run.googleapis.com/request_count is
-# run_googleapis_com:request_count). Routed by severity, like every other rule (OBSERVABILITY -> Alerts).
+# Gated: nothing in this file exists until alert_app_channel_name is set (local.alerting, runbook step
+# 11.1). Then both channels are read; one that does not exist, or a name two channels share, fails the
+# plan (step 11.2's stop rule). The channels themselves are the user's, made by hand in the console: an
+# email to ryft-timkrebs and the Google Cloud app. Their names stay out of this root but for the email's.
+#
+# Queries are PromQL on Google's metric names, the threshold part of the query (any series it returns is
+# an open incident). Condition 1 is a classic threshold: check_passed is a BOOL, which PromQL can't count
+# per location without a cast. First looks: docs/OPERATIONS.md -> GCP -> When an alert fires.
+
+data "google_monitoring_notification_channel" "email" {
+  count = local.alerting ? 1 : 0
+
+  project      = var.project_id
+  type         = "email"
+  display_name = "ryft-timkrebs"
+}
+
+data "google_monitoring_notification_channel" "app" {
+  count = local.alerting ? 1 : 0
+
+  project      = var.project_id
+  display_name = var.alert_app_channel_name
+}
+
 locals {
-  gcp_rules = {
-    # More than 2 % of api or ingest requests answer 5xx, Cloud Run's own 5xx (no instance, timeouts)
-    # included. The app-metric rule of the same name it replaces used the same 2 %.
-    HTTP5xxRatio = {
-      expr      = <<-EOT
-        sum by (service_name) (rate(run_googleapis_com:request_count{monitored_resource="cloud_run_revision", service_name=~"api|ingest", response_code_class="5xx"}[10m]))
-          / sum by (service_name) (rate(run_googleapis_com:request_count{monitored_resource="cloud_run_revision", service_name=~"api|ingest"}[10m]))
-      EOT
-      window    = 900
-      threshold = 0.02
-      for       = "10m"
-      severity  = "critical"
-      summary   = "{{ $labels.service_name }}: more than 2 % of requests answer 5xx"
-      look      = "Logs Explorer: resource.type=\"cloud_run_revision\" resource.labels.service_name=\"<svc>\" httpRequest.status>=500"
-    }
+  alert_channels = concat(
+    data.google_monitoring_notification_channel.email[*].name,
+    data.google_monitoring_notification_channel.app[*].name,
+  )
 
-    # ingest's p95 latency over 10 s (milliseconds here). Cloud Run's latencies have no path, so this
-    # is every ingest request, ticks and health checks included: the sync dominates it.
-    SyncSlow = {
-      expr      = <<-EOT
-        histogram_quantile(0.95, sum by (le) (rate(run_googleapis_com:request_latencies_bucket{monitored_resource="cloud_run_revision", service_name="ingest"}[15m])))
-      EOT
-      window    = 1200
-      threshold = 10000
-      for       = "15m"
-      severity  = "warning"
-      summary   = "Syncs take over 10 s (ingest p95)"
-      look      = "Cloud Run -> ingest -> Metrics (latency, instance count); Supabase's pooler"
-    }
+  alert_look = "docs/OPERATIONS.md -> GCP -> When an alert fires"
 
-    # A letter waits in a DLQ hold subscription (replaces RabbitMQDeadLetters).
-    DeadLetters = {
-      expr      = <<-EOT
-        max by (subscription_id) (pubsub_googleapis_com:subscription_num_undelivered_messages{monitored_resource="pubsub_subscription", subscription_id=~"dlq-.+-hold"})
-      EOT
-      window    = 900
-      threshold = 0
-      for       = "5m"
-      severity  = "warning"
-      summary   = "{{ $labels.subscription_id }} holds dead letters (scripts/dlq.sh list)"
-      look      = "scripts/dlq.sh list; the last error is in the consumer's log, keyed by messageId"
-    }
+  # Condition 2 to 5. Name => display name, severity, the PromQL, how often it is evaluated and how long
+  # it must hold, and the first look. Evaluated every 5 minutes but for the 5xx ratio (every minute): each
+  # evaluation's series count towards the query price (D236 -> Cost), and none of the others moves faster.
+  promql_policies = merge(
+    {
+      # More than 2 % of api's or ingest's requests answer 5xx for 10 minutes, Cloud Run's own 5xx (no
+      # instance, a timeout) included, and at least 3 of them: at night the uptime checks are most of the
+      # traffic, and one failed request in six is no outage.
+      "http-5xx" = {
+        name     = "RYFT · 5xx over 2 % (api, ingest)"
+        severity = "CRITICAL"
+        query    = <<-EOT
+          (
+            sum by (service_name) (rate(run_googleapis_com:request_count{${local.run}, service_name=~"api|ingest", response_code_class="5xx"}[10m]))
+              / sum by (service_name) (rate(run_googleapis_com:request_count{${local.run}, service_name=~"api|ingest"}[10m]))
+          ) > 0.02
+          and on (service_name)
+          sum by (service_name) (increase(run_googleapis_com:request_count{${local.run}, service_name=~"api|ingest", response_code_class="5xx"}[10m])) >= 3
+        EOT
+        every    = "60s"
+        hold     = "600s"
+        look     = "Logs Explorer: resource.type=\"cloud_run_revision\" resource.labels.service_name=\"<service>\" httpRequest.status>=500; then the service's ERROR lines (dashboard RYFT · Overview)."
+      }
 
-    # A scoring or notify subscription's oldest unacked message is over 15 minutes old (replaces
-    # RabbitMQBacklog). Tick subscriptions keep messages 10 minutes, so they never reach it.
-    PushBacklog = {
-      expr      = <<-EOT
-        max by (subscription_id) (pubsub_googleapis_com:subscription_oldest_unacked_message_age{monitored_resource="pubsub_subscription", subscription_id=~"(scoring|notify)-.+"})
-      EOT
-      window    = 900
-      threshold = 900
-      for       = "5m"
-      severity  = "warning"
-      summary   = "{{ $labels.subscription_id }}: the oldest event waits over 15 minutes"
-      look      = "the consumer's request log (429, 5xx), its max instances, then DeadLetters"
-    }
+      # A letter waits in a DLQ hold subscription: an event a consumer failed on five times.
+      "dead-letters" = {
+        name     = "RYFT · Dead letters held"
+        severity = "WARNING"
+        query    = <<-EOT
+          max by (subscription_id) (pubsub_googleapis_com:subscription_num_undelivered_messages{${local.pubsub}, subscription_id=~"${local.dlq_holds}"}) > 0
+        EOT
+        every    = "300s"
+        hold     = "300s"
+        look     = "scripts/dlq.sh --project ${var.project_id} list; the last error is in the consumer's log, keyed by messageId. Replay or purge (docs/OPERATIONS.md -> GCP -> Dead letters)."
+      }
 
-    # Cloud Run answered 429: no instance was free at max instances. On api and ingest a 429 can also
-    # be the app's own limiter (that one is RateLimited, from the app's metrics).
-    Saturated = {
-      expr      = <<-EOT
-        sum by (service_name) (increase(run_googleapis_com:request_count{monitored_resource="cloud_run_revision", response_code="429"}[15m]))
-      EOT
-      window    = 900
-      threshold = 0
-      for       = "5m"
-      severity  = "warning"
-      summary   = "{{ $labels.service_name }} answers 429 (saturated, or the app's limiter)"
-      look      = "Logs Explorer: a 429 from Cloud Run says no available instance; the app's has its JSON body"
-    }
-  }
+      # An event subscription's oldest unacked event is over 15 minutes old: a consumer that is down, or
+      # fails every push, while its dead-letter attempts are still running out (scoring and notify are
+      # the consumers today; condition 4 fires only after).
+      "push-backlog" = {
+        name     = "RYFT · Event backlog over 15 minutes"
+        severity = "WARNING"
+        query    = <<-EOT
+          max by (subscription_id) (pubsub_googleapis_com:subscription_oldest_unacked_message_age{${local.pubsub}, subscription_id=~"${local.event_subscriptions}"}) > 900
+        EOT
+        every    = "300s"
+        hold     = "300s"
+        look     = "the consumer's request log (429, 5xx), its max instances, then Dead letters held."
+      }
+    },
+    # A service has had no tick with result ok for 45 minutes (three ticks, every 15 minutes): the tick
+    # is not delivered, or every one fails (outbox, the purges, the reconcile, a database that is down).
+    # Every service by name, so a service with no tick line at all is in it too (an absent series). Only
+    # while the tick runs: paused (serve = false, or the stop line), it would page for every service.
+    local.tick ? {
+      "tick-missing" = {
+        name     = "RYFT · Tick missing"
+        severity = "CRITICAL"
+        query    = <<-EOT
+          (
+            ${join("\n  or ", [for s in sort(local.services) : "label_replace(vector(1), \"service_name\", \"${s}\", \"\", \"\")"])}
+          )
+          unless on (service_name)
+          (sum by (service_name) (increase(logging_googleapis_com:user_${google_logging_metric.ticks.name}{${local.run}, result="ok"}[45m])) > 0)
+        EOT
+        every    = "300s"
+        hold     = "300s"
+        look     = "the service's tick lines (jsonPayload.message=\"tick\"): result error names the step; none at all, then tick-<service> (Pub/Sub) and the Scheduler job ryft-tick."
+      }
+    } : {},
+  )
 }
 
-resource "grafana_folder" "gcp" {
-  count = local.alerts ? 1 : 0
+# Condition 1: an uptime check fails from at least two of its three locations for 10 minutes (more than
+# one location false, per check). The pattern Google's console writes, with a 10-minute duration.
+resource "google_monitoring_alert_policy" "uptime" {
+  count = local.alerting ? 1 : 0
 
-  uid   = "ryft-gcp"
-  title = "RYFT GCP (infra/gcp)"
-}
+  project               = var.project_id
+  display_name          = "RYFT · Uptime check failing"
+  combiner              = "OR"
+  severity              = "CRITICAL"
+  notification_channels = local.alert_channels
 
-resource "grafana_rule_group" "gcp" {
-  count = local.alerts ? 1 : 0
+  conditions {
+    display_name = "An uptime check fails from 2 of 3 locations for 10 minutes"
 
-  name             = "ryft-gcp"
-  folder_uid       = grafana_folder.gcp[0].uid
-  interval_seconds = 300
+    condition_threshold {
+      filter          = "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND resource.type=\"uptime_url\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 1
+      duration        = "600s"
 
-  dynamic "rule" {
-    for_each = local.gcp_rules
-
-    content {
-      name           = rule.key
-      condition      = "C"
-      for            = rule.value.for
-      no_data_state  = "OK"
-      exec_err_state = "Error"
-
-      labels = {
-        severity = rule.value.severity
+      aggregations {
+        alignment_period     = "1200s"
+        per_series_aligner   = "ALIGN_NEXT_OLDER"
+        cross_series_reducer = "REDUCE_COUNT_FALSE"
+        group_by_fields      = ["metric.label.check_id", "resource.label.host"]
       }
 
-      annotations = {
-        summary     = rule.value.summary
-        description = "First look: ${rule.value.look}. docs/OPERATIONS.md -> GCP."
-      }
-
-      data {
-        ref_id         = "A"
-        datasource_uid = var.grafana_datasource_uid
-
-        relative_time_range {
-          from = rule.value.window
-          to   = 0
-        }
-
-        model = jsonencode({
-          refId     = "A"
-          queryType = "promQL"
-          promQLQuery = {
-            projectName = var.project_id
-            expr        = trimspace(rule.value.expr)
-            step        = "60s"
-          }
-          intervalMs    = 60000
-          maxDataPoints = 43200
-        })
-      }
-
-      data {
-        ref_id         = "B"
-        datasource_uid = "__expr__"
-
-        relative_time_range {
-          from = 0
-          to   = 0
-        }
-
-        model = jsonencode({
-          refId      = "B"
-          type       = "reduce"
-          expression = "A"
-          reducer    = "last"
-          settings   = { mode = "dropNN" }
-          datasource = { type = "__expr__", uid = "__expr__" }
-        })
-      }
-
-      data {
-        ref_id         = "C"
-        datasource_uid = "__expr__"
-
-        relative_time_range {
-          from = 0
-          to   = 0
-        }
-
-        model = jsonencode({
-          refId      = "C"
-          type       = "threshold"
-          expression = "B"
-          conditions = [{ evaluator = { type = "gt", params = [rule.value.threshold] } }]
-          datasource = { type = "__expr__", uid = "__expr__" }
-        })
+      trigger {
+        count = 1
       }
     }
   }
+
+  alert_strategy {
+    auto_close = "1800s"
+  }
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "An uptime check (ryft-site-*, ryft-api-ready, ryft-ingest-ready) fails from two of three locations. First look: the check's page in Monitoring -> Uptime checks (which location, which status), then the host itself: ryftlab.de is Firebase Hosting (site job in deploy.yml), api. and ingest. are Cloud Run (/health/ready is the database behind them). ${local.alert_look}."
+  }
+}
+
+# Condition 2 to 5.
+resource "google_monitoring_alert_policy" "promql" {
+  for_each = local.alerting ? local.promql_policies : {}
+
+  project               = var.project_id
+  display_name          = each.value.name
+  combiner              = "OR"
+  severity              = each.value.severity
+  notification_channels = local.alert_channels
+
+  conditions {
+    display_name = each.value.name
+
+    condition_prometheus_query_language {
+      query               = trimspace(each.value.query)
+      evaluation_interval = each.value.every
+      duration            = each.value.hold
+      # The tick's metric is new with this root (monitoring.tf) and has no point until the first tick
+      # line after the apply.
+      disable_metric_validation = each.key == "tick-missing"
+    }
+  }
+
+  alert_strategy {
+    auto_close = "1800s"
+  }
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "First look: ${each.value.look} ${local.alert_look}."
+  }
+
+  depends_on = [google_logging_metric.ticks]
 }

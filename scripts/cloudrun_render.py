@@ -17,8 +17,9 @@ change what is deployed. Derived values:
   PUSH_AUDIENCE  https://<svc>-<project number>.europe-west1.run.app (the service's own run.app URL)
   IMAGE          europe-west1-docker.pkg.dev/ryftlab-prod/ryft/<svc>@sha256:<digest>
 Fails closed: a FILL_ME_IN left in config.env (the config PR before the first deploy), a value of the
-wrong shape, a missing, unknown or repeated key, half of the OTLP pair. --lint checks the same but lets
-FILL_ME_IN pass (and names what is left), so CI catches a typo in a config PR before the deploy does.
+wrong shape, a missing, unknown or repeated key (OTLP_ENDPOINT and OTLP_USER among the unknown since
+D236). --lint checks the same but lets FILL_ME_IN pass (and names what is left), so CI catches a typo
+in a config PR before the deploy does.
 Exit 0 rendered (or linted), 1 a finding, 2 usage.
 """
 import argparse
@@ -48,13 +49,10 @@ KEYS = {
                              "aws-<n>-eu-central-1.pooler.supabase.com"),
     "APPLE_KEY_ID": (True, r"[A-Z0-9]{10}", "10 upper-case letters or digits"),
     "APNS_KEY_ID": (True, r"[A-Z0-9]{10}", "10 upper-case letters or digits"),
-    "OTLP_ENDPOINT": (False, r"https://otlp-gateway-[a-z0-9-]+\.grafana\.net/otlp",
-                      "empty, or https://otlp-gateway-<region>.grafana.net/otlp"),
-    "OTLP_USER": (False, r"[1-9][0-9]{0,11}", "empty, or the Grafana Cloud instance ID (digits)"),
 }
 # The template placeholders, the only names ever substituted.
 VARS = ("IMAGE", "DATABASE_URL", "PUSH_AUDIENCE", "PRIVACY_POLICY_VERSION", "LOG_LEVEL", "SUPABASE_PROJECT_REF",
-        "PUSH_SA_ID", "OTLP_ENDPOINT", "OTLP_USER", "APPLE_KEY_ID", "APNS_KEY_ID")
+        "PUSH_SA_ID", "APPLE_KEY_ID", "APNS_KEY_ID")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=(.*)")
 PLACE = re.compile(r"\$\{([A-Za-z0-9_]*)\}")
@@ -115,8 +113,6 @@ def read_config(path, lint):
                 datetime.date.fromisoformat(v)
             except ValueError:
                 errs.append(f"{path}: PRIVACY_POLICY_VERSION={v} is not a calendar date (the services refuse it)")
-    if (vals.get("OTLP_ENDPOINT", "") == "") != (vals.get("OTLP_USER", "") == ""):
-        errs.append(f"{path}: OTLP_ENDPOINT and OTLP_USER are set together or both left empty")
     if errs:
         raise Finding("\n".join(errs))
     return vals, left

@@ -49,9 +49,6 @@ spec:
             - { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }
             - { name: PUSH_SA_EMAIL, value: ryft-push@ryftlab-prod.iam.gserviceaccount.com }
             - { name: PUSH_SA_ID, value: "${PUSH_SA_ID}" }
-            - { name: OTLP_ENDPOINT, value: "${OTLP_ENDPOINT}" }
-            - { name: OTLP_USER, value: "${OTLP_USER}" }
-            - { name: OTLP_TOKEN, valueFrom: { secretKeyRef: { name: otlp-token, key: "1" } } }
             - { name: LOG_LEVEL, value: "${LOG_LEVEL}" }
   traffic:
     - { percent: 100, latestRevision: true }

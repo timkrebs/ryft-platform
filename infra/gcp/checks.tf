@@ -24,3 +24,14 @@ check "domain_mappings_ready" {
     error_message = "A domain mapping is not Ready (its certificate is pending). gcloud beta run domain-mappings describe --domain=<host> --region=${var.region} names the condition."
   }
 }
+
+# A disabled channel is still a valid notification_channels entry: the policy opens incidents and nobody
+# hears of them (D236). Both are read only once the alerting gate is on (alerts.tf).
+check "alert_channels_enabled" {
+  assert {
+    condition = alltrue([
+      for c in concat(data.google_monitoring_notification_channel.email, data.google_monitoring_notification_channel.app) : c.enabled
+    ])
+    error_message = "A notification channel of the alert policies is disabled, so its alerts reach nobody. Monitoring -> Alerting -> Edit notification channels: enable it (docs/OPERATIONS.md -> GCP, step 11)."
+  }
+}
