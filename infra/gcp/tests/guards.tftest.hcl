@@ -63,15 +63,35 @@ run "prevent_destroy_and_delayed_destruction" {
   assert {
     condition = (
       length(regexall("(?m)^\\s*prevent_destroy\\s*=\\s*true", file("${path.module}/secrets.tf"))) == 1 &&
-      length(regexall("(?m)^\\s*version_destroy_ttl\\s*=\\s*\"2592000s\"", file("${path.module}/secrets.tf"))) == 1 &&
+      length(regexall("(?m)^\\s*version_destroy_ttl\\s*=\\s*\"2592000s\"", file("${path.module}/secrets.tf"))) == 2 &&
       length(regexall("(?m)^\\s*prevent_destroy\\s*=\\s*true", file("${path.module}/dns.tf"))) == 1
     )
-    error_message = "the secrets and the zone keep prevent_destroy; the secrets keep the 30-day destroy delay"
+    error_message = "the secrets and the zone keep prevent_destroy; both secret blocks (this, retired) keep the 30-day destroy delay"
+  }
+
+  # The one prevent_destroy of secrets.tf sits in `this`, in its lifecycle, not commented out (Terraform
+  # test doesn't enforce it, so the file is checked, as infra/vault/tests/vault.tftest.hcl does).
+  assert {
+    condition = (
+      length([for c in split("\nresource \"", file("${path.module}/secrets.tf")) : c if startswith(c, "google_secret_manager_secret\" \"this\" {")]) == 1 &&
+      alltrue([
+        for c in split("\nresource \"", file("${path.module}/secrets.tf")) :
+        can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true$", c)) if startswith(c, "google_secret_manager_secret\" \"this\" {")
+      ])
+    )
+    error_message = "google_secret_manager_secret.this (secrets.tf) needs lifecycle { prevent_destroy = true }: the data key's container is among them"
+  }
+
+  # Two blocks until step 11.6's PR 2 (docs/OPERATIONS.md -> GCP): `this`, with prevent_destroy, and
+  # `retired`, without, for otlp-token alone. Nothing else may sit in the one without.
+  assert {
+    condition     = length(regexall("(?m)^\\s*resource\\s+\"google_secret_manager_secret\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 2
+    error_message = "two google_secret_manager_secret blocks: this (prevent_destroy) and retired (step 11.6)"
   }
 
   assert {
-    condition     = length(regexall("(?m)^\\s*resource\\s+\"google_secret_manager_secret\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
-    error_message = "one google_secret_manager_secret block (the one with prevent_destroy)"
+    condition     = toset(keys(google_secret_manager_secret.retired)) == toset(["otlp-token"])
+    error_message = "only otlp-token is retired: every other secret keeps prevent_destroy"
   }
 
   assert {
@@ -80,8 +100,8 @@ run "prevent_destroy_and_delayed_destruction" {
   }
 
   assert {
-    condition     = alltrue([for s in google_secret_manager_secret.this : s.version_destroy_ttl == "2592000s"])
-    error_message = "every secret's versions are restorable for 30 days after a destroy"
+    condition     = alltrue([for s in concat(values(google_secret_manager_secret.this), values(google_secret_manager_secret.retired)) : s.version_destroy_ttl == "2592000s"])
+    error_message = "every secret's versions, the retired ones' included, are restorable for 30 days after a destroy"
   }
 }
 

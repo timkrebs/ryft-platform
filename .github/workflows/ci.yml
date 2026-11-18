@@ -759,7 +759,8 @@ jobs:
   # http://localhost:8080 and runs Playwright (every page, light + dark, routes, headers, axe),
   # scripts/check-hosting.mjs --emulator (deploy.yml's `site` job runs it against ryftlab.de with
   # production's expectations; they differ on the admin redirects and on "//", web D21),
-  # the links and Lighthouse (mobile; LCP < 1.5 s, < 80 KB JS) against it; any failure is exit 1.
+  # the links and Lighthouse against it (mobile, 3 runs per page; the median of the runs within LCP
+  # 1.5 s, CLS 0.05, TBT 100 ms and a score of 0.95, web D24; < 80 KB JS); any failure is exit 1.
   # No image and no container: Hosting serves the files themselves.
   web-e2e:
     needs: [changes]

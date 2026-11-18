@@ -1405,7 +1405,7 @@ and counted). A bad payload from a new device type would vanish.
   The data is `synth.py --demo` (named sources with bundle ids, workouts three days a
   week); its default output is unchanged, so the smoke's expectations stay.
 
-## D87 — Gate modes: off, warn, on
+## D87 — Gate modes: off, warn, on (amended by D238)
 
 The app cannot pass the gates yet (no invite or consent screen), and the operator's own
 account was locked out of syncing by the consent check (STATUS → Incidents, 2026-10-20).
@@ -5315,7 +5315,7 @@ _Grafana half superseded by D236._
 - **Consequences:** a Dependabot bump of an action anywhere under `.github/` runs the test on its own PR, and the next
   bump of a pinned action doesn't touch the test.
 
-## D236 — Cloud Monitoring is the only observability; Grafana Cloud out (**the user's decision**, 2026-11-17; supersedes D224's Grafana half)
+## D236 — Cloud Monitoring is the only observability; Grafana Cloud out (**the user's decision**, 2026-11-17; supersedes D224's Grafana half; amended by D237)
 
 - **Context:** D224 had Grafana Cloud read Cloud Monitoring through `grafana-reader` (a service-account key) and take
   the app metrics by OTLP push. Runbook step 11, which would have made the key, the data source, the push, the
@@ -5379,6 +5379,99 @@ _Grafana half superseded by D236._
   log has ERROR entries for every 5xx, with the caller's IP. For RYFT on GCP, C2 need not name Grafana.
 - **Consequences:** `OBSERVABILITY.md` → Cloud Monitoring; `OPERATIONS.md` → GCP → 11 and When an alert fires;
   `infra/gcp/README.md`.
+
+## D237 — The app alert channel by id: `alert_app_channel`, null as unset, and a plan that fails on the email channel (2026-11-18; amends D236)
+
+- **Context (found on 2026-11-18, read-only, through the API):** every alert policy lists the same channel twice,
+  the email channel `ryft-timkrebs` (type `email`). The project has no other channel in the API and no mobile type
+  among its channel descriptors: the Google Cloud app's device ("Mobile Devices" in the console) is no channel the
+  API lists or a data source can find, and only the console can pick it. D236's app data source, looked up by
+  display name alone, resolved to the email channel. Nothing failed: not the plan, not the apply, not `checks.tf`'s
+  enabled check.
+- **Decision:**
+  - **By id.** The app channel comes in by its full resource name, `alert_app_channel` (a string,
+    `^projects/[a-z0-9-]+/notificationChannels/[0-9]+$`). The user attaches the device to one policy in the console
+    and reads the name from that policy's `notificationChannels` (runbook GCP 11.1; once, 11.8). The app data source
+    and D236's display-name variable go. 11.1 reads the policies with a projection (`displayName`,
+    `notificationChannels`), so their edit records, which name who edited them, stay off the screen.
+  - **Null is unset.** `default = null`; the validation is `var.alert_app_channel == null || can(regex(…))`. With no
+    default at all, every plan, every `terraform test` run and CI would need a value: the gate (unset, no policy and
+    no channel read) would be gone, and a value would have to sit in a file. "No default" meant no committed value:
+    there is none, and a test fails on one. An empty string is refused, not taken for unset, so an HCP variable
+    saved empty fails the plan instead of turning alerting off quietly.
+  - **Not sensitive** (HCP's Sensitive off to match). The name is an opaque id, the project and a number: it grants
+    nothing, and the device's display name, the personal part, stays in the console. Not sensitive, it drives
+    `local.alerting` without `nonsensitive()`, and the plan shows it in every policy, which is where the user checks
+    it against 11.1. It is per device, so it is a workspace variable and in no committed file.
+  - **A postcondition on the email channel's data source, not a `check`.** A check only warns, and the finding passed
+    every plan with its warnings. The postcondition fails the plan when the app channel is the email channel: one
+    place, evaluated when the email channel is read at plan time, where a precondition would sit on both policy
+    blocks and fail five instances with five identical errors.
+  - **By the channel number**, the name's last segment. `projects/<id>/…` and `projects/<number>/…` are the same
+    project, so a comparison of the whole names could miss the same channel. The whole number is compared, never its
+    end (`11` is not `1`). Another project's channel with the same number fails too, which is harmless: a policy
+    takes this project's channels.
+  - **Order `[email, app]`** in every policy. `notification_channels` is an ordered list, so the policies applied
+    under D236 (`[email, email]`) change in place once: 11.8's plan is 0 to add, 5 to change, 0 to destroy, or 4 to
+    change if the console saved the policy the user edited as exactly `[email, app]` (then it already matches).
+- **Rejected:** a lookup with a `type` (no mobile type among the descriptors to name); the channel as a resource (only
+  the console makes a device channel); sensitive (it would hide the one value the user must check in the plan, and
+  protect no secret); a `check` (see above).
+- **Lost:** `checks.tf`'s enabled check covers the email channel only, since no data source reads the app's. 11.4's
+  test alert is its check, and 11.8 runs it again.
+- **Tests** (`tests/monitoring.tftest.hcl`, mocked, plan only): unset, no policy and no data source; set, every
+  policy's channels exactly [the email's name, the variable], not sensitive; equal to the email channel's, also
+  under the project number, the plan fails (`expect_failures` on the data source); `…/11` beside `…/1` plans; the
+  validation refuses a display name, `""`, `…/alertPolicies/1` and a trailing slash; no committed tfvars sets it, no
+  `.tf` or tfvars holds a channel id, and every test value is in the fake project `fake-for-tests`.
+- **Consequences:** `OPERATIONS.md` → GCP → 11.1, 11.2, 11.4 and 11.8 (once); `infra/gcp/README.md`;
+  `OBSERVABILITY.md`; STATUS's 11.1 and 11.2.
+  
+## D238 — The beta gate on GCP: `warn` first, `on` after a stop rule, in `deploy/run/config.env` (2026-11-18; amends D87)
+
+- **Context:** on Cloud Run `BETA_GATE` was set nowhere, so the code's default (`off`, D87) held: any Supabase
+  account could sync. The first testers (5–10, TestFlight, heart rate and sleep: GDPR Art. 9) come next. `on`
+  straight away would refuse every account without a redeemed code at the first request after the deploy: the
+  operator's own and the smoke user's, if they have none, and `deploy.yml`'s smoke would go red, since it has
+  no admin key to make one.
+- **Decision:**
+  - `BETA_GATE` is a required key of `deploy/run/config.env` (shape `off|warn|on`, lower case), rendered into
+    api and ingest only, the two services that run the gate. scoring calls `LoadBeta` but reads only the
+    consent mode, so it gets no such line. The mode in force is always the one in git, never the code's
+    default.
+  - **`warn` first.** It serves every account as before and flags each one without access (`X-RYFT-Gate:
+    invite_required`, the access line's `gate`, `GET /v1/me/sync` → `gate`), so the merge refuses nothing and the
+    app, which knows the header, asks for a code. In that time the operator redeems a code for their own account
+    (in the app, which also proves the TestFlight build takes one) and for the smoke user, and every invited
+    tester redeems theirs.
+  - **`on` needs** (OPERATIONS → GCP → The beta gate, step 5): 7 days of warn lines with nothing but the smoke
+    probe's, every code handed out used, no account without access that should keep it, the testers' build the
+    one that took the operator's code (or newer), and `make smoke-prod` green with the key (`gates: invite warn`).
+    Then the flip is a PR of one line, and its rollback is the same line back to `warn`.
+  - Codes are unbound, single use, expire in 14 days, and their notes name nobody (an unbound code's note is
+    never cleared). No bound code before the privacy text names the stored address (U3).
+  - **`CONSENT_ENFORCE` is unchanged:** not in `config.env`, so the default `on` holds in every step. A sync
+    without consent to the current policy is refused throughout, and nothing is scored without one.
+- **Amends D87:** D87's runbook made "both `on`" the step before the first external invite, because `warn`
+  in the consent gate processes health data without a recorded consent. With the consent gate `on` throughout,
+  that reason doesn't apply to the beta gate. So invited testers may redeem while it is still `warn`: under warn
+  an account without a code is served, never processed without consent. `on` still comes before the beta is
+  opened to anyone not invited.
+- **Rejected:**
+  - `on` in this PR. It would lock out whichever of the operator's account and the smoke user has no code,
+    with no way to tell in advance which: `ryft_gate_refusals_total` isn't read on Cloud Run (D236).
+  - Leaving the key optional, with the code's default. A deploy's mode would then be what the code says, not
+    what the reviewed PR says.
+  - The admin key in `deploy.yml`'s smoke, so CI could redeem or probe by itself. That puts the operator's
+    break-glass key into a CI environment for a one-time step.
+- **Unchecked here:** that the TestFlight build shows the invite screen on a `403 invite_required` (the app's
+  code reads so; the throwaway check after the flip proves it); that the operator's and the smoke user's accounts
+  lack access today (the count in step 5 says).
+- **Privacy:** no new processor and no new data. The warn lines carry `user_id` like every access line; the
+  runbook's prints leave it out, and the count goes through `sort` and `wc`. A code's note names nobody.
+- **Consequences:** `scripts/cloudrun_render.py` (the key and the placeholder), `scripts/check_cloudrun.py` (the
+  env of api and ingest), their tests, `deploy/run/{config.env,api.yaml,ingest.yaml}`; `OPERATIONS.md` → GCP →
+  The beta gate: warn, then on.
 
 ## D239 — Before testers: auth mail through Microsoft 365 as a bridge, the restore drill on a new project, feedback by a proposed sixth condition (2026-11-18)
 

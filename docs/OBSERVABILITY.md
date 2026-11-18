@@ -15,8 +15,8 @@ cluster's, not Cloud Run's.
 
 Everything here is `infra/gcp`: `monitoring.tf` (the log-based metrics, the uptime checks, the
 dashboard; free at RYFT's volume, so always there) and `alerts.tf` (the five policies; only once
-the workspace variable `alert_app_channel_name` is set, runbook GCP step 11.1). The user applies
-it (OPERATIONS → GCP → 11).
+the workspace variable `alert_app_channel` is set, the app channel's resource name, runbook GCP step
+11.1, D237). The user applies it (OPERATIONS → GCP → 11).
 
 **What is measured, and by whom.**
 
@@ -80,8 +80,8 @@ locations passing) and the certificate's days left, by check; and a logs panel o
 ### The alert policies
 
 Five conditions, one policy each, to both channels: the email `ryft-timkrebs` and the Google Cloud
-app's (made by hand; the app channel's display name is personal data, so it is a sensitive
-workspace variable and in no file). Five is the cap (`tests/monitoring.tftest.hcl`): each condition
+app's (made by hand; the app channel by its resource name, the workspace variable
+`alert_app_channel`, not sensitive and in no file, D237). Five is the cap (`tests/monitoring.tftest.hcl`): each condition
 has a price, and a sixth is a decision. Each policy's documentation is its first look; the table
 with the commands is OPERATIONS → GCP → When an alert fires.
 

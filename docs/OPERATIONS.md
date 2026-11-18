@@ -79,7 +79,7 @@ on Pub/Sub and Cloud Run.
 | 8 | First deploy | A merged, steps 5 and 7 done |
 | 9 | Apply 2: invokers and mappings, then `make smoke-supabase` | step 8 |
 | 10 | The site and the app | waits for C1 |
-| 11 | Observability on Cloud Monitoring (D236) | the PR "observability on Cloud Monitoring" merged; step 10 done (the site's uptime checks). 11.6 waits for 11.4, 11.7 for D3 if EKS still sends to Grafana Cloud |
+| 11 | Observability on Cloud Monitoring (D236) | the PR "observability on Cloud Monitoring" merged; step 10 done (the site's uptime checks). 11.6 waits for 11.4, 11.7 for D3 if EKS still sends to Grafana Cloud, 11.8 (once) for the PR "infra: the app alert channel by id" and 11.6's first apply |
 | 12–14 | Old org: retire Route 53, AWS and the old workspaces | after step 10, with D1, D2, D3 |
 | 15 | Testers | step 10 done, C2 in force |
 
@@ -209,8 +209,8 @@ read -r REPO_ID OWNER_ID < <(gh api repos/timkrebs/ryft-platform --jq '"\(.id) \
 echo "$REPO_ID $OWNER_ID"                           # two numbers
 tfc_var github_repository_id "$REPO_ID" terraform
 tfc_var github_repository_owner_id "$OWNER_ID" terraform
-# From step 11, not now: alert_app_channel_name, the Google Cloud app channel's name, is personal data and
-# sensitive: the workspace UI only (step 11.1), never here, never on argv.
+# From step 11, not now: alert_app_channel, the Google Cloud app channel's resource name, which a policy
+# shows only once you attached the device in the console: the workspace UI (step 11.1).
 
 # 2f. Connect and plan once (speculative: it proves the plan SA's sign-in).
 terraform -chdir=infra/gcp init                     # connects to ryft-gcp, which 2b made
@@ -984,30 +984,42 @@ the app rules) never ran, and are gone with D236.
 
 The parts run in this order, 11.1 to 11.5 in one sitting, once the PR "infra: observability on
 Cloud Monitoring; Grafana Cloud out" is merged and step 10 serves the site. 11.6 is a PR of its own
-after 11.4. 11.7 deletes what is left in Grafana Cloud.
+after 11.4. 11.7 deletes what is left in Grafana Cloud. 11.8 runs once, in this project only: its
+11.1 to 11.3 ran before D237.
 
-**11.1 The app channel's name, a workspace variable.** Monitoring → Alerting → **Edit notification
-channels** → Mobile Devices: the Google Cloud app's channel, by its display name, written here as
-`<the app channel's name>`. It is personal data. You type it into HCP Terraform's UI and nowhere
-else: never into a file, a script, a command line, a commit or a chat. Terraform keeps it in the
-workspace's state as the data source's argument (as it keeps the email channel's address), and the
-state is readable only by the workspace's members. One way out remains: when the app channel's
-data source fails (no channel or two with that name, 11.2's stop rule), **the provider's error
-quotes the name**, unmasked, in the run's log. Never copy or paste that error; report it as "the app
-channel's data source failed".
+**11.1 The app channel's id, a workspace variable** *(D237)*. The Google Cloud app's device
+("Mobile Devices" in the console) is a notification channel the API doesn't list, and only the
+console can pick it. So you attach it to one policy by hand, read its resource name there, and give
+Terraform that name. Its display name (your phone's) never reaches Terraform.
 
-1. app.terraform.io → organization `ryft-lab` → Workspaces → `ryft-gcp` → **Variables** →
-   Workspace variables → **+ Add variable**.
-2. Variable category **Terraform variable**. Key `alert_app_channel_name`. Value `<the app
-   channel's name>`, exactly as the console shows it (case and spaces count). **HCL** off.
-   **Sensitive** on. Description: `The Google Cloud app's notification channel (D236)`.
-3. **Add variable**. The list shows the key with its value hidden ("Sensitive - write only").
+1. Console → **Monitoring** → **Alerting** → the policy **RYFT · Dead letters held** → **Edit** →
+   **Notifications**: the Google Cloud app's device (under Mobile Devices), next to `ryft-timkrebs`
+   → **Save**. On a new project, where no policy exists before 11.3, make a throwaway one instead
+   (**Create policy**, any metric, the device as its only channel), and delete it after 2.
+2. The resource name (the projection keeps the policies' edit records, which name who edited them,
+   off the screen):
+   ```bash
+   gcloud monitoring policies list --project=ryftlab-prod --format='json(displayName,notificationChannels)'
+   ```
+   The policy you edited lists `projects/…/notificationChannels/<number>` entries. The email
+   channel's is in every other policy too. The new one, the entry that isn't the email channel's,
+   is the app's: written here as `<the app channel's id>`, the whole `projects/…/notificationChannels/<number>`.
+3. app.terraform.io → organization `ryft-lab` → Workspaces → `ryft-gcp` → **Variables** →
+   Workspace variables → **+ Add variable**. Variable category **Terraform variable**. Key
+   `alert_app_channel`. Value `<the app channel's id>`. **HCL** off. **Sensitive** off: an opaque id
+   that grants nothing, and Terraform doesn't mark it sensitive either, so the plan shows it in each
+   policy (D237). Description: `The Google Cloud app's notification channel, by resource name (D237)`.
+   **Add variable**.
 
 While Email in the same console page lists `ryft-timkrebs`, the email channel needs nothing here:
-`alerts.tf` names it.
+`alerts.tf` names it. The id is per device: never in a committed file (`tests/monitoring.tftest.hcl`
+fails on one). A new phone is a new device: 11.1 again, and the variable's new value.
 
-**Stop if** the variable shows its value (Sensitive off): delete it and add it again with Sensitive
-on, before any plan.
+**Stop if** the edited policy lists no entry besides the email channel's (the device wasn't saved:
+Edit again; still none after a second Save: stop and report it, don't guess an id), or more than one (two devices: keep the one you want, Save, read again); the console
+doesn't offer the device (open the Google Cloud app on the phone, signed in to the account that owns
+`ryftlab-prod`, with its notifications allowed, then Edit again); or the variable's value isn't the
+whole `projects/…/notificationChannels/<number>` (the plan refuses anything else).
 
 **11.2 The plan.** First the apply account's four Monitoring roles, once (step 2d grants them on a
 new project; `infra/gcp/README.md` → Variables):
@@ -1034,7 +1046,7 @@ terraform -chdir=infra/gcp plan -out=monitoring.tfplan
 
 ```text
 # Step 11's plan (serve = true, public_invokers = true, the variable set): 13 to add, 0 to change, 2 to destroy.
-#   read: data.google_monitoring_notification_channel.email[0] (ryft-timkrebs) and .app[0]
+#   read: data.google_monitoring_notification_channel.email[0] (ryft-timkrebs); the app's is the variable
 #   2 log-based metrics (ryft_ticks, ryft_errors)                                             =  2
 #   + 5 uptime checks (ryft-site-home, ryft-site-privacy, ryft-site-aasa, ryft-api-ready,
 #     ryft-ingest-ready)                                                                      =  5  (7)
@@ -1042,21 +1054,23 @@ terraform -chdir=infra/gcp plan -out=monitoring.tfplan
 #   + 1 uptime policy + 4 PromQL policies (5xx, tick missing, dead letters, event backlog)    =  5 (13)  to add
 #   google_service_account.this["grafana-reader"]
 #   + google_project_iam_member.grafana_reader (roles/monitoring.viewer)                      =  2       to destroy
-# The variable empty (the gate off): 8 to add, 0 to change, 2 to destroy; no channel read, no policy.
+# The variable unset (the gate off): 8 to add, 0 to change, 2 to destroy; no channel read, no policy.
 # Under the stop line (public_invokers = false): 10 to add with the gate on, 6 with it off (no
 # ryft-api-ready, no ryft-ingest-ready, no tick policy); the same 2 to destroy.
 ```
 
-The app channel's display name shows as `(sensitive value)`. Outputs: `grafana_reader_email` goes,
+Each policy's `notification_channels` is two entries, the email channel's name, then `<the app
+channel's id>` in clear (D237). Outputs: `grafana_reader_email` goes,
 `monitoring` comes. No change to the secrets (`otlp-token` and its accessor stay, 11.6), the
 invoker bindings, the topics and subscriptions, the log bucket and sink, the zone, the WIF pool or
 the deployer. The two destroys hold no data: `grafana-reader` never had a key (the loop above), and
 nothing reads as it.
 
 **Stop if** the counts are not your gate's line above; anything changes, or anything else is
-destroyed; a channel's data source fails (no channel, or more than one, with that name: 11.1's
-value must match exactly one channel, and the email channel must be named `ryft-timkrebs`; the app
-channel's error quotes its name, so don't paste it anywhere, 11.1); a 403
+destroyed; the email channel's data source fails (no channel, or more than one, named
+`ryft-timkrebs`); the plan fails with `alert_app_channel is the email channel ryft-timkrebs` (11.1's
+2 took the email's entry: the other one is the app's) or with the variable's validation (not the
+whole resource name); the two entries of a policy's `notification_channels` are the same; a 403
 on `monitoring.*` (the four roles above); or `grafana-reader` has a key (delete it with
 `gcloud iam service-accounts keys delete`, then find out who made it).
 
@@ -1107,7 +1121,8 @@ closing notice.
 
 **Stop if** a channel gets nothing within 20 minutes (Monitoring → Alerting → the incident: opened
 but not delivered is the channel; Edit notification channels → its row → **Send test
-notification**); `list` shows another letter than yours (then it is a real one: **Dead letters
+notification**; only the email arrives: the policy's second channel isn't the device, so check
+`alert_app_channel` against 11.1's 2); `list` shows another letter than yours (then it is a real one: **Dead letters
 and the outbox**, before the purge); or the incident is still open 20 minutes after the purge.
 
 **11.5 Error Reporting's notifications** (free). Console → **Error Reporting**. It needs the
@@ -1150,12 +1165,22 @@ Then the PR. `prevent_destroy` stops a plain removal, so it takes two applies:
    container into a new `google_secret_manager_secret.retired["otlp-token"]` without
    `prevent_destroy`, and its accessor into `…_iam_binding.retired["otlp-token"]`;
    `tests/iam.tftest.hcl` and `guards.tftest.hcl` follow (12 → 11, two secret blocks for one).
-   Plan and apply: 0 to add, 0 to change, 0 to destroy, 2 moved.
+   Plan and apply: 0 to add, 0 to change, 0 to destroy, 2 moved. After its merge, from main:
+   ```bash
+   git switch main && git pull
+   terraform -chdir=infra/gcp plan -out=otlp-retire.tfplan   # Plan: 0 to add, 0 to change, 0 to destroy; the 2 "has moved to" lines
+   terraform -chdir=infra/gcp apply otlp-retire.tfplan
+   rm infra/gcp/otlp-retire.tfplan
+   terraform -chdir=infra/gcp plan                           # No changes
+   ```
+   The two moves: `google_secret_manager_secret.this["otlp-token"]` → `.retired["otlp-token"]` and
+   `google_secret_manager_secret_iam_binding.accessor["otlp-token"]` → `.retired["otlp-token"]`.
 2. **PR 2:** both `retired` resources and the `moved` blocks go; `scripts/check_cloudrun.py`'s
    `ACCESSORS` loses `otlp-token`. Plan and apply: 0 to add, 0 to change, 2 to destroy (the
    container, every version with it, and its binding).
 
-**Stop if** any serving revision reads `otlp-token`; PR 1's plan adds or destroys anything; PR 2's
+**Stop if** any serving revision reads `otlp-token`; PR 1's plan adds, changes or destroys anything, or
+moves anything but those two; PR 2's
 plan destroys anything but those two. Rolling back past this PR after PR 2 needs the secret back
 (a new container and a version: step 5's `put`).
 
@@ -1175,6 +1200,80 @@ plan destroys anything but those two. Rolling back past this PR after PR 2 needs
 
 **Stop if** the stack's usage (grafana.com → the stack → Usage) still shows metrics or logs coming
 in: keep the stack, and do 3 with D3.
+
+**11.8 Once: the app channel by id** *(D237; after 11.6's first apply. 1 to 3 **before** the PR
+"infra: the app alert channel by id" is merged, 4 to 7 after it)*. 11.1 to 11.3 ran here on
+2026-11-18 with the app channel looked up by display name, and the lookup found the email channel:
+each of the five policies lists `ryft-timkrebs` twice and no app.
+
+The order matters. With the PR merged and `alert_app_channel` unset, the gate is off, and any plan
+from main destroys the five policies. So the new variable goes in first: the code before the PR
+doesn't declare it, and a plan there only warns of it and changes nothing. Merge the PR only once 3
+is done. In this order:
+
+1. **The device on one policy**: 11.1's 1, on **RYFT · Dead letters held**.
+   **Stop if** the console doesn't offer the device (11.1's stop rule).
+2. **Its id**: 11.1's 2. Dead letters held now lists the email channel's entry and one more, the
+   app's; the other four still list the email's twice.
+   **Stop if** there is no entry besides the email channel's, or more than one.
+3. **The new variable**: 11.1's 3, key `alert_app_channel`, Sensitive off.
+   **Stop if** the value isn't the whole `projects/…/notificationChannels/<number>`.
+
+   **Now merge the PR** (its checks green). Nothing deploys; nothing in GCP changes until 6.
+4. **The old variable goes**: `ryft-gcp` → **Variables** → Workspace variables → the row
+   `alert_app_channel_name` → **⋯** → **Delete**. Nothing reads it any more; while it is listed,
+   each plan warns of a value for an undeclared variable.
+   **Stop if** the list doesn't show `alert_app_channel` afterwards (the wrong row went: add it again, 3).
+5. **The plan**, from main:
+   ```bash
+   git switch main && git pull
+   terraform -chdir=infra/gcp plan -out=app-channel.tfplan
+   ```
+   ```text
+   # Step 11.8's plan: 0 to add, 5 to change, 0 to destroy.
+   #   read: data.google_monitoring_notification_channel.email[0] (ryft-timkrebs)
+   #   ~ google_monitoring_alert_policy.uptime[0]                RYFT · Uptime check failing
+   #   ~ google_monitoring_alert_policy.promql["http-5xx"]       RYFT · 5xx over 2 % (api, ingest)
+   #   ~ google_monitoring_alert_policy.promql["tick-missing"]   RYFT · Tick missing
+   #   ~ google_monitoring_alert_policy.promql["push-backlog"]   RYFT · Event backlog over 15 minutes
+   #   ~ google_monitoring_alert_policy.promql["dead-letters"]   RYFT · Dead letters held             = 5 to change
+   #     each: notification_channels [the email's, the email's] -> [the email's, <the app channel's id>]
+   #     (a "-" line with the email channel's id, a "+" line with the app's)
+   # 4 to change if the console saved Dead letters held's list as exactly [the email's, the app's], in
+   # that order: it then matches the code and isn't in the plan. Under the stop line (public_invokers =
+   # false) there is no Tick missing: 4, or 3.
+   ```
+   The channels are an ordered list, the email's first (`alerts.tf`), so a policy whose two entries
+   are the same, or in the other order, is a change. Dead letters held may show more lines: what the
+   console wrote when you saved goes back to the code's values. No change to the uptime checks, the
+   dashboard, the log-based metrics, the secrets (as 11.6 left them), the invokers, Pub/Sub, the log
+   bucket and sink, the zone, WIF or the deployer; no change to the outputs.
+   **Stop if** anything is added or destroyed (a policy replaced, `-/+`, gets a new id and loses its
+   incidents); any other resource changes; one of the other four policies changes anything but
+   `notification_channels`; the plan shows "has moved to" lines (11.6's first apply hasn't run: do
+   it first, then plan again); it fails with `alert_app_channel is the email channel ryft-timkrebs`
+   (2 took the email's entry: the other one is the app's) or with the variable's validation (3); it
+   warns that `alert_app_channel_name` is undeclared (4 didn't save; the `grafana_*` warnings are
+   expected until 11.7); or a 403 on `monitoring.*` (11.2's four roles).
+6. **The apply**:
+   ```bash
+   terraform -chdir=infra/gcp apply app-channel.tfplan
+   rm infra/gcp/app-channel.tfplan
+   terraform -chdir=infra/gcp plan                     # No changes
+   gcloud monitoring policies list --project=ryftlab-prod --format='json(displayName,notificationChannels)'
+   ```
+   Each of the five lists two entries: the email channel's, then the app's.
+   **Stop if** the second plan isn't "No changes", or a policy lists anything else.
+7. **11.4's test alert again, on both channels this time**: the email to `ryft-timkrebs` and a push
+   on the Google Cloud app, then the purge and both closing notices.
+   **Stop if** only the email arrives (the id isn't the device's: read it again, 2), or 11.4's stop
+   rule.
+
+A wrong id is fixed the same way: the variable's right value in HCP, then 5 and 6 (again 0 to add,
+5 to change, 0 to destroy, each policy's second entry). Unsetting the variable is no way back: it
+turns the gate off and destroys the five policies. Neither is reverting the PR after 4: the old
+code's gate reads `alert_app_channel_name`, so add that variable back first (11.1's old value), or
+its plan destroys the five as well.
 
 ### 12. E, old org: Route 53
 
@@ -2319,6 +2418,249 @@ What no policy covers since D236 (OBSERVABILITY → Cloud Monitoring → What D2
 sync (ingest's p95 panel), 429s (their panel), APNs, feedback and admin events, the www redirect and
 the certificate's days left (its panel; Google renews it, and a failed renewal fails TLS, which the
 uptime checks see).
+
+### The beta gate: warn, then on (D238)
+
+`BETA_GATE` (D79, D87) is a line of `deploy/run/config.env`, rendered into api and ingest only
+(scoring reads only the consent mode). D238 set it to `warn`; step 6's one-line PR sets `on`;
+`config.env` holds the mode in force. `CONSENT_ENFORCE` isn't in
+`config.env`, so the services' default `on` holds in every step here: a sync without consent to the
+current policy is `403 consent_required` throughout. On GCP this replaces **Beta → The gates and
+their modes** (Vault's `shared_secrets` and the VSO restart there are EKS's); the rest of **Beta**
+(codes, bound codes, the users list, the audit) holds, with the admin key from step 1 below.
+
+| `BETA_GATE` | An account without beta access (no redeemed code, no operator grant) |
+| --- | --- |
+| `off` | served, nothing flagged |
+| `warn` | served; the answer carries `X-RYFT-Gate: invite_required`, the access line `gate`, and `GET /v1/me/sync` → `gate` says `invite_required` |
+| `on` | `403 invite_required` on every `/v1/*` route but `GET /v1/me`, `GET /v1/me/sync`, `GET /v1/config`, `GET /v1/model`, `POST /v1/me/invite`, `POST`/`DELETE /v1/me/consent`, `POST /v1/feedback` and `DELETE /v1/me` (API.md → Errors) |
+
+The app (API.md → Errors): under `warn` its Today screen shows "Action needed: enter your invite
+code to use RYFT." with **Enter code**, and everything keeps working. Under `on` a `403
+invite_required` stops every call but onboarding's until a code is redeemed.
+
+**What D238's merge did.** A normal deploy (**Deploy, roll back, rotate**): api and ingest roll with
+`BETA_GATE=warn`; scoring and notify roll with the new images, their env unchanged. Nothing is refused
+that was served before. The run's `make smoke-prod` has no admin key, so for a smoke user without
+access it says "! the smoke user has no beta access: fine while BETA_GATE is off" (off or warn), its
+requests are served with the header, and it ends `gates: invite unknown (no ADMIN_API_KEY), consent on`.
+The mode in force, from the repository root:
+
+```bash
+for s in api ingest; do
+  echo "$s $(gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod --format=json \
+    | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "BETA_GATE") | .value')"
+done                                                    # api warn, ingest warn
+gcloud logging read 'resource.type="cloud_run_revision" AND (resource.labels.service_name="api" OR resource.labels.service_name="ingest") AND jsonPayload.message="beta"' \
+  --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=1d --limit=4 \
+  --format='value(timestamp,resource.labels.service_name,resource.labels.revision_name,jsonPayload.gate,jsonPayload.consent)'
+                                                        # the newest revisions: gate warn, consent on
+```
+
+The `beta` line is each instance's start (min instances 0: one at the deploy, then one per cold start).
+
+**1. The admin key, never on screen.** The api reads `admin-api-key` at the version `api.yaml` pins.
+In zsh, from the repository root on an up-to-date main:
+
+```bash
+V=$(sed -n 's/.*name: admin-api-key, key: "\([0-9]*\)".*/\1/p' deploy/run/api.yaml)   # the version the api reads
+ADMIN_API_KEY=$(gcloud secrets versions access "$V" --secret=admin-api-key --project=ryftlab-prod) && export ADMIN_API_KEY
+echo "admin key: ${#ADMIN_API_KEY} characters"          # a length, never the key
+API=https://api.ryftlab.de
+adm() { printf 'Authorization: Bearer %s\n' "$ADMIN_API_KEY" | curl -sS --fail-with-body -H @- -H 'Content-Type: application/json' "$@"; }
+```
+
+`adm` keeps the key off argv (`printf` is a builtin; curl reads the header from stdin). Without
+`gcloud`, the 1Password item "RYFT ADMIN_API_KEY" at a hidden prompt does the same:
+`read -rs "ADMIN_API_KEY?ADMIN_API_KEY: "; echo; export ADMIN_API_KEY` (zsh's `name?prompt`). `make smoke-prod`,
+`scripts/beta_report.sh` and `scripts/user.sh` take it from the environment (`scripts/lib/admin.sh`;
+its other two sources are EKS's). `unset ADMIN_API_KEY` when you're done.
+
+**2. Codes** (`POST /v1/admin/invites`, API.md → Invites for a person). Each one unbound, single
+use, with an expiry, and a note that names nobody: an unbound code's note is never cleared and has
+no hard delete. No `email` (a bound code) until the privacy text names the stored address (U3,
+**Beta → Before the first bound code**). One code per account: yours, the smoke user's, one per
+tester. The loop makes yours and the smoke user's. Run it again with `tester-1 tester-2 …` when the
+testers' TestFlight invites go out (step 15), so their 14 days start then (without the `rm` line).
+The links go into a file only you can read, never to the screen. The whole loop runs under `umask
+077`, so the file is `0600` whichever run creates it:
+
+```bash
+EXP=$(date -u -v+14d +%Y-%m-%dT%H:%M:%SZ)               # 14 days from now (macOS date)
+rm -f ~/ryft-invites.txt                                # the first run only: no old line left
+(umask 077
+for n in operator smoke; do                             # later: tester-1 tester-2 …, one per tester; never a name
+  adm -X POST "$API/v1/admin/invites" -d "{\"note\": \"beta 1 $n\", \"max_uses\": 1, \"expires_at\": \"$EXP\"}" \
+    | jq -er --arg n "$n" 'select(.link != null) | "\($n) \(.link)"' >> ~/ryft-invites.txt \
+    || echo "no code made for $n: stop (curl's error is the line above)" >&2
+done)
+ls -l ~/ryft-invites.txt                                # -rw------- (0600)
+wc -l < ~/ryft-invites.txt                              # one line per code
+adm "$API/v1/admin/invites" | jq -c '.[] | select(.note | startswith("beta 1 ")) | {note, status, uses, expires_at}'
+                                                        # status open, uses 0; no code, no email, no account
+```
+
+A tester gets their line's link (`https://ryftlab.de/invite/RYFT-…`) with the TestFlight invite.
+On the iPhone it opens the app's invite screen, or they type the code at **Enter code**. `rm
+~/ryft-invites.txt` once every link is sent. The operator's page (`https://ryftlab.de/admin` →
+Invites) makes the same codes, if your operator account is set up on this project (**Admin
+sign-in**). A code that isn't needed is revoked:
+`adm -X DELETE "$API/v1/admin/invites/<code>" -w '%{http_code}\n'` (`204`).
+
+**3. Redeem yours and the smoke user's.** Yours in the app, which also proves that the TestFlight
+build takes a code: on the Today screen, **Enter code** under "Action needed", and paste the code
+(on the Mac, `sed -n 's#^operator .*/invite/##p' ~/ryft-invites.txt | pbcopy`, Universal Clipboard to
+the iPhone, then `pbcopy < /dev/null`), or send yourself the link and open it on the iPhone. No
+"Action needed" line means your account has access already (it existed at migration 0017, or has an
+operator grant): revoke that code instead.
+
+The smoke user's, with its token (the email, the password, the token and the code never reach argv
+or the screen; zsh, in step 1's shell):
+
+```bash
+read -rs "SMOKE_EMAIL?Smoke user's email: "; echo; read -rs "SMOKE_PASSWORD?Its password: "; echo
+read -r "SUPABASE_ANON_KEY?Supabase anon key (Project settings -> API): "
+REF=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env)
+TOKEN=$(E="$SMOKE_EMAIL" P="$SMOKE_PASSWORD" jq -n '{email: env.E, password: env.P}' \
+  | curl -fsS -X POST "https://$REF.supabase.co/auth/v1/token?grant_type=password" \
+      -H "apikey: $SUPABASE_ANON_KEY" -H 'Content-Type: application/json' --data-binary @- | jq -r .access_token)
+as_smoke() { printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS --fail-with-body -H @- -H 'Content-Type: application/json' "$@"; }
+as_smoke "$API/v1/me" | jq .beta_access                 # false: redeem below; true: revoke its code instead
+C=$(sed -n 's#^smoke .*/invite/##p' ~/ryft-invites.txt)
+as_smoke -X POST "$API/v1/me/invite" --data-binary @<(C="$C" jq -nc '{code: env.C}') -w '%{http_code}\n'   # 204
+as_smoke "$API/v1/me" | jq .beta_access                 # true
+unset C TOKEN
+```
+
+`make smoke-prod` with the key in the environment does the smoke user's half by itself: for a
+smoke user without access it makes a one-use code (note `smoke-prod`, no expiry) and redeems it. Run
+it once now, with the key, in the shell above, and not while a `deploy.yml` run is going (`gh run
+list -w deploy.yml -L 1`): its probe takes the smoke user's access away for one request, and under
+`on` a deploy's smoke in that second goes red:
+
+```bash
+export SMOKE_EMAIL SMOKE_PASSWORD SUPABASE_ANON_KEY
+SUPABASE_URL=https://$REF.supabase.co make smoke-prod  # … gates: invite warn, consent on
+unset SMOKE_PASSWORD
+```
+
+With the key, its gate probe takes the smoke user's access away for one `GET /v1/days`, then gives it
+back by operator grant (`POST /v1/admin/users/{id}/access`, audited). So each such run writes one
+warn line on purpose: `api GET /v1/days invite_required`. The smoke in `deploy.yml` has no key and
+never probes. If the probe fails half way ("it is left without"), run `make smoke-prod` with the key
+again: it redeems a new one-use code.
+
+**4. The warn lines.** The access line (`message` `http`, `internal/httpx.Instrument`) of a request
+the gate let through carries `gate`. Its fields: `time`, `severity`, `message`, `service`, `method`,
+`path`, `status`, `bytes`, `dur_ms`, `code` (a refused request's), `gate`, `request_id`,
+`client_request_id` (when the client sent one), `user_id`, `route` and `logging.googleapis.com/trace`.
+It holds no IP (D222). Cloud Run's own request log (`run.googleapis.com/requests`) does, in
+`httpRequest.remoteIp`, so both queries read only the services' stdout. The print leaves out
+`user_id`, `request_id`, `client_request_id`, `path` (dates and resource ids), the trace, `status`,
+`bytes` and `dur_ms`. `route` is the pattern with its method (`GET /v1/days/{day}`).
+
+Logs Explorer on `ryft-logs` (project `ryftlab-prod`, scope: the bucket's `_AllLogs` view):
+
+```text
+resource.type="cloud_run_revision"
+(resource.labels.service_name="api" OR resource.labels.service_name="ingest")
+logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout"
+jsonPayload.message="http"
+jsonPayload.gate:*
+```
+
+An expanded entry shows the whole payload, `user_id` included. Add `jsonPayload.route` and
+`jsonPayload.gate` as summary fields, read the histogram, and copy nothing out of an expanded entry.
+The same lines in a shell, printed without an id:
+
+```bash
+Q='resource.type="cloud_run_revision" AND (resource.labels.service_name="api" OR resource.labels.service_name="ingest") AND logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout" AND jsonPayload.message="http" AND jsonPayload.gate:*'
+gcloud logging read "$Q" --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs \
+  --freshness=7d --limit=500 --format='value(timestamp,resource.labels.service_name,jsonPayload.route,jsonPayload.gate)'
+                                                        # the newest 500 of 7 days, newest first
+# How many lines and how many accounts over the same 7 days, as counts: the ids go into sort and wc,
+# never to the screen.
+gcloud logging read "$Q" --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs \
+  --freshness=7d --limit=100000 --format='value(jsonPayload.user_id)' | wc -l
+gcloud logging read "$Q" --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs \
+  --freshness=7d --limit=100000 --format='value(jsonPayload.user_id)' | sort -u | wc -l
+```
+
+`ryft_gate_refusals_total` is counted in each instance, but nothing reads it on Cloud Run (no scrape,
+no push, D236; OBSERVABILITY → The OTLP push (dormant)). The access line's `gate` (warn) and `code`
+(on) are the only signal on GCP.
+
+**5. The stop rule before `on`.** Flip only when all of these hold:
+1. The 7-day print in step 4 (`--freshness=7d`, inside `ryft-logs`' 14 days) shows no line but the
+   probe's (`api GET /v1/days invite_required` at the minutes of your own `make smoke-prod` runs with
+   the key), its line count is under 500 (else the print shows only the newest 500: read them all
+   before you trust it), and its account count is 0, or 1 when you ran the probe (the smoke user):
+   for a whole week your account and the smoke user's were served without a flag, and so was every
+   tester who is in.
+2. Every code you handed out is used, yours and the smoke user's included:
+   `adm "$API/v1/admin/invites" | jq -c '.[] | select(.note | startswith("beta 1 ")) | {note, status}'`
+   shows `used` for each one you sent (revoke the rest).
+3. No account that should keep access lacks it:
+   `adm "$API/v1/admin/users" | jq '{accounts: length, without_access: ([.[] | select(.beta_access | not)] | length)}'`.
+   Every account counted in `without_access` is refused at the flip. That's right for one you don't
+   know, and wrong for anyone you invited: they redeem first.
+4. The testers' TestFlight build is the one whose **Enter code** took your code in step 3, or a newer
+   one. The app sends a `403 invite_required` to that same screen (API.md → Errors); the throwaway
+   check after the flip proves it on production.
+5. `make smoke-prod` is green: the newest `deploy.yml` run, and once from your shell with the key
+   (step 3), ending `gates: invite warn, consent on`.
+
+**Stop if** any of these fails: stay on `warn`, which refuses nothing.
+
+**6. The flip: a PR of one line.**
+
+```bash
+git fetch origin && git switch -c deploy/beta-gate-on origin/main
+# deploy/run/config.env: BETA_GATE=warn becomes BETA_GATE=on (that line only, the comment stays)
+make cloudrun-check
+bash scripts/tests/check_cloudrun_test.sh
+git diff --stat                                          # deploy/run/config.env | 2 +-
+git commit -am "deploy: BETA_GATE on"
+git push -u origin HEAD && gh pr create --fill -R timkrebs/ryft-platform
+```
+
+Its merge is a normal deploy. api and ingest roll with `BETA_GATE=on`, and scoring and notify with the
+new images. From the first request a new revision serves, an account without access gets `403
+invite_required` outside the open routes, and its app shows the invite screen. Ingest rolls before
+api, so for a minute or two an account without access can be refused by one and served by the other.
+`deploy.yml`'s smoke passes only if the smoke user has access (step 3). Without it, it fails with
+"BETA_GATE is on and the smoke user has no access".
+
+It worked when (in a new zsh: step 1, then step 3's three `read` lines, its `REF=` line and its
+`export` line, first; not while another `deploy.yml` run is going, step 3):
+
+```bash
+for s in api ingest; do
+  echo "$s $(gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod --format=json \
+    | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "BETA_GATE") | .value')"
+done                                                     # api on, ingest on
+# the beta line as above, --freshness=1h: gate on, consent on
+SMOKE_EXPECT_GATES=on SUPABASE_URL=https://$REF.supabase.co make smoke-prod   # … gates: invite on, consent on
+# the refusals since (api's route is /v1/, its gate runs before the inner routes):
+gcloud logging read 'resource.type="cloud_run_revision" AND (resource.labels.service_name="api" OR resource.labels.service_name="ingest") AND logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout" AND jsonPayload.message="http" AND jsonPayload.code="invite_required"' \
+  --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=1d --order=asc --limit=200 \
+  --format='value(timestamp,resource.labels.service_name,jsonPayload.method,jsonPayload.route)'
+```
+
+`SMOKE_EXPECT_GATES=on` fails unless both gates refused in the probe; it needs the key (without it the
+invite gate reads `unknown`). Then the throwaway check: sign out in the app, sign up with an email
+address you use for nothing else, and the app shows the invite screen and nothing loads. Delete that
+account in the app (`DELETE /v1/me` is open under `on`), then sign in to yours again.
+
+**Rollback:** a PR of one line, `BETA_GATE=warn` (or `git revert` of the flip, **Deploy, roll back,
+rotate → By revert**). Its merge serves every account again from the first request the new revisions
+take. Faster, while that PR waits: **A rollback → By traffic** for api and ingest (the hold first;
+their previous revisions run `warn`), then merge the PR and release the hold. One tester refused by
+mistake needs no rollback: a new code, or `scripts/user.sh <id> --grant` (**Beta**).
+
+**Stop if** after the flip `deploy.yml`'s smoke fails at "the smoke user has no access" (step 3 for
+the smoke user, then `gh workflow run deploy.yml --ref main -R timkrebs/ryft-platform`), a tester who
+redeemed is refused (roll back, then find out why), or the `beta` line says anything but `gate on`.
 
 ## EKS (api.ryftlab.de)
 
@@ -4183,7 +4525,9 @@ that would have been refused is counted (`ryft_gate_refusals_total{mode="warn"}`
 flagged on its access line (`gate`). **Before the first external invite both are `on`,
 and `make smoke-prod` proves it:** with `ADMIN_API_KEY` it takes the smoke user's consent
 and access away for one request each, reports what each gate did, and gives them back;
-`SMOKE_EXPECT_GATES=on make smoke-prod` fails unless both refused.
+`SMOKE_EXPECT_GATES=on make smoke-prod` fails unless both refused. *On GCP, D238 amends this: the
+invite gate is `warn` while the first testers redeem (consent stays `on`), and goes `on` after its
+stop rule: GCP → **The beta gate: warn, then on**.*
 
 ```bash
 # infra/vault/terraform.tfvars:  shared_secrets = { BETA_GATE = "warn", CONSENT_ENFORCE = "warn" }   (later both "on")
