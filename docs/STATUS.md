@@ -78,8 +78,12 @@ Your decision (D241, amends D238): the beta has no invite codes. `deploy/run/con
 `BETA_GATE=off`. Every signed-in account is served and nothing is flagged; consent stays `on`, so
 nothing is synced or scored without it. Access on the server comes with App Attest, which is still to be
 decided. Until then any confirmed Supabase account with the API's address can sync its own data (D241
-names the risk). The two unused codes are revoked. OPERATIONS → GCP → The beta gate keeps its steps for a
-later `warn` or `on`, behind a note.
+names the risk). The two unused codes are revoked. OPERATIONS → GCP → The beta gate keeps its steps for
+later, behind a note (a gate starts again with `warn`). This replaces #208's open steps below (codes, the
+stop rule, the flip to `on`): there is nothing to run for them.
+
+Open, not in this PR: the site still says the beta needs an invite code (`web/messages/en.json`,
+`web/content/legal/en/support.mdx`). That needs a web PR.
 
 **On merge:** `deploy.yml` redeploys the five services (api and ingest with `BETA_GATE=off`), `migrate`
 a no-op, then `make smoke-prod`. Nothing to run. Check, from the repository root:

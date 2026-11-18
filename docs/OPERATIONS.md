@@ -2423,8 +2423,9 @@ uptime checks see).
 
 > **`BETA_GATE` is `off`** (D241, the user's decision on 2026-11-18): the beta has no invite codes.
 > Every signed-in account is served and nothing is flagged; consent stays `on`. Access on the server is
-> to come with App Attest, which is still to be decided. The steps below are kept for a later `warn` or
-> `on`. Each would start with a one-line PR of `config.env` and then follow step 1 onward. The two
+> to come with App Attest, which is still to be decided. The steps below are kept for later. A gate
+> starts again with a one-line PR to `warn`, never straight to `on` (it would refuse every account
+> without a code), and then follows steps 1–6. The two
 > unused codes (`beta 1 operator`, `beta 1 smoke`) are revoked. Their rows stay listed as `revoked`, and
 > nobody can redeem them. With the gate off, `make smoke-prod` passes without the admin key; for a smoke
 > user without access it prints "! the smoke user has no beta access: fine while BETA_GATE is off".
@@ -4533,9 +4534,10 @@ that would have been refused is counted (`ryft_gate_refusals_total{mode="warn"}`
 flagged on its access line (`gate`). **Before the first external invite both are `on`,
 and `make smoke-prod` proves it:** with `ADMIN_API_KEY` it takes the smoke user's consent
 and access away for one request each, reports what each gate did, and gives them back;
-`SMOKE_EXPECT_GATES=on make smoke-prod` fails unless both refused. *On GCP, D238 amends this: the
-invite gate is `warn` while the first testers redeem (consent stays `on`), and goes `on` after its
-stop rule: GCP → **The beta gate: warn, then on**.*
+`SMOKE_EXPECT_GATES=on make smoke-prod` fails unless both refused. *On GCP, D238 amended this (the
+invite gate `warn` while the first testers redeem, then `on`), and D241 amends it again: the invite
+gate is `off`, with no codes for the beta, and consent stays `on`. See GCP → **The beta gate: warn,
+then on**.*
 
 ```bash
 # infra/vault/terraform.tfvars:  shared_secrets = { BETA_GATE = "warn", CONSENT_ENFORCE = "warn" }   (later both "on")
