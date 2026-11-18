@@ -2005,7 +2005,7 @@ within its 1 s, or the refresh limit), not that an outage is proven.
 | Valid token, `role` admin, allow-listed, but `aal` is not `aal2` or the TOTP is older than 12 h | `403` | `code` **`mfa_required`**. Only a real, allow-listed admin ever sees it |
 | Valid admin token on a **key-only** route (route table below) | `403` | no `code`; message `this route needs the admin key` |
 | The signing keys or the database cannot be reached while a **token** is checked, or the token names a key id the api does not know and the keys were fetched in the last minute | `503` | `Retry-After: 5`; message `authentication temporarily unavailable`. Never a reason to sign out. The key path is not affected |
-| More than 10 requests a second from one client address (bursts of 20; counted per api pod, before any bearer is checked) | `429` | `Retry-After` (whole seconds); message `too many requests`. A preflight is not counted |
+| More than 10 requests a second from one client address (bursts of 20; counted per api pod, before any bearer is checked) | `429` | `Retry-After` (whole seconds); message `too many requests`. A preflight is not counted here (the per-address limit of every route, Errors → `429`, counts it) |
 
 The message texts are for people and not pinned by tests (the `…` in the examples stands for the message; for `mfa_required` it reads `a second factor confirmed in the last 12 hours is required`); branch on the status and the `code`. What the page does: `401` →
 refresh the Supabase session once and send again, a second `401` means sign in again; `403`

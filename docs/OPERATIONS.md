@@ -2679,7 +2679,9 @@ api, a `/v1/admin/*` request that bears `ADMIN_API_KEY` passes it too. Over the 
 
 **After the deploy that brings it** (or any later change to `XFF_TRUSTED_HOPS`). Run this from your
 Mac, on your own network: it needs `curl` 7.84 or newer for `%header{}` (`curl --version`), `jq` and
-`gcloud`. The burst goes over IPv4 (`-4`), so the address the logs must not hold is one you know.
+`gcloud`. The burst goes over IPv4 (`-4`), so the address the logs must not hold is one you know. In
+zsh, run `setopt interactivecomments` first: stock zsh doesn't treat `#` as a comment at the prompt,
+and the blocks below end lines with one.
 
 ```bash
 # 1. The value in force, on both services:
@@ -2722,6 +2724,18 @@ What it should show, per host (the counts vary from run to run):
 - `after 3 s` is `401` again: the limit has let go.
 
 ```bash
+# 2b. Forged entries don't buy a bucket. The same burst, on api only, with two X-Forwarded-For lines of
+#     your own: a fixed one and a different IPv6 /64 per request. Google appends your real address; if a
+#     forged entry were the key, every request would have a fresh bucket and nothing would be refused.
+H=api.ryftlab.de; sleep 3
+seq 300 | xargs -P 20 -I{} curl -4 -s -o /dev/null \
+  -H 'X-Forwarded-For: 192.0.2.1' -H 'X-Forwarded-For: 2001:db8:{}::1' \
+  -w '%{http_code} retry-after=%header{retry-after}\n' "https://$H/v1/me" | sort | uniq -c
+```
+
+The same split as step 2 (roughly 50 to 80 `401`s, the rest `429 retry-after=1`).
+
+```bash
 # 3. No line of either service holds your address (D222). Cloud Run's own request log
 #    (run.googleapis.com/requests) does hold it, in httpRequest.remoteIp: that is Google's log, and
 #    the filter leaves it out. Only the services' stdout and stderr are ours.
@@ -2752,6 +2766,10 @@ refusals, each with `method`, `path`, `status` 429, `code`, `request_id` and no 
 **Stop if:**
 - **No `429` at all.** The limit isn't running: check step 1 and that the revision is the merge's.
   Or the burst was too slow (fewer than ~100 requests a second): run it again from a wired connection.
+- **2b refuses nothing, or far less than step 2.** A forged entry became the key: anyone can dodge
+  this limit and `/v1/admin`'s (which read the header the same way before) by sending a new address
+  each time. Report it with the two splits (no address needed): a PR that reads the header the way
+  Google writes it follows. A revert doesn't help here.
 - **`429`s from the start, far fewer than 50 `401`s, or `after 3 s` still `429`.** Every client shares
   one key. Run step 9's forged-entry loop and its `client address` query. `picked` `fallback` means
   the hop count is above what Google appends. `xff_index` 4 or more means a Google hop `ClientKeys`

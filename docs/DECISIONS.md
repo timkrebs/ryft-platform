@@ -3230,6 +3230,8 @@ Engine, and fails with the changed fields grouped by field.
 
 ## D155 — A per-address limiter on `/v1/admin/*`, keyed by the address Traefik appends
 
+*Amended by D222 (Cloud Run) and D240 (`httpx.ClientKeys`, `ratelimit.Capped`, shared with the edge limit).*
+
 - **Decision:** 10 requests a second, bursts of 20, per api pod, before the bearer check (so a flood of bad
   credentials costs no token verification and no database call); over the limit `429` with `Retry-After`. The key
   is `httpx.ClientIP`: the rightmost `X-Forwarded-For` entry, IPv6 masked to /64, else the peer.
@@ -4802,7 +4804,9 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     130.211.0.0/22 and their IPv6 /64s), and take the next entry as it is, else `RemoteAddr`; never the leftmost
     entry. A private, CGNAT, link-local or loopback entry is a client (one inside a VPC), not a hop: skipping it would
     let the forged entry to its left be the key (security review of A2). IPv6 is cut to /64.
-    `TestStepNineUnderGoogleFrontEnd` proves the choice for each shape Google could send.
+    `TestStepNineUnderGoogleFrontEnd` proves the choice for each shape Google could send. *Amended by D240:* it is
+    `httpx.ClientKeys` now, the `XFF_TRUSTED_HOPS`-th entry, with no `RemoteAddr` (a shared fallback key instead),
+    `picked` is `xff`|`fallback`, and the limits key by an HMAC of the address.
   - **No IP address in any log line** (head-architect's rule, 2026-11-15): the privacy text in force promises logs
     without them, so no address is logged, whole or as a /24 or /48. The `client address` line (info, at most once
     a minute per instance, no request ID, user, route or header) holds `picked` (`xff`|`remote`), `xff_index` (the
@@ -5601,10 +5605,22 @@ _Grafana half superseded by D236._
 - **Consequences:**
   - The limits are per instance and reset at a cold start. One address gets at most max-instances × 20/s, and
     with scale to zero usually one instance's worth.
-  - A distributed flood of more than 65,536 new /64s a minute per instance moves the newcomers, testers who were
-    idle included, into the shared bucket while it lasts. Cloud Armor is the answer to that.
-  - Requests without `X-Forwarded-For` (local compose, `make smoke`) share the fallback bucket. The smoke is
-    sequential and stays under it.
+  - **The map can be held full from one IPv6 /48** (65,536 /64s, free from a tunnel broker). Touching each of
+    them once a minute takes about 1,100 requests a second per instance, and a little more traffic from
+    elsewhere drains the shared bucket. While that lasts, every client that is new or was idle for over a
+    minute, testers included, gets `429` on api and ingest. The known keys keep their buckets. Keying IPv6 by
+    /48, or counting a /48 once against the cap, would raise that bar. It is left for a follow-up if it is
+    ever seen. Cloud Armor's rules in front (the next PR) are the answer.
+  - **The tick is the one public path the limit doesn't guard.** A flood of fake ticks costs a token check (a
+    parse, an RSA verification for a real Google key id) and two log lines each, bounded by max instances like
+    any flood. Limiting it would let a flood that fills the map push Google's real tick into the shared
+    bucket, and the brief exempts what Google pushes.
+  - **Multi-line `X-Forwarded-For` is read last line first.** Whether Google's front end appends to the last
+    line when a client sends several isn't documented. The runbook's burst 2b sends two forged lines and
+    would show it.
+  - Requests without `X-Forwarded-For` share the fallback bucket: local compose, `make smoke`, `make load`.
+    The smoke is sequential and stays under it. `scripts/load/day.js` gives each k6 user an address of its
+    own in 198.18.0.0/15, so the load test measures the services, not this limit.
   - Files: `internal/httpx` (`ClientKeys`; `Instrument` takes it), `internal/ratelimit` (`Capped`, `Idle`,
     `Clock`), `internal/app` (`iplimit.go`, `Spec.LimitExempt`, `Deps.Clients`), `internal/config`
     (`XFFTrustedHops`), `cmd/api` (`adminKey`, the admin limit on `Capped`), `scripts/cloudrun_render.py`,

@@ -46,6 +46,9 @@ type ipLimit struct {
 }
 
 func newIPLimit(clients *httpx.ClientKeys, exempt func(*http.Request) bool, now func() time.Time) *ipLimit {
+	// The series exists at 0 from the start, as the admin series do: increase() over a counter born at 1
+	// sees no increase, so an instance's first refusal would otherwise be invisible.
+	metrics.RateLimited.WithLabelValues(ipClass)
 	return &ipLimit{clients: clients, exempt: exempt,
 		lim: ratelimit.NewCapped(ipPerSecond, ipBurst, ipMaxKeys, ratelimit.Idle(ipIdle), ratelimit.Clock(now))}
 }

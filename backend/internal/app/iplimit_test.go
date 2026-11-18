@@ -85,6 +85,18 @@ func drain(t *testing.T, h http.Handler, hdr ...string) {
 
 func ipLimited() float64 { return testutil.ToFloat64(metrics.RateLimited.WithLabelValues(ipClass)) }
 
+// The edge limit's values are D53's and D240's: a change here is a decision and an API.md entry, not a
+// tweak. ipIdle must stay at least the refill time (burst/rate, 2.5 s), or a sweep would hand a flooder a
+// full bucket again; ipMaxKeys bounds the memory (about 6 MiB at the cap).
+func TestEdgeLimitValuesArePinned(t *testing.T) {
+	if ipPerSecond != 20 || ipBurst != 50 || ipMaxKeys != 65536 || ipIdle != time.Minute {
+		t.Fatalf("edge limit %v/s, burst %v, %d keys, idle %v: want 20/s, 50, 65536, 1m (D53, D240)", ipPerSecond, ipBurst, ipMaxKeys, ipIdle)
+	}
+	if refill := time.Duration(float64(ipBurst) / float64(ipPerSecond) * float64(time.Second)); ipIdle < refill {
+		t.Fatalf("idle %v is shorter than the refill %v: a sweep would reset a flooder's bucket", ipIdle, refill)
+	}
+}
+
 // One address gets bursts of 50: the 51st request is 429, while another address (and another /64)
 // is not affected, and every 429 is counted under class ip. Addresses in one /64 are one client.
 func TestEdgeLimitIsPerAddress(t *testing.T) {
