@@ -95,6 +95,54 @@ resource "google_logging_metric" "errors" {
   }
 }
 
+# The edge's (D242), from edge = built on: Cloud Armor's denials and preview matches, by the rule's
+# priority (edge.tf: 1000 to 1005 the WAF sets, 2000 the rate rule; a closed set). Counted from the
+# load balancer's request log entries, the same ones the sink keeps (logging.tf). Never an IP (the
+# rate rule's rateLimitAction.key holds it), a URL or a user agent as a label.
+locals {
+  edge_log_metrics = local.edge_built ? {
+    ryft_edge_denials = {
+      description = "Cloud Armor's denials at the edge (a WAF rule enforced, the rate rule's 429 and ban), by rule priority (infra/gcp, D242)"
+      title       = "RYFT edge denials"
+      field       = "enforcedSecurityPolicy"
+    }
+    ryft_edge_preview_matches = {
+      description = "Requests a preview rule at the edge would have denied, by rule priority (infra/gcp, D242)"
+      title       = "RYFT edge preview matches"
+      field       = "previewSecurityPolicy"
+    }
+  } : {}
+}
+
+resource "google_logging_metric" "edge" {
+  for_each = local.edge_log_metrics
+
+  project     = var.project_id
+  name        = each.key
+  description = each.value.description
+  filter = join("\n", [
+    "resource.type=\"http_load_balancer\"",
+    "jsonPayload.${each.value.field}.outcome=\"DENY\"",
+  ])
+
+  metric_descriptor {
+    metric_kind  = "DELTA"
+    value_type   = "INT64"
+    unit         = "1"
+    display_name = each.value.title
+
+    labels {
+      key         = "priority"
+      value_type  = "STRING"
+      description = "The Cloud Armor rule's priority (edge.tf: 1000 to 1005 WAF, 2000 the rate rule)"
+    }
+  }
+
+  label_extractors = {
+    "priority" = "EXTRACT(jsonPayload.${each.value.field}.priority)"
+  }
+}
+
 # ---- the uptime checks: the site and the two public services from outside --------------------------
 # Every 5 minutes from three locations, 10 s each, TLS validated, exactly 200, no redirect accepted.
 # 5 checks x 3 locations x 8,760 runs a month per location (12 an hour x 730 hours) = 131,400 executions, under
@@ -176,8 +224,27 @@ locals {
     ["Certificate: days left, by check", "monitoring.googleapis.com/uptime_check/time_until_ssl_cert_expires", "ALIGN_MIN", "REDUCE_MIN"],
   ]
 
+  # The edge's (D242), from edge = built on, after the PromQL tiles above. The load balancer's metric is
+  # loadbalancing.googleapis.com/https/request_count on https_lb_rule (backend_target_name is the
+  # backend service, ryft-edge-api or ryft-edge-ingest; response_code_class is a number there, 500 not
+  # 5xx); Cloud Armor's is networksecurity.googleapis.com/https/request_count on network_security_policy,
+  # with blocked and backend_target_name (search). The log-based pair is one tile, its series by
+  # priority and kind (denied, preview), with no monitored_resource selector: Logging writes them
+  # against the load balancer's log resource, and that resource's name in Monitoring wasn't verified.
+  lb    = "monitored_resource=\"https_lb_rule\""
+  armor = "monitored_resource=\"network_security_policy\""
+  dashboard_edge = local.edge_built ? [
+    ["Edge: requests per second, by backend and code class", "sum by (backend_target_name, response_code_class) (rate(loadbalancing_googleapis_com:https_request_count{${local.lb}}[5m]))"],
+    ["Edge: 429 per second, by backend (Cloud Armor's and the services')", "sum by (backend_target_name) (rate(loadbalancing_googleapis_com:https_request_count{${local.lb}, response_code=\"429\"}[5m]))"],
+    ["Cloud Armor: requests per second, blocked or not, by backend", "sum by (backend_target_name, blocked) (rate(networksecurity_googleapis_com:https_request_count{${local.armor}}[5m]))"],
+    ["Cloud Armor: denials and preview matches per hour, by rule priority", join(" or ", [
+      "label_replace(sum by (priority) (increase(logging_googleapis_com:user_${google_logging_metric.edge["ryft_edge_denials"].name}[1h])), \"kind\", \"denied\", \"\", \"\")",
+      "label_replace(sum by (priority) (increase(logging_googleapis_com:user_${google_logging_metric.edge["ryft_edge_preview_matches"].name}[1h])), \"kind\", \"preview\", \"\", \"\")",
+    ])],
+  ] : []
+
   dashboard_widgets = concat(
-    [for w in local.dashboard_promql : {
+    [for w in concat(local.dashboard_promql, local.dashboard_edge) : {
       title = w[0]
       xyChart = {
         chartOptions = { mode = "COLOR" }
@@ -241,9 +308,10 @@ resource "google_monitoring_dashboard" "overview" {
           height = 16
           widget = w
         })],
-        # The services' own ERROR lines, from ryft-logs (every log is there, logging.tf). Only stdout and
-        # stderr: Cloud Run's request log (run.googleapis.com/requests) has ERROR entries for every 5xx,
-        # and they carry the caller's IP, the URL and the user agent.
+        # The services' own ERROR lines, from ryft-logs (every log is there, logging.tf; from edge = built
+        # on less the edge's two exclusions). Only stdout and stderr: Cloud Run's request log
+        # (run.googleapis.com/requests) has ERROR entries for every 5xx, and they carry the caller's IP,
+        # the URL and the user agent.
         [merge(local.tile_at[length(local.dashboard_widgets)], {
           width  = 48
           height = 20

@@ -4,7 +4,7 @@ data "google_project" "this" {
 
 locals {
   # Runbook step 2a's keep list, exactly. The bootstrap turns everything else off by hand.
-  apis = toset([
+  apis_base = toset([
     "artifactregistry.googleapis.com",
     "billingbudgets.googleapis.com",
     "cloudbilling.googleapis.com",
@@ -22,6 +22,18 @@ locals {
     "serviceusage.googleapis.com",
     "sts.googleapis.com",
   ])
+
+  # The edge's (D242, edge.tf): Compute Engine for the load balancer and Cloud Armor, Certificate
+  # Manager for its certificates. Only from edge = built, when step 2a's KEEP gains them too (runbook
+  # step 16). Enabling Compute Engine on a project without an organisation makes its default service
+  # account with Editor, and usually the network `default`: step 16's hygiene removes both by hand. Back
+  # at off they leave this list but stay on (disable_on_destroy below).
+  apis_edge = toset([
+    "certificatemanager.googleapis.com",
+    "compute.googleapis.com",
+  ])
+
+  apis = local.edge_built ? setunion(local.apis_base, local.apis_edge) : local.apis_base
 
   # Service agents that a new project may not have until something asks for them, and that this root
   # binds (pubsub.tf, iam.tf).

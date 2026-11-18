@@ -40,6 +40,8 @@ variables {
   site_www_a                 = []
   site_www_txt               = ""
   site_www_cname             = ""
+  # The edge's phases are tests/edge.tftest.hcl; here off, whatever gates.auto.tfvars holds.
+  edge = "off"
 }
 
 run "empty_adds_nothing" {

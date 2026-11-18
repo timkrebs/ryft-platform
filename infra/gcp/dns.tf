@@ -132,25 +132,43 @@ resource "google_dns_record_set" "mail_srv" {
 
 # Apply 2: api. and ingest. point where their mapping says. For a subdomain Cloud Run returns one CNAME
 # (ghs.googlehosted.com.); the records are read from the mapping's status, not typed in.
-resource "google_dns_record_set" "mapping" {
+#
+# The edge (D242): from edge = live, each is an A record at the load balancer's IPv4 address instead
+# (no AAAA: the edge has no IPv6 address). Cloud DNS can't hold a CNAME and an A at one name, and two
+# resources could create the A before the CNAME is gone, so it is one record set per host whose type
+# and data follow the gate. The provider writes a type change as one Cloud DNS change that deletes the
+# old set and adds the new one; a replacement (-/+) would delete first, too. From locked the mappings
+# are gone, and the A records read nothing of them.
+locals {
+  # Host => the CNAME data its mapping returned (no entry once the mapping is gone, edge = locked).
+  mapping_cnames = {
+    for k, m in google_cloud_run_domain_mapping.host : k => [
+      for rr in flatten(m.status[*].resource_records) : "${trimsuffix(rr.rrdata, ".")}." if rr.type == "CNAME"
+    ]
+  }
+}
+
+resource "google_dns_record_set" "host" {
   for_each = var.serve ? local.mapped_hosts : {}
 
   project      = var.project_id
   managed_zone = google_dns_managed_zone.ryftlab_de.name
   name         = "${each.key}.${google_dns_managed_zone.ryftlab_de.dns_name}"
-  type         = "CNAME"
+  type         = local.edge_live ? "A" : "CNAME"
   ttl          = 300
-  rrdatas = [
-    for rr in flatten(google_cloud_run_domain_mapping.host[each.key].status[*].resource_records) :
-    "${trimsuffix(rr.rrdata, ".")}." if rr.type == "CNAME"
-  ]
+  rrdatas      = local.edge_live ? google_compute_global_address.edge[*].address : lookup(local.mapping_cnames, each.key, [])
 
   lifecycle {
     precondition {
-      condition = length([
-        for rr in flatten(google_cloud_run_domain_mapping.host[each.key].status[*].resource_records) : rr if rr.type == "CNAME"
-      ]) == 1
+      condition     = local.edge_live || length(lookup(local.mapping_cnames, each.key, [])) == 1
       error_message = "The domain mapping did not return exactly one CNAME for this host; read its status (gcloud beta run domain-mappings describe) before anything else."
     }
   }
+}
+
+# The record sets were google_dns_record_set.mapping before D242: the same two, so edge = off plans no
+# change.
+moved {
+  from = google_dns_record_set.mapping
+  to   = google_dns_record_set.host
 }

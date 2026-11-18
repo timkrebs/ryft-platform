@@ -72,6 +72,30 @@ variable "public_invokers" {
   default     = true
 }
 
+# The edge (D242, edge.tf, runbook step 16), one phase a PR, in this order and back the same way:
+#   off     nothing of the edge exists (the APIs, the sink, the dashboard and DNS as before D242);
+#   built   the load balancer with Cloud Armor, its certificates, the sink's exclusions, the metrics and
+#           tiles; nothing points at it, so DNS still names the domain mappings;
+#   live    api. and ingest. are A records at the edge's address; the mappings stay as the way back;
+#   locked  the two domain mappings are gone (only after deploy/run's ingress is the LB's alone).
+variable "edge" {
+  description = "The edge (D242): off, built (the load balancer and Cloud Armor, nothing pointing at it), live (api. and ingest. at its address), locked (the domain mappings gone)"
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "built", "live", "locked"], var.edge)
+    error_message = "edge must be off, built, live or locked (one step a PR, runbook GCP step 16)."
+  }
+
+  # The backends are the Cloud Run services api and ingest, which exist only from runbook step 8, and
+  # the hosts only from apply 2.
+  validation {
+    condition     = var.edge == "off" || var.serve
+    error_message = "edge must stay off while serve is false: its backends are api and ingest, and its hosts exist only from apply 2 (runbook GCP step 9)."
+  }
+}
+
 # ---- Cloud Monitoring's alerting (alerts.tf, runbook step 11): the gate -----------------------------
 
 # The Google Cloud mobile app's notification channel, by its full resource name: the device can only

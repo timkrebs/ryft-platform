@@ -9,18 +9,19 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 
 | File | What |
 | --- | --- |
-| `project.tf` | the API keep list (`google_project_service`, `disable_on_destroy = false`), Data Access audit logs (`DATA_READ`) for Secret Manager, STS and IAM credentials (every secret read and token mint), the Pub/Sub and Cloud Scheduler service agents |
+| `project.tf` | the API keep list (`google_project_service`, `disable_on_destroy = false`; 16, and Compute Engine and Certificate Manager from `edge = "built"` on), Data Access audit logs (`DATA_READ`) for Secret Manager, STS and IAM credentials (every secret read and token mint), the Pub/Sub and Cloud Scheduler service agents |
 | `iam.tf` | the accounts `ryft-<api,ingest,scoring,notify,migrate>`, `ryft-push`, `ryft-deployer` (no key, ever; `grafana-reader` went with Grafana Cloud, D236); the deployer's rights (**The deployer**, below); Pub/Sub's token creator on `ryft-push` |
 | `wif.tf` | the GitHub pool `github` and provider `github-actions` (condition by repository and owner ID, `deploy.yml` on `main`, environment `deploy` or `site`, a GitHub-hosted runner); one principal set per environment, `ryft-deployer` bound to `deploy`'s alone (D233), `site`'s for `site-deployer` in ryftlab-site (by hand, step 10a) |
 | `secrets.tf` | the 11 secret containers in use (ticket B's 10 and `posthog-project-key`, D231), `prevent_destroy`, 30-day delayed destruction, accessors on each secret; `retired`: `otlp-token` and its accessor without `prevent_destroy`, on their way out (OPERATIONS → GCP 11.6). **No values**: they never pass through state |
 | `pubsub.tf`, `pubsub.auto.tfvars.json` | topics (messages stored in `europe-west1` only; `enforce_in_transit` stays off, so the Scheduler's publish and an operator's `gcloud pubsub` through the global endpoint still work), push and hold subscriptions, publisher bindings per topic, the agents' bindings. The JSON is written by `go run ./cmd/pubsub-topology` (PR A); do not edit it by hand once that exists |
 | `scheduler.tf` | the job `ryft-tick` (every 15 minutes) |
 | `registry.tf` | Artifact Registry `ryft`: the 5 newest versions of each image kept, every other version deleted after 30 days (tagged or not); scanning off |
-| `run.tf` | who invokes the four services (one authoritative `run.invoker` binding each), and the domain mappings `api.` and `ingest.ryftlab.de` (only with `serve = true`) |
-| `dns.tf` | the zone `ryftlab.de` (`prevent_destroy`, DNSSEC off) with every record of `infra/aws/dns`, CAA with `pki.goog`, Search Console's TXT, and the mappings' CNAMEs |
+| `run.tf` | who invokes the four services (one authoritative `run.invoker` binding each), and the domain mappings `api.` and `ingest.ryftlab.de` (only with `serve = true`, and gone at `edge = "locked"`) |
+| `dns.tf` | the zone `ryftlab.de` (`prevent_destroy`, DNSSEC off) with every record of `infra/aws/dns`, CAA with `pki.goog`, Search Console's TXT, and `api.`'s and `ingest.`'s record sets (`google_dns_record_set.host`): CNAMEs to the mappings, A records at the edge's address from `edge = "live"` on |
+| `edge.tf` | the edge (D242, from `edge = "built"` on): a global external Application Load Balancer on one IPv4 address (no IPv6), a serverless NEG and a backend service per public service, a URL map by host (anything else 301 to the site), an SSL policy (MODERN, TLS 1.2+), Certificate Manager certificates by DNS authorization in one map, HTTPS on 443 and a redirect on 80; one Cloud Armor policy: six WAF rules in preview (`local.edge_waf_preview`), an enforced rate rule per address, allow by default. Output `edge_ip` |
 | `site.tf`, `site.auto.tfvars` | the site's records on Firebase Hosting (C1, D233): the apex A set and its `hosting-site=` TXT (joins the apex TXT set), and www's A set and TXT or its CNAME, from the values the Firebase wizard shows. Empty adds nothing |
-| `logging.tf` | the bucket `ryft-logs` (europe-west1, 14 days) and the sink into it |
-| `monitoring.tf` | Cloud Monitoring, RYFT's only observability (D236): the log-based metrics `ryft_ticks` (by `result`) and `ryft_errors`, the uptime checks (the site's `/`, `/privacy` and AASA always; api's and ingest's `/health/ready` while they're public; every 5 minutes from 3 locations), the dashboard "RYFT · Overview". All free at RYFT's volume, so ungated |
+| `logging.tf` | the bucket `ryft-logs` (europe-west1, 14 days) and the sink into it; from `edge = "built"` on two exclusions: the load balancer's requests but Cloud Armor's denials and preview matches, and api's and ingest's Cloud Run request log below 5xx (D242) |
+| `monitoring.tf` | Cloud Monitoring, RYFT's only observability (D236): the log-based metrics `ryft_ticks` (by `result`) and `ryft_errors`, the uptime checks (the site's `/`, `/privacy` and AASA always; api's and ingest's `/health/ready` while they're public; every 5 minutes from 3 locations), the dashboard "RYFT · Overview". All free at RYFT's volume, so ungated. From `edge = "built"` on: `ryft_edge_denials` and `ryft_edge_preview_matches` (by `priority`) and four edge tiles |
 | `alerts.tf` | the five alert policies, one condition each (uptime failing, 5xx over 2 %, tick missing, dead letters held, event backlog over 15 minutes), to both notification channels, the email first, then the app's; only once `alert_app_channel` is set (step 11), the tick's only while the tick runs; the plan fails if that is the email channel (D237) |
 | `checks.tf` | warnings for what fails silently: the `_Default` log sink still on, a mapping not Ready, a disabled email channel (the app's has no data source, D237: step 11.4 tests it) |
 
@@ -43,7 +44,7 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 ## The gates
 
 `gates.auto.tfvars` is committed, so each flip is a reviewed one-line PR. HCP Terraform loads
-`*.auto.tfvars` in remote runs. Never set `serve` or `public_invokers` as workspace variables.
+`*.auto.tfvars` in remote runs. Never set `serve`, `public_invokers` or `edge` as workspace variables.
 `site.auto.tfvars` (the site's DNS values) works the same way: committed, reviewed, never a
 workspace variable, and `tests/site.tftest.hcl` holds it to its five keys.
 
@@ -57,6 +58,17 @@ The invoker bindings are authoritative for the role: an invoker added by hand (`
 scoring, say) is removed at the next apply. The stop line's gcloud commands (OPERATIONS → GCP →
 The €20 stop line) remove `allUsers` by hand at once; `public_invokers = false` leaves exactly
 that, so the next apply neither undoes them nor adds it back.
+
+`edge` (D242, runbook step 16) is `off` unless `serve` is true, and moves one phase a PR, back the
+same way. `scripts/check_cloudrun.py` is to hold `deploy/run`'s ingress to it: that order rule
+comes in the follow-up PR after #211 (D242), before `live`.
+
+| `edge` | The load balancer and Cloud Armor | `api.`, `ingest.` in DNS | Domain mappings | The sink |
+| --- | --- | --- | --- | --- |
+| `off` | none | CNAMEs to the mappings | yes | everything |
+| `built` | built, nothing points at it | CNAMEs to the mappings | yes | everything but the two exclusions |
+| `live` | serving | A records at `edge_ip` | yes (the way back) | the same |
+| `locked` | serving | A records at `edge_ip` | none | the same |
 
 ## The deployer
 
@@ -113,6 +125,14 @@ The arithmetic of each count is in the runbook (steps 4, 9, 11 and the stop line
    Outputs: `github_principal_set` goes; `deployer_principal_set` and `site_principal_set` come.
    The `deploy` set spans the pool, so `tests/iam.tftest.hcl` holds the root to one pool and one
    provider.
+7. **The edge** (D242, step 16). The D242 PR's merge (`edge = "off"`): 0 to add, 0 to change, 0 to
+   destroy, and two moves (`google_dns_record_set.mapping` → `.host`). `built`: 26 to add (2 APIs,
+   the address, 2 NEGs, 2 backend services, the policy, the SSL policy, 2 URL maps, 2 proxies, 2
+   forwarding rules, 2 DNS authorizations and their 2 CNAMEs, 2 certificates, the map and 2 entries,
+   2 log-based metrics), 2 to change (the sink, the dashboard), 0 to destroy. `live`: 0 to add, 2 to
+   change (the two record sets, CNAME → A), 0 to destroy. `locked`: 0 to add, 0 to change, 2 to
+   destroy (the mappings). Each way back is the reverse; `built` → `off` destroys the 26 (the APIs
+   stay on).
 
 ```bash
 cd infra/gcp
@@ -135,7 +155,9 @@ The apply account `hcp-terraform-apply` needs four Monitoring roles for `alerts.
 `monitoring.tf` beyond the bootstrap's (step 11.2): `roles/monitoring.uptimeCheckConfigEditor`,
 `roles/monitoring.dashboardEditor`, `roles/monitoring.alertPolicyEditor` and
 `roles/monitoring.notificationChannelViewer`. The log-based metrics need `logging.configWriter`, which
-it already holds for the bucket and the sink.
+it already holds for the bucket and the sink. The edge (D242, step 16.1) needs three more:
+`roles/compute.loadBalancerAdmin`, `roles/compute.securityAdmin` (the Cloud Armor policy and its
+attachment) and `roles/certificatemanager.editor`; the plan account's `roles/viewer` covers the reads.
 
 ## Checks
 
