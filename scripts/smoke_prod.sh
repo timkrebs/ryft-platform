@@ -38,7 +38,7 @@ if [ -z "$TOKEN" ]; then
   TOKEN=$(curl -fsS -X POST "${SUPABASE_URL%/}/auth/v1/token?grant_type=password" \
     -H "apikey: $SUPABASE_ANON_KEY" -H 'Content-Type: application/json' \
     -d "$(python3 -c 'import json,os;print(json.dumps({"email":os.environ["SMOKE_EMAIL"],"password":os.environ["SMOKE_PASSWORD"]}))')" \
-    | json 'd["access_token"]') || fail "sign-in of $SMOKE_EMAIL"
+    | json 'd["access_token"]') || fail "sign-in of the smoke user (SMOKE_EMAIL)"
 fi
 call() { curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' "$@"; }
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$INGEST/v1/sync")

@@ -1973,7 +1973,8 @@ uptime checks see).
 ### The beta gate: warn, then on (D238)
 
 `BETA_GATE` (D79, D87) is a line of `deploy/run/config.env`, rendered into api and ingest only
-(scoring reads only the consent mode). It is `warn` since D238. `CONSENT_ENFORCE` isn't in
+(scoring reads only the consent mode). D238 set it to `warn`; step 6's one-line PR sets `on`;
+`config.env` holds the mode in force. `CONSENT_ENFORCE` isn't in
 `config.env`, so the services' default `on` holds in every step here: a sync without consent to the
 current policy is `403 consent_required` throughout. On GCP this replaces **Beta → The gates and
 their modes** (Vault's `shared_secrets` and the VSO restart there are EKS's); the rest of **Beta**
@@ -2031,16 +2032,20 @@ use, with an expiry, and a note that names nobody: an unbound code's note is nev
 no hard delete. No `email` (a bound code) until the privacy text names the stored address (U3,
 **Beta → Before the first bound code**). One code per account: yours, the smoke user's, one per
 tester. The loop makes yours and the smoke user's. Run it again with `tester-1 tester-2 …` when the
-testers' TestFlight invites go out (step 15), so their 14 days start then (without the `: >` line,
-which empties the file). The links go into a file only you can read, never to the screen:
+testers' TestFlight invites go out (step 15), so their 14 days start then (without the `rm` line).
+The links go into a file only you can read, never to the screen. The whole loop runs under `umask
+077`, so the file is `0600` whichever run creates it:
 
 ```bash
 EXP=$(date -u -v+14d +%Y-%m-%dT%H:%M:%SZ)               # 14 days from now (macOS date)
-(umask 077; : > ~/ryft-invites.txt)
+rm -f ~/ryft-invites.txt                                # the first run only: no old line left
+(umask 077
 for n in operator smoke; do                             # later: tester-1 tester-2 …, one per tester; never a name
   adm -X POST "$API/v1/admin/invites" -d "{\"note\": \"beta 1 $n\", \"max_uses\": 1, \"expires_at\": \"$EXP\"}" \
-    | jq -r --arg n "$n" '"\($n) \(.link)"' >> ~/ryft-invites.txt
-done
+    | jq -er --arg n "$n" 'select(.link != null) | "\($n) \(.link)"' >> ~/ryft-invites.txt \
+    || echo "no code made for $n: stop (curl's error is the line above)" >&2
+done)
+ls -l ~/ryft-invites.txt                                # -rw------- (0600)
 wc -l < ~/ryft-invites.txt                              # one line per code
 adm "$API/v1/admin/invites" | jq -c '.[] | select(.note | startswith("beta 1 ")) | {note, status, uses, expires_at}'
                                                         # status open, uses 0; no code, no email, no account
@@ -2060,11 +2065,11 @@ the iPhone, then `pbcopy < /dev/null`), or send yourself the link and open it on
 "Action needed" line means your account has access already (it existed at migration 0017, or has an
 operator grant): revoke that code instead.
 
-The smoke user's, with its token (the password, the token and the code never reach argv or the
-screen):
+The smoke user's, with its token (the email, the password, the token and the code never reach argv
+or the screen; zsh, in step 1's shell):
 
 ```bash
-read -r "SMOKE_EMAIL?Smoke user's email: "; read -rs "SMOKE_PASSWORD?Its password: "; echo
+read -rs "SMOKE_EMAIL?Smoke user's email: "; echo; read -rs "SMOKE_PASSWORD?Its password: "; echo
 read -r "SUPABASE_ANON_KEY?Supabase anon key (Project settings -> API): "
 REF=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env)
 TOKEN=$(E="$SMOKE_EMAIL" P="$SMOKE_PASSWORD" jq -n '{email: env.E, password: env.P}' \
@@ -2080,7 +2085,9 @@ unset C TOKEN
 
 `make smoke-prod` with the key in the environment does the smoke user's half by itself: for a
 smoke user without access it makes a one-use code (note `smoke-prod`, no expiry) and redeems it. Run
-it once now, with the key, in the shell above:
+it once now, with the key, in the shell above, and not while a `deploy.yml` run is going (`gh run
+list -w deploy.yml -L 1`): its probe takes the smoke user's access away for one request, and under
+`on` a deploy's smoke in that second goes red:
 
 ```bash
 export SMOKE_EMAIL SMOKE_PASSWORD SUPABASE_ANON_KEY
@@ -2120,10 +2127,14 @@ The same lines in a shell, printed without an id:
 ```bash
 Q='resource.type="cloud_run_revision" AND (resource.labels.service_name="api" OR resource.labels.service_name="ingest") AND logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout" AND jsonPayload.message="http" AND jsonPayload.gate:*'
 gcloud logging read "$Q" --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs \
-  --freshness=7d --order=asc --limit=500 --format='value(timestamp,resource.labels.service_name,jsonPayload.route,jsonPayload.gate)'
-# How many accounts that is, as a count: the ids go into sort and wc, never to the screen.
+  --freshness=7d --limit=500 --format='value(timestamp,resource.labels.service_name,jsonPayload.route,jsonPayload.gate)'
+                                                        # the newest 500 of 7 days, newest first
+# How many lines and how many accounts over the same 7 days, as counts: the ids go into sort and wc,
+# never to the screen.
 gcloud logging read "$Q" --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs \
-  --freshness=1d --limit=10000 --format='value(jsonPayload.user_id)' | sort -u | wc -l
+  --freshness=7d --limit=100000 --format='value(jsonPayload.user_id)' | wc -l
+gcloud logging read "$Q" --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs \
+  --freshness=7d --limit=100000 --format='value(jsonPayload.user_id)' | sort -u | wc -l
 ```
 
 `ryft_gate_refusals_total` is counted in each instance, but nothing reads it on Cloud Run (no scrape,
@@ -2133,8 +2144,10 @@ no push, D236; OBSERVABILITY → The OTLP push (dormant)). The access line's `ga
 **5. The stop rule before `on`.** Flip only when all of these hold:
 1. The 7-day print in step 4 (`--freshness=7d`, inside `ryft-logs`' 14 days) shows no line but the
    probe's (`api GET /v1/days invite_required` at the minutes of your own `make smoke-prod` runs with
-   the key): for a whole week your account and the smoke user's were served without a flag, and so
-   was every tester who is in.
+   the key), its line count is under 500 (else the print shows only the newest 500: read them all
+   before you trust it), and its account count is 0, or 1 when you ran the probe (the smoke user):
+   for a whole week your account and the smoke user's were served without a flag, and so was every
+   tester who is in.
 2. Every code you handed out is used, yours and the smoke user's included:
    `adm "$API/v1/admin/invites" | jq -c '.[] | select(.note | startswith("beta 1 ")) | {note, status}'`
    shows `used` for each one you sent (revoke the rest).
@@ -2169,7 +2182,8 @@ api, so for a minute or two an account without access can be refused by one and 
 `deploy.yml`'s smoke passes only if the smoke user has access (step 3). Without it, it fails with
 "BETA_GATE is on and the smoke user has no access".
 
-It worked when (in a new shell: step 1, and step 3's prompts and `export` line, first):
+It worked when (in a new zsh: step 1, then step 3's three `read` lines, its `REF=` line and its
+`export` line, first; not while another `deploy.yml` run is going, step 3):
 
 ```bash
 for s in api ingest; do
@@ -4062,7 +4076,9 @@ that would have been refused is counted (`ryft_gate_refusals_total{mode="warn"}`
 flagged on its access line (`gate`). **Before the first external invite both are `on`,
 and `make smoke-prod` proves it:** with `ADMIN_API_KEY` it takes the smoke user's consent
 and access away for one request each, reports what each gate did, and gives them back;
-`SMOKE_EXPECT_GATES=on make smoke-prod` fails unless both refused.
+`SMOKE_EXPECT_GATES=on make smoke-prod` fails unless both refused. *On GCP, D238 amends this: the
+invite gate is `warn` while the first testers redeem (consent stays `on`), and goes `on` after its
+stop rule: GCP → **The beta gate: warn, then on**.*
 
 ```bash
 # infra/vault/terraform.tfvars:  shared_secrets = { BETA_GATE = "warn", CONSENT_ENFORCE = "warn" }   (later both "on")

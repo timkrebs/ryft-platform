@@ -1405,7 +1405,7 @@ and counted). A bad payload from a new device type would vanish.
   The data is `synth.py --demo` (named sources with bundle ids, workouts three days a
   week); its default output is unchanged, so the smoke's expectations stay.
 
-## D87 — Gate modes: off, warn, on
+## D87 — Gate modes: off, warn, on (amended by D238)
 
 The app cannot pass the gates yet (no invite or consent screen), and the operator's own
 account was locked out of syncing by the consent check (STATUS → Incidents, 2026-10-20).
