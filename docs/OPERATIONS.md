@@ -1150,7 +1150,16 @@ Then the PR. `prevent_destroy` stops a plain removal, so it takes two applies:
    container into a new `google_secret_manager_secret.retired["otlp-token"]` without
    `prevent_destroy`, and its accessor into `…_iam_binding.retired["otlp-token"]`;
    `tests/iam.tftest.hcl` and `guards.tftest.hcl` follow (12 → 11, two secret blocks for one).
-   Plan and apply: 0 to add, 0 to change, 0 to destroy, 2 moved.
+   Plan and apply: 0 to add, 0 to change, 0 to destroy, 2 moved. After its merge, from main:
+   ```bash
+   git switch main && git pull
+   terraform -chdir=infra/gcp plan -out=otlp-retire.tfplan   # Plan: 0 to add, 0 to change, 0 to destroy; the 2 "has moved to" lines
+   terraform -chdir=infra/gcp apply otlp-retire.tfplan
+   rm infra/gcp/otlp-retire.tfplan
+   terraform -chdir=infra/gcp plan                           # No changes
+   ```
+   The two moves: `google_secret_manager_secret.this["otlp-token"]` → `.retired["otlp-token"]` and
+   `google_secret_manager_secret_iam_binding.accessor["otlp-token"]` → `.retired["otlp-token"]`.
 2. **PR 2:** both `retired` resources and the `moved` blocks go; `scripts/check_cloudrun.py`'s
    `ACCESSORS` loses `otlp-token`. Plan and apply: 0 to add, 0 to change, 2 to destroy (the
    container, every version with it, and its binding).
