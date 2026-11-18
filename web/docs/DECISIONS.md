@@ -633,7 +633,11 @@ An assertion with `median-run` then reads that run alone:
 
 So LCP, CLS, TBT and the score were four readings of one run, picked by FCP and TTI, neither of
 which has a budget here. "All values: 162" is that one run. The run is not the one with the median
-performance score either: the score plays no part in the choice.
+performance score either: the score plays no part in the choice. The log doesn't show the other two
+runs' TBT, so whether `median` would have passed that run isn't known: if two of its three were
+over 100, it fails under `median` too, and that is right. What is known is the rerun: one `/` run
+at 1681 ms and a score of 0.73, two at 0, the case `median` passes and `median-run` passes only
+when it picks one of the two.
 
 **What `median` does.** Every run's value goes in, and the middle one is asserted:
 
@@ -649,12 +653,14 @@ function getValueForAggregationMethod(values, aggregationMethod, assertionType) 
 ```
 
 With 3 runs that is the second of the sorted values, for each metric on its own. A budget fails when
-2 of the 3 runs miss it.
+2 of the 3 runs miss it. A run that reports no value is dropped (lines 90 and 108): with two left,
+the median is their mean.
 
 **The decision.** LCP, CLS, TBT and `categories:performance` use `median`. `numberOfRuns` stays 3,
 and every value stays: LCP 1500 ms, CLS 0.05, TBT 100 ms, performance 0.95, script 81 920 bytes,
-accessibility 0.95, best practices 0.95 (warn), SEO 0.9. The method is set on each assertion: LHCI
-refuses a top-level `aggregationMethod` next to `assertMatrix` (`assertions.js`, line 540). The
+accessibility 0.95, best practices 0.95 (warn), SEO 0.9. The method is set on each assertion, where
+it is read: a top-level `aggregationMethod` next to `assertMatrix` throws (`assertions.js`, line
+540), and one per matrix entry would set it for that entry's every assertion (lines 440, 502). The
 other four keep LHCI's default, `optimistic` (line 168, `aggregationMethod = 'optimistic'`). That is
 the best run: the lowest value for a maximum, the highest score for a minimum (lines 93–96). Their
 values don't vary between runs, so `median` would assert the same number and change no verdict:

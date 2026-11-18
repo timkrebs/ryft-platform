@@ -100,7 +100,7 @@ had expired).
 | Science | Model `2026.10.1`, formulas from `SCORING.md`, `ARCHITECTURE.md` and the scoring code | `tests/science.test.ts` fails when SCORING.md's version moves |
 | Licences | 8 Swift packages at their pinned revisions + Satoshi; 166 npm production packages + Satoshi; full texts | `npm run licenses:check`, `tests/output.test.ts` |
 | JavaScript | 1.4 KB of inline JS on every page (theme), no framework runtime (D2) | `tests/output.test.ts` (< 80 KB), Lighthouse `resource-summary:script` |
-| Performance | Lighthouse mobile, simulated throttling: LCP 1.35 s on `/`, `/de`, `/science`, `/beta`, `/privacy`; CLS ≤ 0.002; TBT 0 | `lighthouserc.json`, 3 runs per page, the median of each metric and the score (D24) |
+| Performance | Lighthouse mobile, simulated throttling: LCP 1.35 s on `/`, `/science`, `/beta`, `/privacy`; CLS ≤ 0.002; TBT 0 | `lighthouserc.json`, 3 runs per page, the median of each metric and the score (D24) |
 | Lighthouse scores | Performance 100, Accessibility 100, Best Practices 100, SEO 92 (indexable pages; see below) | same |
 | Accessibility | axe: 0 serious or critical on every page × dark/light × desktop/phone, English only since D18 (2026-10-21: 22 pages, 88 tests) | `e2e/site.spec.ts` |
 | Links | 246 links, internal and external, all reachable | `npm run links` |
