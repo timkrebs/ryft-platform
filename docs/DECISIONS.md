@@ -5379,3 +5379,49 @@ _Grafana half superseded by D236._
   log has ERROR entries for every 5xx, with the caller's IP. For RYFT on GCP, C2 need not name Grafana.
 - **Consequences:** `OBSERVABILITY.md` → Cloud Monitoring; `OPERATIONS.md` → GCP → 11 and When an alert fires;
   `infra/gcp/README.md`.
+
+## D238 — The beta gate on GCP: `warn` first, `on` after a stop rule, in `deploy/run/config.env` (2026-11-18; amends D87)
+
+- **Context:** on Cloud Run `BETA_GATE` was set nowhere, so the code's default (`off`, D87) held: any Supabase
+  account could sync. The first testers (5–10, TestFlight, heart rate and sleep: GDPR Art. 9) come next. `on`
+  straight away would refuse every account without a redeemed code at the first request after the deploy: the
+  operator's own and the smoke user's, if they have none, and `deploy.yml`'s smoke would go red, since it has
+  no admin key to make one.
+- **Decision:**
+  - `BETA_GATE` is a required key of `deploy/run/config.env` (shape `off|warn|on`, lower case), rendered into
+    api and ingest only, the two services that run the gate. scoring calls `LoadBeta` but reads only the
+    consent mode, so it gets no such line. The mode in force is always the one in git, never the code's
+    default.
+  - **`warn` first.** It serves every account as before and flags each one without access (`X-RYFT-Gate:
+    invite_required`, the access line's `gate`, `GET /v1/me/sync` → `gate`), so the merge refuses nothing and the
+    app, which knows the header, asks for a code. In that time the operator redeems a code for their own account
+    (in the app, which also proves the TestFlight build takes one) and for the smoke user, and every invited
+    tester redeems theirs.
+  - **`on` needs** (OPERATIONS → GCP → The beta gate, step 5): 7 days of warn lines with nothing but the smoke
+    probe's, every code handed out used, no account without access that should keep it, the testers' build the
+    one that took the operator's code (or newer), and `make smoke-prod` green with the key (`gates: invite warn`).
+    Then the flip is a PR of one line, and its rollback is the same line back to `warn`.
+  - Codes are unbound, single use, expire in 14 days, and their notes name nobody (an unbound code's note is
+    never cleared). No bound code before the privacy text names the stored address (U3).
+  - **`CONSENT_ENFORCE` is unchanged:** not in `config.env`, so the default `on` holds in every step. A sync
+    without consent to the current policy is refused throughout, and nothing is scored without one.
+- **Amends D87:** D87's runbook made "both `on`" the step before the first external invite, because `warn`
+  in the consent gate processes health data without a recorded consent. With the consent gate `on` throughout,
+  that reason doesn't apply to the beta gate. So invited testers may redeem while it is still `warn`: under warn
+  an account without a code is served, never processed without consent. `on` still comes before the beta is
+  opened to anyone not invited.
+- **Rejected:**
+  - `on` in this PR. It would lock out whichever of the operator's account and the smoke user has no code,
+    with no way to tell in advance which: `ryft_gate_refusals_total` isn't read on Cloud Run (D236).
+  - Leaving the key optional, with the code's default. A deploy's mode would then be what the code says, not
+    what the reviewed PR says.
+  - The admin key in `deploy.yml`'s smoke, so CI could redeem or probe by itself. That puts the operator's
+    break-glass key into a CI environment for a one-time step.
+- **Unchecked here:** that the TestFlight build shows the invite screen on a `403 invite_required` (the app's
+  code reads so; the throwaway check after the flip proves it); that the operator's and the smoke user's accounts
+  lack access today (the count in step 5 says).
+- **Privacy:** no new processor and no new data. The warn lines carry `user_id` like every access line; the
+  runbook's prints leave it out, and the count goes through `sort` and `wc`. A code's note names nobody.
+- **Consequences:** `scripts/cloudrun_render.py` (the key and the placeholder), `scripts/check_cloudrun.py` (the
+  env of api and ingest), their tests, `deploy/run/{config.env,api.yaml,ingest.yaml}`; `OPERATIONS.md` → GCP →
+  The beta gate: warn, then on.

@@ -54,6 +54,7 @@ spec:
             - { name: SUPABASE_SERVICE_ROLE_KEY, valueFrom: { secretKeyRef: { name: supabase-secret-key, key: "1" } } }
             - { name: PRIVACY_POLICY_VERSION, value: "${PRIVACY_POLICY_VERSION}" }
             - { name: PRIVACY_POLICY_URL, value: "https://ryftlab.de/privacy" }
+            - { name: BETA_GATE, value: "${BETA_GATE}" }
             - { name: ADMIN_WEB_ORIGINS, value: "https://ryftlab.de" }
             - { name: ADMIN_API_KEY, valueFrom: { secretKeyRef: { name: admin-api-key, key: "1" } } }
             - { name: APPLE_TEAM_ID, value: M77SKHKG63 }

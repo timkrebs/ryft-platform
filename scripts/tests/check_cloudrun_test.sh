@@ -100,7 +100,8 @@ ok "a copy of deploy/run"
 printf -v s '%20s' ''; ref=${s// /q}
 printf -v s '%10s' ''; akey=${s// /A}; nkey=${s// /N}
 {
-  printf '%s\n' "PRIVACY_POLICY_VERSION=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' "$HERE/deploy/run/config.env")" LOG_LEVEL=info
+  printf '%s\n' "PRIVACY_POLICY_VERSION=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' "$HERE/deploy/run/config.env")" LOG_LEVEL=info \
+    BETA_GATE=on
   printf 'GCP_PROJECT_NUMBER=7%011d\nPUSH_SA_ID=1%020d\n' 0 0
   printf '%s\n' "SUPABASE_PROJECT_REF=$ref" SUPABASE_POOLER_HOST=aws-0-eu-central-1.pooler.supabase.com \
     "APPLE_KEY_ID=$akey" "APNS_KEY_ID=$nkey"
@@ -172,6 +173,24 @@ drop notify.yaml 'name: PUSH_SA_ID,'
 bad "notify without PUSH_SA_ID" "PUSH_SA_ID is missing"
 add notify.yaml 'name: LOG_LEVEL,' '- { name: LOG_LEVEL, value: debug }'
 bad "an env twice" "LOG_LEVEL is set twice"
+# The beta gate (D238): config.env's mode in api and ingest, nowhere else, never written into a template.
+gate=$(sed -n 's/^BETA_GATE=//p' "$HERE/deploy/run/config.env")
+[ -n "$gate" ] || fail "fixture: deploy/run/config.env has no BETA_GATE line"
+other=on; [ "$gate" != on ] || other=off
+drop api.yaml 'name: BETA_GATE,'
+bad "api without the beta gate" "api.yaml env: BETA_GATE is missing"
+drop ingest.yaml 'name: BETA_GATE,'
+bad "ingest without the beta gate" "ingest.yaml env: BETA_GATE is missing"
+edit ingest.yaml 'name: BETA_GATE,' '${BETA_GATE}' "$other"
+bad "a gate mode written into the template" "BETA_GATE='$other', want '$gate'"
+add scoring.yaml 'name: LOG_LEVEL,' '- { name: BETA_GATE, value: "${BETA_GATE}" }'
+bad "scoring with the beta gate" "BETA_GATE is not in ticket-b.md's env table for scoring"
+add notify.yaml 'name: LOG_LEVEL,' '- { name: BETA_GATE, value: "${BETA_GATE}" }'
+bad "notify with the beta gate" "BETA_GATE is not in ticket-b.md's env table for notify"
+edit config.env 'BETA_GATE=' "$gate" 'enforce'
+bad "a gate mode outside off|warn|on" "BETA_GATE='enforce' does not have the shape off, warn or on"
+drop config.env 'BETA_GATE='
+bad "config.env without the gate mode" "BETA_GATE is missing"
 
 # P5 (design §5.1): never on Cloud Run, in a template or in config.env.
 add ingest.yaml 'name: LOG_LEVEL,' '- { name: PORT, value: "8080" }'
@@ -287,4 +306,4 @@ bad "a placeholder outside the list" "placeholder(s) outside the fixed list: HOM
 add migrate.yaml 'name: LOG_LEVEL,' '- { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }'
 bad "migrate with an audience" "migrate is no push target"
 
-echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env, P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"
+echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env (BETA_GATE from config.env in api and ingest only), P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"
