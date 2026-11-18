@@ -1332,6 +1332,356 @@ gh secret delete <name>                              # each AWS and GHCR one; ad
 
 **Stop if** a safe delete is refused. Resources are still in that state: find out why first.
 
+### 14a. Before testers: auth mail, the restore drill, feedback
+
+Three things to do before step 15 (D239). They change no Terraform, no service and no site. They can run
+now, in any order. Testers who sign up by email need 14a.1 to 14a.4 first. *Confirm email* is on
+(SUPABASE.md), and until then nobody outside the Supabase team gets the confirmation mail. Sign in with
+Apple sends no mail.
+
+The external sources were read through search results only, on 2026-11-18. WebFetch was refused in that
+session, so each claim below names its page and is marked *(search)*.
+
+**The risk.** The app uses email sign-up and password reset. Supabase's custom SMTP takes a host, a
+port, a user name and a password, and documents no OAuth (XOAUTH2) option
+([Supabase: Send emails with custom SMTP](https://supabase.com/docs/guides/auth/auth-smtp), as of
+2026-11-18, *(search)*). Exchange Online is retiring exactly that sign-in, a password for SMTP AUTH client
+submission to `smtp.office365.com:587`.
+
+- **Certain:**
+  - The Exchange Team blog post
+    ["Updated Exchange Online SMTP AUTH Basic Authentication Deprecation Timeline"](https://techcommunity.microsoft.com/blog/exchange/updated-exchange-online-smtp-auth-basic-authentication-deprecation-timeline/4489835)
+    is dated 2026-01-27 (version 3.0, 2026-01-29) *(search)*. It says Basic auth for SMTP AUTH is unchanged
+    until December 2026. At the end of December 2026 it is disabled by default for existing tenants, and
+    administrators can still enable it. Tenants created after December 2026 don't get it. Microsoft
+    announces the final removal date in the second half of 2027.
+  - The plan before it is on hold: a share of submissions rejected from 2026-03-01, all of them by
+    2026-04-30. That was Message Center MC786329's earlier version; its update of 2026-01-27 carries
+    the timeline above instead (mirror:
+    [mc.merill.net/message/MC786329](https://mc.merill.net/message/MC786329), *(search)*). The first
+    announcement was
+    [Exchange Online to retire Basic auth for Client Submission (SMTP AUTH)](https://techcommunity.microsoft.com/blog/exchange/exchange-online-to-retire-basic-auth-for-client-submission-smtp-auth/4114750)
+    in 2024-04 *(search)*.
+  - Only Basic auth goes, meaning a user name and a password for client submission. OAuth (XOAUTH2)
+    submission stays: the blog names OAuth as the supported method.
+  - Two switches decide today. One is the tenant's `SmtpClientAuthenticationDisabled`
+    (`Get-TransportConfig`). The other is the mailbox's (`Set-CASMailbox`), and the mailbox's wins. Security
+    defaults block SMTP AUTH whatever both say. So does an authentication policy that blocks Basic auth
+    ([Learn: Enable or disable SMTP AUTH](https://learn.microsoft.com/en-us/exchange/clients-and-mobile-in-exchange-online/authenticated-client-smtp-submission),
+    as of 2026-11-18, *(search)*).
+  - High Volume Email doesn't help. It delivers to recipients inside the tenant only
+    ([Learn: Manage High Volume Email](https://learn.microsoft.com/en-us/exchange/mail-flow-best-practices/high-volume-mails-m365),
+    as of 2026-11-18, *(search)*). Its external sending ended in June 2025
+    ([Exchange Team blog on HVE](https://techcommunity.microsoft.com/blog/exchange/high-volume-email-continued-support-for-basic-authentication--other-important-up/4411197),
+    post date not read, *(search)*). Testers are external.
+  - The tenant is an existing one (live since 2026-11-14, D214), so the rule for new tenants doesn't apply.
+- **Not certain:**
+  - Whether the default at the end of December 2026 also turns off a mailbox you enabled explicitly, and
+    which switch turns it back on. The search excerpts don't say.
+  - The final removal date. It isn't announced. After it this route stops for good, because Supabase's
+    SMTP has no OAuth.
+  - Whether a GoDaddy tenant lets you use the Microsoft 365 admin center or Exchange Online PowerShell
+    for this. GoDaddy documents its own switch.
+- **Verdict:** the route works for the start of the beta, and it has an end date. Test again in the
+  first week of January 2027 (14a.5). Have the fallback (14a.6) ready before the second half of 2027.
+
+**14a.1 The sender mailbox.** Use a dedicated user, `no-reply@ryftlab.de`, with its own licence: GoDaddy →
+Email & Office Dashboard → add a user. GoDaddy's plan and price are not checked here. Mail for the domain
+already runs there (**Mail for ryftlab.de** below; the zone's records are `infra/gcp/dns.tf`).
+- **Not a shared mailbox.** SMTP AUTH signs in as the mailbox's account, with its password
+  ([Learn: set up a device or application to send email](https://learn.microsoft.com/en-us/exchange/mail-flow-best-practices/how-to-set-up-a-multifunction-device-or-application-to-send-email-using-microsoft-365-or-office-365),
+  as of 2026-11-18, *(search)*). A shared mailbox has no sign-in of its own: people reach it through
+  their own accounts (no Microsoft page on this was read here). Community answers say that a password and
+  a sign-in for it then need a licence anyway (they aren't Microsoft's docs).
+- **Not `support@ryftlab.de`.** Its password would sit in Supabase's settings, and that mailbox holds every
+  tester's mail.
+- **The account:** no admin role, no forwarding, no other use. Its password comes from 1Password's
+  generator (item "RYFT no-reply SMTP") and goes nowhere but into Supabase (14a.3).
+- **MFA.** Basic SMTP AUTH can't answer a second factor, and security defaults block it for the whole
+  tenant. When you enable SMTP authentication, GoDaddy's switch (14a.2) turns security defaults off for
+  the whole organisation
+  ([GoDaddy: Enable SMTP Authentication](https://www.godaddy.com/help/enable-smtp-authentication-40981),
+  as of 2026-11-18, *(search)*). After that, `support@` and your admin account keep a second factor
+  only through per-user MFA. Turn it on for each of them before 14a.2. Your tenant may offer it in
+  GoDaddy's dashboard or in Entra → Per-user MFA; which one wasn't checked.
+
+**Stop if** you can't keep a second factor on every other account of the tenant once security defaults
+are off. Then use the fallback (14a.6): an EU sender needs nothing from the tenant.
+
+**14a.2 Authenticated SMTP, for that mailbox only.** Use one of these three, whichever your tenant gives
+you:
+1. GoDaddy, the tenant's own path ([GoDaddy](https://www.godaddy.com/help/enable-smtp-authentication-40981),
+   *(search)*): Email & Office Dashboard → **Manage** next to `no-reply@ryftlab.de` → Account information →
+   **Advanced Settings** → **SMTP Authentication** on → **Continue**.
+2. The Microsoft 365 admin center ([Learn](https://learn.microsoft.com/en-us/exchange/clients-and-mobile-in-exchange-online/authenticated-client-smtp-submission),
+   *(search)*): Users → Active users → `no-reply@ryftlab.de` → **Mail** → **Manage email apps** →
+   **Authenticated SMTP** ticked → **Save changes**.
+3. Exchange Online PowerShell (the same page):
+
+   ```powershell
+   Connect-ExchangeOnline
+   Get-TransportConfig | Format-List SmtpClientAuthenticationDisabled                          # the tenant's default: leave it
+   Set-CASMailbox -Identity no-reply@ryftlab.de -SmtpClientAuthenticationDisabled $false
+   Get-CASMailbox -Identity no-reply@ryftlab.de | Format-List SmtpClientAuthenticationDisabled   # False
+   ```
+
+The mailbox's setting wins over the tenant's. The tenant can stay at `True`, and then only this mailbox
+submits by SMTP. Leave `support@` alone.
+
+Paths 2 and 3 leave security defaults as they are, and while they are on, SMTP AUTH fails whatever
+the mailbox says (`535 5.7.139`). After 14a.1's per-user MFA on every other account, turn them off:
+Microsoft Entra admin center → Identity → Overview → **Properties** → **Manage security defaults** →
+**Disabled** (Learn, the same page, *(search)*). Path 1 does this for you.
+
+**Stop if** the switch is missing or greyed out (the tenant blocks it), or 14a.1's stop applies.
+
+**14a.3 Supabase's SMTP settings.** In the production project's dashboard:
+1. Authentication → URL Configuration. The Site URL is `https://ryftlab.de`. The Redirect URLs are
+   `ryft://auth/callback` and nothing on another domain (step 7, SUPABASE.md, D213). Leave them as they are.
+2. Authentication → Emails → **SMTP Settings** → enable custom SMTP:
+
+   | Field | Value |
+   | --- | --- |
+   | Sender email | `no-reply@ryftlab.de`. The account that signs in appears as the sender (the Learn page in the port's row); another address fails without Send As |
+   | Sender name | `RYFT` (SUPABASE.md) |
+   | Host | `smtp.office365.com` |
+   | Port | `587`, STARTTLS (Microsoft's recommended port, [Learn](https://learn.microsoft.com/en-us/exchange/mail-flow-best-practices/how-to-set-up-a-multifunction-device-or-application-to-send-email-using-microsoft-365-or-office-365), *(search)*) |
+   | Username | `no-reply@ryftlab.de` |
+   | Password | pasted from the 1Password item; never into a file, a chat or a command |
+
+   Leave the minimum interval as Supabase sets it. **Save**.
+3. Authentication → Rate Limits → the rate limit for emails: **30 an hour**. That is Supabase's default once
+   custom SMTP is on ([auth-smtp](https://supabase.com/docs/guides/auth/auth-smtp),
+   [Rate limits](https://supabase.com/docs/guides/auth/rate-limits), as of 2026-11-18, *(search)*). Keep it.
+   5 to 10 testers need a few mails a day, and 30 caps abuse. Exchange's own limits per mailbox are 30
+   messages a minute and 10,000 recipients a day
+   ([Learn: Exchange Online limits](https://learn.microsoft.com/en-us/office365/servicedescriptions/exchange-online-service-description/exchange-online-limits),
+   as of 2026-11-18, *(search)*).
+4. Authentication → Emails → the templates (*Confirm signup*, *Reset password*, *Change email address*,
+   *Magic link*) stay as SUPABASE.md words them. The SMTP settings only change how the mail leaves. The
+   templates' links, the Site URL and the redirect URLs are separate settings, and this step doesn't touch
+   them. A link still goes to `https://<ref>.supabase.co/auth/v1/verify…` and comes back into the app
+   through `ryft://auth/callback`.
+
+**Stop if** Supabase refuses to save.
+
+**14a.4 The test: a password reset to an address outside the team.** Supabase's built-in mailer delivers
+only to the organisation's team (Supabase → Organization → Team;
+[auth-smtp](https://supabase.com/docs/guides/auth/auth-smtp), *(search)*). So the test address must not be
+on that team. Use a second address of yours that isn't, written here as `<the test address>`.
+1. In the app (the TestFlight build), sign up with `<the test address>`. The confirmation mail arrives.
+   Open its link on the iPhone. That proves *Confirm signup* too.
+2. In the app: Sign in → Forgot password → `<the test address>`.
+3. Within five minutes the mail is in that inbox, not in spam, from `RYFT <no-reply@ryftlab.de>`.
+   Don't long-press the link: iOS's preview opens it and spends the one-time token, and the tap then
+   fails as "link expired". Read the URL in the mail's source instead (4's original view), and never
+   copy it: it is a live token. It must start with `https://<ref>.supabase.co/auth/v1/verify?` and carry
+   `redirect_to=ryft://auth/callback`. Then tap it once: the app opens on Set new password. Set one.
+4. Open the mail's original (its headers). They show `SPF: PASS`, `DKIM: PASS` with `d=ryftlab.de`, and
+   `DMARC: PASS`. If DKIM fails and names `selector1`, the `selector1` line of **Mail for ryftlab.de** is
+   due. DMARC is `p=quarantine`, so such mail lands in spam.
+5. Sign in to Outlook on the web as `no-reply@` and open **Sent Items**. It holds a copy: Exchange keeps
+   every SMTP AUTH submission there
+   ([Learn: SMTP Authenticated Submission](https://learn.microsoft.com/en-us/troubleshoot/exchange/send-emails/smtp-submission-improvements),
+   as of 2026-11-18, *(search)*). Each copy holds a tester's address and a one-time link. Delete it for
+   good now: Shift+Delete, or empty Deleted Items and then **Recover items deleted from this folder** →
+   purge. A plain delete keeps it in Recoverable Items, 14 days by default (the mailbox's
+   `RetainDeletedItemsFor`, `Get-Mailbox no-reply@ryftlab.de | Format-List RetainDeletedItemsFor`). Then
+   set a retention of 7 days on Sent Items, or empty it every week the same way. C2 must name this
+   copy, and both windows.
+6. Delete the test account in the app (Settings → delete the account), unless you keep it for tests.
+
+**Stop if** the mail hasn't come after 15 minutes, or DMARC fails in 4. Supabase's Auth logs should show
+the SMTP server's reply (not checked). `535 5.7.139` means SMTP AUTH is off for the tenant or the mailbox, or security defaults
+are on. `550 5.7.30 Basic authentication is not supported for Client Submission` means Basic auth is off.
+Both codes come from search results (*(search)*), not from a page read here. Don't retry in a loop: fix
+the setting the reply names, then test once more. If it still fails with Basic auth off, use the fallback
+(14a.6).
+
+**14a.5 January 2027: the test again.** Microsoft's default changes at the end of December 2026 (above).
+In the first week of January 2027, run 14a.4's steps 2 to 4 again.
+
+**Stop if** it fails with `5.7.30` or `5.7.139`. Enable the mailbox again with 14a.2's switch, where
+Microsoft still lets admins do that, and test once. If Microsoft no longer offers it, use the fallback.
+
+**14a.6 The fallback: an EU sender** (nothing is built here). These three EU providers have a free tier
+that covers a beta. Each sends through its own SMTP host and credentials, which its console shows (not
+checked here). In Supabase only 14a.3's host, port, user name and password change. The sender, the rate
+limit, the templates and the URLs stay.
+
+| Provider | Free tier | DNS records it asks for |
+| --- | --- | --- |
+| Brevo (France) | 300 emails a day ([brevo.com/facts](https://www.brevo.com/facts/), as of 2026-11-18, *(search)*; the pricing page itself not read) | an apex TXT `brevo-code:…`; two DKIM CNAMEs, `brevo1._domainkey` and `brevo2._domainkey`, to targets under `dkim.brevo.com` (the account shows them); a DMARC record (ours is one: don't add a second). Guides disagree on whether Brevo needs an SPF include for this ([Brevo help](https://help.brevo.com/hc/en-us/articles/12163873383186), *(search)*): DMARC passes through the aligned DKIM either way |
+| Mailjet (France, part of Sinch) | 6,000 emails a month, at most 200 a day ([mailjet.com/pricing](https://www.mailjet.com/pricing/), as of 2026-11-18, *(search)*) | `include:spf.mailjet.com` in the SPF; a DKIM TXT at `mailjet._domainkey` (Mailjet's pages also show it as a CNAME: use what the account shows); DMARC through DKIM, because SPF aligns only with a custom return path ([Mailjet: SPF and DKIM](https://documentation.mailjet.com/hc/en-us/articles/360049641733-Authenticating-Domains-with-SPF-and-DKIM-A-Complete-Guide), *(search)*) |
+| Scaleway Transactional Email (France) | 300 emails a month per organisation, counted per recipient, then €0.25 per 1,000 ([scaleway.com pricing](https://www.scaleway.com/en/pricing/managed-services/), as of 2026-11-18, *(search)*) | an SPF include: the guide shows `include:_spf.tem.scaleway.com`, another page `_spf.scw-tem.cloud`, so use what the console shows; a DKIM TXT under `_domainkey` with the console's name; an MX only for a domain without one (ours is Microsoft's: keep it); DMARC: ours ([Scaleway: authenticate your domain](https://www.scaleway.com/en/docs/transactional-email/how-to/authenticate-domain/), *(search)*) |
+
+Each provider's DPA, subprocessors and log retention are not read here, and neither is whether its free
+tier brands the mail.
+
+The zone's records are code in `infra/gcp/dns.tf`. The apex TXT set is `local.apex_txt`: the SPF is one
+string of `local.m365_apex_txt` in it, and a provider's verification string (`brevo-code:…`) joins
+`local.apex_txt`, not the Microsoft list. The SPF: `v=spf1 include:secureserver.net -all`, plus the provider's include, never a second
+SPF. DKIM CNAMEs go into `local.mail_cnames`. A DKIM TXT needs a new `google_dns_record_set` there. DMARC is
+`local.dmarc`. `infra/gcp/tests/dns.tftest.hcl` pins those values, so the PR changes it too. SPF allows at
+most 10 DNS lookups, and how many `secureserver.net` uses wasn't checked: check it before that PR. The PR is
+code, and the apply is yours (`terraform -chdir=infra/gcp plan`, then `apply`).
+
+**The privacy text must name the one chosen.** The text in force (2026-10-26) names Supabase "(database and
+sign-in)". For email it names Google Workspace, for `support@`. It names no Microsoft, and no one who sends
+the sign-in mails. Whichever route you take, C2 must add three things:
+- who sends the sign-up, reset and email-change mails, and what passes: the address, the link and the
+  time;
+- on this route, Microsoft (Exchange Online, the tenant through GoDaddy) and the Sent Items copy with its
+  retention; on the fallback, the provider, where it is, its contract and its log retention;
+- Microsoft instead of Google Workspace for `support@` (D214 says so already).
+
+**Stop if** the provider's console asks for a record not in the table above. Then read its page first; the
+PR names every record it adds.
+
+**14a.7 The restore drill: Supabase Pro's daily backups, without touching production.** What Supabase
+offers today ([Database Backups](https://supabase.com/docs/guides/platform/backups),
+[Restore to a new project](https://supabase.com/docs/guides/platform/clone-project),
+[Restore Dashboard backup](https://supabase.com/docs/guides/platform/migrating-within-supabase/dashboard-restore),
+[Database backups](https://supabase.com/features/database-backups), all as of 2026-11-18, *(search)*):
+- Pro keeps the last 7 daily backups. Logical backups are for databases up to 15 GB, physical ones for
+  bigger databases and for PITR. Every project on Postgres 15.8.1.079 or newer uses physical backups.
+- **Restore to a new project** (Database → Backups → the tab **Restore to a New Project**) needs a paid
+  plan with physical backups. The copy gets the source's compute size, disk, SSL enforcement and network
+  restrictions. It stays in the source's region. It is a database-only copy: Auth's settings, the keys
+  and SMTP don't come along. A cost overview shows before you start.
+- **A download** shows in the dashboard only for older projects on logical backups. Physical backups
+  can't be downloaded. The CLI route (`supabase db dump`) reads production itself.
+
+**The route: restore to a new project.** The copy stays in Frankfurt with the same processor, Supabase, so
+no new place holds Art. 9 data. A download would put the testers' heart rate and sleep on the laptop,
+outside Supabase's controls. For a physical backup it isn't offered at all.
+
+**The cost.** Compute is billed by the hour, and a started hour counts as a full one. Micro is $0.01344
+an hour (about $10 a month); Small is $0.0206 an hour
+([Manage Compute usage](https://supabase.com/docs/guides/platform/manage-your-usage/compute), as of
+2026-11-18, *(search)*). Pro includes $10 of compute credits a month, which cover one Micro project.
+Production uses them, so you pay for the copy's hours. A two-hour drill on Micro costs about $0.03. Left
+running for a month, the copy costs about $10. Disk: a database this small stays inside a project's
+included disk (8 GB per project,
+[Manage Disk size usage](https://supabase.com/docs/guides/platform/manage-your-usage/disk-size),
+*(search)*; not checked for a copy). If production's disk was grown, the copy mirrors it, and the overview
+shows the cost.
+
+1. **Before.** In production, open Database → Extensions: `pg_cron` and `pg_net` are off. A physical copy
+   starts their jobs at once (Restore to a new project, above). No migration uses either. Then Database →
+   Backups: note the newest backup's time, and whether a Download button shows (logical) or not (physical).
+   And Project Settings → **Compute and Disk**: note production's compute size, which the copy gets. The
+   repository doesn't record it; the cost above assumes Micro, and Small is about half as much again.
+
+   **Stop if** `pg_cron` or `pg_net` is on: the copy would run their jobs too. First find out who turned it
+   on.
+2. **The restore.** Database → Backups → **Restore to a New Project** → the newest backup. Read the
+   overview: the region is Central EU (Frankfurt), and the compute size is production's. Then **Restore**.
+   Note the time, wait until the new project is healthy, and note how long it took.
+
+   **Stop if** the tab is missing (no physical backups), the region isn't Frankfurt, or the size is bigger
+   than production's. A download instead is your decision (D239), not a step on the way.
+3. **Lock the copy.** In the copy, turn the Data API off (Project Settings → Data API, as SUPABASE.md step 4
+   says). Migration 0007's revokes hold anyway. Set up no SMTP, keys, users or service. Connect nothing to it:
+   no app, no compose stack, no `psql` from the laptop. So this drill replaces **Backups → Restore
+   drill, monthly** for RYFT on GCP, its smoke against the copy included.
+
+   **Stop if** the Data API won't turn off. Delete the copy (5) and ask Supabase why.
+4. **The check, counts only.** Run the same query in the copy's SQL editor, then in production's. It only
+   reads. It returns one row of numbers: no row content, no id. Copy nothing out of either page: no CSV,
+   no export, no screenshot into a chat.
+
+   ```sql
+   SELECT
+     (SELECT max(version) FROM schema_migrations)               AS schema_version,
+     (SELECT count(*) FROM schema_migrations)                   AS migrations,
+     (SELECT count(*) FROM pg_roles
+       WHERE rolname IN ('ryft_api', 'ryft_ingest', 'ryft_scoring', 'ryft_notify')) AS service_roles,
+     (SELECT count(*) FROM auth.users)                          AS auth_users,
+     (SELECT count(*) FROM users)                               AS users,
+     (SELECT count(*) FROM deleted_users)                       AS tombstones,
+     (SELECT count(*) FROM consents WHERE revoked_at IS NULL)   AS consents,
+     (SELECT count(*) FROM devices)                             AS devices,
+     (SELECT count(*) FROM samples)                             AS samples,
+     (SELECT count(*) FROM sleep_segments)                      AS sleep_segments,
+     (SELECT count(*) FROM workouts)                            AS workouts,
+     (SELECT count(*) FROM daily_scores)                        AS daily_scores,
+     (SELECT count(*) FROM journal_entries)                     AS journal_entries,
+     (SELECT count(*) FROM feedback)                            AS feedback,
+     (SELECT count(*) FROM outbox WHERE published_at IS NULL)   AS outbox_pending;
+   ```
+
+   It passes when, comparing the copy with production:
+   - `schema_version` is 36 on both. 36 is `0036_analytics_flag.sql`, main's newest migration file on
+     2026-11-18; later, `ls backend/internal/db/migrations | tail -n 1` names it. `migrations` equals
+     `schema_version`. If production is higher, a migration landed after the backup: the copy must then
+     equal the newest file of the backup's day.
+   - `service_roles` is 4 on both.
+   - `tombstones` in the copy is at most production's. Tombstones are never deleted.
+   - `users` in the copy is at most production's `users` plus production's `tombstones` minus the copy's
+     `tombstones`; the same for `auth_users`. Sign-ups after the backup make production bigger; deletions
+     make it smaller by exactly the new tombstones.
+   - `samples`, `sleep_segments`, `workouts` and `daily_scores` are not 0 in the copy where production's
+     aren't. Each is within about a day's growth of production's. An account deletion or a HealthKit
+     deletion can make production's smaller.
+   - `outbox_pending` is small on both: the outbox drains within minutes (**Dead letters and the outbox**).
+
+   **Stop if** the query fails in the copy (a missing table: the backup lacks it), the copy's
+   `schema_version` is below the backup day's, a data table is 0 in the copy but not in production, or a
+   rule above fails. Keep the copy only as long as finding the cause takes, then step 5.
+5. **Tear it down.** In the copy: Project Settings → General → **Delete project**, then type its name. The
+   organisation's project list shows production only. The next day, Billing → Usage shows the copy's
+   hours (cents). Note in STATUS.md the date, the backup's time, how long the restore took, and pass or
+   stop. Don't note the counts: they are the beta's size.
+
+   **Stop if** the delete fails, or the copy is still listed an hour later. Contact Supabase support the
+   same day: the copy holds production's health data and bills by the hour.
+
+Run 14a.7 again every month. For RYFT on GCP it replaces **Backups → Restore drill, monthly**, whose
+compose stack and `make smoke-supabase` against the copy step 3 forbids.
+
+**14a.8 Where `POST /v1/feedback` lands, and how you hear of it.**
+- The report goes into the table `feedback` (migration 0021, `store.AddFeedback`, at most 10 a day per
+  account). The api logs one line, `feedback received`. It carries `feedback_id`, `category` (bug, idea,
+  data, other) and `request_ids` (a count), plus what every line has (`time`, `severity`, `message`,
+  `service`) and what logx adds from the request (`request_id`, `client_request_id` when the app sent
+  one, `user_id`, `route`, and the trace, `logging.googleapis.com/trace`). It never
+  carries the message, the diagnostics or the device fields (**Data protection (logs)**; `writeLogKeys` in
+  `backend/cmd/api/logs_test.go` pins it). The line stays in `ryft-logs` for 14 days.
+- **Today nothing tells you.** On EKS, Grafana's NewFeedback alert on `ryft_feedback_received_total` did
+  (D83). D236 dropped it, because nothing reads the app's metrics on Cloud Run (OBSERVABILITY → What D236
+  dropped). The dashboard has no feedback panel, and its logs panel shows ERROR lines only; this line is
+  INFO. You see feedback only when you look:
+  1. `/admin` → Feedback: the last 30 days, each with Resolve (**Beta → Admin sign-in**).
+  2. The script, with the admin key from 1Password (item "RYFT ADMIN_API_KEY"), pasted at a hidden prompt:
+
+     ```bash
+     read -rs "?ADMIN_API_KEY: " ADMIN_API_KEY; echo; export ADMIN_API_KEY   # zsh: nothing on screen, in the history or on argv
+     scripts/beta_report.sh feedback          # the last 7 days: id, when, account (8 characters), category, app, open, message
+     scripts/beta_report.sh                   # one line per tester, "open fb" among the columns
+     unset ADMIN_API_KEY
+     ```
+  3. Logs Explorer, `jsonPayload.message="feedback received"`: the count and the categories, no text.
+- **The cheapest way to be told** (a proposal, not built; D239) is a sixth alert condition:
+  - A third log-based counter, `ryft_feedback`, counts the line `feedback received` on api's stdout. Its
+    one label is `category`, a closed set. No id becomes a label, so neither the metric nor the alert holds
+    personal data.
+  - A policy "RYFT · New feedback" fires on any increase in 10 minutes, at severity warning, to both
+    channels, and closes by itself. A panel "Feedback per day, by category" from the same counter is free.
+  - The price is $1.50 a month under D236's reading A. Google's pricing page now reads differently
+    ([Google Cloud Observability pricing](https://cloud.google.com/products/observability/pricing), as of
+    2026-11-18, *(search)*): Monitoring starts charging for alerting no sooner than 2027-09-01, at $0.35 a
+    month per metric reference and $0.50 per million points returned. That would make the condition free
+    until then and about $0.35 a month after. Neither price is verified here.
+  - It needs your decision. The cap of five is a test (`five_conditions_at_most` in
+    `infra/gcp/tests/monitoring.tftest.hcl`), and a sixth condition is a decision (D236). After it, a PR in
+    `infra/gcp` (the counter, the policy, the test at six, OBSERVABILITY) and your apply.
+  - Rejected: the dashboard alone and `/admin` alone (both wait for you to look); a log-match condition
+    (its notification may carry the line's fields, the user id among them; not checked).
+
+**Stop if** a `feedback received` line in Logs Explorer shows a key that isn't listed above, such as a
+message or an email. That is a bug in the api: report it, and build no counter on that line.
+
 ### 15. Testers
 
 Testers come after step 10's pages load and C2 is in force. C2 is a draft today, and its consent
@@ -6913,8 +7263,9 @@ There is no dump job in the cluster. Before restoring a backup:
    passwords in case the backup predates them. The api's deletion reconciler erases the restored
    accounts at start-up.
 
-**Restore drill, monthly** (Pro): restore the latest backup into a new scratch project
-(Database → Backups → *Restore to a new project*). Then:
+**Restore drill, monthly** (Pro): *for RYFT on GCP, run GCP → 14a.7 instead (D239). It replaces all
+three steps below: its copy is connected to nothing, so step 2 never runs there.* Restore the latest backup into a new
+scratch project (Database → Backups → *Restore to a new project*). Then:
 
 1. Compare `SELECT count(*)` of `users`, `samples` and `daily_scores` with production.
 2. Run the services against it and smoke them: the compose stack in Supabase mode with

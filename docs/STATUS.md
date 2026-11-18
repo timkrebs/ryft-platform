@@ -72,6 +72,68 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Beta readiness, the platform's must-haves (2026-11-18)
+
+Four PRs from main, none merged; each had one code review (no blockers) and is green:
+- **#207 `infra: the app alert channel by id`** (D237). The app channel's lookup by display name had found
+  the email channel: every policy lists `ryft-timkrebs` twice. Now `alert_app_channel` holds the channel's
+  resource name (not sensitive, null = no policy), and the plan fails if it is the email channel. Your
+  steps: runbook GCP **11.8**, after #206's apply. **1 to 3 (the device in the console, its id, the HCP
+  variable) before the merge**: with the PR on main and the variable unset, a plan destroys the five
+  policies. Then the merge, the old variable deleted, a plan of 0 to add, 5 to change (4 if the console
+  saved Dead letters held as exactly [email, app]), 0 to destroy, the apply, and 11.4's test alert on both
+  channels.
+- **#210 `web: Lighthouse budgets against the median of 3 runs`** (web D24). Main went red after #205 on
+  one run's TBT (162 against 100): `median-run` asserted one representative run; `median` asserts each
+  metric's median of the 3. Budgets unchanged. The merge redeploys the site (same export). Nothing to run.
+- **#208 `deploy: BETA_GATE to warn, and the runbook to on`** (D238). `BETA_GATE=warn` on api and ingest:
+  nothing refused, accounts without a code are flagged. Consent stays `on`. Your steps: OPERATIONS → GCP →
+  **The beta gate: warn, then on** (the admin key, codes for you and the smoke user, the warn lines, the stop
+  rule, then a one-line PR `BETA_GATE=on`).
+- **#209, this one** (D239), below.
+
+Merge order: #207 (as above), #210, #208, #209. #207, #208 and #209 each append a D-entry at the end of
+`DECISIONS.md`, so after the first merge the next two conflict there: keep both entries, in number order
+(main merged in, not rebased). Every merge runs `deploy.yml` (the services redeploy).
+
+**#209, docs only.** The runbook is OPERATIONS → GCP → 14a. The research used search results only: WebFetch
+was refused in that session, so every external claim there is marked *(search)* with its page.
+- **Auth mail on `@ryftlab.de` through Microsoft 365** (your choice). It works today once the mailbox may use
+  SMTP AUTH. The Exchange Team blog (2026-01-27) says Basic auth for SMTP AUTH is disabled by default for
+  existing tenants at the end of December 2026. Admins can enable it again, and the final removal date
+  comes in the second half of 2027. Supabase's SMTP takes only a password. So this is a bridge for the
+  beta: a dedicated `no-reply@ryftlab.de`, a test again in January 2027, and an EU sender as the fallback
+  (Brevo, Mailjet or Scaleway, each with a free tier). Enabling SMTP authentication in a GoDaddy tenant
+  turns security defaults off for the organisation (GoDaddy's help page): the other accounts need per-user
+  MFA first.
+- **The restore drill:** the newest daily backup restored to a new Supabase project in Frankfurt, a
+  counts-only query in both SQL editors, then the copy deleted. The copy gets production's compute size and
+  is billed by the hour: cents per drill on Micro ($0.01344 an hour; Pro's $10 of credits already go to
+  production); check production's size first (14a.7's step 1).
+- **Feedback:** nothing tells you today (D236 dropped NewFeedback). You see it in `/admin` → Feedback or with
+  `scripts/beta_report.sh feedback`. Proposed, not built: a sixth alert condition on a log-based counter
+  with the label `category` only, at $1.50 a month or, per Google's pricing page now, nothing before
+  2027-09-01.
+
+**Open, your steps for #209** (in order; each part in 14a has its Stop if):
+1. Merge the PR. It is docs only, but `deploy.yml` runs on every push to main: it redeploys the five
+   services from unchanged code (`migrate` a no-op, then `make smoke-prod`). The site is unchanged, so the
+   `site` job deploys nothing.
+2. **14a.1** `no-reply@ryftlab.de` at GoDaddy, with per-user MFA on `support@` and your admin account first.
+3. **14a.2** SMTP authentication for that mailbox only.
+4. **14a.3** Supabase: custom SMTP (`smtp.office365.com:587`, sender `RYFT`), email rate limit 30 an hour.
+   The Site URL, the redirect URLs and the templates stay.
+5. **14a.4** A password reset to an address outside the Supabase team: the inbox, SPF/DKIM/DMARC pass, the
+   link back into the app (tapped once, never long-pressed). Then purge the sender's Sent Items copy for good
+   (Recoverable Items keeps a plain delete 14 days) and give the folder a retention.
+6. **14a.7** The restore drill; note here its date, the backup's time, how long it took, and pass or stop.
+7. **14a.8** Decide on the sixth condition. A yes is a PR in `infra/gcp` and your apply.
+8. **14a.5** In the first week of January 2027, the reset test again.
+
+Privacy: the text in force (2026-10-26) names Google Workspace for `support@` and nobody who sends the
+sign-in mails. C2 must name the sender (Microsoft through the GoDaddy tenant, with the Sent Items copy, or
+the fallback provider) and Microsoft for `support@`. Nothing in this PR changes a privacy text.
+
 ## Observability on Cloud Monitoring; Grafana Cloud out (2026-11-17)
 
 Your decision (D236, superseding D224's Grafana half): Cloud Monitoring is RYFT's only observability. Branch
