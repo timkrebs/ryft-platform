@@ -72,6 +72,45 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Beta readiness: auth mail, the restore drill, feedback (2026-11-18)
+
+Branch `docs/beta-readiness`, docs only (D239). The runbook is OPERATIONS → GCP → 14a. The research used
+search results only: WebFetch was refused in this session, so every external claim there is marked
+*(search)* with its page.
+- **Auth mail on `@ryftlab.de` through Microsoft 365** (your choice). It works today once the mailbox may use
+  SMTP AUTH. The Exchange Team blog (2026-01-27) says Basic auth for SMTP AUTH is disabled by default for
+  existing tenants at the end of December 2026. Admins can enable it again, and the final removal date
+  comes in the second half of 2027. Supabase's SMTP takes only a password. So this is a bridge for the
+  beta: a dedicated `no-reply@ryftlab.de`, a test again in January 2027, and an EU sender as the fallback
+  (Brevo, Mailjet or Scaleway, each with a free tier). Enabling SMTP authentication in a GoDaddy tenant
+  turns security defaults off for the organisation (GoDaddy's help page): the other accounts need per-user
+  MFA first.
+- **The restore drill:** the newest daily backup restored to a new Supabase project in Frankfurt, a
+  counts-only query in both SQL editors, then the copy deleted. Billed by the hour: cents per drill on
+  Micro ($0.01344 an hour; Pro's $10 of credits already go to production).
+- **Feedback:** nothing tells you today (D236 dropped NewFeedback). You see it in `/admin` → Feedback or with
+  `scripts/beta_report.sh feedback`. Proposed, not built: a sixth alert condition on a log-based counter
+  with the label `category` only, at $1.50 a month or, per Google's pricing page now, nothing before
+  2027-09-01.
+
+**Open, your steps** (in order; each part in 14a has its Stop if):
+1. Merge the PR. It is docs only, but `deploy.yml` runs on every push to main: it redeploys the five
+   services from unchanged code (`migrate` a no-op, then `make smoke-prod`). The site is unchanged, so the
+   `site` job deploys nothing.
+2. **14a.1** `no-reply@ryftlab.de` at GoDaddy, with per-user MFA on `support@` and your admin account first.
+3. **14a.2** SMTP authentication for that mailbox only.
+4. **14a.3** Supabase: custom SMTP (`smtp.office365.com:587`, sender `RYFT`), email rate limit 30 an hour.
+   The Site URL, the redirect URLs and the templates stay.
+5. **14a.4** A password reset to an address outside the Supabase team: the inbox, SPF/DKIM/DMARC pass, the
+   link back into the app. Then empty the sender's Sent Items and give it a retention.
+6. **14a.7** The restore drill; note here its date, the backup's time, how long it took, and pass or stop.
+7. **14a.8** Decide on the sixth condition. A yes is a PR in `infra/gcp` and your apply.
+8. **14a.5** In the first week of January 2027, the reset test again.
+
+Privacy: the text in force (2026-10-26) names Google Workspace for `support@` and nobody who sends the
+sign-in mails. C2 must name the sender (Microsoft through the GoDaddy tenant, with the Sent Items copy, or
+the fallback provider) and Microsoft for `support@`. Nothing in this PR changes a privacy text.
+
 ## Observability on Cloud Monitoring; Grafana Cloud out (2026-11-17)
 
 Your decision (D236, superseding D224's Grafana half): Cloud Monitoring is RYFT's only observability. Branch

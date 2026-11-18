@@ -5379,3 +5379,55 @@ _Grafana half superseded by D236._
   log has ERROR entries for every 5xx, with the caller's IP. For RYFT on GCP, C2 need not name Grafana.
 - **Consequences:** `OBSERVABILITY.md` → Cloud Monitoring; `OPERATIONS.md` → GCP → 11 and When an alert fires;
   `infra/gcp/README.md`.
+
+## D239 — Before testers: auth mail through Microsoft 365 as a bridge, the restore drill on a new project, feedback by a proposed sixth condition (2026-11-18)
+
+- **Context:** the first testers (5 to 10 friends, TestFlight) come next, and their heart rate and sleep are Art. 9
+  data. Three gaps: email sign-up needs mail outside the Supabase team (*Confirm email* is on, D159), Supabase Pro's
+  backups were never restored, and since D236 no alert tells the operator about feedback. The research used search
+  results only, because WebFetch was refused. Every external claim in `OPERATIONS.md` → GCP → 14a names its page and
+  is marked *(search)*.
+- **Decision 1, auth mail (Microsoft 365 is the user's choice; the how is the lead's):**
+  - Supabase's custom SMTP sends through `smtp.office365.com:587` as a dedicated, licensed user,
+    `no-reply@ryftlab.de`. SMTP AUTH is enabled for that mailbox only, and the tenant's default stays as it is.
+  - **A bridge, not a home.** The Exchange Team blog (2026-01-27) disables Basic auth for SMTP AUTH by default for
+    existing tenants at the end of December 2026, lets admins enable it again, and announces the final removal date
+    in the second half of 2027. Supabase documents no OAuth for SMTP. So 14a.5 tests again in January 2027, and
+    14a.6 is the way out.
+  - Not a shared mailbox: SMTP AUTH signs in with the account's password, and a shared mailbox has no sign-in of its
+    own. Not `support@`: its password would sit in Supabase's settings, and every tester's mail sits behind it.
+  - **Security defaults:** GoDaddy's SMTP switch turns them off for the whole organisation. The other accounts keep a
+    second factor through per-user MFA, turned on first. If they can't, the route stops and the fallback runs.
+  - **Sent Items:** Exchange keeps every SMTP AUTH submission there, so each tester's address and a one-time link
+    stay in the mailbox. They get a 7-day retention or a weekly emptying, and C2 names the copy.
+  - **The fallback:** an EU transactional sender (Brevo, Mailjet or Scaleway Transactional Email), with records in
+    `infra/gcp/dns.tf`, in a PR of its own with C2's text. There is no pick here: the providers' DPAs and
+    subprocessors weren't read.
+  - **Rejected:** High Volume Email (internal recipients only); sending as `support@`; building Supabase's Send
+    Email hook now to send through Microsoft Graph with OAuth. That hook is the way to keep Microsoft past 2027, but
+    it is a build, not the beta's start.
+- **Decision 2, the restore drill:** the newest daily backup goes to a new project ("Restore to a new project": the
+  same region, the same processor, compute billed by the hour). A counts-only query runs in both SQL editors, judged
+  by plausibility rules, because production moves on after the backup. Then the copy is deleted. **Rejected:** a
+  download into a local Postgres. It puts Art. 9 data on a laptop, physical backups can't be downloaded, and the CLI
+  dump reads production. On GCP this replaces steps 1 and 2 of `OPERATIONS.md` → Backups → Restore drill, monthly:
+  no service or compose stack connects to the copy, and the counts stay on Supabase's pages.
+- **Decision 3, feedback:** today the operator hears of feedback only by looking (`/admin` → Feedback,
+  `scripts/beta_report.sh feedback`). **Proposed, not built:** a log-based counter `ryft_feedback` of the line
+  `feedback received`, with the label `category` only, and a sixth condition "RYFT · New feedback". The line holds
+  `feedback_id`, `category`, `request_ids` (a count), `user_id` and `request_id`, and never the message
+  (`writeLogKeys`). No id becomes a label. The price is $1.50 a month under D236's reading A; Google's pricing page
+  now says alerting is charged from no sooner than 2027-09-01, at $0.35 a month per metric reference. The cap of five
+  is a test, so the sixth condition is the user's decision. **Rejected:** a log-match condition, whose notification
+  may carry the line's fields.
+- **Placement:** a new step 14a. The step table at the top of GCP, step 11 and step 15 stay as they are, because
+  other open PRs edit them.
+- **Unchecked:** every external page was read through search excerpts only. Also unchecked: whether the December 2026
+  default also turns off an explicitly enabled mailbox; whether a GoDaddy tenant offers the Microsoft 365 admin
+  center, Exchange Online PowerShell or per-user MFA; the SMTP error codes; whether a copy on physical backups is
+  offered for this project; `secureserver.net`'s SPF lookup count; and both alerting prices.
+- **Privacy:** the Microsoft route adds a processor for the sign-in mails that the text in force (2026-10-26)
+  doesn't name: it names Google Workspace for `support@` and nobody who sends sign-in mail. C2 must name the sender
+  (Microsoft through the GoDaddy tenant, with the Sent Items copy, or the fallback provider) and Microsoft for
+  `support@` (D214). The drill adds no processor and no place. The proposed counter carries no personal data.
+- **Consequences:** `OPERATIONS.md` → GCP → 14a; `STATUS.md`.
