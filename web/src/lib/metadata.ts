@@ -10,9 +10,12 @@ export function rootMetadata(locale: Locale): Metadata {
     title: { default: `${SITE_NAME} — ${t.site.tagline}`, template: `%s · ${SITE_NAME}` },
     description: t.site.description,
     applicationName: SITE_NAME,
-    // From the app's icon, a raster (scripts/icons.mjs, web D22): no SVG favicon.
+    // The tab icon is the site's own mark (web D23); the touch icon is the app's (web D22).
     icons: {
-      icon: [{ url: '/favicon-32.png', sizes: '32x32', type: 'image/png' }],
+      icon: [
+        { url: '/favicon.svg', type: 'image/svg+xml' },
+        { url: '/favicon-32.png', sizes: '32x32', type: 'image/png' },
+      ],
       apple: [{ url: '/apple-touch-icon.png', sizes: '180x180' }],
     },
     manifest: '/site.webmanifest',

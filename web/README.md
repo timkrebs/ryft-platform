@@ -91,7 +91,7 @@ npm run typecheck && npm run lint && npm test && npm run build
 | --- | --- |
 | `npm run tokens` | A colour set, `Theme.swift` metrics, the type scale or the label style changed (from the app at the commit in `.app-ref`) |
 | `npm run screenshots` | New captures in `../../app/docs/screenshots` |
-| `npm run icons` | The app's icon or the tokens changed (favicon, touch icons, manifest, `config/app-icon.json`; from the app's `AppIcon.appiconset`, D22) |
+| `npm run icons` | The app's icon or the tokens changed (touch icons, manifest, `config/app-icon.json`; from the app's `AppIcon.appiconset`, D22; the tab icon is the site's own mark and no script writes it, D23) |
 | `npm run og` | The OG image's copy, the tokens or the app's icon changed (needs Playwright's Chromium) |
 | `npm run licenses -- --sync` | The app's Swift packages changed |
 | `npm run brand:report` | Refresh `docs/BRAND_CHECK.md` for the app, this repository outside `web/`, and the shared docs |

@@ -1,5 +1,5 @@
 {
-  "$comment": "The app icon (web D22) the committed icons (npm run icons: path, sha256) and the OG card (npm run og: ogSha256) were drawn from. tests/app-icon.test.ts fails when the app at web/.app-ref has another.",
+  "$comment": "The app icon (web D22) the committed touch and manifest icons (npm run icons: path, sha256) and the OG card (npm run og: ogSha256) were drawn from; the tab icon is not (web D23). tests/app-icon.test.ts fails when the app at web/.app-ref has another.",
   "path": "Ryft/Assets.xcassets/AppIcon.appiconset/AppIcon-Light.png",
   "sha256": "dffc372e95a12587dcd6cfd1298b9ea3d6349dedc7b42d32df661b9a2ce10580",
   "ogSha256": "dffc372e95a12587dcd6cfd1298b9ea3d6349dedc7b42d32df661b9a2ce10580"

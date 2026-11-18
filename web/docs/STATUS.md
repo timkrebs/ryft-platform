@@ -1,8 +1,12 @@
 # Status — ryftapp.de (web/)
 
+## 2026-11-18 — The tab icon is the mark again (branch `web/icons-own-mark`)
+
+D23: `favicon.svg` and `favicon-32.png` are the site's orbit mark again, the pre-D22 files byte for byte; `npm run icons` no longer writes them, and the drift test leaves them out. The touch and manifest icons and the OG card stay from the app's icon (D22).
+
 ## 2026-11-17 — Icons from the app (branch `web/app-icon`)
 
-D22: the favicon, touch icons, manifest icons and the OG card come from the app's icon (M1, the largest PNG of its AppIcon set at `.app-ref`); `favicon.svg` is gone, the header keeps the mark, and `tests/app-icon.test.ts` fails when the app's icon moves until `npm run icons` and `npm run og` ran.
+D22: the touch icons, manifest icons and the OG card come from the app's icon (M1, the largest PNG of its AppIcon set at `.app-ref`); the header keeps the mark, and `tests/app-icon.test.ts` fails when the app's icon moves until `npm run icons` and `npm run og` ran. (The favicon came from it too, and `favicon.svg` was gone, until D23.)
 
 ## 2026-11-17 — Nocturne tokens (branch `web/nocturne-tokens`)
 

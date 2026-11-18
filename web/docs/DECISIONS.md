@@ -572,3 +572,24 @@ composition was the old mark. If the user wants the word alone in the header, th
 
 Would change if the app ships a vector of the icon (the site would take it instead of the raster) or
 its header drops the mark (then the site's header follows, in its own PR).
+
+_D23 amends D22 for the tab icon (`favicon.svg`, `favicon-32.png`); the rest of D22 stands._
+
+## D23 — The tab icon goes back to the site's mark (2026-11-18; amends D22)
+
+The user saw D22 live and decided on 2026-11-18 that only the browser tab icon goes back to the
+site's orbit mark, the one the header draws. The apple-touch icon, the manifest icons and the OG card
+stay as D22 made them, from the app's icon.
+
+- **The files.** `public/favicon.svg` and `public/favicon-32.png` are the pre-D22 files, restored
+  byte for byte from `c17ae21^`. The head links both again, the SVG first. They were drawn before
+  Nocturne, so they carry the old Graphite `#0b0f0e` and Mist `#e8e7e3`, where the tokens now
+  have `#0a0c0b` and `#f2f1ec`. The user asked for the old icon itself, so the colours stay.
+- **No script writes them.** `scripts/icons.mjs` makes only the touch and manifest icons from the
+  app's icon. The tab icon is a committed file of the site, and the D22 drift record
+  (`config/app-icon.json`) and test (`tests/app-icon.test.ts`) leave it out. The test checks that
+  `favicon.svg` exists and that `favicon-32.png` is 32 × 32 (D22 had it check that the SVG was gone).
+- Nothing else changes: `Brand.tsx` and the header, the OG card, `.app-ref`.
+
+Would change if the user wants the tab icon in today's colours (then it is drawn again from
+`src/lib/mark.ts`, as before D22, in its own PR) or wants the app's icon there after all.

@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// The site's icons from the app's icon (M1, web D22): the largest PNG of the app's AppIcon set
-// (scripts/lib/app-icon.mjs; 1024 × 1024 at the pin), scaled down with Lanczos. The app draws that
-// raster itself (its scripts/icon-spec.swift and render-icon.swift: "RYFT" in Satoshi Light on the
-// Background tile) and has no vector of it, so the raster is the source: the site doesn't redraw
-// the word.
-//   public/favicon-32.png         32 × 32
+// The touch and manifest icons from the app's icon (M1, web D22): the largest PNG of the app's
+// AppIcon set (scripts/lib/app-icon.mjs; 1024 × 1024 at the pin), scaled down with Lanczos. The app
+// draws that raster itself (its scripts/icon-spec.swift and render-icon.swift: "RYFT" in Satoshi
+// Light on the Background tile) and has no vector of it, so the raster is the source: the site
+// doesn't redraw the word.
 //   public/apple-touch-icon.png   180 × 180, full bleed (iOS rounds the corners)
 //   public/icon-{192,512}.png     full bleed
 //   public/icon-maskable-512.png  the word's ink inside the 80 % safe circle: the full-bleed icon
@@ -12,9 +11,10 @@
 //                                 colour when it isn't
 //   public/site.webmanifest       background and theme colour: the tokens' background
 //   config/app-icon.json          the source's path and SHA-256 (tests/app-icon.test.ts, the drift check)
-// No favicon.svg: a raster gives no vector without converting the font (ITF FFL), and a favicon
-// can't load a web font. The output is committed. Run again, with RYFT_APP_DIR at the app's commit
-// in web/.app-ref, when the app's icon or the tokens change; then `npm run og`.
+// Not the tab icon: public/favicon.svg and public/favicon-32.png are the site's own orbit mark,
+// committed files this script never writes (web D23). The output is committed. Run again, with
+// RYFT_APP_DIR at the app's commit in web/.app-ref, when the app's icon or the tokens change; then
+// `npm run og`.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import sharp from 'sharp';
@@ -102,7 +102,6 @@ const png = (input, size) =>
     .toBuffer();
 
 const outputs = [
-  ['favicon-32.png', icon.bytes, 32],
   ['apple-touch-icon.png', icon.bytes, 180],
   ['icon-192.png', icon.bytes, 192],
   ['icon-512.png', icon.bytes, 512],
