@@ -97,6 +97,11 @@ Your decision (D236, superseding D224's Grafana half): Cloud Monitoring is RYFT'
 5. **11.4** The test dead letter: both channels get "RYFT · Dead letters held"; purge it.
 6. **11.5** Error Reporting's notifications only if its API already runs.
 7. **11.6** After a deploy of this PR: `otlp-token` goes in a PR of its own, two applies (`prevent_destroy`).
+   No serving revision read it on 2026-11-18 (`api-00018-dwk`, `ingest-00018-4lg`, `scoring-00018-kk7`,
+   `notify-00018-dfm`: 0 each). PR 1 (`infra: otlp-token, step 1 of 2`, branch `infra/otlp-token-retire`) moves the
+   container and its binding to `retired`: after its merge, `terraform -chdir=infra/gcp plan -out=otlp-retire.tfplan`
+   must say 0 to add, 0 to change, 0 to destroy, with two "has moved to" lines and nothing else, then
+   `terraform -chdir=infra/gcp apply otlp-retire.tfplan` (runbook 11.6). PR 2 (the destroy) waits for that apply.
 8. **11.7** Delete the `grafana_*` workspace variables, the GCP tokens and checks in Grafana Cloud; the stack only
    once EKS sends nothing (D3).
 

@@ -72,10 +72,10 @@ run "secret_accessors_exactly" {
   assert {
     condition = toset(keys(google_secret_manager_secret.this)) == toset([
       "db-password-api", "db-password-ingest", "db-password-scoring", "db-password-notify", "db-password-owner",
-      "supabase-secret-key", "admin-api-key", "apple-key-p8", "apns-key-p8", "data-key", "otlp-token",
+      "supabase-secret-key", "admin-api-key", "apple-key-p8", "apns-key-p8", "data-key",
       "posthog-project-key",
     ])
-    error_message = "the 11 secret containers of ticket B and posthog-project-key (D231)"
+    error_message = "the 10 secret containers of ticket B still in use and posthog-project-key (D231); otlp-token is retired (step 11.6)"
   }
 
   assert {
@@ -115,31 +115,46 @@ run "secret_accessors_exactly" {
     error_message = "the APNs key: notify only"
   }
 
+  # Retired (step 11.6, PR 1): the same container and binding as before the move, so the apply changes
+  # nothing. PR 2 deletes them.
   assert {
-    condition = google_secret_manager_secret_iam_binding.accessor["otlp-token"].members == toset([
-      "serviceAccount:ryft-api@ryftlab-prod.iam.gserviceaccount.com",
-      "serviceAccount:ryft-ingest@ryftlab-prod.iam.gserviceaccount.com",
-      "serviceAccount:ryft-scoring@ryftlab-prod.iam.gserviceaccount.com",
-      "serviceAccount:ryft-notify@ryftlab-prod.iam.gserviceaccount.com",
-    ])
-    error_message = "the OTLP token: the four services, not migrate"
+    condition = (
+      toset(keys(google_secret_manager_secret.retired)) == toset(["otlp-token"]) &&
+      toset(keys(google_secret_manager_secret_iam_binding.retired)) == toset(["otlp-token"])
+    )
+    error_message = "one retired secret, otlp-token, with its binding"
+  }
+
+  assert {
+    condition = (
+      google_secret_manager_secret_iam_binding.retired["otlp-token"].role == "roles/secretmanager.secretAccessor" &&
+      google_secret_manager_secret_iam_binding.retired["otlp-token"].secret_id == "otlp-token" &&
+      google_secret_manager_secret_iam_binding.retired["otlp-token"].members == toset([
+        "serviceAccount:ryft-api@ryftlab-prod.iam.gserviceaccount.com",
+        "serviceAccount:ryft-ingest@ryftlab-prod.iam.gserviceaccount.com",
+        "serviceAccount:ryft-scoring@ryftlab-prod.iam.gserviceaccount.com",
+        "serviceAccount:ryft-notify@ryftlab-prod.iam.gserviceaccount.com",
+      ])
+    )
+    error_message = "the retired OTLP token: the four services, not migrate, as before the move"
   }
 
   assert {
     condition = alltrue([
-      for s in google_secret_manager_secret.this :
+      for s in concat(values(google_secret_manager_secret.this), values(google_secret_manager_secret.retired)) :
       s.version_destroy_ttl == "2592000s" &&
       toset(flatten([for rep in s.replication : [for um in rep.user_managed : [for r in um.replicas : r.location]]])) == toset(["europe-west1"]) &&
       length(flatten([for rep in s.replication : [for um in rep.user_managed : um.replicas]])) == 1
     ])
-    error_message = "every secret: delayed destruction of 30 days, one replica in europe-west1"
+    error_message = "every secret, retired ones included: delayed destruction of 30 days, one replica in europe-west1"
   }
 
-  # Never at project level: the role appears once in the whole root (the per-secret binding), and no
-  # authoritative project IAM resource exists (it would also wipe the bootstrap's bindings).
+  # Never at project level: the role appears in the whole root only in the per-secret bindings (the
+  # accessor one and, until step 11.6's PR 2, the retired one), and no authoritative project IAM resource
+  # exists (it would also wipe the bootstrap's bindings).
   assert {
     condition = (
-      length(regexall("(?m)^[^#\\n]*secretmanager\\.secretAccessor", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      length(regexall("(?m)^[^#\\n]*secretmanager\\.secretAccessor", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 2 &&
       length(regexall("(?m)^\\s*resource\\s+\"google_project_iam_(binding|policy)\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0 &&
       length(regexall("(?m)^\\s*(resource|data)\\s+\"google_secret_manager_secret_iam_(member|policy)", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
     )
