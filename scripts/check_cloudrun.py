@@ -16,9 +16,9 @@ renderer deploy.yml uses), parses the result with yq (mikefarah v4) and asserts,
     database is down, so its tick logs result error; /health/ready is the uptime checks' target);
     all traffic to the latest revision;
   - the env exactly as ticket-b.md's tables (names and the values the renderer builds; api may add the
-    pin of posthog-project-key, D231), every secret pinned by a version number (never latest), each
-    secret only in the services of the accessor table, and migrate's DB_PASSWORD_<SVC> pin equal to
-    PGPASSWORD's in <svc>.yaml (design §4);
+    pin of posthog-project-key, D231; api and ingest carry BETA_GATE from config.env, D238), every
+    secret pinned by a version number (never latest), each secret only in the services of the accessor
+    table, and migrate's DB_PASSWORD_<SVC> pin equal to PGPASSWORD's in <svc>.yaml (design §4);
   - P5 (design §5.1): none of AUTH_MODE=apikey, ALLOW_INSECURE_APIKEY_AUTH, API_KEY, USER_ID,
     ALLOW_INSECURE_PUSH or PORT anywhere;
   - keys only from an allowlist (no envFrom, command, args, volumes, extra annotations such as
@@ -54,8 +54,10 @@ MIGRATE = dict(timeout=600, memory="512Mi")
 SHARED = {"GCP_PROJECT": PROJECT, "PUBSUB_ENDPOINT": "https://europe-west1-pubsub.googleapis.com",
           "PUSH_AUDIENCE": None, "PUSH_SA_EMAIL": f"ryft-push@{PROJECT}.iam.gserviceaccount.com",
           "PUSH_SA_ID": None, "LOG_LEVEL": None, "DATABASE_URL": None}
+# BETA_GATE (D238) is the one row ticket-b.md's tables lack: the beta gate's mode from config.env, in the
+# two services that run the gate (api and ingest; scoring reads only the consent mode).
 PUBLIC = {"AUTH_MODE": "supabase", "SUPABASE_PROJECT_REF": None, "PRIVACY_POLICY_VERSION": None,
-          "PRIVACY_POLICY_URL": "https://ryftlab.de/privacy"}
+          "PRIVACY_POLICY_URL": "https://ryftlab.de/privacy", "BETA_GATE": None}
 PLAIN = {
     "api": {**SHARED, **PUBLIC, "ADMIN_WEB_ORIGINS": "https://ryftlab.de", "APPLE_TEAM_ID": "M77SKHKG63",
             "APPLE_KEY_ID": None, "APPLE_CLIENT_ID": "dev.timkrebs.ryft"},
@@ -122,6 +124,9 @@ def fakes(committed):
          "APNS_KEY_ID": "N" * 10, "LOG_LEVEL": "info"}
     m = re.search(r"^PRIVACY_POLICY_VERSION=(.*)$", committed, re.M)
     v["PRIVACY_POLICY_VERSION"] = m.group(1) if m else "2026-01-01"
+    # The committed gate mode (the lint before this has checked its shape), so the render is what deploys.
+    m = re.search(r"^BETA_GATE=(.*)$", committed, re.M)
+    v["BETA_GATE"] = m.group(1) if m else "off"
     return v
 
 

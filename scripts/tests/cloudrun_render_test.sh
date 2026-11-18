@@ -20,13 +20,14 @@ printf -v s '%20s' ''; ref=${s// /q}
 printf -v s '%10s' ''; akey=${s// /A}; nkey=${s// /N}
 host=aws-0-eu-central-1.pooler.supabase.com
 policy=2026-10-26
+gate=warn
 dg() { local s; printf -v s '%64s' ''; printf 'sha256:%s' "${s// /$1}"; }  # 64 times one hex digit
 D=(--digest "api=$(dg a)" --digest "ingest=$(dg b)" --digest "scoring=$(dg c)" --digest "notify=$(dg d)" --digest "migrate=$(dg e)")
 cfg=$tmp/config.env
 tpl=$tmp/tpl
 out=$tmp/out
 fresh() {
-  printf '%s\n' "# a fake, of the right shape" "PRIVACY_POLICY_VERSION=$policy" LOG_LEVEL=info "GCP_PROJECT_NUMBER=$pn" \
+  printf '%s\n' "# a fake, of the right shape" "PRIVACY_POLICY_VERSION=$policy" LOG_LEVEL=info "BETA_GATE=$gate" "GCP_PROJECT_NUMBER=$pn" \
     "PUSH_SA_ID=$said" "SUPABASE_PROJECT_REF=$ref" "SUPABASE_POOLER_HOST=$host" "APPLE_KEY_ID=$akey" \
     "APNS_KEY_ID=$nkey" > "$cfg"
   rm -rf "$tpl" "$out"
@@ -85,12 +86,17 @@ if grep -q 'PUSH_AUDIENCE' "$out/migrate.yaml"; then fail "migrate.yaml has a PU
 for s in api ingest; do
   has "$s.yaml" "name: PRIVACY_POLICY_VERSION, value: \"$policy\" }"
   has "$s.yaml" "name: SUPABASE_PROJECT_REF, value: \"$ref\" }"
+  has "$s.yaml" "name: BETA_GATE, value: \"$gate\" }"
+done
+# The beta gate only where it is read (D238): scoring reads the consent mode alone, notify and migrate neither.
+for f in scoring notify migrate; do
+  if grep -q 'BETA_GATE' "$out/$f.yaml"; then fail "$f.yaml has BETA_GATE: only api and ingest run the beta gate"; fi
 done
 has api.yaml "name: APPLE_KEY_ID, value: \"$akey\" }"
 has notify.yaml "name: APNS_KEY_ID, value: \"$nkey\" }"
 
 # No environment variable reaches the output: the same render with the placeholders' names set.
-IMAGE=x DATABASE_URL=y PUSH_AUDIENCE=z LOG_LEVEL=debug PRIVACY_POLICY_VERSION=1999-01-01 \
+IMAGE=x DATABASE_URL=y PUSH_AUDIENCE=z LOG_LEVEL=debug PRIVACY_POLICY_VERSION=1999-01-01 BETA_GATE=off \
   render "${R[@]}" --out "$tmp/again" "${D[@]}" >/dev/null 2>&1 || fail "the second render failed"
 diff -r "$out" "$tmp/again" >/dev/null || fail "the environment changed the output: $(diff -r "$out" "$tmp/again")"
 
@@ -120,6 +126,25 @@ setcfg LOG_LEVEL 'info # the default'
 bad "an inline comment" "does not have the shape" "${R[@]}" --out "$out" "${D[@]}"
 printf 'LOG_LEVEL = info\n' >> "$cfg"
 bad "spaces around =" "not KEY=value" "${R[@]}" --out "$out" "${D[@]}"
+# BETA_GATE (D238): off, warn or on as committed, never left to the services' default.
+for m in off on; do
+  setcfg BETA_GATE "$m"
+  o=$(render "${R[@]}" --out "$out" "${D[@]}" 2>&1) || fail "BETA_GATE=$m does not render: $o"
+  has api.yaml "name: BETA_GATE, value: \"$m\" }"
+  has ingest.yaml "name: BETA_GATE, value: \"$m\" }"
+  rm -rf "$out"
+  fresh
+done
+setcfg BETA_GATE enforce
+bad "a gate mode outside off|warn|on" "BETA_GATE='enforce' does not have the shape off, warn or on" "${R[@]}" --out "$out" "${D[@]}"
+setcfg BETA_GATE Warn
+bad "a gate mode in another case" "BETA_GATE='Warn' does not have the shape" "${R[@]}" --out "$out" "${D[@]}"
+setcfg BETA_GATE ''
+bad "an empty gate mode" "BETA_GATE is empty" "${R[@]}" --out "$out" "${D[@]}"
+setcfg BETA_GATE -
+bad "no gate mode" "BETA_GATE is missing" "${R[@]}" --out "$out" "${D[@]}"
+setcfg BETA_GATE -
+bad "no gate mode, linted" "BETA_GATE is missing" "${R[@]}" --lint
 setcfg PRIVACY_POLICY_VERSION 2026-02-30
 bad "no calendar date" "PRIVACY_POLICY_VERSION=2026-02-30 is not a calendar date" "${R[@]}" --out "$out" "${D[@]}"
 setcfg GCP_PROJECT_NUMBER "0$pn"
@@ -164,4 +189,4 @@ usage "${R[@]}" --lint "${D[@]}"
 usage "${R[@]}" --out "$out" "${D[@]}" --force
 [ ! -e "$out" ] || fail "a usage error wrote $out"
 
-echo "✓ cloudrun_render_test: the derived values render by digest, the environment changes nothing, FILL_ME_IN passes --lint and fails a render, and every wrong shape, key, digest, placeholder and \$ fails closed"
+echo "✓ cloudrun_render_test: the derived values render by digest, BETA_GATE only into api and ingest, the environment changes nothing, FILL_ME_IN passes --lint and fails a render, and every wrong shape, key, digest, placeholder and \$ fails closed"

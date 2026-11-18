@@ -42,6 +42,9 @@ PLACEHOLDER = "FILL_ME_IN"
 KEYS = {
     "PRIVACY_POLICY_VERSION": (True, r"[0-9]{4}-[0-9]{2}-[0-9]{2}", "a YYYY-MM-DD date"),
     "LOG_LEVEL": (True, r"debug|info|warn|error", "debug, info, warn or error"),
+    # The beta gate (D87, D238), api and ingest only: lower case, as committed; unset is no option here,
+    # so the mode in force is always the one in git, never the code's default.
+    "BETA_GATE": (True, r"off|warn|on", "off, warn or on"),
     "GCP_PROJECT_NUMBER": (True, r"[1-9][0-9]{5,19}", "the project number, digits only"),
     "PUSH_SA_ID": (True, r"[1-9][0-9]{11,24}", "ryft-push's unique ID, digits only"),
     "SUPABASE_PROJECT_REF": (True, r"[a-z]{20}", "the Supabase project ref, 20 lower-case letters"),
@@ -52,7 +55,7 @@ KEYS = {
 }
 # The template placeholders, the only names ever substituted.
 VARS = ("IMAGE", "DATABASE_URL", "PUSH_AUDIENCE", "PRIVACY_POLICY_VERSION", "LOG_LEVEL", "SUPABASE_PROJECT_REF",
-        "PUSH_SA_ID", "APPLE_KEY_ID", "APNS_KEY_ID")
+        "PUSH_SA_ID", "APPLE_KEY_ID", "APNS_KEY_ID", "BETA_GATE")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=(.*)")
 PLACE = re.compile(r"\$\{([A-Za-z0-9_]*)\}")

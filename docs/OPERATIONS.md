@@ -2069,6 +2069,249 @@ sync (ingest's p95 panel), 429s (their panel), APNs, feedback and admin events, 
 the certificate's days left (its panel; Google renews it, and a failed renewal fails TLS, which the
 uptime checks see).
 
+### The beta gate: warn, then on (D238)
+
+`BETA_GATE` (D79, D87) is a line of `deploy/run/config.env`, rendered into api and ingest only
+(scoring reads only the consent mode). D238 set it to `warn`; step 6's one-line PR sets `on`;
+`config.env` holds the mode in force. `CONSENT_ENFORCE` isn't in
+`config.env`, so the services' default `on` holds in every step here: a sync without consent to the
+current policy is `403 consent_required` throughout. On GCP this replaces **Beta → The gates and
+their modes** (Vault's `shared_secrets` and the VSO restart there are EKS's); the rest of **Beta**
+(codes, bound codes, the users list, the audit) holds, with the admin key from step 1 below.
+
+| `BETA_GATE` | An account without beta access (no redeemed code, no operator grant) |
+| --- | --- |
+| `off` | served, nothing flagged |
+| `warn` | served; the answer carries `X-RYFT-Gate: invite_required`, the access line `gate`, and `GET /v1/me/sync` → `gate` says `invite_required` |
+| `on` | `403 invite_required` on every `/v1/*` route but `GET /v1/me`, `GET /v1/me/sync`, `GET /v1/config`, `GET /v1/model`, `POST /v1/me/invite`, `POST`/`DELETE /v1/me/consent`, `POST /v1/feedback` and `DELETE /v1/me` (API.md → Errors) |
+
+The app (API.md → Errors): under `warn` its Today screen shows "Action needed: enter your invite
+code to use RYFT." with **Enter code**, and everything keeps working. Under `on` a `403
+invite_required` stops every call but onboarding's until a code is redeemed.
+
+**What D238's merge did.** A normal deploy (**Deploy, roll back, rotate**): api and ingest roll with
+`BETA_GATE=warn`; scoring and notify roll with the new images, their env unchanged. Nothing is refused
+that was served before. The run's `make smoke-prod` has no admin key, so for a smoke user without
+access it says "! the smoke user has no beta access: fine while BETA_GATE is off" (off or warn), its
+requests are served with the header, and it ends `gates: invite unknown (no ADMIN_API_KEY), consent on`.
+The mode in force, from the repository root:
+
+```bash
+for s in api ingest; do
+  echo "$s $(gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod --format=json \
+    | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "BETA_GATE") | .value')"
+done                                                    # api warn, ingest warn
+gcloud logging read 'resource.type="cloud_run_revision" AND (resource.labels.service_name="api" OR resource.labels.service_name="ingest") AND jsonPayload.message="beta"' \
+  --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=1d --limit=4 \
+  --format='value(timestamp,resource.labels.service_name,resource.labels.revision_name,jsonPayload.gate,jsonPayload.consent)'
+                                                        # the newest revisions: gate warn, consent on
+```
+
+The `beta` line is each instance's start (min instances 0: one at the deploy, then one per cold start).
+
+**1. The admin key, never on screen.** The api reads `admin-api-key` at the version `api.yaml` pins.
+In zsh, from the repository root on an up-to-date main:
+
+```bash
+V=$(sed -n 's/.*name: admin-api-key, key: "\([0-9]*\)".*/\1/p' deploy/run/api.yaml)   # the version the api reads
+ADMIN_API_KEY=$(gcloud secrets versions access "$V" --secret=admin-api-key --project=ryftlab-prod) && export ADMIN_API_KEY
+echo "admin key: ${#ADMIN_API_KEY} characters"          # a length, never the key
+API=https://api.ryftlab.de
+adm() { printf 'Authorization: Bearer %s\n' "$ADMIN_API_KEY" | curl -sS --fail-with-body -H @- -H 'Content-Type: application/json' "$@"; }
+```
+
+`adm` keeps the key off argv (`printf` is a builtin; curl reads the header from stdin). Without
+`gcloud`, the 1Password item "RYFT ADMIN_API_KEY" at a hidden prompt does the same:
+`read -rs "ADMIN_API_KEY?ADMIN_API_KEY: "; echo; export ADMIN_API_KEY` (zsh's `name?prompt`). `make smoke-prod`,
+`scripts/beta_report.sh` and `scripts/user.sh` take it from the environment (`scripts/lib/admin.sh`;
+its other two sources are EKS's). `unset ADMIN_API_KEY` when you're done.
+
+**2. Codes** (`POST /v1/admin/invites`, API.md → Invites for a person). Each one unbound, single
+use, with an expiry, and a note that names nobody: an unbound code's note is never cleared and has
+no hard delete. No `email` (a bound code) until the privacy text names the stored address (U3,
+**Beta → Before the first bound code**). One code per account: yours, the smoke user's, one per
+tester. The loop makes yours and the smoke user's. Run it again with `tester-1 tester-2 …` when the
+testers' TestFlight invites go out (step 15), so their 14 days start then (without the `rm` line).
+The links go into a file only you can read, never to the screen. The whole loop runs under `umask
+077`, so the file is `0600` whichever run creates it:
+
+```bash
+EXP=$(date -u -v+14d +%Y-%m-%dT%H:%M:%SZ)               # 14 days from now (macOS date)
+rm -f ~/ryft-invites.txt                                # the first run only: no old line left
+(umask 077
+for n in operator smoke; do                             # later: tester-1 tester-2 …, one per tester; never a name
+  adm -X POST "$API/v1/admin/invites" -d "{\"note\": \"beta 1 $n\", \"max_uses\": 1, \"expires_at\": \"$EXP\"}" \
+    | jq -er --arg n "$n" 'select(.link != null) | "\($n) \(.link)"' >> ~/ryft-invites.txt \
+    || echo "no code made for $n: stop (curl's error is the line above)" >&2
+done)
+ls -l ~/ryft-invites.txt                                # -rw------- (0600)
+wc -l < ~/ryft-invites.txt                              # one line per code
+adm "$API/v1/admin/invites" | jq -c '.[] | select(.note | startswith("beta 1 ")) | {note, status, uses, expires_at}'
+                                                        # status open, uses 0; no code, no email, no account
+```
+
+A tester gets their line's link (`https://ryftlab.de/invite/RYFT-…`) with the TestFlight invite.
+On the iPhone it opens the app's invite screen, or they type the code at **Enter code**. `rm
+~/ryft-invites.txt` once every link is sent. The operator's page (`https://ryftlab.de/admin` →
+Invites) makes the same codes, if your operator account is set up on this project (**Admin
+sign-in**). A code that isn't needed is revoked:
+`adm -X DELETE "$API/v1/admin/invites/<code>" -w '%{http_code}\n'` (`204`).
+
+**3. Redeem yours and the smoke user's.** Yours in the app, which also proves that the TestFlight
+build takes a code: on the Today screen, **Enter code** under "Action needed", and paste the code
+(on the Mac, `sed -n 's#^operator .*/invite/##p' ~/ryft-invites.txt | pbcopy`, Universal Clipboard to
+the iPhone, then `pbcopy < /dev/null`), or send yourself the link and open it on the iPhone. No
+"Action needed" line means your account has access already (it existed at migration 0017, or has an
+operator grant): revoke that code instead.
+
+The smoke user's, with its token (the email, the password, the token and the code never reach argv
+or the screen; zsh, in step 1's shell):
+
+```bash
+read -rs "SMOKE_EMAIL?Smoke user's email: "; echo; read -rs "SMOKE_PASSWORD?Its password: "; echo
+read -r "SUPABASE_ANON_KEY?Supabase anon key (Project settings -> API): "
+REF=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env)
+TOKEN=$(E="$SMOKE_EMAIL" P="$SMOKE_PASSWORD" jq -n '{email: env.E, password: env.P}' \
+  | curl -fsS -X POST "https://$REF.supabase.co/auth/v1/token?grant_type=password" \
+      -H "apikey: $SUPABASE_ANON_KEY" -H 'Content-Type: application/json' --data-binary @- | jq -r .access_token)
+as_smoke() { printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS --fail-with-body -H @- -H 'Content-Type: application/json' "$@"; }
+as_smoke "$API/v1/me" | jq .beta_access                 # false: redeem below; true: revoke its code instead
+C=$(sed -n 's#^smoke .*/invite/##p' ~/ryft-invites.txt)
+as_smoke -X POST "$API/v1/me/invite" --data-binary @<(C="$C" jq -nc '{code: env.C}') -w '%{http_code}\n'   # 204
+as_smoke "$API/v1/me" | jq .beta_access                 # true
+unset C TOKEN
+```
+
+`make smoke-prod` with the key in the environment does the smoke user's half by itself: for a
+smoke user without access it makes a one-use code (note `smoke-prod`, no expiry) and redeems it. Run
+it once now, with the key, in the shell above, and not while a `deploy.yml` run is going (`gh run
+list -w deploy.yml -L 1`): its probe takes the smoke user's access away for one request, and under
+`on` a deploy's smoke in that second goes red:
+
+```bash
+export SMOKE_EMAIL SMOKE_PASSWORD SUPABASE_ANON_KEY
+SUPABASE_URL=https://$REF.supabase.co make smoke-prod  # … gates: invite warn, consent on
+unset SMOKE_PASSWORD
+```
+
+With the key, its gate probe takes the smoke user's access away for one `GET /v1/days`, then gives it
+back by operator grant (`POST /v1/admin/users/{id}/access`, audited). So each such run writes one
+warn line on purpose: `api GET /v1/days invite_required`. The smoke in `deploy.yml` has no key and
+never probes. If the probe fails half way ("it is left without"), run `make smoke-prod` with the key
+again: it redeems a new one-use code.
+
+**4. The warn lines.** The access line (`message` `http`, `internal/httpx.Instrument`) of a request
+the gate let through carries `gate`. Its fields: `time`, `severity`, `message`, `service`, `method`,
+`path`, `status`, `bytes`, `dur_ms`, `code` (a refused request's), `gate`, `request_id`,
+`client_request_id` (when the client sent one), `user_id`, `route` and `logging.googleapis.com/trace`.
+It holds no IP (D222). Cloud Run's own request log (`run.googleapis.com/requests`) does, in
+`httpRequest.remoteIp`, so both queries read only the services' stdout. The print leaves out
+`user_id`, `request_id`, `client_request_id`, `path` (dates and resource ids), the trace, `status`,
+`bytes` and `dur_ms`. `route` is the pattern with its method (`GET /v1/days/{day}`).
+
+Logs Explorer on `ryft-logs` (project `ryftlab-prod`, scope: the bucket's `_AllLogs` view):
+
+```text
+resource.type="cloud_run_revision"
+(resource.labels.service_name="api" OR resource.labels.service_name="ingest")
+logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout"
+jsonPayload.message="http"
+jsonPayload.gate:*
+```
+
+An expanded entry shows the whole payload, `user_id` included. Add `jsonPayload.route` and
+`jsonPayload.gate` as summary fields, read the histogram, and copy nothing out of an expanded entry.
+The same lines in a shell, printed without an id:
+
+```bash
+Q='resource.type="cloud_run_revision" AND (resource.labels.service_name="api" OR resource.labels.service_name="ingest") AND logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout" AND jsonPayload.message="http" AND jsonPayload.gate:*'
+gcloud logging read "$Q" --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs \
+  --freshness=7d --limit=500 --format='value(timestamp,resource.labels.service_name,jsonPayload.route,jsonPayload.gate)'
+                                                        # the newest 500 of 7 days, newest first
+# How many lines and how many accounts over the same 7 days, as counts: the ids go into sort and wc,
+# never to the screen.
+gcloud logging read "$Q" --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs \
+  --freshness=7d --limit=100000 --format='value(jsonPayload.user_id)' | wc -l
+gcloud logging read "$Q" --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs \
+  --freshness=7d --limit=100000 --format='value(jsonPayload.user_id)' | sort -u | wc -l
+```
+
+`ryft_gate_refusals_total` is counted in each instance, but nothing reads it on Cloud Run (no scrape,
+no push, D236; OBSERVABILITY → The OTLP push (dormant)). The access line's `gate` (warn) and `code`
+(on) are the only signal on GCP.
+
+**5. The stop rule before `on`.** Flip only when all of these hold:
+1. The 7-day print in step 4 (`--freshness=7d`, inside `ryft-logs`' 14 days) shows no line but the
+   probe's (`api GET /v1/days invite_required` at the minutes of your own `make smoke-prod` runs with
+   the key), its line count is under 500 (else the print shows only the newest 500: read them all
+   before you trust it), and its account count is 0, or 1 when you ran the probe (the smoke user):
+   for a whole week your account and the smoke user's were served without a flag, and so was every
+   tester who is in.
+2. Every code you handed out is used, yours and the smoke user's included:
+   `adm "$API/v1/admin/invites" | jq -c '.[] | select(.note | startswith("beta 1 ")) | {note, status}'`
+   shows `used` for each one you sent (revoke the rest).
+3. No account that should keep access lacks it:
+   `adm "$API/v1/admin/users" | jq '{accounts: length, without_access: ([.[] | select(.beta_access | not)] | length)}'`.
+   Every account counted in `without_access` is refused at the flip. That's right for one you don't
+   know, and wrong for anyone you invited: they redeem first.
+4. The testers' TestFlight build is the one whose **Enter code** took your code in step 3, or a newer
+   one. The app sends a `403 invite_required` to that same screen (API.md → Errors); the throwaway
+   check after the flip proves it on production.
+5. `make smoke-prod` is green: the newest `deploy.yml` run, and once from your shell with the key
+   (step 3), ending `gates: invite warn, consent on`.
+
+**Stop if** any of these fails: stay on `warn`, which refuses nothing.
+
+**6. The flip: a PR of one line.**
+
+```bash
+git fetch origin && git switch -c deploy/beta-gate-on origin/main
+# deploy/run/config.env: BETA_GATE=warn becomes BETA_GATE=on (that line only, the comment stays)
+make cloudrun-check
+bash scripts/tests/check_cloudrun_test.sh
+git diff --stat                                          # deploy/run/config.env | 2 +-
+git commit -am "deploy: BETA_GATE on"
+git push -u origin HEAD && gh pr create --fill -R timkrebs/ryft-platform
+```
+
+Its merge is a normal deploy. api and ingest roll with `BETA_GATE=on`, and scoring and notify with the
+new images. From the first request a new revision serves, an account without access gets `403
+invite_required` outside the open routes, and its app shows the invite screen. Ingest rolls before
+api, so for a minute or two an account without access can be refused by one and served by the other.
+`deploy.yml`'s smoke passes only if the smoke user has access (step 3). Without it, it fails with
+"BETA_GATE is on and the smoke user has no access".
+
+It worked when (in a new zsh: step 1, then step 3's three `read` lines, its `REF=` line and its
+`export` line, first; not while another `deploy.yml` run is going, step 3):
+
+```bash
+for s in api ingest; do
+  echo "$s $(gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod --format=json \
+    | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "BETA_GATE") | .value')"
+done                                                     # api on, ingest on
+# the beta line as above, --freshness=1h: gate on, consent on
+SMOKE_EXPECT_GATES=on SUPABASE_URL=https://$REF.supabase.co make smoke-prod   # … gates: invite on, consent on
+# the refusals since (api's route is /v1/, its gate runs before the inner routes):
+gcloud logging read 'resource.type="cloud_run_revision" AND (resource.labels.service_name="api" OR resource.labels.service_name="ingest") AND logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout" AND jsonPayload.message="http" AND jsonPayload.code="invite_required"' \
+  --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=1d --order=asc --limit=200 \
+  --format='value(timestamp,resource.labels.service_name,jsonPayload.method,jsonPayload.route)'
+```
+
+`SMOKE_EXPECT_GATES=on` fails unless both gates refused in the probe; it needs the key (without it the
+invite gate reads `unknown`). Then the throwaway check: sign out in the app, sign up with an email
+address you use for nothing else, and the app shows the invite screen and nothing loads. Delete that
+account in the app (`DELETE /v1/me` is open under `on`), then sign in to yours again.
+
+**Rollback:** a PR of one line, `BETA_GATE=warn` (or `git revert` of the flip, **Deploy, roll back,
+rotate → By revert**). Its merge serves every account again from the first request the new revisions
+take. Faster, while that PR waits: **A rollback → By traffic** for api and ingest (the hold first;
+their previous revisions run `warn`), then merge the PR and release the hold. One tester refused by
+mistake needs no rollback: a new code, or `scripts/user.sh <id> --grant` (**Beta**).
+
+**Stop if** after the flip `deploy.yml`'s smoke fails at "the smoke user has no access" (step 3 for
+the smoke user, then `gh workflow run deploy.yml --ref main -R timkrebs/ryft-platform`), a tester who
+redeemed is refused (roll back, then find out why), or the `beta` line says anything but `gate on`.
+
 ## EKS (api.ryftlab.de)
 
 **Retired.** Production moves to GCP (**GCP** above), and D3 removes this section.
@@ -3932,7 +4175,9 @@ that would have been refused is counted (`ryft_gate_refusals_total{mode="warn"}`
 flagged on its access line (`gate`). **Before the first external invite both are `on`,
 and `make smoke-prod` proves it:** with `ADMIN_API_KEY` it takes the smoke user's consent
 and access away for one request each, reports what each gate did, and gives them back;
-`SMOKE_EXPECT_GATES=on make smoke-prod` fails unless both refused.
+`SMOKE_EXPECT_GATES=on make smoke-prod` fails unless both refused. *On GCP, D238 amends this: the
+invite gate is `warn` while the first testers redeem (consent stays `on`), and goes `on` after its
+stop rule: GCP → **The beta gate: warn, then on**.*
 
 ```bash
 # infra/vault/terraform.tfvars:  shared_secrets = { BETA_GATE = "warn", CONSENT_ENFORCE = "warn" }   (later both "on")
