@@ -18,17 +18,11 @@
         {
           "matchingUrlPattern": ".*",
           "assertions": {
-            "largest-contentful-paint": [
-              "error",
-              { "maxNumericValue": 1500, "aggregationMethod": "median-run" }
-            ],
-            "cumulative-layout-shift": [
-              "error",
-              { "maxNumericValue": 0.05, "aggregationMethod": "median-run" }
-            ],
-            "total-blocking-time": ["error", { "maxNumericValue": 100, "aggregationMethod": "median-run" }],
+            "largest-contentful-paint": ["error", { "maxNumericValue": 1500, "aggregationMethod": "median" }],
+            "cumulative-layout-shift": ["error", { "maxNumericValue": 0.05, "aggregationMethod": "median" }],
+            "total-blocking-time": ["error", { "maxNumericValue": 100, "aggregationMethod": "median" }],
             "resource-summary:script:size": ["error", { "maxNumericValue": 81920 }],
-            "categories:performance": ["error", { "minScore": 0.95, "aggregationMethod": "median-run" }],
+            "categories:performance": ["error", { "minScore": 0.95, "aggregationMethod": "median" }],
             "categories:accessibility": ["error", { "minScore": 0.95 }],
             "categories:best-practices": ["warn", { "minScore": 0.95 }]
           }
