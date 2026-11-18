@@ -1164,7 +1164,8 @@ Then the PR. `prevent_destroy` stops a plain removal, so it takes two applies:
    `ACCESSORS` loses `otlp-token`. Plan and apply: 0 to add, 0 to change, 2 to destroy (the
    container, every version with it, and its binding).
 
-**Stop if** any serving revision reads `otlp-token`; PR 1's plan adds or destroys anything; PR 2's
+**Stop if** any serving revision reads `otlp-token`; PR 1's plan adds, changes or destroys anything, or
+moves anything but those two; PR 2's
 plan destroys anything but those two. Rolling back past this PR after PR 2 needs the secret back
 (a new container and a version: step 5's `put`).
 
