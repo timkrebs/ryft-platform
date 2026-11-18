@@ -56,8 +56,7 @@ locals {
     ))
   }
 
-  # The alerting gate (alerts.tf, runbook step 11): the alert policies and the two channels' data sources
-  # exist once alert_app_channel_name is set. A sensitive value can't drive count, and this boolean says
-  # only whether the name is set, never what it is.
-  alerting = nonsensitive(var.alert_app_channel_name != "")
+  # The alerting gate (alerts.tf, runbook step 11): the alert policies and the email channel's data
+  # source exist once alert_app_channel is set (null is unset, D237).
+  alerting = var.alert_app_channel != null
 }

@@ -12,7 +12,7 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 | `project.tf` | the API keep list (`google_project_service`, `disable_on_destroy = false`), Data Access audit logs (`DATA_READ`) for Secret Manager, STS and IAM credentials (every secret read and token mint), the Pub/Sub and Cloud Scheduler service agents |
 | `iam.tf` | the accounts `ryft-<api,ingest,scoring,notify,migrate>`, `ryft-push`, `ryft-deployer` (no key, ever; `grafana-reader` went with Grafana Cloud, D236); the deployer's rights (**The deployer**, below); Pub/Sub's token creator on `ryft-push` |
 | `wif.tf` | the GitHub pool `github` and provider `github-actions` (condition by repository and owner ID, `deploy.yml` on `main`, environment `deploy` or `site`, a GitHub-hosted runner); one principal set per environment, `ryft-deployer` bound to `deploy`'s alone (D233), `site`'s for `site-deployer` in ryftlab-site (by hand, step 10a) |
-| `secrets.tf` | the 12 secret containers (ticket B's 11 and `posthog-project-key`, D231), `prevent_destroy`, 30-day delayed destruction, accessors on each secret. **No values**: they never pass through state |
+| `secrets.tf` | the 11 secret containers in use (ticket B's 10 and `posthog-project-key`, D231), `prevent_destroy`, 30-day delayed destruction, accessors on each secret; `retired`: `otlp-token` and its accessor without `prevent_destroy`, on their way out (OPERATIONS → GCP 11.6). **No values**: they never pass through state |
 | `pubsub.tf`, `pubsub.auto.tfvars.json` | topics (messages stored in `europe-west1` only; `enforce_in_transit` stays off, so the Scheduler's publish and an operator's `gcloud pubsub` through the global endpoint still work), push and hold subscriptions, publisher bindings per topic, the agents' bindings. The JSON is written by `go run ./cmd/pubsub-topology` (PR A); do not edit it by hand once that exists |
 | `scheduler.tf` | the job `ryft-tick` (every 15 minutes) |
 | `registry.tf` | Artifact Registry `ryft`: the 5 newest versions of each image kept, every other version deleted after 30 days (tagged or not); scanning off |
@@ -21,8 +21,8 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 | `site.tf`, `site.auto.tfvars` | the site's records on Firebase Hosting (C1, D233): the apex A set and its `hosting-site=` TXT (joins the apex TXT set), and www's A set and TXT or its CNAME, from the values the Firebase wizard shows. Empty adds nothing |
 | `logging.tf` | the bucket `ryft-logs` (europe-west1, 14 days) and the sink into it |
 | `monitoring.tf` | Cloud Monitoring, RYFT's only observability (D236): the log-based metrics `ryft_ticks` (by `result`) and `ryft_errors`, the uptime checks (the site's `/`, `/privacy` and AASA always; api's and ingest's `/health/ready` while they're public; every 5 minutes from 3 locations), the dashboard "RYFT · Overview". All free at RYFT's volume, so ungated |
-| `alerts.tf` | the five alert policies, one condition each (uptime failing, 5xx over 2 %, tick missing, dead letters held, event backlog over 15 minutes), to both notification channels; only once `alert_app_channel_name` is set (step 11), the tick's only while the tick runs |
-| `checks.tf` | warnings for what fails silently: the `_Default` log sink still on, a mapping not Ready, a disabled notification channel |
+| `alerts.tf` | the five alert policies, one condition each (uptime failing, 5xx over 2 %, tick missing, dead letters held, event backlog over 15 minutes), to both notification channels, the email first, then the app's; only once `alert_app_channel` is set (step 11), the tick's only while the tick runs; the plan fails if that is the email channel (D237) |
+| `checks.tf` | warnings for what fails silently: the `_Default` log sink still on, a mapping not Ready, a disabled email channel (the app's has no data source, D237: step 11.4 tests it) |
 
 ## What it does not own (design §9)
 
@@ -31,9 +31,9 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 - **The budget** "RYFT 50 EUR": made by hand in the console, with its rules (runbook step 3).
 - **Its own credentials**: the HCP Terraform pool and the accounts `hcp-terraform-plan` and
   `hcp-terraform-apply` (the bootstrap, runbook step 2). Terraform cannot create what it signs in with.
-- **The two notification channels**: the email `ryft-timkrebs` and the Google Cloud app's, made by
-  hand in the console. `alerts.tf` reads them by display name; the app channel's is personal data, so
-  it is a sensitive workspace variable and in no file (step 11.1).
+- **The two notification channels**: the email `ryft-timkrebs` and the Google Cloud app's device,
+  made and picked by hand in the console. `alerts.tf` reads the email's by display name; the app's
+  comes in by its resource name, a workspace variable in no committed file (step 11.1, D237).
 - **Error Reporting's notifications**: a console toggle (step 11.5).
 - **The site project `ryftlab-site`**, its deploy account and its custom domains (by hand, step 10).
   Only the site's DNS records come here, with C1.
@@ -97,8 +97,10 @@ The arithmetic of each count is in the runbook (steps 4, 9, 11 and the stop line
    them 3 to change more (api's and ingest's invoker bindings, the tick).
 4. **Step 11** (D236, the PR that removes Grafana): 8 to add (2 log-based metrics, 5 uptime checks,
    the dashboard), 0 to change, 2 to destroy (`grafana-reader` and its `monitoring.viewer`) with the
-   gate off; 13 to add with `alert_app_channel_name` set (and the 5 policies). The runbook's 11.2
-   has the stop line's counts.
+   gate off; 13 to add with the app channel set (and the 5 policies). The runbook's 11.2
+   has the stop line's counts. **Step 11.8** (D237, once, on the policies applied with 11.3): 0 to
+   add, 5 to change (each policy's second channel, the email's twice so far, becomes the app's), 0
+   to destroy; 4 to change if the policy you edited in the console already reads exactly [email, app].
 5. **Apply 3** (C1, step 10, after the PR that fills in `site.auto.tfvars`): the site's record sets
    only. With A records for both names: 3 to add (the apex A, www's A and www's TXT), 1 to change
    (the apex TXT set gains `hosting-site=`), 0 to destroy. With a CNAME for www: 2 to add (the apex
@@ -124,9 +126,10 @@ rm gcp.tfplan
 
 Set as workspace variables (runbook step 2e), never in a local file: `terraform.tfvars.example` lists
 them with placeholders. `github_repository_id`, `github_repository_owner_id` and
-`google_site_verification` have no default. `alert_app_channel_name` (the Google Cloud app
-channel's display name, personal data) is sensitive, set in the workspace UI only with Sensitive on,
-never in a file or on argv; empty (the default) keeps every alert policy out (step 11.1).
+`google_site_verification` have no default. `alert_app_channel` (the Google Cloud app channel's
+resource name, `projects/<project>/notificationChannels/<number>`) is set in the workspace UI only,
+never in a committed file: it is per device. Not sensitive, an opaque id (D237), so Sensitive off in
+HCP too. Null (the default, unset) keeps every alert policy out; an empty string is refused (step 11.1).
 
 The apply account `hcp-terraform-apply` needs four Monitoring roles for `alerts.tf` and
 `monitoring.tf` beyond the bootstrap's (step 11.2): `roles/monitoring.uptimeCheckConfigEditor`,

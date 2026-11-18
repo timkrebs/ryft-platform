@@ -10,9 +10,10 @@ github_repository_owner_id = "<owner id, digits>"
 # Search Console -> add the domain property ryftlab.de -> the TXT value it shows (public).
 google_site_verification = "google-site-verification=<value from Search Console>"
 
-# From runbook step 11.1. Until it is set, no alert policy exists and no channel is read (alerts.tf).
-# alert_app_channel_name = "<the app channel's name>"
-# Sensitive (it is personal data): in the workspace UI only, Sensitive on. Never in a file, never on argv.
+# From runbook step 11.1: the Google Cloud app's channel, by its resource name. Until it is set, no
+# alert policy exists and no channel is read (alerts.tf). Unset is unset, never "".
+# alert_app_channel = "projects/<project>/notificationChannels/<number>"
+# Per device: a workspace variable only (HCL off, Sensitive off), never in a committed file.
 
 # Defaults, change only with a reason:
 # project_id = "ryftlab-prod"

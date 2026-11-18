@@ -593,3 +593,91 @@ stay as D22 made them, from the app's icon.
 
 Would change if the user wants the tab icon in today's colours (then it is drawn again from
 `src/lib/mark.ts`, as before D22, in its own PR) or wants the app's icon there after all.
+
+## D24 — Lighthouse budgets against the median of 3 runs (2026-11-18)
+
+**The red run.** The merge of #205 (`f541d70`, CI run 44261694220, first attempt) failed `web-e2e` on
+one assertion: `total-blocking-time` on `/`, "expected: <=100, found: 162, all values: 162". The same
+code had passed on the PR, and the rerun (attempt 2) passed. Locally, LCP once missed by 4 ms (1504
+against 1500). The marketing pages run no script (`script-src 'none'`, D20), so their blocking time
+measures the runner's CPU, not the site. The rerun shows the spread: on `/`, one of the three runs had
+TBT 1681 ms, TTI 3019 ms and a performance score of 0.73, and the other two had TBT 0 and a score of 1.
+
+**What `median-run` does** (`@lhci/utils` 0.16.0, which the pinned `@lhci/cli` 0.16.0 installs:
+`src/representative-runs.js`, `src/assertions.js`). It takes no median of anything we assert. For
+each URL, LHCI picks one representative run: the run nearest the median first contentful paint and
+the median time to interactive.
+
+```js
+// representative-runs.js, lines 17–22 and 64
+function getMedianSortValue(lhr, medianFcp, medianInteractive) {
+  const distanceFcp = medianFcp - getAuditValue(lhr, 'first-contentful-paint');
+  const distanceInteractive = medianInteractive - getAuditValue(lhr, 'interactive');
+
+  return distanceFcp * distanceFcp + distanceInteractive * distanceInteractive;
+}
+    representativeRuns.push(sortedByProximityToMedian[0][0]);
+```
+
+An assertion with `median-run` then reads that run alone:
+
+```js
+// assertions.js, lines 446–448 and 502–504
+  const medianLhrs = computeRepresentativeRuns([
+    lhrs.map(lhr => /** @type {[LH.Result, LH.Result]} */ ([lhr, lhr])),
+  ]);
+    const options = {aggregationMethod, ...assertionOptions};
+    const lhrsToUseForAudit = options.aggregationMethod === 'median-run' ? medianLhrs : lhrs;
+    const auditResults = lhrsToUseForAudit.map(lhr => lhr.audits[auditId]);
+```
+
+So LCP, CLS, TBT and the score were four readings of one run, picked by FCP and TTI, neither of
+which has a budget here. "All values: 162" is that one run. The run is not the one with the median
+performance score either: the score plays no part in the choice. The log doesn't show the other two
+runs' TBT, so whether `median` would have passed that run isn't known: if two of its three were
+over 100, it fails under `median` too, and that is right. What is known is the rerun: one `/` run
+at 1681 ms and a score of 0.73, two at 0, the case `median` passes and `median-run` passes only
+when it picks one of the two.
+
+**What `median` does.** Every run's value goes in, and the middle one is asserted:
+
+```js
+// assertions.js, lines 85–91
+function getValueForAggregationMethod(values, aggregationMethod, assertionType) {
+  if (aggregationMethod === 'median') {
+    const medianIndex = Math.floor((values.length - 1) / 2);
+    const sorted = values.slice().sort((a, b) => a - b);
+    if (values.length % 2 === 1) return sorted[medianIndex];
+    return (sorted[medianIndex] + sorted[medianIndex + 1]) / 2;
+  }
+```
+
+With 3 runs that is the second of the sorted values, for each metric on its own. A budget fails when
+2 of the 3 runs miss it. A run that reports no value is dropped (lines 90 and 108): with two left,
+the median is their mean.
+
+**The decision.** LCP, CLS, TBT and `categories:performance` use `median`. `numberOfRuns` stays 3,
+and every value stays: LCP 1500 ms, CLS 0.05, TBT 100 ms, performance 0.95, script 81 920 bytes,
+accessibility 0.95, best practices 0.95 (warn), SEO 0.9. The method is set on each assertion, where
+it is read: a top-level `aggregationMethod` next to `assertMatrix` throws (`assertions.js`, line
+540), and one per matrix entry would set it for that entry's every assertion (lines 440, 502). The
+other four keep LHCI's default, `optimistic` (line 168, `aggregationMethod = 'optimistic'`). That is
+the best run: the lowest value for a maximum, the highest score for a minimum (lines 93–96). Their
+values don't vary between runs, so `median` would assert the same number and change no verdict:
+- `resource-summary:script:size` counts the bytes of one build, the same in every run.
+- `categories:accessibility`, `categories:best-practices` and `categories:seo` audit the same static
+  HTML. In the rerun, all twelve runs scored 1, 1 and 0.92. axe in Playwright (`e2e/site.spec.ts`,
+  every page) is the accessibility gate that fails on a regression.
+
+**Why the budgets stay.** Neither the slow CI run nor the 4 ms local miss means the site got slower.
+The pages ship no script and three font files (D4, D20), and a normal CI run still has TBT 0 and LCP
+about 0.9 s on `/`. A wider budget would let a real regression through on every run. The median keeps
+each number meaning what it says, measured on most runs instead of one. It ignores one bad run, and
+it fails a page whose runs mostly miss, which `median-run` passed whenever the run it picked was the
+good one. `tests/lighthouse.test.ts` pins the 3 runs, the methods and the values. It also runs the
+installed LHCI's `getAllAssertionResults` on synthetic runs: one run of three over a budget passes,
+and two fail, at the middle value.
+
+Would change if two of three runs miss on CI (a real regression, or a runner that stays slower): then
+the page or the budget is a decision of its own, not the aggregation. An LHCI upgrade that moves
+`assertions.js` fails the test until its aggregation is read again.

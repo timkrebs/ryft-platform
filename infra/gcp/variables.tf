@@ -74,16 +74,22 @@ variable "public_invokers" {
 
 # ---- Cloud Monitoring's alerting (alerts.tf, runbook step 11): the gate -----------------------------
 
-# The display name of the notification channel for the Google Cloud mobile app, which the user made by
-# hand. It is personal data, so it is never in a file, a test, a doc or a commit: a workspace variable
-# of ryft-gcp (category terraform, Sensitive on, runbook step 11.1). Sensitive, not
-# ephemeral: the channel's data source reads it, and a data source can't take an ephemeral value.
-# Empty (the default): no alert policy exists and no channel is read (local.alerting).
-variable "alert_app_channel_name" {
-  description = "The display name of the Google Cloud app's notification channel (runbook step 11.1): a sensitive workspace variable only. Empty: no alert policy, no channel read"
+# The Google Cloud mobile app's notification channel, by its full resource name: the device can only
+# be picked in the console, so the user attaches it to one policy by hand and reads the name there
+# (runbook step 11.1). An id, not a display name: a lookup by name found the email channel (D237).
+# A workspace variable of ryft-gcp only (category terraform), never in a committed file: it is per
+# device. Not sensitive: an opaque id that grants nothing, so the plan shows it and count needs no
+# nonsensitive(). Null (the default) is unset: no alert policy exists and no channel is read
+# (local.alerting). An empty string is refused, not taken for unset.
+variable "alert_app_channel" {
+  description = "The Google Cloud app's notification channel, projects/<project>/notificationChannels/<number> (runbook step 11.1): a workspace variable only. Null: no alert policy, no channel read"
   type        = string
-  default     = ""
-  sensitive   = true
+  default     = null
+
+  validation {
+    condition     = var.alert_app_channel == null || can(regex("^projects/[a-z0-9-]+/notificationChannels/[0-9]+$", var.alert_app_channel))
+    error_message = "alert_app_channel must be the channel's full resource name, projects/<project>/notificationChannels/<number> (the entry of the policy's notificationChannels that isn't the email channel's, runbook GCP 11.1), not a display name. Leave it unset, not empty, to keep alerting off."
+  }
 }
 
 # ---- the Pub/Sub topology: pubsub.auto.tfvars.json, written by cmd/pubsub-topology (design 2.1) ------

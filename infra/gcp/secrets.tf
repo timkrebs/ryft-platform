@@ -16,13 +16,18 @@ locals {
     "apple-key-p8"        = ["ryft-api"]
     "apns-key-p8"         = ["ryft-notify"]
     "data-key"            = ["ryft-api"]
-    # Unread since D236: deploy/run pins it no more. It stays until no serving revision reads it (an
-    # older revision does not start without it), then goes in its own PR, in two applies, because of
-    # prevent_destroy below (docs/OPERATIONS.md -> GCP, step 11.6).
-    "otlp-token" = ["ryft-api", "ryft-ingest", "ryft-scoring", "ryft-notify"]
     # PostHog's project API key, served to the app by GET /v1/config (D231). Its pin in deploy/run/api.yaml
     # comes after the first version: a revision that reads a missing version does not start.
     "posthog-project-key" = ["ryft-api"]
+  }
+
+  # Retired secrets, on their way out (docs/OPERATIONS.md -> GCP, step 11.6). prevent_destroy on
+  # google_secret_manager_secret.this stops a plain removal, so a retired secret first moves here, the
+  # same container and binding without prevent_destroy (apply 1: 0 to add, change or destroy, 2 moved),
+  # then its own PR deletes these blocks (apply 2: 2 to destroy). tests/guards.tftest.hcl pins the keys.
+  retired_secret_accessors = {
+    # Unread since D236: deploy/run pins it no more, and no serving revision read it on 2026-11-18.
+    "otlp-token" = ["ryft-api", "ryft-ingest", "ryft-scoring", "ryft-notify"]
   }
 }
 
@@ -56,4 +61,41 @@ resource "google_secret_manager_secret_iam_binding" "accessor" {
   secret_id = google_secret_manager_secret.this[each.key].secret_id
   role      = "roles/secretmanager.secretAccessor"
   members   = [for a in each.value : local.member[a]]
+}
+
+# The retired secrets: the same arguments as above, so the move changes nothing; no prevent_destroy.
+resource "google_secret_manager_secret" "retired" {
+  for_each = local.retired_secret_accessors
+
+  project   = var.project_id
+  secret_id = each.key
+
+  version_destroy_ttl = "2592000s"
+
+  replication {
+    user_managed {
+      replicas {
+        location = var.region
+      }
+    }
+  }
+}
+
+resource "google_secret_manager_secret_iam_binding" "retired" {
+  for_each = local.retired_secret_accessors
+
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.retired[each.key].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  members   = [for a in each.value : local.member[a]]
+}
+
+moved {
+  from = google_secret_manager_secret.this["otlp-token"]
+  to   = google_secret_manager_secret.retired["otlp-token"]
+}
+
+moved {
+  from = google_secret_manager_secret_iam_binding.accessor["otlp-token"]
+  to   = google_secret_manager_secret_iam_binding.retired["otlp-token"]
 }

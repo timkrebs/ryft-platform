@@ -1,5 +1,9 @@
 # Status — ryftapp.de (web/)
 
+## 2026-11-18 — Lighthouse on the median of 3 runs (branch `web/lighthouse-median`)
+
+D24: LCP, CLS, TBT and the performance score are asserted against their median over the 3 runs per page (LHCI's `median`), not against one representative run (`median-run`). One run's TBT of 162 ms had failed `main` after #205. The 3 runs and every budget are unchanged, and `tests/lighthouse.test.ts` pins them and runs the installed LHCI's assertion code on synthetic runs.
+
 ## 2026-11-18 — The tab icon is the mark again (branch `web/icons-own-mark`)
 
 D23: `favicon.svg` and `favicon-32.png` are the site's orbit mark again, the pre-D22 files byte for byte; `npm run icons` no longer writes them, and the drift test leaves them out. The touch and manifest icons and the OG card stay from the app's icon (D22).
@@ -96,7 +100,7 @@ had expired).
 | Science | Model `2026.10.1`, formulas from `SCORING.md`, `ARCHITECTURE.md` and the scoring code | `tests/science.test.ts` fails when SCORING.md's version moves |
 | Licences | 8 Swift packages at their pinned revisions + Satoshi; 166 npm production packages + Satoshi; full texts | `npm run licenses:check`, `tests/output.test.ts` |
 | JavaScript | 1.4 KB of inline JS on every page (theme), no framework runtime (D2) | `tests/output.test.ts` (< 80 KB), Lighthouse `resource-summary:script` |
-| Performance | Lighthouse mobile, simulated throttling: LCP 1.35 s on `/`, `/de`, `/science`, `/beta`, `/privacy`; CLS ≤ 0.002; TBT 0 | `lighthouserc.json`, 3 runs per page |
+| Performance | Lighthouse mobile, simulated throttling: LCP 1.35 s on `/`, `/science`, `/beta`, `/privacy`; CLS ≤ 0.002; TBT 0 | `lighthouserc.json`, 3 runs per page, the median of each metric and the score (D24) |
 | Lighthouse scores | Performance 100, Accessibility 100, Best Practices 100, SEO 92 (indexable pages; see below) | same |
 | Accessibility | axe: 0 serious or critical on every page × dark/light × desktop/phone, English only since D18 (2026-10-21: 22 pages, 88 tests) | `e2e/site.spec.ts` |
 | Links | 246 links, internal and external, all reachable | `npm run links` |
