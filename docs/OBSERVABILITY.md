@@ -15,8 +15,8 @@ cluster's, not Cloud Run's.
 
 Everything here is `infra/gcp`: `monitoring.tf` (the log-based metrics, the uptime checks, the
 dashboard; free at RYFT's volume, so always there) and `alerts.tf` (the five policies; only once
-the workspace variable `alert_app_channel_name` is set, runbook GCP step 11.1). The user applies
-it (OPERATIONS → GCP → 11).
+the workspace variable `alert_app_channel` is set, the app channel's resource name, runbook GCP step
+11.1, D237). The user applies it (OPERATIONS → GCP → 11).
 
 **What is measured, and by whom.**
 

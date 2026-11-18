@@ -26,12 +26,14 @@ check "domain_mappings_ready" {
 }
 
 # A disabled channel is still a valid notification_channels entry: the policy opens incidents and nobody
-# hears of them (D236). Both are read only once the alerting gate is on (alerts.tf).
+# hears of them (D236). The email channel is read only once the alerting gate is on (alerts.tf). The
+# app's comes in by its resource name, which no data source looks up (D237): runbook step 11.4's test
+# alert is its check.
 check "alert_channels_enabled" {
   assert {
     condition = alltrue([
-      for c in concat(data.google_monitoring_notification_channel.email, data.google_monitoring_notification_channel.app) : c.enabled
+      for c in data.google_monitoring_notification_channel.email : c.enabled
     ])
-    error_message = "A notification channel of the alert policies is disabled, so its alerts reach nobody. Monitoring -> Alerting -> Edit notification channels: enable it (docs/OPERATIONS.md -> GCP, step 11)."
+    error_message = "The alert policies' email channel ryft-timkrebs is disabled, so its alerts reach nobody. Monitoring -> Alerting -> Edit notification channels: enable it (docs/OPERATIONS.md -> GCP, step 11)."
   }
 }
