@@ -83,7 +83,7 @@ export function writeRecord(fields) {
   const { path, sha256: hash, ogSha256 } = { ...readRecord(), ...fields };
   const record = {
     $comment:
-      'The app icon (web D22) the committed icons (npm run icons: path, sha256) and the OG card (npm run og: ogSha256) were drawn from. tests/app-icon.test.ts fails when the app at web/.app-ref has another.',
+      'The app icon (web D22) the committed touch and manifest icons (npm run icons: path, sha256) and the OG card (npm run og: ogSha256) were drawn from; the tab icon is not (web D23). tests/app-icon.test.ts fails when the app at web/.app-ref has another.',
     path,
     sha256: hash,
     ogSha256,

@@ -149,9 +149,9 @@ which had been red since #194: `web-checks` read the app at its main, and the ap
   disabled), the 403 right after `addfirebase`.
 - **Merging** ships the site only while `SITE_DEPLOY` is `on`. The services redeploy unchanged.
 - **Open:**
-  - The icons: done on 2026-11-17 (web D22). The favicon, touch and manifest icons and the OG card come from the
-    app's wordmark icon (M1) at the pin, and `favicon.svg` is gone. The header keeps the orbit mark, as the app's
-    header does.
+  - The icons: the touch and manifest icons and the OG card come from the app's wordmark icon (M1) at the pin
+    (web D22, 2026-11-17). The tab icon (`favicon.svg`, `favicon-32.png`) is the site's orbit mark again, the
+    pre-D22 files (web D23, 2026-11-18), and the header keeps the orbit mark, as the app's header does.
   - The app screenshots on the pages are pre-Nocturne captures, and a new set needs the app's PR 5.
   - LCP: three font files per page now (web D4 had 1.5 s against a 1.5 s budget). Lighthouse passed in CI.
   - #196's conflict in OPERATIONS 10a is resolved on its branch (2026-11-17): #196's order (10a.1–3) with `ft()`, the

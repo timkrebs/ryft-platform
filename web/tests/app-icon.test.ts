@@ -12,9 +12,10 @@ import {
   sha256,
 } from '../scripts/lib/app-icon.mjs';
 
-// The site's icons and OG card come from the app's icon (M1, web D22): the largest PNG of its
-// AppIcon set. config/app-icon.json records which file and its SHA-256, written by
-// `npm run icons` (path, sha256) and `npm run og` (ogSha256).
+// The touch and manifest icons and the OG card come from the app's icon (M1, web D22): the largest
+// PNG of its AppIcon set. config/app-icon.json records which file and its SHA-256, written by
+// `npm run icons` (path, sha256) and `npm run og` (ogSha256). The tab icon (favicon.svg,
+// favicon-32.png) is the site's own mark and stays out of it (web D23).
 
 type Entry = { filename?: string; size?: string; scale?: string; appearances?: object[] };
 
@@ -81,7 +82,6 @@ describe('appIcon() picks the source', () => {
 
 describe('the icons in public/', () => {
   it.each([
-    ['favicon-32.png', 32],
     ['apple-touch-icon.png', 180],
     ['icon-192.png', 192],
     ['icon-512.png', 512],
@@ -92,8 +92,11 @@ describe('the icons in public/', () => {
     expect(hasAlpha).toBe(false);
   });
 
-  it('has no SVG favicon: the source is a raster, and a favicon can’t load the font', () => {
-    expect(existsSync('public/favicon.svg')).toBe(false);
+  // The tab icon is the site's own mark (web D23): committed files `npm run icons` never writes.
+  it('keeps the tab icon: favicon.svg and the 32 px favicon-32.png', async () => {
+    expect(existsSync('public/favicon.svg')).toBe(true);
+    const { width, height } = await sharp('public/favicon-32.png').metadata();
+    expect([width, height]).toEqual([32, 32]);
   });
 
   // A pin bump that moves the background reaches the tokens (make web-tokens), but the manifest

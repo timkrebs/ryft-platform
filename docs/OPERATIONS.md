@@ -1743,7 +1743,8 @@ git -C ~/ryft-app-pin switch --detach <sha>                             # a comm
 APP=$HOME/ryft-app-pin
 git -C "$APP" rev-parse HEAD > web/.app-ref
 RYFT_APP_DIR=$APP make web-tokens                       # src/styles/tokens.{css,json}, swatches.css
-# When the app icon or a colour moved (web D22; the icon test fails until both ran; the OG card needs the fonts):
+# When the app icon or a colour moved (web D22; the icon test fails until both ran; the OG card needs the fonts).
+# They write the touch and manifest icons and the OG card; the tab icon (favicon.svg, favicon-32.png) is the site's own (web D23):
 (cd web && npm run fonts -- --if-missing && RYFT_APP_DIR=$APP npm run icons && RYFT_APP_DIR=$APP npm run og)
 RYFT_APP_DIR=$APP make web-test web-build web-e2e       # the build's prebuild also rewrites the Swift licence snapshot
 git status --short                                      # web/.app-ref and the files the app's change implies
