@@ -90,7 +90,7 @@ func newDupBench(t *testing.T) *dupBench {
 	o.OnAuth = auth.LoadUser(ensureUser(apiSt))
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", auth.Middleware(o, httpx.WithRoutes(api)))
-	b.srv = httpx.Instrument(log, httpx.Recover(mux))
+	b.srv = httpx.Instrument(log, nil, httpx.Recover(mux))
 	return b
 }
 

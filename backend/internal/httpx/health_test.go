@@ -157,7 +157,7 @@ func TestTraceID(t *testing.T) {
 func TestInstrumentTracesTheRequestsLines(t *testing.T) {
 	var buf bytes.Buffer
 	log := logx.NewCloud(&buf, "api", slog.LevelInfo, "ryftlab-prod")
-	h := Instrument(log, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Instrument(log, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.InfoContext(r.Context(), "inside")
 		w.WriteHeader(http.StatusNoContent)
 	}))

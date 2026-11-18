@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+// defaultIdle is how long a bucket may go unused before it is dropped, unless Idle says otherwise.
+const defaultIdle = 10 * time.Minute
+
+// sweepEvery is how many calls of a Limiter pass between two sweeps of its idle buckets.
+const sweepEvery = 1024
+
 // Limiter holds one token bucket per key.
 type Limiter struct {
 	perSecond float64
@@ -25,10 +31,23 @@ type bucket struct {
 	last   time.Time
 }
 
+// Option sets one of a Limiter's defaults (New, NewCapped).
+type Option func(*Limiter)
+
+// Idle drops a bucket unused for d instead of 10 minutes. A bucket is full again after burst/perSecond
+// seconds, so any d beyond that loses nothing; a shorter one keeps fewer keys in memory.
+func Idle(d time.Duration) Option { return func(l *Limiter) { l.idle = d } }
+
+// Clock reads the time from now instead of time.Now (tests).
+func Clock(now func() time.Time) Option { return func(l *Limiter) { l.now = now } }
+
 // New allows perSecond requests per key on average, with bursts of burst.
-func New(perSecond float64, burst int) *Limiter {
-	return &Limiter{perSecond: perSecond, burst: float64(burst), idle: 10 * time.Minute,
-		now: time.Now, buckets: map[string]*bucket{}}
+func New(perSecond float64, burst int, opts ...Option) *Limiter {
+	l := &Limiter{perSecond: perSecond, burst: float64(burst), idle: defaultIdle, now: time.Now, buckets: map[string]*bucket{}}
+	for _, o := range opts {
+		o(l)
+	}
+	return l
 }
 
 // Allow takes a token for key. When none is left it returns false and how
@@ -37,19 +56,39 @@ func (l *Limiter) Allow(key string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
-	l.calls++
-	if l.calls%1024 == 0 {
-		for k, b := range l.buckets {
-			if now.Sub(b.last) > l.idle {
-				delete(l.buckets, k)
-			}
-		}
-	}
+	l.count(now)
 	b, ok := l.buckets[key]
 	if !ok {
-		b = &bucket{tokens: l.burst, last: now}
-		l.buckets[key] = b
+		b = l.add(key, now)
 	}
+	return l.take(b, now)
+}
+
+// count counts a call and sweeps the idle buckets every sweepEvery calls. l.mu is held.
+func (l *Limiter) count(now time.Time) {
+	if l.calls++; l.calls%sweepEvery == 0 {
+		l.sweep(now)
+	}
+}
+
+// sweep drops every bucket unused for longer than the idle time. l.mu is held.
+func (l *Limiter) sweep(now time.Time) {
+	for k, b := range l.buckets {
+		if now.Sub(b.last) > l.idle {
+			delete(l.buckets, k)
+		}
+	}
+}
+
+// add makes key's bucket, full. l.mu is held.
+func (l *Limiter) add(key string, now time.Time) *bucket {
+	b := &bucket{tokens: l.burst, last: now}
+	l.buckets[key] = b
+	return b
+}
+
+// take refills b for the time since its last request and takes a token from it. l.mu is held.
+func (l *Limiter) take(b *bucket, now time.Time) (bool, time.Duration) {
 	b.tokens = math.Min(l.burst, b.tokens+now.Sub(b.last).Seconds()*l.perSecond)
 	b.last = now
 	if b.tokens >= 1 {
@@ -58,6 +97,52 @@ func (l *Limiter) Allow(key string) (bool, time.Duration) {
 	}
 	wait := time.Duration((1 - b.tokens) / l.perSecond * float64(time.Second))
 	return false, wait
+}
+
+// Capped is a Limiter that keeps a bucket for at most a fixed number of keys: a key it knows keeps its own
+// bucket; a new one gets one while fewer than the cap are known (a key unused for the idle time is
+// forgotten, swept at most once a second once the cap is reached); beyond that every new key shares one
+// overflow bucket. So a flood from many keys gets one key's rate together (it fails closed for the
+// newcomers) while the known keys are not affected, and memory stays bounded however many keys arrive.
+// It is the per-address limit's (the edge's in internal/app, D53; /v1/admin's in cmd/api, D155), where a
+// client chooses its key: one IPv6 /48 holds 65,536 /64s.
+//
+// The overflow bucket lives outside the map, so the map holds at most the cap and no key of a caller can
+// be the overflow bucket. There is one map and one idle time: nothing outlives it.
+type Capped struct {
+	lim *Limiter
+	max int
+
+	// Under lim.mu.
+	overflow bucket
+	swept    time.Time // the last sweep a full map triggered
+}
+
+// NewCapped is New for at most capacity keys at a time.
+func NewCapped(perSecond float64, burst, capacity int, opts ...Option) *Capped {
+	l := New(perSecond, burst, opts...)
+	return &Capped{lim: l, max: capacity, overflow: bucket{tokens: l.burst, last: l.now()}}
+}
+
+// Allow takes a token for key's bucket, or the overflow bucket's when key is new and the cap is reached.
+// When none is left it returns false and how long until one is.
+func (c *Capped) Allow(key string) (bool, time.Duration) {
+	l := c.lim
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	l.count(now)
+	if b, ok := l.buckets[key]; ok {
+		return l.take(b, now)
+	}
+	if len(l.buckets) >= c.max && now.Sub(c.swept) >= time.Second {
+		c.swept = now
+		l.sweep(now)
+	}
+	if len(l.buckets) >= c.max {
+		return l.take(&c.overflow, now)
+	}
+	return l.take(l.add(key, now), now)
 }
 
 // UserLimits applies a per-user limit per request class.

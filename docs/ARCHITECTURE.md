@@ -184,7 +184,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `cmd/pubsub-topology` | pubsub-topology writes the Pub/Sub topology (internal/events/pubsub) as Terraform's variables and as the emulator's init script. | events/pubsub | 1 file |
 | `cmd/scoring` | scoring scores the pushed ingest events and runs the 15-minute tick that keeps today and yesterday fresh. | app, config, db, eventbus, events, httpx, logx, metrics, model, scoring, store | 3 files (Postgres) |
 | `internal/apns` | sends one APNs request per device token with token-based authentication: an ES256 JWT from the team's .p8 key over HTTP/2 (net/http negotiates it). | apple | 1 file |
-| `internal/app` | owns a service's lifecycle: it opens the pool and the transport, serves the push, tick and health routes, pushes the metrics, and stops in reverse. | auth, config, db, eventbus, events, events/outbox, httpx, metrics | 6 files |
+| `internal/app` | owns a service's lifecycle: it opens the pool and the transport, serves the push, tick and health routes, pushes the metrics, and stops in reverse. | auth, config, db, eventbus, events, events/outbox, httpx, metrics, ratelimit | 7 files |
 | `internal/apple` | talks to Sign in with Apple's REST API: it exchanges the authorization code for a refresh token and revokes that token on deletion. | logx | 2 files |
 | `internal/auth` | owns bearer checks (Supabase JWT or a dev key on /v1, Google OIDC on pushes and ticks), the per-user limit hook and the Supabase admin client. | config, httpx, logx, metrics, model | 6 files |
 | `internal/behavior` | owns the journal's arithmetic: the fixed ids of the built-in behaviors, what an entry may hold, and how a behavior changes the morning after. | model, train | 1 file |
@@ -203,7 +203,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/metrics` | owns every Prometheus metric the services export, declared in one place, and serves them on /metrics or pushes them by OTLP. | none | 1 file |
 | `internal/model` | owns the wire types of docs/API.md, the event payloads the services exchange, and the error code constants. | none | 5 files |
 | `internal/notify` | decides what RYFT pushes, to whom and when. | apns, events, logx, metrics, model, store | 4 files |
-| `internal/ratelimit` | owns the in-memory token bucket per user and the platform's per-request-class limits. | none | 1 file |
+| `internal/ratelimit` | owns the in-memory token bucket per user and the platform's per-request-class limits. | none | 2 files |
 | `internal/retry` | owns start-up retry with backoff and jitter for dependencies that may not be up yet. | none | 1 file |
 | `internal/scoring` | owns the Recovery, Strain, Sleep and Readiness model and the Engine that applies it to stored data and writes the daily rows. | config, events, metrics, model, scoring/workoutdup, store, train | 25 files (Postgres) |
 | `internal/scoring/workoutdup` | owns the two rules that make one activity one workout: the same-source fold and the cross-source duplicate mark. | model | 1 file |

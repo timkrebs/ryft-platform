@@ -46,7 +46,7 @@ func nulServer(t *testing.T, st *store.Store, user model.User) (http.Handler, *b
 	api.HandleFunc("PUT /v1/sessions/{id}", h.putSession)
 	api.HandleFunc("POST /v1/behaviors", h.createBehavior)
 	routes := httpx.WithRoutes(api)
-	return httpx.Instrument(log, httpx.Recover(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return httpx.Instrument(log, nil, httpx.Recover(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if f := httpx.Info(r.Context()); f != nil {
 			f.UserID = user.ID.String()
 		}

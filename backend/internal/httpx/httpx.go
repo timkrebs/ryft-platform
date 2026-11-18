@@ -227,10 +227,15 @@ var clientRequestID = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 // body), logs one access line and records the HTTP metrics. The route label is
 // the ServeMux pattern ("GET /v1/days/{day}", never the raw path), so
 // cardinality stays bounded. A valid trace header becomes the lines' trace
-// (Cloud Logging's format only), and a request with X-Forwarded-For is sampled
-// for the "client address" line (clientAddressLog: which entry was picked, no address).
-func Instrument(log *slog.Logger, next http.Handler) http.Handler {
-	sample := &clientAddressLog{log: log, now: time.Now}
+// (Cloud Logging's format only). With clients (the process's, the same the
+// limits key by), a request with X-Forwarded-For is sampled for the "client
+// address" line (clientAddressLog: which entry was picked, no address); nil
+// clients write no such line (a test's chain).
+func Instrument(log *slog.Logger, clients *ClientKeys, next http.Handler) http.Handler {
+	var sample *clientAddressLog
+	if clients != nil {
+		sample = &clientAddressLog{keys: clients, log: log, now: time.Now}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, f := logx.NewContext(r.Context())
 		f.RequestID = newRequestID()
@@ -239,7 +244,9 @@ func Instrument(log *slog.Logger, next http.Handler) http.Handler {
 		}
 		f.Trace = traceID(r.Header)
 		w.Header().Set(RequestIDHeader, f.RequestID)
-		sample.maybe(r)
+		if sample != nil {
+			sample.maybe(r)
+		}
 		r = r.WithContext(ctx)
 
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}

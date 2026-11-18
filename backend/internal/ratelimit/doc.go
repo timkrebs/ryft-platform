@@ -8,12 +8,15 @@
 // Invariants:
 //   - Buckets are keyed by the verified user id, not the client IP: mobile
 //     clients share carrier NAT addresses (D36).
-//     The one exception is /v1/admin/*: an operator surface that is rate limited
-//     before its bearer is checked has no user yet, so cmd/api keys a Limiter
-//     there by httpx.ClientIP (10/s, bursts of 20; the address lives in memory
-//     only and is never logged or a metric label).
+//     The exceptions run before any token is checked, so there is no user yet:
+//     the edge limit of api and ingest (internal/app: 20/s, bursts of 50, D53)
+//     and /v1/admin/* (cmd/api: 10/s, bursts of 20, D155). Both are a Capped,
+//     keyed by httpx.ClientKeys, an HMAC of the client's address under a key of
+//     the process: no map holds an address, and none is logged or a label.
 //   - Idle buckets are dropped, so memory follows the active users, not every
-//     user ever seen.
+//     user ever seen. A Capped also bounds its keys (a client picks its address,
+//     and one IPv6 /48 is 65,536 /64s): the newcomers beyond the cap share one
+//     bucket, the known keys keep theirs.
 //   - The class limits (sync, session saves, invite codes, the training import,
 //     everything else) are the contract's numbers: docs/API.md → Conventions,
 //     and for invite codes POST /v1/me/invite.
