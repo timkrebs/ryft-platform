@@ -80,8 +80,8 @@ locations passing) and the certificate's days left, by check; and a logs panel o
 ### The alert policies
 
 Five conditions, one policy each, to both channels: the email `ryft-timkrebs` and the Google Cloud
-app's (made by hand; the app channel's display name is personal data, so it is a sensitive
-workspace variable and in no file). Five is the cap (`tests/monitoring.tftest.hcl`): each condition
+app's (made by hand; the app channel by its resource name, the workspace variable
+`alert_app_channel`, not sensitive and in no file, D237). Five is the cap (`tests/monitoring.tftest.hcl`): each condition
 has a price, and a sixth is a decision. Each policy's documentation is its first look; the table
 with the commands is OPERATIONS → GCP → When an alert fires.
 

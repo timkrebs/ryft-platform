@@ -5315,7 +5315,7 @@ _Grafana half superseded by D236._
 - **Consequences:** a Dependabot bump of an action anywhere under `.github/` runs the test on its own PR, and the next
   bump of a pinned action doesn't touch the test.
 
-## D236 — Cloud Monitoring is the only observability; Grafana Cloud out (**the user's decision**, 2026-11-17; supersedes D224's Grafana half)
+## D236 — Cloud Monitoring is the only observability; Grafana Cloud out (**the user's decision**, 2026-11-17; supersedes D224's Grafana half; amended by D237)
 
 - **Context:** D224 had Grafana Cloud read Cloud Monitoring through `grafana-reader` (a service-account key) and take
   the app metrics by OTLP push. Runbook step 11, which would have made the key, the data source, the push, the

@@ -1016,7 +1016,7 @@ While Email in the same console page lists `ryft-timkrebs`, the email channel ne
 fails on one). A new phone is a new device: 11.1 again, and the variable's new value.
 
 **Stop if** the edited policy lists no entry besides the email channel's (the device wasn't saved:
-Edit again), or more than one (two devices: keep the one you want, Save, read again); the console
+Edit again; still none after a second Save: stop and report it, don't guess an id), or more than one (two devices: keep the one you want, Save, read again); the console
 doesn't offer the device (open the Google Cloud app on the phone, signed in to the account that owns
 `ryftlab-prod`, with its notifications allowed, then Edit again); or the variable's value isn't the
 whole `projects/…/notificationChannels/<number>` (the plan refuses anything else).
@@ -1201,10 +1201,15 @@ plan destroys anything but those two. Rolling back past this PR after PR 2 needs
 **Stop if** the stack's usage (grafana.com → the stack → Usage) still shows metrics or logs coming
 in: keep the stack, and do 3 with D3.
 
-**11.8 Once: the app channel by id** *(D237; after the PR "infra: the app alert channel by id" is
-merged, and after 11.6's first apply)*. 11.1 to 11.3 ran here on 2026-11-18 with the app channel
-looked up by display name, and the lookup found the email channel: each of the five policies lists
-`ryft-timkrebs` twice and no app. In this order:
+**11.8 Once: the app channel by id** *(D237; after 11.6's first apply. 1 to 3 **before** the PR
+"infra: the app alert channel by id" is merged, 4 to 7 after it)*. 11.1 to 11.3 ran here on
+2026-11-18 with the app channel looked up by display name, and the lookup found the email channel:
+each of the five policies lists `ryft-timkrebs` twice and no app.
+
+The order matters. With the PR merged and `alert_app_channel` unset, the gate is off, and any plan
+from main destroys the five policies. So the new variable goes in first: the code before the PR
+doesn't declare it, and a plan there only warns of it and changes nothing. Merge the PR only once 3
+is done. In this order:
 
 1. **The device on one policy**: 11.1's 1, on **RYFT · Dead letters held**.
    **Stop if** the console doesn't offer the device (11.1's stop rule).
@@ -1213,6 +1218,8 @@ looked up by display name, and the lookup found the email channel: each of the f
    **Stop if** there is no entry besides the email channel's, or more than one.
 3. **The new variable**: 11.1's 3, key `alert_app_channel`, Sensitive off.
    **Stop if** the value isn't the whole `projects/…/notificationChannels/<number>`.
+
+   **Now merge the PR** (its checks green). Nothing deploys; nothing in GCP changes until 6.
 4. **The old variable goes**: `ryft-gcp` → **Variables** → Workspace variables → the row
    `alert_app_channel_name` → **⋯** → **Delete**. Nothing reads it any more; while it is listed,
    each plan warns of a value for an undeclared variable.
@@ -1246,7 +1253,8 @@ looked up by display name, and the lookup found the email channel: each of the f
    `notification_channels`; the plan shows "has moved to" lines (11.6's first apply hasn't run: do
    it first, then plan again); it fails with `alert_app_channel is the email channel ryft-timkrebs`
    (2 took the email's entry: the other one is the app's) or with the variable's validation (3); it
-   warns of an undeclared variable (4 didn't save); or a 403 on `monitoring.*` (11.2's four roles).
+   warns that `alert_app_channel_name` is undeclared (4 didn't save; the `grafana_*` warnings are
+   expected until 11.7); or a 403 on `monitoring.*` (11.2's four roles).
 6. **The apply**:
    ```bash
    terraform -chdir=infra/gcp apply app-channel.tfplan
@@ -1263,7 +1271,9 @@ looked up by display name, and the lookup found the email channel: each of the f
 
 A wrong id is fixed the same way: the variable's right value in HCP, then 5 and 6 (again 0 to add,
 5 to change, 0 to destroy, each policy's second entry). Unsetting the variable is no way back: it
-turns the gate off and destroys the five policies.
+turns the gate off and destroys the five policies. Neither is reverting the PR after 4: the old
+code's gate reads `alert_app_channel_name`, so add that variable back first (11.1's old value), or
+its plan destroys the five as well.
 
 ### 12. E, old org: Route 53
 
