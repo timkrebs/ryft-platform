@@ -2,10 +2,12 @@
 # cap is five (tests/monitoring.tftest.hcl): every condition has a monthly price (D236 -> Cost), and a
 # sixth needs a decision, not a line here.
 #
-# Gated: nothing in this file exists until alert_app_channel_name is set (local.alerting, runbook step
-# 11.1). Then both channels are read; one that does not exist, or a name two channels share, fails the
-# plan (step 11.2's stop rule). The channels themselves are the user's, made by hand in the console: an
-# email to ryft-timkrebs and the Google Cloud app. Their names stay out of this root but for the email's.
+# Gated: nothing in this file exists until alert_app_channel is set (local.alerting, runbook step
+# 11.1). Then the email channel is read by its display name: none, or two with that name, fails the
+# plan (step 11.2's stop rule), and so does an app channel that is the email channel (D237). The
+# channels themselves are the user's, made by hand in the console: an email to ryft-timkrebs and the
+# Google Cloud app's device, which only the console can pick. The app's comes in by its resource name
+# (variables.tf), since no lookup by display name can find it (D237).
 #
 # Queries are PromQL on Google's metric names, the threshold part of the query (any series it returns is
 # an open incident). Condition 1 is a classic threshold: check_passed is a BOOL, which PromQL can't count
@@ -17,19 +19,23 @@ data "google_monitoring_notification_channel" "email" {
   project      = var.project_id
   type         = "email"
   display_name = "ryft-timkrebs"
-}
 
-data "google_monitoring_notification_channel" "app" {
-  count = local.alerting ? 1 : 0
-
-  project      = var.project_id
-  display_name = var.alert_app_channel_name
+  lifecycle {
+    # The app channel must be another channel than this one, or every alert goes to the email twice
+    # and to no app (D237). By the channel number, the name's last segment: projects/<id> and
+    # projects/<number> are the same project, so the whole names may differ for the same channel.
+    postcondition {
+      condition     = reverse(split("/", self.name))[0] != reverse(split("/", var.alert_app_channel))[0]
+      error_message = "alert_app_channel is the email channel ryft-timkrebs (${self.name}). It must be the Google Cloud app's channel: the other entry in the notificationChannels of the policy you attached the device to (docs/OPERATIONS.md -> GCP, step 11.1)."
+    }
+  }
 }
 
 locals {
+  # Email first, then the app, in every policy.
   alert_channels = concat(
     data.google_monitoring_notification_channel.email[*].name,
-    data.google_monitoring_notification_channel.app[*].name,
+    local.alerting ? [var.alert_app_channel] : [],
   )
 
   alert_look = "docs/OPERATIONS.md -> GCP -> When an alert fires"

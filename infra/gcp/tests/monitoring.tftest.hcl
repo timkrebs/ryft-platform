@@ -1,7 +1,8 @@
-# Cloud Monitoring (D236): the alerting gate, the cap of five conditions, the uptime checks, the
-# log-based metrics and the dashboard, and that Grafana is gone. Plan-only, mocked: this machine has real
-# gcloud credentials, and a real provider here could create what it tests. The app channel's name in
-# these runs is a fake one; the real one is a sensitive workspace variable and in no file.
+# Cloud Monitoring (D236, D237): the alerting gate, the app channel by id, the cap of five conditions,
+# the uptime checks, the log-based metrics and the dashboard, and that Grafana is gone. Plan-only,
+# mocked: this machine has real gcloud credentials, and a real provider here could create what it
+# tests. Every channel in these runs is in the fake project fake-for-tests; the real app channel is a
+# workspace variable and in no committed file.
 mock_provider "google" {
   mock_data "google_logging_sink" {
     defaults = {
@@ -44,20 +45,13 @@ override_resource {
   }
 }
 
-# Two channels with two names, so a policy that names one of them twice shows.
+# The email channel as the API would return it. The runs that turn alerting on set alert_app_channel
+# to .../notificationChannels/2, another channel, so a policy that names one of them twice shows.
 override_data {
   target = data.google_monitoring_notification_channel.email
   values = {
     enabled = true
-    name    = "projects/p/notificationChannels/1"
-  }
-}
-
-override_data {
-  target = data.google_monitoring_notification_channel.app
-  values = {
-    enabled = true
-    name    = "projects/p/notificationChannels/2"
+    name    = "projects/fake-for-tests/notificationChannels/1"
   }
 }
 
@@ -79,12 +73,12 @@ run "alerting_off_while_the_app_channel_is_unset" {
 
   assert {
     condition = (
+      var.alert_app_channel == null &&
       length(data.google_monitoring_notification_channel.email) == 0 &&
-      length(data.google_monitoring_notification_channel.app) == 0 &&
       length(google_monitoring_alert_policy.uptime) == 0 &&
       length(google_monitoring_alert_policy.promql) == 0
     )
-    error_message = "gate off: no channel is read and no alert policy exists"
+    error_message = "gate off (alert_app_channel null): no channel is read and no alert policy exists"
   }
 
   # What costs nothing does not wait for the gate.
@@ -108,9 +102,9 @@ run "alerting_on_once_the_app_channel_is_set" {
   command = plan
 
   variables {
-    serve                  = true
-    public_invokers        = true
-    alert_app_channel_name = "app-channel-for-tests"
+    serve             = true
+    public_invokers   = true
+    alert_app_channel = "projects/fake-for-tests/notificationChannels/2"
   }
 
   assert {
@@ -118,11 +112,21 @@ run "alerting_on_once_the_app_channel_is_set" {
       length(data.google_monitoring_notification_channel.email) == 1 &&
       data.google_monitoring_notification_channel.email[0].type == "email" &&
       data.google_monitoring_notification_channel.email[0].display_name == "ryft-timkrebs" &&
-      data.google_monitoring_notification_channel.email[0].project == "ryftlab-prod" &&
-      length(data.google_monitoring_notification_channel.app) == 1 &&
-      data.google_monitoring_notification_channel.app[0].project == "ryftlab-prod"
+      data.google_monitoring_notification_channel.email[0].project == "ryftlab-prod"
     )
-    error_message = "gate on: the email channel ryft-timkrebs and the app channel are read, in ryftlab-prod"
+    error_message = "gate on: the email channel ryft-timkrebs is read, in ryftlab-prod, and no other channel (the app's is an id)"
+  }
+
+  # Exactly the email channel's name, then the variable, in every policy; and in the plan in clear, so
+  # the user can read the id there (D237: not sensitive).
+  assert {
+    condition = alltrue([
+      for p in concat(google_monitoring_alert_policy.uptime, values(google_monitoring_alert_policy.promql)) :
+      p.notification_channels == tolist([data.google_monitoring_notification_channel.email[0].name, var.alert_app_channel]) &&
+      p.notification_channels == tolist(["projects/fake-for-tests/notificationChannels/1", "projects/fake-for-tests/notificationChannels/2"]) &&
+      !issensitive(p.notification_channels)
+    ])
+    error_message = "every policy's notification_channels is [the email channel's name, alert_app_channel], in that order, not sensitive"
   }
 
   assert {
@@ -136,7 +140,7 @@ run "alerting_on_once_the_app_channel_is_set" {
   assert {
     condition = alltrue([
       for p in concat(google_monitoring_alert_policy.uptime, values(google_monitoring_alert_policy.promql)) :
-      p.notification_channels == tolist(["projects/p/notificationChannels/1", "projects/p/notificationChannels/2"]) &&
+      length(p.notification_channels) == 2 &&
       p.project == "ryftlab-prod" && p.combiner == "OR" && length(p.conditions) == 1 &&
       contains(["CRITICAL", "WARNING"], p.severity) &&
       startswith(p.display_name, "RYFT · ") &&
@@ -162,9 +166,9 @@ run "five_conditions_at_most" {
   command = plan
 
   variables {
-    serve                  = true
-    public_invokers        = true
-    alert_app_channel_name = "app-channel-for-tests"
+    serve             = true
+    public_invokers   = true
+    alert_app_channel = "projects/fake-for-tests/notificationChannels/2"
   }
 
   assert {
@@ -177,9 +181,10 @@ run "five_conditions_at_most" {
   assert {
     condition = (
       length(regexall("(?m)^\\s*resource\\s+\"google_monitoring_alert_policy\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 2 &&
-      length(regexall("(?m)^\\s*resource\\s+\"google_monitoring_notification_channel\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
+      length(regexall("(?m)^\\s*resource\\s+\"google_monitoring_notification_channel\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0 &&
+      length(regexall("(?m)^\\s*data\\s+\"google_monitoring_notification_channel\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
     )
-    error_message = "the alert policies are alerts.tf's two blocks; no channel is made here (the user's, by hand)"
+    error_message = "the alert policies are alerts.tf's two blocks; no channel is made here (the user's, by hand), and only the email's is looked up (the app's is an id, D237)"
   }
 
   # Evaluated every minute at the most often, every 5 minutes but for the 5xx ratio.
@@ -196,9 +201,9 @@ run "the_conditions" {
   command = plan
 
   variables {
-    serve                  = true
-    public_invokers        = true
-    alert_app_channel_name = "app-channel-for-tests"
+    serve             = true
+    public_invokers   = true
+    alert_app_channel = "projects/fake-for-tests/notificationChannels/2"
   }
 
   # 1: more than one of the three locations false, per check, held 10 minutes.
@@ -272,9 +277,9 @@ run "the_stop_line_drops_the_tick_policy_and_the_service_checks" {
   command = plan
 
   variables {
-    serve                  = true
-    public_invokers        = false
-    alert_app_channel_name = "app-channel-for-tests"
+    serve             = true
+    public_invokers   = false
+    alert_app_channel = "projects/fake-for-tests/notificationChannels/2"
   }
 
   assert {
@@ -295,9 +300,9 @@ run "serve_false_has_no_tick_policy_and_no_service_checks" {
   command = plan
 
   variables {
-    serve                  = false
-    public_invokers        = true
-    alert_app_channel_name = "app-channel-for-tests"
+    serve             = false
+    public_invokers   = true
+    alert_app_channel = "projects/fake-for-tests/notificationChannels/2"
   }
 
   assert {
@@ -309,25 +314,124 @@ run "serve_false_has_no_tick_policy_and_no_service_checks" {
   }
 }
 
-# A disabled channel is a silent policy: checks.tf warns on every plan.
+# A disabled channel is a silent policy: checks.tf warns on every plan. The email's only: the app's is
+# an id that no data source reads (D237), and 11.4's test alert proves it.
 run "a_disabled_channel_is_flagged" {
   command = plan
 
   variables {
-    serve                  = true
-    public_invokers        = true
-    alert_app_channel_name = "app-channel-for-tests"
+    serve             = true
+    public_invokers   = true
+    alert_app_channel = "projects/fake-for-tests/notificationChannels/2"
   }
 
   override_data {
-    target = data.google_monitoring_notification_channel.app
+    target = data.google_monitoring_notification_channel.email
     values = {
       enabled = false
-      name    = "projects/p/notificationChannels/2"
+      name    = "projects/fake-for-tests/notificationChannels/1"
     }
   }
 
   expect_failures = [check.alert_channels_enabled]
+}
+
+# ---- the app channel by id (D237) ---------------------------------------------------------------------
+
+# The finding of 2026-11-18: the app channel resolved to the email channel, and every policy listed it
+# twice. The email data source's postcondition fails the plan, not a check's warning.
+run "the_app_channel_equal_to_the_email_channel_fails_the_plan" {
+  command = plan
+
+  variables {
+    serve             = true
+    public_invokers   = true
+    alert_app_channel = "projects/fake-for-tests/notificationChannels/1"
+  }
+
+  expect_failures = [data.google_monitoring_notification_channel.email]
+}
+
+# The same channel under the project's number: compared by the channel number, so the project segment
+# can't hide it.
+run "the_email_channel_under_the_project_number_fails_the_plan" {
+  command = plan
+
+  variables {
+    serve             = true
+    public_invokers   = true
+    alert_app_channel = "projects/fake-for-tests/notificationChannels/1"
+  }
+
+  override_data {
+    target = data.google_monitoring_notification_channel.email
+    values = {
+      enabled = true
+      name    = "projects/123456789012/notificationChannels/1"
+    }
+  }
+
+  expect_failures = [data.google_monitoring_notification_channel.email]
+}
+
+# The whole number, not its end: 11 is not 1.
+run "a_number_that_only_ends_alike_is_another_channel" {
+  command = plan
+
+  variables {
+    serve             = true
+    public_invokers   = true
+    alert_app_channel = "projects/fake-for-tests/notificationChannels/11"
+  }
+
+  assert {
+    condition = alltrue([
+      for p in concat(google_monitoring_alert_policy.uptime, values(google_monitoring_alert_policy.promql)) :
+      p.notification_channels == tolist(["projects/fake-for-tests/notificationChannels/1", "projects/fake-for-tests/notificationChannels/11"])
+    ])
+    error_message = "channel 11 is another channel than 1: the plan goes on, both in every policy"
+  }
+}
+
+# The validation: a full resource name of a notification channel, or nothing.
+run "a_display_name_is_refused" {
+  command = plan
+
+  variables {
+    alert_app_channel = "fake-for-tests app device"
+  }
+
+  expect_failures = [var.alert_app_channel]
+}
+
+run "an_empty_string_is_refused" {
+  command = plan
+
+  variables {
+    alert_app_channel = ""
+  }
+
+  expect_failures = [var.alert_app_channel]
+}
+
+run "another_collection_is_refused" {
+  command = plan
+
+  variables {
+    alert_app_channel = "projects/fake-for-tests/alertPolicies/1"
+  }
+
+  expect_failures = [var.alert_app_channel]
+}
+
+run "a_trailing_slash_is_refused" {
+  command = plan
+
+  variables {
+    alert_app_channel = "projects/fake-for-tests/notificationChannels/2/"
+  }
+
+  expect_failures = [var.alert_app_channel]
 }
 
 # ---- what costs nothing ----------------------------------------------------------------------------------
@@ -492,7 +596,7 @@ run "the_dashboard" {
   }
 }
 
-# ---- Grafana is gone, and the app channel's name stays out of every file ------------------------------
+# ---- Grafana is gone, and the app channel stays out of every committed file ---------------------------
 
 run "no_grafana" {
   command = plan
@@ -508,33 +612,61 @@ run "no_grafana" {
   }
 }
 
-run "the_app_channel_name_is_sensitive_and_in_no_file" {
+run "the_app_channel_is_an_id_in_no_committed_file" {
   command = plan
 
+  # D237: null by default (unset, the gate), and not sensitive (an opaque id the plan shows).
   assert {
-    condition     = length(regexall("variable \"alert_app_channel_name\" \\{[^}]*\\n\\s*sensitive\\s*=\\s*true", file("${path.module}/variables.tf"))) == 1
-    error_message = "alert_app_channel_name is sensitive"
+    condition = (
+      length(regexall("variable \"alert_app_channel\" \\{[^}]*\\n\\s*default\\s*=\\s*null\\n", file("${path.module}/variables.tf"))) == 1 &&
+      length(regexall("variable \"alert_app_channel\" \\{[^}]*\\n\\s*(sensitive|ephemeral)\\s*=", file("${path.module}/variables.tf"))) == 0
+    )
+    error_message = "alert_app_channel defaults to null (unset: no alert policy) and is neither sensitive nor ephemeral (D237)"
   }
 
-  # The committed tfvars set it nowhere (terraform.tfvars itself is the user's, and never read here).
+  # The committed tfvars set it nowhere (terraform.tfvars itself is the user's, and never read here), so a
+  # plan without the workspace variable has it null.
   assert {
-    condition = length(regexall(
-      "(?m)^\\s*\"?alert_app_channel_name\"?\\s*[=:]",
+    condition = var.alert_app_channel == null && length(regexall(
+      "(?m)^\\s*\"?alert_app_channel\"?\\s*[=:]",
       join("\n", concat(
         [for f in fileset(path.module, "*.auto.tfvars") : file("${path.module}/${f}")],
         [for f in fileset(path.module, "*.auto.tfvars.json") : file("${path.module}/${f}")],
         [file("${path.module}/terraform.tfvars.example")],
       )),
     )) == 0
-    error_message = "no committed tfvars sets alert_app_channel_name: it is a sensitive workspace variable only"
+    error_message = "no committed tfvars sets alert_app_channel: it is per device, a workspace variable only"
   }
 
-  # The tests set it to the fake name only.
+  # No channel id in the root at all: neither a default nor a constant nor a tfvars value.
   assert {
-    condition = toset(flatten(regexall(
-      "alert_app_channel_name\\s*=\\s*\"([^\"]*)\"",
-      join("\n", [for f in fileset("${path.module}/tests", "*.tftest.hcl") : file("${path.module}/tests/${f}")]),
-    ))) == toset(["app-channel-for-tests"])
-    error_message = "every test sets alert_app_channel_name to app-channel-for-tests, never a real-looking name"
+    condition = length(regexall(
+      "notificationChannels/[0-9]",
+      join("\n", concat(
+        [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")],
+        [for f in fileset(path.module, "*.auto.tfvars") : file("${path.module}/${f}")],
+        [for f in fileset(path.module, "*.auto.tfvars.json") : file("${path.module}/${f}")],
+        [file("${path.module}/terraform.tfvars.example")],
+      )),
+    )) == 0
+    error_message = "no .tf or committed tfvars holds a notification channel's id (the app's is a workspace variable, D237)"
+  }
+
+  # The tests set it to obviously fake values only: the project fake-for-tests, or the empty string the
+  # validation refuses.
+  assert {
+    condition = (
+      length(regexall(
+        "alert_app_channel\\s*=\\s*\"",
+        join("\n", [for f in fileset("${path.module}/tests", "*.tftest.hcl") : file("${path.module}/tests/${f}")]),
+      )) > 0 &&
+      alltrue([
+        for v in flatten(regexall(
+          "alert_app_channel\\s*=\\s*\"([^\"]*)\"",
+          join("\n", [for f in fileset("${path.module}/tests", "*.tftest.hcl") : file("${path.module}/tests/${f}")]),
+        )) : v == "" || strcontains(v, "fake-for-tests")
+      ])
+    )
+    error_message = "every test sets alert_app_channel to a value in the fake project fake-for-tests (or to \"\"), never a real-looking one"
   }
 }

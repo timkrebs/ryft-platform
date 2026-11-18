@@ -5315,7 +5315,7 @@ _Grafana half superseded by D236._
 - **Consequences:** a Dependabot bump of an action anywhere under `.github/` runs the test on its own PR, and the next
   bump of a pinned action doesn't touch the test.
 
-## D236 — Cloud Monitoring is the only observability; Grafana Cloud out (**the user's decision**, 2026-11-17; supersedes D224's Grafana half)
+## D236 — Cloud Monitoring is the only observability; Grafana Cloud out (**the user's decision**, 2026-11-17; supersedes D224's Grafana half; amended by D237)
 
 - **Context:** D224 had Grafana Cloud read Cloud Monitoring through `grafana-reader` (a service-account key) and take
   the app metrics by OTLP push. Runbook step 11, which would have made the key, the data source, the push, the
@@ -5379,3 +5379,50 @@ _Grafana half superseded by D236._
   log has ERROR entries for every 5xx, with the caller's IP. For RYFT on GCP, C2 need not name Grafana.
 - **Consequences:** `OBSERVABILITY.md` → Cloud Monitoring; `OPERATIONS.md` → GCP → 11 and When an alert fires;
   `infra/gcp/README.md`.
+
+## D237 — The app alert channel by id: `alert_app_channel`, null as unset, and a plan that fails on the email channel (2026-11-18; amends D236)
+
+- **Context (found on 2026-11-18, read-only, through the API):** every alert policy lists the same channel twice,
+  the email channel `ryft-timkrebs` (type `email`). The project has no other channel in the API and no mobile type
+  among its channel descriptors: the Google Cloud app's device ("Mobile Devices" in the console) is no channel the
+  API lists or a data source can find, and only the console can pick it. D236's app data source, looked up by
+  display name alone, resolved to the email channel. Nothing failed: not the plan, not the apply, not `checks.tf`'s
+  enabled check.
+- **Decision:**
+  - **By id.** The app channel comes in by its full resource name, `alert_app_channel` (a string,
+    `^projects/[a-z0-9-]+/notificationChannels/[0-9]+$`). The user attaches the device to one policy in the console
+    and reads the name from that policy's `notificationChannels` (runbook GCP 11.1; once, 11.8). The app data source
+    and D236's display-name variable go. 11.1 reads the policies with a projection (`displayName`,
+    `notificationChannels`), so their edit records, which name who edited them, stay off the screen.
+  - **Null is unset.** `default = null`; the validation is `var.alert_app_channel == null || can(regex(…))`. With no
+    default at all, every plan, every `terraform test` run and CI would need a value: the gate (unset, no policy and
+    no channel read) would be gone, and a value would have to sit in a file. "No default" meant no committed value:
+    there is none, and a test fails on one. An empty string is refused, not taken for unset, so an HCP variable
+    saved empty fails the plan instead of turning alerting off quietly.
+  - **Not sensitive** (HCP's Sensitive off to match). The name is an opaque id, the project and a number: it grants
+    nothing, and the device's display name, the personal part, stays in the console. Not sensitive, it drives
+    `local.alerting` without `nonsensitive()`, and the plan shows it in every policy, which is where the user checks
+    it against 11.1. It is per device, so it is a workspace variable and in no committed file.
+  - **A postcondition on the email channel's data source, not a `check`.** A check only warns, and the finding passed
+    every plan with its warnings. The postcondition fails the plan when the app channel is the email channel: one
+    place, evaluated when the email channel is read at plan time, where a precondition would sit on both policy
+    blocks and fail five instances with five identical errors.
+  - **By the channel number**, the name's last segment. `projects/<id>/…` and `projects/<number>/…` are the same
+    project, so a comparison of the whole names could miss the same channel. The whole number is compared, never its
+    end (`11` is not `1`). Another project's channel with the same number fails too, which is harmless: a policy
+    takes this project's channels.
+  - **Order `[email, app]`** in every policy. `notification_channels` is an ordered list, so the policies applied
+    under D236 (`[email, email]`) change in place once: 11.8's plan is 0 to add, 5 to change, 0 to destroy, or 4 to
+    change if the console saved the policy the user edited as exactly `[email, app]` (then it already matches).
+- **Rejected:** a lookup with a `type` (no mobile type among the descriptors to name); the channel as a resource (only
+  the console makes a device channel); sensitive (it would hide the one value the user must check in the plan, and
+  protect no secret); a `check` (see above).
+- **Lost:** `checks.tf`'s enabled check covers the email channel only, since no data source reads the app's. 11.4's
+  test alert is its check, and 11.8 runs it again.
+- **Tests** (`tests/monitoring.tftest.hcl`, mocked, plan only): unset, no policy and no data source; set, every
+  policy's channels exactly [the email's name, the variable], not sensitive; equal to the email channel's, also
+  under the project number, the plan fails (`expect_failures` on the data source); `…/11` beside `…/1` plans; the
+  validation refuses a display name, `""`, `…/alertPolicies/1` and a trailing slash; no committed tfvars sets it, no
+  `.tf` or tfvars holds a channel id, and every test value is in the fake project `fake-for-tests`.
+- **Consequences:** `OPERATIONS.md` → GCP → 11.1, 11.2, 11.4 and 11.8 (once); `infra/gcp/README.md`;
+  `OBSERVABILITY.md`; STATUS's 11.1 and 11.2.

@@ -78,21 +78,27 @@ Your decision (D236, superseding D224's Grafana half): Cloud Monitoring is RYFT'
 `infra/cloud-monitoring`, not pushed. **Done in the branch:**
 - `infra/gcp`: two log-based metrics (`ryft_ticks` by `result`, `ryft_errors`), five uptime checks (the site's three
   always, api and ingest while public), the dashboard "RYFT · Overview", five alert policies to your two hand-made
-  channels behind the sensitive workspace variable `alert_app_channel_name`. The `grafana` provider and
-  `grafana-reader` are gone. `terraform test`: 59 passed.
+  channels behind the workspace variable `alert_app_channel`, the app channel's resource name (D237: the lookup
+  by display name had found the email channel). The `grafana` provider and
+  `grafana-reader` are gone. `terraform test`: 66 passed (with D237).
 - Gone: the synthetics (file, script, Make targets, CI steps), `ryft.yaml`, its tests and `make alerts-apply`, the
   `OTLP_*` env in `deploy/run`. Kept: the OTLP Go code (dormant) and the secret `otlp-token` with its accessor.
 - Cost: $7.50 a month at $1.50 a condition, or about $0.70 under the possible May-2026 pricing (neither verified).
 
 **Open, your steps** (runbook GCP → 11, in order; each part has its Stop if):
 1. Merge the PR. `deploy.yml` deploys revisions without the OTLP env.
-2. **11.1** In HCP Terraform, `ryft-gcp` → Variables: `alert_app_channel_name`, Sensitive on, the app channel's name
-   from the console. Never in a file or a command.
-3. **11.2** The apply account's four Monitoring roles (the loop in 11.2), then
+2. **11.1** Ran on 2026-11-18 by display name, which found the email channel: every policy lists `ryft-timkrebs`
+   twice. Redone by id once, **11.8** (D237, after 11.6's first apply): **before** merging the PR
+   `infra: the app alert channel by id`, the device on "RYFT · Dead letters held" in the console, its id from
+   `gcloud monitoring policies list`, and `alert_app_channel` in HCP (Sensitive off); then the merge, the old
+   variable deleted, then
+   `terraform -chdir=infra/gcp plan -out=app-channel.tfplan`: 0 to add, 5 to change (4 if the console saved that
+   policy as exactly [email, app]), 0 to destroy; apply, and 11.4 again on both channels.
+3. **11.2** *(ran 2026-11-18)* The apply account's four Monitoring roles (the loop in 11.2), then
    `terraform -chdir=infra/gcp plan -out=monitoring.tfplan`. Expect 13 to add, 0 to change, 2 to destroy
-   (`grafana-reader` and its `monitoring.viewer`); 8/0/2 with the variable empty. No change to the secrets, the
+   (`grafana-reader` and its `monitoring.viewer`); 8/0/2 with the variable unset. No change to the secrets, the
    invokers, Pub/Sub, the log bucket, the zone, WIF or the deployer.
-4. **11.3** `terraform -chdir=infra/gcp apply monitoring.tfplan`, then `plan`: No changes. "Tick missing" may open
+4. **11.3** *(ran 2026-11-18)* `terraform -chdir=infra/gcp apply monitoring.tfplan`, then `plan`: No changes. "Tick missing" may open
    once and closes within the hour.
 5. **11.4** The test dead letter: both channels get "RYFT · Dead letters held"; purge it.
 6. **11.5** Error Reporting's notifications only if its API already runs.

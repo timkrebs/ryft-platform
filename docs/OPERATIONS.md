@@ -79,7 +79,7 @@ on Pub/Sub and Cloud Run.
 | 8 | First deploy | A merged, steps 5 and 7 done |
 | 9 | Apply 2: invokers and mappings, then `make smoke-supabase` | step 8 |
 | 10 | The site and the app | waits for C1 |
-| 11 | Observability on Cloud Monitoring (D236) | the PR "observability on Cloud Monitoring" merged; step 10 done (the site's uptime checks). 11.6 waits for 11.4, 11.7 for D3 if EKS still sends to Grafana Cloud |
+| 11 | Observability on Cloud Monitoring (D236) | the PR "observability on Cloud Monitoring" merged; step 10 done (the site's uptime checks). 11.6 waits for 11.4, 11.7 for D3 if EKS still sends to Grafana Cloud, 11.8 (once) for the PR "infra: the app alert channel by id" and 11.6's first apply |
 | 12–14 | Old org: retire Route 53, AWS and the old workspaces | after step 10, with D1, D2, D3 |
 | 15 | Testers | step 10 done, C2 in force |
 
@@ -209,8 +209,8 @@ read -r REPO_ID OWNER_ID < <(gh api repos/timkrebs/ryft-platform --jq '"\(.id) \
 echo "$REPO_ID $OWNER_ID"                           # two numbers
 tfc_var github_repository_id "$REPO_ID" terraform
 tfc_var github_repository_owner_id "$OWNER_ID" terraform
-# From step 11, not now: alert_app_channel_name, the Google Cloud app channel's name, is personal data and
-# sensitive: the workspace UI only (step 11.1), never here, never on argv.
+# From step 11, not now: alert_app_channel, the Google Cloud app channel's resource name, which a policy
+# shows only once you attached the device in the console: the workspace UI (step 11.1).
 
 # 2f. Connect and plan once (speculative: it proves the plan SA's sign-in).
 terraform -chdir=infra/gcp init                     # connects to ryft-gcp, which 2b made
@@ -984,30 +984,42 @@ the app rules) never ran, and are gone with D236.
 
 The parts run in this order, 11.1 to 11.5 in one sitting, once the PR "infra: observability on
 Cloud Monitoring; Grafana Cloud out" is merged and step 10 serves the site. 11.6 is a PR of its own
-after 11.4. 11.7 deletes what is left in Grafana Cloud.
+after 11.4. 11.7 deletes what is left in Grafana Cloud. 11.8 runs once, in this project only: its
+11.1 to 11.3 ran before D237.
 
-**11.1 The app channel's name, a workspace variable.** Monitoring → Alerting → **Edit notification
-channels** → Mobile Devices: the Google Cloud app's channel, by its display name, written here as
-`<the app channel's name>`. It is personal data. You type it into HCP Terraform's UI and nowhere
-else: never into a file, a script, a command line, a commit or a chat. Terraform keeps it in the
-workspace's state as the data source's argument (as it keeps the email channel's address), and the
-state is readable only by the workspace's members. One way out remains: when the app channel's
-data source fails (no channel or two with that name, 11.2's stop rule), **the provider's error
-quotes the name**, unmasked, in the run's log. Never copy or paste that error; report it as "the app
-channel's data source failed".
+**11.1 The app channel's id, a workspace variable** *(D237)*. The Google Cloud app's device
+("Mobile Devices" in the console) is a notification channel the API doesn't list, and only the
+console can pick it. So you attach it to one policy by hand, read its resource name there, and give
+Terraform that name. Its display name (your phone's) never reaches Terraform.
 
-1. app.terraform.io → organization `ryft-lab` → Workspaces → `ryft-gcp` → **Variables** →
-   Workspace variables → **+ Add variable**.
-2. Variable category **Terraform variable**. Key `alert_app_channel_name`. Value `<the app
-   channel's name>`, exactly as the console shows it (case and spaces count). **HCL** off.
-   **Sensitive** on. Description: `The Google Cloud app's notification channel (D236)`.
-3. **Add variable**. The list shows the key with its value hidden ("Sensitive - write only").
+1. Console → **Monitoring** → **Alerting** → the policy **RYFT · Dead letters held** → **Edit** →
+   **Notifications**: the Google Cloud app's device (under Mobile Devices), next to `ryft-timkrebs`
+   → **Save**. On a new project, where no policy exists before 11.3, make a throwaway one instead
+   (**Create policy**, any metric, the device as its only channel), and delete it after 2.
+2. The resource name (the projection keeps the policies' edit records, which name who edited them,
+   off the screen):
+   ```bash
+   gcloud monitoring policies list --project=ryftlab-prod --format='json(displayName,notificationChannels)'
+   ```
+   The policy you edited lists `projects/…/notificationChannels/<number>` entries. The email
+   channel's is in every other policy too. The new one, the entry that isn't the email channel's,
+   is the app's: written here as `<the app channel's id>`, the whole `projects/…/notificationChannels/<number>`.
+3. app.terraform.io → organization `ryft-lab` → Workspaces → `ryft-gcp` → **Variables** →
+   Workspace variables → **+ Add variable**. Variable category **Terraform variable**. Key
+   `alert_app_channel`. Value `<the app channel's id>`. **HCL** off. **Sensitive** off: an opaque id
+   that grants nothing, and Terraform doesn't mark it sensitive either, so the plan shows it in each
+   policy (D237). Description: `The Google Cloud app's notification channel, by resource name (D237)`.
+   **Add variable**.
 
 While Email in the same console page lists `ryft-timkrebs`, the email channel needs nothing here:
-`alerts.tf` names it.
+`alerts.tf` names it. The id is per device: never in a committed file (`tests/monitoring.tftest.hcl`
+fails on one). A new phone is a new device: 11.1 again, and the variable's new value.
 
-**Stop if** the variable shows its value (Sensitive off): delete it and add it again with Sensitive
-on, before any plan.
+**Stop if** the edited policy lists no entry besides the email channel's (the device wasn't saved:
+Edit again; still none after a second Save: stop and report it, don't guess an id), or more than one (two devices: keep the one you want, Save, read again); the console
+doesn't offer the device (open the Google Cloud app on the phone, signed in to the account that owns
+`ryftlab-prod`, with its notifications allowed, then Edit again); or the variable's value isn't the
+whole `projects/…/notificationChannels/<number>` (the plan refuses anything else).
 
 **11.2 The plan.** First the apply account's four Monitoring roles, once (step 2d grants them on a
 new project; `infra/gcp/README.md` → Variables):
@@ -1034,7 +1046,7 @@ terraform -chdir=infra/gcp plan -out=monitoring.tfplan
 
 ```text
 # Step 11's plan (serve = true, public_invokers = true, the variable set): 13 to add, 0 to change, 2 to destroy.
-#   read: data.google_monitoring_notification_channel.email[0] (ryft-timkrebs) and .app[0]
+#   read: data.google_monitoring_notification_channel.email[0] (ryft-timkrebs); the app's is the variable
 #   2 log-based metrics (ryft_ticks, ryft_errors)                                             =  2
 #   + 5 uptime checks (ryft-site-home, ryft-site-privacy, ryft-site-aasa, ryft-api-ready,
 #     ryft-ingest-ready)                                                                      =  5  (7)
@@ -1042,21 +1054,23 @@ terraform -chdir=infra/gcp plan -out=monitoring.tfplan
 #   + 1 uptime policy + 4 PromQL policies (5xx, tick missing, dead letters, event backlog)    =  5 (13)  to add
 #   google_service_account.this["grafana-reader"]
 #   + google_project_iam_member.grafana_reader (roles/monitoring.viewer)                      =  2       to destroy
-# The variable empty (the gate off): 8 to add, 0 to change, 2 to destroy; no channel read, no policy.
+# The variable unset (the gate off): 8 to add, 0 to change, 2 to destroy; no channel read, no policy.
 # Under the stop line (public_invokers = false): 10 to add with the gate on, 6 with it off (no
 # ryft-api-ready, no ryft-ingest-ready, no tick policy); the same 2 to destroy.
 ```
 
-The app channel's display name shows as `(sensitive value)`. Outputs: `grafana_reader_email` goes,
+Each policy's `notification_channels` is two entries, the email channel's name, then `<the app
+channel's id>` in clear (D237). Outputs: `grafana_reader_email` goes,
 `monitoring` comes. No change to the secrets (`otlp-token` and its accessor stay, 11.6), the
 invoker bindings, the topics and subscriptions, the log bucket and sink, the zone, the WIF pool or
 the deployer. The two destroys hold no data: `grafana-reader` never had a key (the loop above), and
 nothing reads as it.
 
 **Stop if** the counts are not your gate's line above; anything changes, or anything else is
-destroyed; a channel's data source fails (no channel, or more than one, with that name: 11.1's
-value must match exactly one channel, and the email channel must be named `ryft-timkrebs`; the app
-channel's error quotes its name, so don't paste it anywhere, 11.1); a 403
+destroyed; the email channel's data source fails (no channel, or more than one, named
+`ryft-timkrebs`); the plan fails with `alert_app_channel is the email channel ryft-timkrebs` (11.1's
+2 took the email's entry: the other one is the app's) or with the variable's validation (not the
+whole resource name); the two entries of a policy's `notification_channels` are the same; a 403
 on `monitoring.*` (the four roles above); or `grafana-reader` has a key (delete it with
 `gcloud iam service-accounts keys delete`, then find out who made it).
 
@@ -1107,7 +1121,8 @@ closing notice.
 
 **Stop if** a channel gets nothing within 20 minutes (Monitoring → Alerting → the incident: opened
 but not delivered is the channel; Edit notification channels → its row → **Send test
-notification**); `list` shows another letter than yours (then it is a real one: **Dead letters
+notification**; only the email arrives: the policy's second channel isn't the device, so check
+`alert_app_channel` against 11.1's 2); `list` shows another letter than yours (then it is a real one: **Dead letters
 and the outbox**, before the purge); or the incident is still open 20 minutes after the purge.
 
 **11.5 Error Reporting's notifications** (free). Console → **Error Reporting**. It needs the
@@ -1185,6 +1200,80 @@ plan destroys anything but those two. Rolling back past this PR after PR 2 needs
 
 **Stop if** the stack's usage (grafana.com → the stack → Usage) still shows metrics or logs coming
 in: keep the stack, and do 3 with D3.
+
+**11.8 Once: the app channel by id** *(D237; after 11.6's first apply. 1 to 3 **before** the PR
+"infra: the app alert channel by id" is merged, 4 to 7 after it)*. 11.1 to 11.3 ran here on
+2026-11-18 with the app channel looked up by display name, and the lookup found the email channel:
+each of the five policies lists `ryft-timkrebs` twice and no app.
+
+The order matters. With the PR merged and `alert_app_channel` unset, the gate is off, and any plan
+from main destroys the five policies. So the new variable goes in first: the code before the PR
+doesn't declare it, and a plan there only warns of it and changes nothing. Merge the PR only once 3
+is done. In this order:
+
+1. **The device on one policy**: 11.1's 1, on **RYFT · Dead letters held**.
+   **Stop if** the console doesn't offer the device (11.1's stop rule).
+2. **Its id**: 11.1's 2. Dead letters held now lists the email channel's entry and one more, the
+   app's; the other four still list the email's twice.
+   **Stop if** there is no entry besides the email channel's, or more than one.
+3. **The new variable**: 11.1's 3, key `alert_app_channel`, Sensitive off.
+   **Stop if** the value isn't the whole `projects/…/notificationChannels/<number>`.
+
+   **Now merge the PR** (its checks green). Nothing deploys; nothing in GCP changes until 6.
+4. **The old variable goes**: `ryft-gcp` → **Variables** → Workspace variables → the row
+   `alert_app_channel_name` → **⋯** → **Delete**. Nothing reads it any more; while it is listed,
+   each plan warns of a value for an undeclared variable.
+   **Stop if** the list doesn't show `alert_app_channel` afterwards (the wrong row went: add it again, 3).
+5. **The plan**, from main:
+   ```bash
+   git switch main && git pull
+   terraform -chdir=infra/gcp plan -out=app-channel.tfplan
+   ```
+   ```text
+   # Step 11.8's plan: 0 to add, 5 to change, 0 to destroy.
+   #   read: data.google_monitoring_notification_channel.email[0] (ryft-timkrebs)
+   #   ~ google_monitoring_alert_policy.uptime[0]                RYFT · Uptime check failing
+   #   ~ google_monitoring_alert_policy.promql["http-5xx"]       RYFT · 5xx over 2 % (api, ingest)
+   #   ~ google_monitoring_alert_policy.promql["tick-missing"]   RYFT · Tick missing
+   #   ~ google_monitoring_alert_policy.promql["push-backlog"]   RYFT · Event backlog over 15 minutes
+   #   ~ google_monitoring_alert_policy.promql["dead-letters"]   RYFT · Dead letters held             = 5 to change
+   #     each: notification_channels [the email's, the email's] -> [the email's, <the app channel's id>]
+   #     (a "-" line with the email channel's id, a "+" line with the app's)
+   # 4 to change if the console saved Dead letters held's list as exactly [the email's, the app's], in
+   # that order: it then matches the code and isn't in the plan. Under the stop line (public_invokers =
+   # false) there is no Tick missing: 4, or 3.
+   ```
+   The channels are an ordered list, the email's first (`alerts.tf`), so a policy whose two entries
+   are the same, or in the other order, is a change. Dead letters held may show more lines: what the
+   console wrote when you saved goes back to the code's values. No change to the uptime checks, the
+   dashboard, the log-based metrics, the secrets (as 11.6 left them), the invokers, Pub/Sub, the log
+   bucket and sink, the zone, WIF or the deployer; no change to the outputs.
+   **Stop if** anything is added or destroyed (a policy replaced, `-/+`, gets a new id and loses its
+   incidents); any other resource changes; one of the other four policies changes anything but
+   `notification_channels`; the plan shows "has moved to" lines (11.6's first apply hasn't run: do
+   it first, then plan again); it fails with `alert_app_channel is the email channel ryft-timkrebs`
+   (2 took the email's entry: the other one is the app's) or with the variable's validation (3); it
+   warns that `alert_app_channel_name` is undeclared (4 didn't save; the `grafana_*` warnings are
+   expected until 11.7); or a 403 on `monitoring.*` (11.2's four roles).
+6. **The apply**:
+   ```bash
+   terraform -chdir=infra/gcp apply app-channel.tfplan
+   rm infra/gcp/app-channel.tfplan
+   terraform -chdir=infra/gcp plan                     # No changes
+   gcloud monitoring policies list --project=ryftlab-prod --format='json(displayName,notificationChannels)'
+   ```
+   Each of the five lists two entries: the email channel's, then the app's.
+   **Stop if** the second plan isn't "No changes", or a policy lists anything else.
+7. **11.4's test alert again, on both channels this time**: the email to `ryft-timkrebs` and a push
+   on the Google Cloud app, then the purge and both closing notices.
+   **Stop if** only the email arrives (the id isn't the device's: read it again, 2), or 11.4's stop
+   rule.
+
+A wrong id is fixed the same way: the variable's right value in HCP, then 5 and 6 (again 0 to add,
+5 to change, 0 to destroy, each policy's second entry). Unsetting the variable is no way back: it
+turns the gate off and destroys the five policies. Neither is reverting the PR after 4: the old
+code's gate reads `alert_app_channel_name`, so add that variable back first (11.1's old value), or
+its plan destroys the five as well.
 
 ### 12. E, old org: Route 53
 
