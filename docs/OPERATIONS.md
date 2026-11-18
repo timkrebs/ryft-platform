@@ -1257,7 +1257,8 @@ submission to `smtp.office365.com:587`.
     administrators can still enable it. Tenants created after December 2026 don't get it. Microsoft
     announces the final removal date in the second half of 2027.
   - The plan before it is on hold: a share of submissions rejected from 2026-03-01, all of them by
-    2026-04-30. That comes from Message Center MC786329, last updated 2026-01-27 (mirror:
+    2026-04-30. That was Message Center MC786329's earlier version; its update of 2026-01-27 carries
+    the timeline above instead (mirror:
     [mc.merill.net/message/MC786329](https://mc.merill.net/message/MC786329), *(search)*). The first
     announcement was
     [Exchange Online to retire Basic auth for Client Submission (SMTP AUTH)](https://techcommunity.microsoft.com/blog/exchange/exchange-online-to-retire-basic-auth-for-client-submission-smtp-auth/4114750)
@@ -1328,6 +1329,11 @@ you:
 The mailbox's setting wins over the tenant's. The tenant can stay at `True`, and then only this mailbox
 submits by SMTP. Leave `support@` alone.
 
+Paths 2 and 3 leave security defaults as they are, and while they are on, SMTP AUTH fails whatever
+the mailbox says (`535 5.7.139`). After 14a.1's per-user MFA on every other account, turn them off:
+Microsoft Entra admin center → Identity → Overview → **Properties** → **Manage security defaults** →
+**Disabled** (Learn, the same page, *(search)*). Path 1 does this for you.
+
 **Stop if** the switch is missing or greyed out (the tenant blocks it), or 14a.1's stop applies.
 
 **14a.3 Supabase's SMTP settings.** In the production project's dashboard:
@@ -1368,17 +1374,22 @@ on that team. Use a second address of yours that isn't, written here as `<the te
    Open its link on the iPhone. That proves *Confirm signup* too.
 2. In the app: Sign in → Forgot password → `<the test address>`.
 3. Within five minutes the mail is in that inbox, not in spam, from `RYFT <no-reply@ryftlab.de>`.
-   Long-press its link to read it, and never copy it: it is a live token. It must start with
-   `https://<ref>.supabase.co/auth/v1/verify?` and carry `redirect_to=ryft://auth/callback`. Tap it: the app
-   opens on Set new password. Set one.
+   Don't long-press the link: iOS's preview opens it and spends the one-time token, and the tap then
+   fails as "link expired". Read the URL in the mail's source instead (4's original view), and never
+   copy it: it is a live token. It must start with `https://<ref>.supabase.co/auth/v1/verify?` and carry
+   `redirect_to=ryft://auth/callback`. Then tap it once: the app opens on Set new password. Set one.
 4. Open the mail's original (its headers). They show `SPF: PASS`, `DKIM: PASS` with `d=ryftlab.de`, and
    `DMARC: PASS`. If DKIM fails and names `selector1`, the `selector1` line of **Mail for ryftlab.de** is
    due. DMARC is `p=quarantine`, so such mail lands in spam.
 5. Sign in to Outlook on the web as `no-reply@` and open **Sent Items**. It holds a copy: Exchange keeps
    every SMTP AUTH submission there
    ([Learn: SMTP Authenticated Submission](https://learn.microsoft.com/en-us/troubleshoot/exchange/send-emails/smtp-submission-improvements),
-   as of 2026-11-18, *(search)*). Each copy holds a tester's address and a one-time link. Delete it now.
-   Then set a retention of 7 days on Sent Items, or empty it every week. C2 must name this copy.
+   as of 2026-11-18, *(search)*). Each copy holds a tester's address and a one-time link. Delete it for
+   good now: Shift+Delete, or empty Deleted Items and then **Recover items deleted from this folder** →
+   purge. A plain delete keeps it in Recoverable Items, 14 days by default (the mailbox's
+   `RetainDeletedItemsFor`, `Get-Mailbox no-reply@ryftlab.de | Format-List RetainDeletedItemsFor`). Then
+   set a retention of 7 days on Sent Items, or empty it every week the same way. C2 must name this
+   copy, and both windows.
 6. Delete the test account in the app (Settings → delete the account), unless you keep it for tests.
 
 **Stop if** the mail hasn't come after 15 minutes, or DMARC fails in 4. Supabase's Auth logs should show
@@ -1408,8 +1419,9 @@ limit, the templates and the URLs stay.
 Each provider's DPA, subprocessors and log retention are not read here, and neither is whether its free
 tier brands the mail.
 
-The zone's records are code in `infra/gcp/dns.tf`. The apex TXT set is `local.m365_apex_txt`, and the SPF
-is one string in it: `v=spf1 include:secureserver.net -all`, plus the provider's include, never a second
+The zone's records are code in `infra/gcp/dns.tf`. The apex TXT set is `local.apex_txt`: the SPF is one
+string of `local.m365_apex_txt` in it, and a provider's verification string (`brevo-code:…`) joins
+`local.apex_txt`, not the Microsoft list. The SPF: `v=spf1 include:secureserver.net -all`, plus the provider's include, never a second
 SPF. DKIM CNAMEs go into `local.mail_cnames`. A DKIM TXT needs a new `google_dns_record_set` there. DMARC is
 `local.dmarc`. `infra/gcp/tests/dns.tftest.hcl` pins those values, so the PR changes it too. SPF allows at
 most 10 DNS lookups, and how many `secureserver.net` uses wasn't checked: check it before that PR. The PR is
@@ -1459,6 +1471,8 @@ shows the cost.
 1. **Before.** In production, open Database → Extensions: `pg_cron` and `pg_net` are off. A physical copy
    starts their jobs at once (Restore to a new project, above). No migration uses either. Then Database →
    Backups: note the newest backup's time, and whether a Download button shows (logical) or not (physical).
+   And Project Settings → **Compute and Disk**: note production's compute size, which the copy gets. The
+   repository doesn't record it; the cost above assumes Micro, and Small is about half as much again.
 
    **Stop if** `pg_cron` or `pg_net` is on: the copy would run their jobs too. First find out who turned it
    on.
@@ -1470,8 +1484,8 @@ shows the cost.
    than production's. A download instead is your decision (D239), not a step on the way.
 3. **Lock the copy.** In the copy, turn the Data API off (Project Settings → Data API, as SUPABASE.md step 4
    says). Migration 0007's revokes hold anyway. Set up no SMTP, keys, users or service. Connect nothing to it:
-   no app, no compose stack, no `psql` from the laptop. So this drill replaces steps 1 and 2 of
-   **Backups → Restore drill, monthly** for RYFT on GCP.
+   no app, no compose stack, no `psql` from the laptop. So this drill replaces **Backups → Restore
+   drill, monthly** for RYFT on GCP, its smoke against the copy included.
 
    **Stop if** the Data API won't turn off. Delete the copy (5) and ask Supabase why.
 4. **The check, counts only.** Run the same query in the copy's SQL editor, then in production's. It only
@@ -1524,12 +1538,15 @@ shows the cost.
    **Stop if** the delete fails, or the copy is still listed an hour later. Contact Supabase support the
    same day: the copy holds production's health data and bills by the hour.
 
-Run it again every month (**Backups → Restore drill, monthly**).
+Run 14a.7 again every month. For RYFT on GCP it replaces **Backups → Restore drill, monthly**, whose
+compose stack and `make smoke-supabase` against the copy step 3 forbids.
 
 **14a.8 Where `POST /v1/feedback` lands, and how you hear of it.**
 - The report goes into the table `feedback` (migration 0021, `store.AddFeedback`, at most 10 a day per
   account). The api logs one line, `feedback received`. It carries `feedback_id`, `category` (bug, idea,
-  data, other) and `request_ids` (a count), plus the `user_id` and `request_id` that logx adds. It never
+  data, other) and `request_ids` (a count), plus what every line has (`time`, `severity`, `message`,
+  `service`) and what logx adds from the request (`request_id`, `client_request_id` when the app sent
+  one, `user_id`, `route`, and the trace, `logging.googleapis.com/trace`). It never
   carries the message, the diagnostics or the device fields (**Data protection (logs)**; `writeLogKeys` in
   `backend/cmd/api/logs_test.go` pins it). The line stays in `ryft-logs` for 14 days.
 - **Today nothing tells you.** On EKS, Grafana's NewFeedback alert on `ryft_feedback_received_total` did
@@ -6902,8 +6919,9 @@ There is no dump job in the cluster. Before restoring a backup:
    passwords in case the backup predates them. The api's deletion reconciler erases the restored
    accounts at start-up.
 
-**Restore drill, monthly** (Pro): restore the latest backup into a new scratch project
-(Database → Backups → *Restore to a new project*). Then:
+**Restore drill, monthly** (Pro): *for RYFT on GCP, run GCP → 14a.7 instead (D239). It replaces all
+three steps below: its copy is connected to nothing, so step 2 never runs there.* Restore the latest backup into a new
+scratch project (Database → Backups → *Restore to a new project*). Then:
 
 1. Compare `SELECT count(*)` of `users`, `samples` and `daily_scores` with production.
 2. Run the services against it and smoke them: the compose stack in Supabase mode with

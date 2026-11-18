@@ -5410,12 +5410,13 @@ _Grafana half superseded by D236._
   same region, the same processor, compute billed by the hour). A counts-only query runs in both SQL editors, judged
   by plausibility rules, because production moves on after the backup. Then the copy is deleted. **Rejected:** a
   download into a local Postgres. It puts Art. 9 data on a laptop, physical backups can't be downloaded, and the CLI
-  dump reads production. On GCP this replaces steps 1 and 2 of `OPERATIONS.md` → Backups → Restore drill, monthly:
-  no service or compose stack connects to the copy, and the counts stay on Supabase's pages.
+  dump reads production. On GCP this replaces `OPERATIONS.md` → Backups → Restore drill, monthly, all of it: no
+  service or compose stack connects to the copy, and the counts stay on Supabase's pages.
 - **Decision 3, feedback:** today the operator hears of feedback only by looking (`/admin` → Feedback,
   `scripts/beta_report.sh feedback`). **Proposed, not built:** a log-based counter `ryft_feedback` of the line
   `feedback received`, with the label `category` only, and a sixth condition "RYFT · New feedback". The line holds
-  `feedback_id`, `category`, `request_ids` (a count), `user_id` and `request_id`, and never the message
+  `feedback_id`, `category`, `request_ids` (a count), the common keys and logx's request keys (`request_id`,
+  `client_request_id`, `user_id`, `route`, the trace), and never the message
   (`writeLogKeys`). No id becomes a label. The price is $1.50 a month under D236's reading A; Google's pricing page
   now says alerting is charged from no sooner than 2027-09-01, at $0.35 a month per metric reference. The cap of five
   is a test, so the sixth condition is the user's decision. **Rejected:** a log-match condition, whose notification
