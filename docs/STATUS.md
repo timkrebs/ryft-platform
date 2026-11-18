@@ -72,6 +72,19 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Main red after #205, Lighthouse on the median of 3 runs (2026-11-18)
+
+#205's merge (`f541d70`, run 44261694220) failed `web-e2e`: Lighthouse's total blocking time on `/` was 162 ms
+against 100. The same code had passed on the PR, and a rerun passed. The fix is branch `web/lighthouse-median`
+(web D24):
+- `web/lighthouserc.json` asserted LCP, CLS, TBT and the performance score with `median-run`. With it, LHCI picks
+  one run per page (the one nearest the median FCP and TTI) and reads all four from that run alone. Now `median`
+  asserts each metric's median over the 3 runs: a page fails when 2 of its 3 runs miss a budget, and one noisy run
+  no longer fails it. The 3 runs and every budget are unchanged.
+- `web/tests/lighthouse.test.ts` pins the config and runs the installed LHCI's assertion code on synthetic runs.
+- **Merging:** `deploy.yml` deploys the services as usual and redeploys the site, because `web/` changed since the
+  live release. The export is the same, and the live check runs after the deploy. Nothing for you to run.
+
 ## Observability on Cloud Monitoring; Grafana Cloud out (2026-11-17)
 
 Your decision (D236, superseding D224's Grafana half): Cloud Monitoring is RYFT's only observability. Branch
