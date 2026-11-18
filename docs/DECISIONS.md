@@ -5525,3 +5525,32 @@ _Grafana half superseded by D236._
   (Microsoft through the GoDaddy tenant, with the Sent Items copy, or the fallback provider) and Microsoft for
   `support@` (D214). The drill adds no processor and no place. The proposed counter carries no personal data.
 - **Consequences:** `OPERATIONS.md` → GCP → 14a; `STATUS.md`.
+
+## D241 — `BETA_GATE` off: the beta has no invite codes (**the user's decision**, 2026-11-18; amends D238)
+
+- **Context:** D238 set `BETA_GATE=warn` on api and ingest, with `on` after a stop rule and a code for every
+  account that keeps access. On 2026-11-18 the user decided the beta gets no invite codes. The two unused
+  codes (`beta 1 operator`, `beta 1 smoke`) were already revoked.
+- **Decision:** `deploy/run/config.env` sets `BETA_GATE=off`. The key stays required (D238's reason holds: the
+  mode in force is the one in git). Under `off` every signed-in account is served as under `warn`, and nothing
+  is flagged as missing a code: no `X-RYFT-Gate: invite_required`, and `GET /v1/me/sync` → `gate` is never
+  `invite_required` (it still says `consent_required` until the user consents). Access on
+  the server is to come with App Attest, which is still to be decided. Until then nothing on the server tells
+  the TestFlight app from any other client with a confirmed Supabase account.
+- **Unchanged:** `CONSENT_ENFORCE` (not in `config.env`, so the default `on` holds): nothing is synced or
+  scored without consent to the current policy. Also unchanged are the per-user and per-IP limits, the code
+  routes (`POST /v1/me/invite`, `/v1/admin/invites`) and the stored grants. An account that redeemed a code
+  keeps its row.
+- **Amends D238:** its "`on` before the beta is opened to anyone not invited" no longer holds. Who gets the
+  app is TestFlight's list. The server admits any confirmed account. OPERATIONS → GCP → The beta gate keeps
+  its steps for a later `warn` or `on`, behind a note that the gate is `off`.
+- **Rejected:** staying on `warn`. It flags every tester (the app shows "Action needed: enter your invite
+  code") for codes nobody will hand out.
+- **The risk, which the user confirms with the PR:** anyone who signs up with Supabase (*Confirm email* is on,
+  D159) and has the API's address can sync their own data after consenting. The limits cap the load, and max
+  instances cap the bill. What is stored is theirs, under the same consent and deletion rules. App Attest is
+  the answer that is still to be decided.
+- **Privacy:** no new processor and no new data.
+- **Consequences:** `deploy/run/config.env`; `OPERATIONS.md` → GCP → The beta gate (the note); `STATUS.md`.
+  The merge's `deploy.yml` rolls api and ingest with `BETA_GATE=off`. The rollback is the same line back to
+  `warn`.

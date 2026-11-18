@@ -2421,6 +2421,14 @@ uptime checks see).
 
 ### The beta gate: warn, then on (D238)
 
+> **`BETA_GATE` is `off`** (D241, the user's decision on 2026-11-18): the beta has no invite codes.
+> Every signed-in account is served and nothing is flagged; consent stays `on`. Access on the server is
+> to come with App Attest, which is still to be decided. The steps below are kept for a later `warn` or
+> `on`. Each would start with a one-line PR of `config.env` and then follow step 1 onward. The two
+> unused codes (`beta 1 operator`, `beta 1 smoke`) are revoked. Their rows stay listed as `revoked`, and
+> nobody can redeem them. With the gate off, `make smoke-prod` passes without the admin key; for a smoke
+> user without access it prints "! the smoke user has no beta access: fine while BETA_GATE is off".
+
 `BETA_GATE` (D79, D87) is a line of `deploy/run/config.env`, rendered into api and ingest only
 (scoring reads only the consent mode). D238 set it to `warn`; step 6's one-line PR sets `on`;
 `config.env` holds the mode in force. `CONSENT_ENFORCE` isn't in
