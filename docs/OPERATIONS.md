@@ -1455,12 +1455,18 @@ if [ -n "$OLD_TOKEN" ] && aws_ok && [ -f infra/aws/d2.tfplan ] \
   && ! aws kms list-aliases --region eu-central-1 --query 'Aliases[].AliasName' --output text | grep -q 'alias/ryft-prod-euc1-vault-' \
   && ! aws s3api head-bucket --bucket ryft-prod-euc1-vault-snapshots-173003892479 2>/dev/null \
   && ! aws budgets describe-budget --account-id 173003892479 --budget-name ryft-prod-euc1-monthly >/dev/null 2>&1 \
+  && git checkout -q -- infra/aws/.terraform.lock.hcl \
   && echo "13 done: both keys PendingDeletion (30 days), no aliases, bucket or budget; ryft-prod-euc1-platform manages nothing" \
   || echo "STOP: the apply or a check after it failed. Send the output."
 else
   echo "STOP: no d2.tfplan (run the plan paste), the AWS account isn't 173003892479, or the plan lacks the two Vault keys."
 fi
 ```
+
+13.2's `init` adds a provider to `infra/aws/.terraform.lock.hcl` when a leftover in the state
+needs one (`tls`, `cloudinit`, …). The apply paste puts the committed file back at its end, so 14.1
+finds a clean tree. `infra/aws/aws.tfplan`, the rebuild's saved plan of 2026-11-14, if it is still
+in your checkout: delete it (`rm infra/aws/aws.tfplan`). It is never to be applied.
 
 Within the 30 days, `aws kms cancel-key-deletion` and then `aws kms enable-key` bring a key back
 (README → Destroying).
