@@ -1,4 +1,4 @@
-# The Cloud DNS zone carries every record of infra/aws/dns (D214), with the same values and TTLs, plus
+# The Cloud DNS zone carries every record the Route 53 zone held (D214), with the same values and TTLs, plus
 # exactly CAA's pki.goog and Search Console's string. Plan-only, mocked. rrdatas is a list, so the
 # literals are tolist([...]): a list never equals a tuple.
 mock_provider "google" {
@@ -154,7 +154,7 @@ run "microsoft_365_mail" {
 
   assert {
     condition     = !contains(keys(google_dns_record_set.mail_cname), "selector1._domainkey")
-    error_message = "selector1 is not published until it resolves (as in infra/aws/dns)"
+    error_message = "selector1 is not published until it resolves"
   }
 
   assert {
@@ -166,28 +166,6 @@ run "microsoft_365_mail" {
       google_dns_record_set.mail_srv["_sipfederationtls._tcp"].rrdatas == tolist(["100 1 5061 sipfed.online.lync.com."])
     )
     error_message = "the two SRV records as GoDaddy shows them"
-  }
-}
-
-# While infra/aws/dns exists (until D3), every value and label here is also in its mail.tf, so the two
-# zones cannot drift apart by a typo on one side. A conditional, not ||: only the chosen branch's errors
-# count, so the run still passes once D3 has removed infra/aws.
-run "the_same_values_as_route_53" {
-  command = plan
-
-  assert {
-    condition = fileexists("${path.module}/../aws/dns/mail.tf") ? alltrue([
-      for v in concat(
-        google_dns_record_set.mx.rrdatas,
-        [for r in google_dns_record_set.apex_txt.rrdatas : trim(r, "\"") if !startswith(r, "\"google-site-verification=") && !startswith(r, "\"hosting-site=")],
-        [for r in google_dns_record_set.dmarc.rrdatas : trim(r, "\"")],
-        flatten([for r in google_dns_record_set.mail_cname : r.rrdatas]),
-        flatten([for r in google_dns_record_set.mail_srv : r.rrdatas]),
-        keys(google_dns_record_set.mail_cname),
-        keys(google_dns_record_set.mail_srv),
-      ) : strcontains(file("${path.module}/../aws/dns/mail.tf"), "\"${v}\"")
-    ]) : true
-    error_message = "a record value or label here is not in infra/aws/dns/mail.tf"
   }
 }
 

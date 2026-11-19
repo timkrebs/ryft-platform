@@ -2,7 +2,7 @@
 # CI's pr-title job (.github/workflows/pr.yml), runnable locally:
 #   scripts/check_pr.sh "<PR title>" [<base-sha> <head-sha>]
 # 1. The title is one line reading "area: what changed". The area is any lower-case word,
-#    optionally with path segments and a scope: web, deploy, infra/aws/kubernetes, events,
+#    optionally with path segments and a scope: web, deploy, infra/gcp/tests, events,
 #    ci(deps). (A closed list would reject most of this repository's history.) GitHub's own
 #    revert titles, Revert "<a valid title>", pass.
 # 2. The denylisted brand (web/config/brand-denylist.json) is in neither the title nor the
@@ -28,7 +28,7 @@ case "$title" in
     if printf '%s' "$shape" | grep -Eq '^[a-z][a-z0-9-]*(/[a-z0-9-]+)*(\([a-z0-9-]+\))?: [^[:space:]].{2,}$'; then
       echo "ok: the title reads 'area: what changed'"
     else
-      echo "::error title=PR title::The PR title must read 'area: what changed' (lower-case area, e.g. web, deploy, infra/vault, ci)."
+      echo "::error title=PR title::The PR title must read 'area: what changed' (lower-case area, e.g. web, deploy, infra/gcp, ci)."
       rc=1
     fi ;;
 esac

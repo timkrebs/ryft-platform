@@ -1,14 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import config from '../config/admin.json';
-import {
-  adminNginxSnippet,
-  adminPolicy,
-  hashesOf,
-  httpsOrigin,
-  nginxSnippet,
-  policy,
-} from '../scripts/lib/csp.mjs';
+import { adminPolicy, hashesOf, httpsOrigin, policy } from '../scripts/lib/csp.mjs';
 import { cspHash, inlineScripts, stripRuntime } from '../scripts/lib/html.mjs';
 
 // The admin bundle stands in for "our" script: since web D20 it is the only one the site has.
@@ -55,12 +48,6 @@ describe('postbuild and CSP', () => {
     expect(p).toContain("frame-ancestors 'none'");
     // A hash, if a page ever had a script again, would be the only way in.
     expect(policy(hashesOf(['a()']))).toContain("script-src 'sha256-");
-  });
-
-  it('writes an nginx directive that sends the header on every status', () => {
-    const snippet = nginxSnippet([], 1);
-    expect(snippet).toMatch(/^add_header Content-Security-Policy ".*" always;$/m);
-    expect(snippet.split('"')).toHaveLength(3);
   });
 });
 
@@ -115,10 +102,12 @@ describe('the two policies', () => {
     expect(admin).not.toContain('unsafe-');
   });
 
-  it('writes one header per snippet, never two policies in one', () => {
-    for (const snippet of [nginxSnippet(["'sha256-x'"], 3), adminNginxSnippet(["'sha256-x'"], config)]) {
-      expect(snippet.match(/add_header Content-Security-Policy/g)).toHaveLength(1);
-      expect(snippet.split('"')).toHaveLength(3);
+  // Each is one header value (firebase.json sets each on its own rule: tests/hosting.test.ts).
+  it('keeps each policy one header value: no line break, every directive once', () => {
+    for (const p of [policy(["'sha256-x'"]), adminPolicy(["'sha256-x'"], config)]) {
+      expect(p).not.toMatch(/[\r\n]/);
+      const names = p.split('; ').map((d) => d.split(' ')[0]);
+      expect(new Set(names).size).toBe(names.length);
     }
   });
 

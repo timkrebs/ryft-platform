@@ -1,13 +1,18 @@
-deploy/k8s/secrets.yaml
-# A secrets.yaml sits next to its overlay, as kustomize refuses files outside the overlay root (D27).
-deploy/k8s/**/secrets.yaml
+# Secrets and state anywhere in the tree, also in the folders D3 removed (D246): a clone keeps its
+# git-ignored files there (deploy/k8s's secrets.yaml, infra/aws's and infra/vault's terraform.tfvars,
+# .terraform/), and with the folders' own .gitignore gone they must stay out of `git add -A`.
+secrets.yaml
+secrets/
+terraform.tfvars
+*.tfstate
+*.tfstate.*
+.terraform/
 backend/bin/
 .env
 *.xcuserstate
 xcuserdata/
 DerivedData/
 .DS_Store
-deploy/k8s/overlays/local-postgres/secrets/
 # Terraform plan files can hold secrets in plaintext
 tfplan
 *.tfplan
@@ -22,7 +27,5 @@ __pycache__/
 /backend/migrate
 /backend/rabbitmq-topology
 
-# make admission-e2e: the summary of the last kind run
-/admission-e2e-summary.md
 # k6 output of scripts/load.sh (make load)
 scripts/load/out/

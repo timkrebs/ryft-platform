@@ -1,5 +1,9 @@
 # Status — ryftapp.de (web/)
 
+## 2026-11-19 — The nginx image is gone (branch `remove/eks-era`, platform PR D3)
+
+D25 (platform D246): `Dockerfile`, `.dockerignore`, `nginx/`, `scripts/container.mjs`, `scripts/csp.mjs`, `scripts/precompress.mjs` and `docs/handoff/` are removed, with `npm run image`, `serve` and `serve:stop`. The CSPs are written into `firebase.json` only; the built file is byte-identical to the one before (SHA-256 `e3c66711…`). The policy check reads `deploy/run/config.env` and `docker-compose.yml`. Where older entries below name the image, `nginx/csp*.conf` or `csp.mjs`, they record the site as it was. Locally: `make web-test` (22 files, 301 tests passed, 5 skipped) and `make web-build` passed, with the app at the pinned commit (`RYFT_APP_DIR`); `make web-e2e` did not run (CI's `web-e2e` is the test bed; the pages and `firebase.json` are unchanged).
+
 ## 2026-11-18 — Lighthouse on the median of 3 runs (branch `web/lighthouse-median`)
 
 D24: LCP, CLS, TBT and the performance score are asserted against their median over the 3 runs per page (LHCI's `median`), not against one representative run (`median-run`). One run's TBT of 162 ms had failed `main` after #205. The 3 runs and every budget are unchanged, and `tests/lighthouse.test.ts` pins them and runs the installed LHCI's assertion code on synthetic runs.

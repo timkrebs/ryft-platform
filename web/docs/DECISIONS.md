@@ -78,6 +78,8 @@ language on a phone. Screenshots follow the choice by retargeting their `<source
 
 ## D6 — One nginx image, the platform's headers plus a hashed CSP (2026-10-20)
 
+_Superseded by D19 and D25: Firebase Hosting serves the site, and the image, `nginx/` and `scripts/csp.mjs` are gone; the CSPs are written into `firebase.json` only._
+
 `nginxinc/nginx-unprivileged` 1.30.6 (the stable line) on Alpine 3.24, pinned by its
 multi-arch digest; Node 24.22.0 (LTS) only in the build stage. `nginx/default.conf` ports
 the platform's `base/web/default.conf` (same routes, `/healthz`, AASA as `application/json`
@@ -93,6 +95,8 @@ are two, the same on every page, so one global header is enough. `require-truste
 levels, so every location that sets its own header includes `snippets/headers.conf`.
 
 ## D7 — Precompressed gzip, no brotli module (2026-10-20)
+
+_Superseded by D19 and D25: Hosting compresses on its own; `scripts/precompress.mjs` went with the image._
 
 The official unprivileged image has `gzip_static` but no brotli. Building `ngx_brotli`
 against the exact nginx version needs a compiler stage, and the multi-arch build would
@@ -148,6 +152,8 @@ two files that must contain such phrases (the denylist, the tests) are excluded 
 
 ## D12 — Trivy and gitleaks as pinned images, not actions (2026-10-20)
 
+_Amended by D25: the Dockerfile is gone, so there is no base image of ours for Dependabot to update._
+
 Security tools run as their official container images pinned by digest
 (`aquasec/trivy:0.76.0`, `zricethezav/gitleaks:v8.30.1`) instead of third-party actions,
 so a moved tag can't change what runs. Every action is pinned by commit SHA; Dependabot
@@ -164,6 +170,8 @@ overrides next/font computed (ascent 102.23 %, descent 24.29 %, line gap 10.12 %
 and Roboto (Android, the same average width); `adjustFontFallback` is off.
 
 ## D14 — The image is public (2026-10-21)
+
+_Superseded by D25: there is no image any more, and the pull-secret variant this entry names (the handoff's section 2 and its patches) went with it._
 
 The user chose to make `ghcr.io/timkrebs/ryft/web` public so that the site can go live
 without a pull secret in the cluster ("just deploy the website, we care about that stuff
@@ -259,6 +267,8 @@ Would change if the user wants German back: `messages/de.json`, `content/legal/d
 `[locale]` segment again, from this PR's parent commit.
 
 ## D19 — Firebase Hosting serves the site, not nginx (2026-11-16; C1, platform D233)
+
+_Amended by D25: the nginx image is gone, so the last paragraph's check of its headers against `firebase.json` is gone too; `tests/hosting.test.ts` pins the shared headers itself, and `tests/output.test.ts` reads the policies from the built `firebase.json`._
 
 The export moves from the nginx image on EKS to Firebase Hosting in the project `ryftlab-site`
 (Spark plan, no billing account; platform `docs/work/2026-11-14-gcp/design.md` §8). The pages
@@ -681,3 +691,33 @@ and two fail, at the middle value.
 Would change if two of three runs miss on CI (a real regression, or a runner that stays slower): then
 the page or the budget is a decision of its own, not the aggregation. An LHCI upgrade that moves
 `assertions.js` fails the test until its aggregation is read again.
+
+## D25 — The nginx image is gone (2026-11-19; platform D246, PR D3; supersedes D6, D7, D14; amends D12, D19)
+
+The platform's PR D3 removes Kubernetes, Argo CD, Vault, the admission policies and AWS (platform
+D246). The nginx image (D6) was kept until then (D19), and nothing shipped it after D19: Firebase
+Hosting serves `out/` with the generated `firebase.json`. It goes in the same PR:
+- Removed: `Dockerfile`, `.dockerignore`, `nginx/` (the server config, the header snippets and the
+  generated `csp.conf` and `csp-admin.conf`), `scripts/container.mjs` (`npm run image`, `serve`,
+  `serve:stop`), `scripts/precompress.mjs` (only the image build ran it, D7), `scripts/csp.mjs` (it
+  only wrote the nginx snippets), and `docs/handoff/` (the patches that put the image on the
+  cluster, D14). No dependency changes; `package-lock.json` is untouched.
+- The CSPs have one output, `firebase.json`. `scripts/firebase-json.mjs` already made the checks
+  `csp.mjs` made: the build stops when a marketing page carries a script (D20) or the admin page
+  doesn't carry exactly one (D15). What `firebase.json` says is unchanged: `scripts/lib/hosting.mjs`
+  changed in comments only, and the two policies of `scripts/lib/csp.mjs` not at all. `ignore:
+  ["**/*.gz"]` stays, so a stray precompressed copy is never uploaded.
+- Tests: `tests/output.test.ts` reads both policies from the built `firebase.json` and checks they
+  are the marketing policy without a hash and the admin policy with the built one;
+  `tests/hosting.test.ts` pins the shared headers value for value (the set `headers-common.conf`
+  sent); `tests/csp.test.ts` checks that each policy is one header value, where it checked the
+  nginx snippets.
+- The policy check (`scripts/check-policy-version.mjs`, `scripts/lib/policy.mjs`) reads
+  `deploy/run/config.env`, the published version, and `docker-compose.yml`, which must agree with
+  it. The per-service copies went with the cluster's manifests. `--strict`, the warnings and
+  problems, and the checks of the pages and `privacy-versions.json` are unchanged.
+- Outside `web/`, in the same PR: the Makefile's targets for the image, Dependabot's Docker entry
+  for `web/`, and CI's change paths for the image.
+
+Would change if the site ever needs a server of its own again. Then it starts from Hosting's rules
+in `scripts/lib/hosting.mjs`; the image is in the history before PR D3.

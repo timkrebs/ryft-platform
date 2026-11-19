@@ -1,7 +1,8 @@
-"""Which characters may not be in a tracked file, or in a string that a YAML parser decoded.
-One definition for scripts/check_bytes.sh (the file's bytes) and scripts/lib/yamlpolicy.py (the
-decoded keys and values: a double-quoted YAML string turns the ASCII text \\L, \\N, \\_ or \\x85 into
-a line break, which the byte check cannot see). Imported by path.
+"""Which characters may not be in a tracked file.
+The one definition for scripts/check_bytes.sh (the file's bytes). Its other user, yamlpolicy.py,
+read the decoded strings of the kustomizations (a double-quoted YAML string turns the ASCII text
+\\L, \\N, \\_ or \\x85 into a line break, which the byte check cannot see); it went with them in
+D3 (D246). Imported by path.
 
 Refused: CR and every other control except tab and newline (Cc: C0, DEL, C1 with U+0085); format
 characters (Cf: bidi controls, zero width, BOM, soft hyphen); U+2028 and U+2029; private use,

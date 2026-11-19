@@ -1,7 +1,7 @@
 // The privacy policy version: ours (content/legal/en/privacy/<version>.mdx; the site is
-// English only, web D18) against PRIVACY_POLICY_VERSION in this repository's api and ingest base env files
-// (deploy/k8s/base/{api,ingest}/config.env) and the local stack's docker-compose.yml, which
-// consent is recorded against.
+// English only, web D18) against PRIVACY_POLICY_VERSION, which consent is recorded against, in
+// this repository's deploy/run/config.env (the published version: Cloud Run's api and ingest get
+// it from there) and in the local stack's docker-compose.yml, which must agree.
 // content/legal/privacy-versions.json lists every version anyone may have consented to, oldest
 // first, the current one last: those pages must never disappear.
 // Node built-ins only: CI runs the check without `npm ci`.
@@ -9,7 +9,10 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const LOCALES = ['en'];
-export const SERVICES = ['api', 'ingest'];
+/** The published version's file, from the repository root. */
+export const RUN_CONFIG = 'deploy/run/config.env';
+/** The local stack, from the repository root: every PRIVACY_POLICY_VERSION in it must agree. */
+export const COMPOSE = 'docker-compose.yml';
 const PAGE = /^\d{4}-\d{2}-\d{2}\.mdx$/;
 
 /** Newest version in content/legal/<locale>/privacy, or null when there is none. */
@@ -24,9 +27,10 @@ export function sitePolicyVersion(root, locale = 'en') {
 }
 
 /**
- * PRIVACY_POLICY_VERSION from a kustomize env file (config.env). The line has exactly one shape,
- * `PRIVACY_POLICY_VERSION=YYYY-MM-DD`: kustomize ships quotes, spaces and an inline comment as
- * part of the value, so any other line that starts with the key is a problem, not a miss.
+ * PRIVACY_POLICY_VERSION from an env file (deploy/run/config.env: KEY=value, one per line, no
+ * quotes, spaces or inline comments). The line has exactly one shape,
+ * `PRIVACY_POLICY_VERSION=YYYY-MM-DD`: a quote, a space or an inline comment would be part of the
+ * value, so any other line that starts with the key is a problem, not a miss.
  * Lines that start with `#` are comments and never match.
  * @param {string} text
  * @returns {{version: string | null, problem?: string}}
@@ -39,7 +43,7 @@ export function versionFromEnvFile(text) {
   if (!m) {
     return {
       version: null,
-      problem: `"${lines[0]}" is not exactly PRIVACY_POLICY_VERSION=YYYY-MM-DD (no quotes, spaces or comment on the line: kustomize ships them as part of the value)`,
+      problem: `"${lines[0]}" is not exactly PRIVACY_POLICY_VERSION=YYYY-MM-DD (no quotes, spaces or comment on the line: they would be part of the value)`,
     };
   }
   if (!isCalendarDate(m[1])) {
@@ -56,32 +60,25 @@ export function isCalendarDate(v) {
 }
 
 /**
- * The published platform version: PRIVACY_POLICY_VERSION in the base env files of the repository
- * at `repoRoot` (deploy/k8s/base/{api,ingest}/config.env). Both must carry it, and the same one.
- * What is in force on EKS is set by promote with the web pin (overlays/eks); that is checked
- * elsewhere (scripts/check_policy_in_force.sh).
+ * The published platform version: PRIVACY_POLICY_VERSION in deploy/run/config.env of the
+ * repository at `repoRoot`, set exactly once. The merge deploys it with the services and the site
+ * (deploy.yml); whether a change may go into force is checked elsewhere
+ * (scripts/check_policy_in_force.sh).
  * @param {string} repoRoot
  * @returns {{version: string | null, source: string, problem?: string}}
  */
 export function platformPolicyVersion(repoRoot) {
-  const source = `${join(repoRoot, 'deploy/k8s/base')}/{${SERVICES.join(',')}}/config.env`;
-  const found = SERVICES.map((s) => {
-    const rel = `deploy/k8s/base/${s}/config.env`;
-    const path = join(repoRoot, rel);
-    if (!existsSync(path)) return { s, rel, version: null, problem: 'file not found' };
-    return { s, rel, ...versionFromEnvFile(readFileSync(path, 'utf8')) };
-  });
-  const bad = found.filter((f) => !f.version);
-  if (bad.length) {
-    const detail = bad.map((f) => `${f.rel}: ${f.problem ?? 'PRIVACY_POLICY_VERSION not found'}`).join('; ');
-    return { version: null, source, problem: detail };
+  const source = join(repoRoot, RUN_CONFIG);
+  if (!existsSync(source)) return { version: null, source, problem: `${RUN_CONFIG}: file not found` };
+  const { version, problem } = versionFromEnvFile(readFileSync(source, 'utf8'));
+  if (!version) {
+    return {
+      version: null,
+      source,
+      problem: `${RUN_CONFIG}: ${problem ?? 'PRIVACY_POLICY_VERSION not found'}`,
+    };
   }
-  const versions = [...new Set(found.map((f) => f.version))];
-  if (versions.length > 1) {
-    const detail = found.map((f) => `${f.s}: ${f.version}`).join(', ');
-    return { version: null, source, problem: `api and ingest disagree (${detail})` };
-  }
-  return { version: versions[0], source };
+  return { version, source };
 }
 
 /** The versions listed in content/legal/privacy-versions.json, or null when it is unusable. */
@@ -158,7 +155,8 @@ export function checkPolicy({ siteRoot, repoRoot }) {
     }
   }
 
-  const compose = join(repoRoot, 'docker-compose.yml');
+  // The local stack: when it sets the version (once per service), every one must be this one.
+  const compose = join(repoRoot, COMPOSE);
   if (existsSync(compose)) {
     const text = readFileSync(compose, 'utf8');
     const others = [...text.matchAll(/^\s*PRIVACY_POLICY_VERSION:\s*["']?([^"'\s#]+)["']?/gm)]
@@ -166,7 +164,7 @@ export function checkPolicy({ siteRoot, repoRoot }) {
       .filter((v) => v !== version);
     if (others.length) {
       problems.push(
-        `docker-compose.yml (local stack) has PRIVACY_POLICY_VERSION ${others[0]}, the config.env files ${version}: update it with the version.`,
+        `${COMPOSE} (local stack) has PRIVACY_POLICY_VERSION ${others[0]}, ${RUN_CONFIG} ${version}: update it with the version.`,
       );
     }
   }

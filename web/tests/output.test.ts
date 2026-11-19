@@ -4,8 +4,8 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import adminConfig from '../config/admin.json';
 import fonts from '../config/fonts.json';
-import { builtHashes } from '../scripts/lib/csp.mjs';
-import { firebaseJson } from '../scripts/lib/hosting.mjs';
+import { adminPolicy, builtHashes, policy } from '../scripts/lib/csp.mjs';
+import { allExcept, firebaseJson } from '../scripts/lib/hosting.mjs';
 import tokens from '../src/styles/tokens.json';
 
 // Checks on the built site (out/). Skipped before a build unless REQUIRE_OUT=1 (CI).
@@ -22,6 +22,19 @@ function* files(dir: string): Generator<string> {
 }
 
 const isAdminPage = (f: string) => relative(OUT, f) === 'admin.html';
+
+type HeaderRule = { regex: string; headers: { key: string; value: string }[] };
+
+/** The built firebase.json's header rules (what Hosting serves by, web D19). */
+const builtRules = (): HeaderRule[] => JSON.parse(readFileSync('firebase.json', 'utf8')).hosting.headers;
+
+/** The CSP the built firebase.json sets on the rule with this pattern ('' when it sets none). */
+function builtCsp(regex: string): string {
+  const rule = builtRules().find((r) => r.regex === regex);
+  return rule?.headers.find((h) => h.key === 'Content-Security-Policy')?.value ?? '';
+}
+const MARKETING_RULE = `^/${allExcept('admin')}$`;
+const ADMIN_RULE = '^/admin$';
 
 describe.skipIf(!built)('built site', () => {
   const html = built ? [...files(OUT)].filter((f) => f.endsWith('.html')) : [];
@@ -67,9 +80,9 @@ describe.skipIf(!built)('built site', () => {
   });
 
   it("pins the marketing CSP: script-src 'none' (web D20)", () => {
-    // scripts/csp.mjs hashes every inline data-ryft script it finds, so a new script on any page
+    // scripts/firebase-json.mjs hashes every inline script it finds, so a new script on any page
     // (or the admin bundle leaking into this policy) would widen it; this fails instead.
-    const csp = readFileSync('nginx/csp.conf', 'utf8');
+    const csp = builtCsp(MARKETING_RULE);
     expect(/script-src ([^;]*);/.exec(csp)![1]).toBe("'none'");
     expect(csp).not.toContain('sha256-');
     expect(csp).toContain("connect-src 'none'");
@@ -107,8 +120,8 @@ describe.skipIf(!built)('built site', () => {
     });
 
     it('has its hash in the admin policy only, and the marketing policy keeps connect-src none', () => {
-      const csp = readFileSync('nginx/csp.conf', 'utf8');
-      const adminCsp = readFileSync('nginx/csp-admin.conf', 'utf8');
+      const csp = builtCsp(MARKETING_RULE);
+      const adminCsp = builtCsp(ADMIN_RULE);
       const body = [...page().matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)][0]![1]!;
       const hash = `'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`;
       expect(adminCsp).toContain(`script-src ${hash};`);
@@ -120,19 +133,20 @@ describe.skipIf(!built)('built site', () => {
     });
   });
 
-  // What Firebase Hosting serves by (web D19): written after csp.mjs from the same export, so its two
-  // policies are the ones in nginx/csp.conf and nginx/csp-admin.conf (the image stays until PR D3).
-  it('writes firebase.json from the built hashes, with the policies of nginx/csp*.conf', () => {
+  // What Firebase Hosting serves by (web D19): written by firebase-json.mjs from this export, with
+  // exactly two policies, the marketing one (no script, web D20) and the admin page's (one hash).
+  it('writes firebase.json from the built hashes, with exactly the two policies', () => {
     const json = JSON.parse(readFileSync('firebase.json', 'utf8'));
     const { hashes, adminHashes } = builtHashes(OUT);
     expect(json).toEqual(firebaseJson({ hashes, adminHashes, config: adminConfig }));
-    const rules: { headers: { key: string; value: string }[] }[] = json.hosting.headers;
-    const policies = rules.flatMap((r) => r.headers.filter((h) => h.key === 'Content-Security-Policy'));
-    const line = /^add_header Content-Security-Policy "([^"]*)" always;$/m;
-    const conf = (f: string) => readFileSync(`nginx/${f}`, 'utf8');
-    const nginx = ['csp.conf', 'csp-admin.conf'].map((f) => line.exec(conf(f))?.[1]);
-    expect(nginx.every(Boolean)).toBe(true);
-    expect(policies.map((h) => h.value)).toEqual(nginx);
+    expect(hashes).toEqual([]);
+    expect(adminHashes).toHaveLength(1);
+    const rules = builtRules().filter((r) => r.headers.some((h) => h.key === 'Content-Security-Policy'));
+    expect(rules.map((r) => r.regex)).toEqual([MARKETING_RULE, ADMIN_RULE]);
+    expect([builtCsp(MARKETING_RULE), builtCsp(ADMIN_RULE)]).toEqual([
+      policy([]),
+      adminPolicy(adminHashes, adminConfig),
+    ]);
   });
 
   it('keeps the app-link fallback, drafts, the styleguide and 404 out of search engines', () => {

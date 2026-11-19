@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import config from '../config/admin.json';
 import {
@@ -262,13 +261,22 @@ describe('firebase.json (scripts/lib/hosting.mjs)', () => {
     });
   });
 
-  // The nginx image stays until PR D3 (platform design §10): both send the same shared headers.
-  const COMMON = 'nginx/headers-common.conf';
-  it.skipIf(!existsSync(COMMON))('carries nginx’s shared headers, value for value', () => {
-    const line = /^add_header (\S+) (?:"([^"]*)"|(\S+)) always;$/gm;
-    const text = readFileSync(COMMON, 'utf8');
-    const nginx: Header[] = [...text.matchAll(line)].map((m) => ({ key: m[1], value: m[2] ?? m[3] }));
-    expect(SHARED_HEADERS).toEqual(nginx);
+  // The shared set, value for value: the one the nginx image sent until web D25, now pinned here.
+  it('carries the shared security headers, value for value', () => {
+    const want: Header[] = [
+      { key: 'X-Content-Type-Options', value: 'nosniff' },
+      { key: 'Referrer-Policy', value: 'no-referrer' },
+      { key: 'X-Frame-Options', value: 'DENY' },
+      { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
+      { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
+      { key: 'Cross-Origin-Resource-Policy', value: 'same-origin' },
+      {
+        key: 'Permissions-Policy',
+        value:
+          'accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=(), browsing-topics=()',
+      },
+    ];
+    expect(SHARED_HEADERS).toEqual(want);
     // Share and clipboard-write stay allowed.
     expect(SHARED_HEADERS.map((h) => h.value).join()).not.toMatch(/web-share|clipboard-write/);
   });

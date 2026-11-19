@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # The bytes of every tracked file (D115: checks read what the parsers read). CI's `bytes` job runs it on every push
 # and pull request with no path filter; the `manifests` job repeats it as its first step; .githooks/pre-commit runs
-# it on the staged files. Line-based checks (deploy_targets.sh, check_registry.sh, check_workflows.sh) and
+# it on the staged files. Line-based checks (check_workflows.sh's merge-key grep, the sed reads of config.env) and
 # the parsers disagree about what a line break is: U+0085, U+2028, U+2029 and a lone CR end a
 # line for a YAML parser but not for grep or awk, so one comment line can carry a hidden second
 # line (a sidecar with envFrom: ryft-secrets, an `images:` entry with a newName). Kustomize also
 # reads files that no extension filter selects (`Kustomization`, any extension in `resources:` or
 # `patches:`, directories outside deploy/), so the rule is by CONTENT and covers every tracked
 # file. A file must be valid UTF-8 and hold none of the code points that scripts/lib/charpolicy.py
-# refuses (it is the one definition, shared with the decoded-string check of yamlpolicy.py):
+# refuses (it is the one definition of them):
 # controls (CR, C1 with U+0085), format characters (bidi, zero width, BOM, soft hyphen), U+2028 and
 # U+2029, private use, surrogates, noncharacters, any space but U+0020, and the default-ignorable
 # characters that are not format characters (U+034F, U+115F/1160, U+17B4/5, U+180B-180F, U+2065,
@@ -55,7 +55,8 @@ files = sys.argv[2:]
 # A binary extension means "not decoded" (images, fonts, a PDF) EVERYWHERE except where kustomize or
 # GitHub Actions read files: under deploy/ and .github/ every file is read as text, because a
 # kustomization can name any file there. Symlinks are refused, so an extension cannot point at
-# another file, and kustomize references are limited to yaml/yml/json/env (check_kustomize_refs).
+# another file. (The kustomize rules stay although D3 removed the kustomizations, D246: stricter
+# costs nothing, and deploy/run and .github/ still hold only text.)
 BINARY = {"png", "jpg", "jpeg", "gif", "ico", "webp", "avif", "woff", "woff2", "ttf", "otf", "pdf"}
 READ_AS_TEXT = ("deploy/", ".github/")
 REGULAR_MODES = {"100644", "100755"}

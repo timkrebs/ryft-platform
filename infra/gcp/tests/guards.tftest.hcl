@@ -1,7 +1,6 @@
 # What must never change silently: no key, no secret value in state, prevent_destroy where data
 # lives, the API keep list, the registry's cleanup (the 5 newest kept, everything else gone after 30
-# days), the log bucket. Plan-only, mocked; the file checks read the root's *.tf as dns.tftest.hcl in
-# infra/aws/dns does.
+# days), the log bucket. Plan-only, mocked; the file checks read the root's *.tf.
 mock_provider "google" {
   mock_data "google_logging_sink" {
     defaults = {
@@ -73,7 +72,7 @@ run "prevent_destroy_and_delayed_destruction" {
   }
 
   # The one prevent_destroy of secrets.tf sits in `this`, in its lifecycle, not commented out (Terraform
-  # test doesn't enforce it, so the file is checked, as infra/vault/tests/vault.tftest.hcl does).
+  # test doesn't enforce it, so the file is checked).
   assert {
     condition = (
       length([for c in split("\nresource \"", file("${path.module}/secrets.tf")) : c if startswith(c, "google_secret_manager_secret\" \"this\" {")]) == 1 &&

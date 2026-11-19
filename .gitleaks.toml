@@ -8,6 +8,10 @@
 # to a rule, a path and a value regex, and give the reason in a comment. Never add a
 # path-only or rule-only entry. Never use .gitleaksignore fingerprints: they are bound
 # to commit + line, so squash merges and `gitleaks dir` do not match them.
+#
+# The entries for deploy/rabbitmq/ and infra/vault/ stay although D3 removed both folders (D246):
+# CI's `secrets` job scans the whole history (--log-opts=HEAD) with the base branch's copy of this
+# file, and the old commits still hold those fixtures. Dropping an entry would turn every run red.
 
 title = "ryft-platform"
 

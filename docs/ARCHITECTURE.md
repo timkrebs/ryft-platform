@@ -1,24 +1,35 @@
 # RYFT — architecture
 
-RYFT, self-hosted: a watch or ring (during development, a Garmin) feeds Apple Health, an iOS
-app ships that data to Go microservices on Kubernetes, and the services turn it into
+RYFT: a watch or ring (during development, a Garmin) feeds Apple Health, an iOS
+app ships that data to Go microservices on Google Cloud Run, and the services turn it into
 daily **Readiness**, **Recovery**, **Strain** and **Sleep** scores the app renders. The
-HTTP contract with the app is [`API.md`](API.md).
+HTTP contract with the app is [`API.md`](API.md). What runs where: [Where it runs](#where-it-runs)
+(GCP since D216; a `D<n>` is an entry in [`DECISIONS.md`](DECISIONS.md)).
 
+```mermaid
+flowchart LR
+    watch[Garmin watch] -- BLE --> gc[Garmin Connect, iOS] --> hk[Apple Health, HealthKit]
+    hk -- "HKAnchoredObjectQuery (incremental)" --> app[Ryft iOS app, SwiftUI]
+    app -- "POST /v1/sync · ingest.ryftlab.de" --> lb
+    app -- "GET /v1/days, /v1/me, … · api.ryftlab.de" --> lb
+    lb["external Application Load Balancer<br/>+ Cloud Armor (D242)"]
+    subgraph cr ["Cloud Run · europe-west1 · ryftlab-prod"]
+        ingest["ingest<br/>writes raw samples"]
+        api["api<br/>reads scores, settings"]
+        scoring["scoring<br/>daily_scores, workout strain"]
+        notify["notify<br/>APNs pushes"]
+    end
+    lb --> ingest & api
+    ingest & api -- "outbox → publish" --> ps[("Pub/Sub<br/>a topic per key")]
+    ps -- "push, OIDC" --> scoring
+    scoring -- "outbox → publish" --> ps
+    ps -- "push, OIDC" --> notify
+    notify --> apns[APNs]
+    tick["Cloud Scheduler<br/>ryft-tick, every 15 min"] --> ps
+    ingest & api & scoring & notify --> pg[("Supabase Postgres<br/>Frankfurt, pooler")]
 ```
- Garmin watch ──BLE──▶ Garmin Connect (iOS) ──▶ Apple Health (HealthKit)
-                                                        │
-                                           HKAnchoredObjectQuery (incremental)
-                                                        ▼
-                                              Ryft iOS app (SwiftUI)
-                                     POST /v1/sync │            ▲ GET /v1/days, /v1/days/{d}, /v1/me
-                                                   ▼            │
-   ┌──────────── Kubernetes namespace `ryft` ────────────────────────────────────┐
-   │   ingest ──── Postgres ◀──── scoring ──── RabbitMQ ◀───────────── api            │
-   │   (writes raw samples,   (computes daily_scores,     (reads scores, settings, │
-   │    publishes event)       workout strain)             publishes recompute)    │
-   └───────────────────────────────────────────────────────────────────────────────┘
-```
+
+Pub/Sub also pushes the tick to every service's `POST /internal/tick` (Events below).
 
 ## Why HealthKit and not the Garmin API
 
@@ -38,21 +49,23 @@ the same `samples` table with new `type` values — nothing else changes.
 
 | Service   | Port | Responsibility | Talks to |
 | --- | --- | --- | --- |
-| `ingest`  | 8080 | `POST /v1/sync`: validate, idempotent upsert of samples / sleep / workouts, publish `ingested` with the local days touched (through its outbox) | Postgres, RabbitMQ |
-| `scoring` | 8080 (health only) | Consume `ingested` and `session.completed` (queue `scoring`); recompute touched days oldest-first, including the day's strength sessions and the workouts carrying their load; every 15 min recompute yesterday + today; publish `scored` (today's first recovery), `session.scored` and `refresh` (a sync's days scored) | Postgres, RabbitMQ |
-| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute`, Train (`/v1/exercises`, `/v1/plans`, `/v1/sessions`), the journal (`/v1/behaviors`, `/v1/journal/{day}`, `/v1/behaviors/impact`), `GET /v1/config`, `GET /v1/model`, consent and invite (`/v1/me/consent`, `/v1/me/invite`), `POST /v1/feedback`, push registration and preferences — see [`API.md`](API.md); the operator's `/v1/admin/` flags, invites, feedback and users | Postgres, RabbitMQ |
-| `notify`  | 8080 (health only) | Consume `scored`, `session.scored` and `refresh` (queue `notify`); send APNs pushes; every 15 min the no-data check | Postgres, RabbitMQ, APNs |
+| `ingest`  | 8080 | `POST /v1/sync`: validate, idempotent upsert of samples / sleep / workouts, publish `ingested` with the local days touched (through its outbox) | Postgres, Pub/Sub |
+| `scoring` | 8080 (push, tick, health) | Take `ingested` and `session.completed` from Pub/Sub's pushes (`/push/<key>`); recompute touched days oldest-first, including the day's strength sessions and the workouts carrying their load; on each tick (every 15 min) recompute yesterday + today; publish `scored` (today's first recovery), `session.scored` and `refresh` (a sync's days scored) | Postgres, Pub/Sub |
+| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute`, Train (`/v1/exercises`, `/v1/plans`, `/v1/sessions`), the journal (`/v1/behaviors`, `/v1/journal/{day}`, `/v1/behaviors/impact`), `GET /v1/config`, `GET /v1/model`, consent and invite (`/v1/me/consent`, `/v1/me/invite`), `POST /v1/feedback`, push registration and preferences — see [`API.md`](API.md); the operator's `/v1/admin/` flags, invites, feedback and users | Postgres, Pub/Sub |
+| `notify`  | 8080 (push, tick, health) | Take `scored`, `session.scored` and `refresh` from Pub/Sub's pushes; send APNs pushes; on each tick the no-data check | Postgres, Pub/Sub, APNs |
 
 All four are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`), and
-share `internal/` packages. A fourth binary, `migrate`, is the only thing that changes the
-schema: it runs once per deploy as the schema owner (a Job, or a one-shot compose
-service), applies each migration in a transaction under a transaction-level advisory
-lock (safe behind Supabase's pooler), and sets the services' role passwords. The
+share `internal/` packages. A fifth binary, `migrate`, is the only thing that changes the
+schema: it runs once per deploy as the schema owner (the Cloud Run job `migrate`, which
+`deploy.yml` runs before any service rolls, or a one-shot compose service), applies each
+migration in a transaction under a transaction-level advisory lock (safe behind Supabase's
+pooler), and sets the services' role passwords. The
 services connect as least-privilege roles (below) and wait at start-up until the schema
 has every migration they were built with.
 Each serves `/health/live` and `/health/ready` (and `/healthz`, `/readyz` for compose) on
-one port, HTTP/1.1 and h2c (D220). On Cloud Run the app metrics are pushed by OTLP at each
-tick and at SIGTERM (D224); locally `/metrics` stays on 9090 — metric catalogue and
+one port, HTTP/1.1 and h2c (D220). On Cloud Run nothing reads the app's own metrics: Cloud
+Monitoring reads what Cloud Run and Pub/Sub measure and two log-based counters (D236), and the
+OTLP push (D224) is dormant; locally `/metrics` stays on 9090 — metric catalogue and
 dashboard in [`OBSERVABILITY.md`](OBSERVABILITY.md).
 
 **Lifecycle.** All four services start and stop through `internal/app`: their `main` hands
@@ -72,7 +85,7 @@ back), the metrics push (2 s), and the pool closes (1 s), each step bounded and 
 (`shutdown step`), all inside Cloud Run's 10 s (the watchdog fires at 9 s). A task that panics
 is recovered, counted (`ryft_goroutine_panics_total`) and ends the service with exit 2; an
 HTTP port that will not bind ends it with exit 1. Tick steps log and swallow a transient
-error. OPERATIONS → A deploy: what the old pod logs.
+error. D168–D173, D220.
 
 **Auth and users.** Multi-user, with Supabase as identity provider and database
 ([`SUPABASE.md`](SUPABASE.md)). The app signs in with Apple through Supabase and sends
@@ -84,8 +97,8 @@ handler reads the user and timezone from the context; there is no global user. `
 means "this token is not acceptable" (the app refreshes once, then signs out), `503`
 means "could not check right now" (JWKS or database unreachable), so an outage never
 signs anyone out. `AUTH_MODE=apikey` (shared key, `<key>:<uuid>` to act as any user) is
-for compose and `overlays/local-postgres` only and refuses to start without
-`ALLOW_INSECURE_APIKEY_AUTH=true`. The scoring service needs no auth; its events carry
+for compose only and refuses to start without `ALLOW_INSECURE_APIKEY_AUTH=true`; on Cloud
+Run `config` refuses it outright (D222). The scoring service needs no auth; its events carry
 the `user_id`, and its 15-minute pass covers every user with a device synced in the
 last 48 hours, each in their own timezone.
 
@@ -94,7 +107,7 @@ and leaves a tombstone (`deleted_users`), then deletes the Supabase auth user wi
 project's secret key, which only api holds. A per-user advisory lock serialises the
 deletion against `EnsureUser`'s writes, and the user row is locked first, so syncs in
 flight finish before the delete and later ones fail. Tokens of a deleted account get
-`401`. A reconciler in each api pod (at start-up, then every 15 minutes) retries failed
+`401`. api's tick step `account reconcile` (every 15 minutes) retries failed
 Supabase deletions and erases accounts that reappeared, e.g. after a restore.
 
 **Remote config.** `feature_flags` holds one row per flag (`enabled`, `rollout_pct`,
@@ -208,7 +221,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/scoring` | owns the Recovery, Strain, Sleep and Readiness model and the Engine that applies it to stored data and writes the daily rows. | config, events, metrics, model, scoring/workoutdup, store, train | 25 files (Postgres) |
 | `internal/scoring/workoutdup` | owns the two rules that make one activity one workout: the same-source fold and the cross-source duplicate mark. | model | 1 file |
 | `internal/sealed` | encrypts the few secrets the platform stores (Apple refresh tokens) with AES-256-GCM. | none | 1 file |
-| `internal/smoke` | owns the production smoke after a deploy, run from inside the cluster. | model | 1 file |
+| `internal/smoke` | owns the Go end-to-end smoke against a running stack. | model | 1 file |
 | `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, events, events/outbox, logx, metrics, model, scoring/workoutdup, train | 23 files (Postgres) |
 | `internal/testsupport` | holds the helpers the Postgres-backed tests of several packages share. | none | via cmd/api, cmd/ingest, db, events/outbox, store |
 | `internal/train` | holds the pure rules of the Train feature that are not scoring. | model | 2 files |
@@ -346,7 +359,7 @@ without a score are empty, so "consecutive nights" means calendar nights). Share
 helpers handle the fiddly parts: `Latest` (today, or yesterday before today's sync),
 `Streak` (consecutive days ending at the latest day with data). Thresholds sit together
 at the top of `rules.go`. The api computes the cards on read and caches them in memory
-for 5 minutes per local day; with several api replicas each keeps its own cache.
+for 5 minutes per local day; with several api instances each keeps its own cache.
 
 Everything above is a starting point with sensible constants; the tests in
 `algorithms_test.go` pin the calibration so you can change a formula and see what moved.
@@ -364,116 +377,133 @@ Everything above is a starting point with sensible constants; the tests in
 4. "Full re-sync" wipes anchors and re-uploads the window; "Apply & recompute" PATCHes
    `max_hr` / sleep base and queues a 90-day recompute.
 
-## Namespaces and trust
+## Where it runs
 
-Every workload is its own security domain: a Kubernetes namespace, a service account, a
-Vault identity of its own, and credentials usable only for what that workload does. No
-credential is shared, and none is broader than its user. On HCP Vault the identity is a
-Vault namespace with its own Kubernetes auth mount. On the Vault in the cluster
-(Community Edition, no namespaces) it is a mount, a role and a policy: `kv-<svc>/`, the
-role `<svc>` in the one `auth/kubernetes`, and a policy that reads `kv-<svc>/data/config`
-and nothing else (D187).
+Google Cloud, project `ryftlab-prod`, region europe-west1 (D216, D217; the design is
+[`work/2026-11-14-gcp/design.md`](work/2026-11-14-gcp/design.md)). Supabase stays in Frankfurt and
+the site has a project of its own. Terraform: [`infra/gcp`](../infra/gcp/README.md), the user's to apply.
 
-```text
-              Internet ──TLS── Traefik (kube-system)
-                                 │ /v1/sync          │ /v1
-                        ┌────────▼───────┐  ┌────────▼───────┐
-                        │ ryft-ingest    │  │ ryft-api       │      ryft-scoring
-                        │ SA ingest      │  │ SA api         │      SA scoring
-                        │ PG ryft_ingest │  │ PG ryft_api    │      PG ryft_scoring
-                        └───┬────────┬───┘  └──┬──────────┬──┘      ┌───┬─────┐
-              AMQP user ingest│      │443/5432 │AMQP user api│      │   │5432 │
-                    mTLS 5671 ┌─▼──────┴─────────▼──┐          │      │   │     │
-                            │ ryft-rabbitmq (3)   │◀─────────┼──────┘   │     │
-                            └─────────────────────┘          │ AMQP user scoring
-                                                             ▼          ▼
-            ryft-migrate (Job, owner) ──5432──▶  Supabase: Supavisor pooler + Auth (public)
+| Piece | On GCP | Defined in | Decisions |
+| --- | --- | --- | --- |
+| api, ingest | Cloud Run services, min 0, max 3 and 2 instances, ingress `internal-and-cloud-load-balancing` (only the load balancer reaches them) | `deploy/run/api.yaml`, `ingest.yaml` | D217, D220, D242 |
+| scoring, notify | Cloud Run services, min 0, max 1 instance each, ingress `internal`, invoked only by `ryft-push` | `deploy/run/scoring.yaml`, `notify.yaml` | D17, D218 |
+| migrate | a Cloud Run job, one task, no retry; `deploy.yml` runs it before any service rolls | `deploy/run/migrate.yaml` | D221, D223 |
+| Events | Pub/Sub: a topic per key, push with OIDC, a dead-letter topic per consumer, messages stored in europe-west1 | `internal/events/pubsub/topology.go` → `infra/gcp/pubsub.auto.tfvars.json` | D218 |
+| Timers | one Cloud Scheduler job, `ryft-tick`, every 15 minutes | `infra/gcp/scheduler.tf` | D219 |
+| Secrets | Secret Manager, one service account per service, versions pinned by number | containers `infra/gcp/secrets.tf`, pins `deploy/run` | D222 |
+| Edge | a global external Application Load Balancer on one IPv4 address, Cloud Armor, TLS 1.2 or later | `infra/gcp/edge.tf`, `gates.auto.tfvars` | D242 |
+| DNS | Cloud DNS zone `ryftlab.de`: mail (Microsoft 365), CAA, `api.` and `ingest.`, the site's records | `infra/gcp/dns.tf`, `site.tf` | D213, D214, D242 |
+| Logs, metrics, alerts | Cloud Logging and Cloud Monitoring only | `infra/gcp/logging.tf`, `monitoring.tf`, `alerts.tf` | D224, D236, D237 |
+| Data | Supabase Postgres and Auth (Frankfurt): the services on the transaction pooler, migrate on the session pooler | `deploy/run/config.env` | D221, D228 |
+| Images | Artifact Registry `ryft`, by digest | `infra/gcp/registry.tf` | D223 |
+| The site | `web/`'s static export on Firebase Hosting, project `ryftlab-site` | `web/`, `deploy.yml` | D107, D230, D233 |
 
-  ryft-notify (SA notify, PG ryft_notify, AMQP user notify) ──443──▶ APNs; 5432 ▶ pooler
+**Runtime.** Request-based CPU: an instance has CPU only while a request runs, so nothing runs
+between requests. There is no ticker, no consumer loop and no relay goroutine: every periodic
+step is a tick step (D219), every event a push (D218), and the outbox relays inline after the
+commit (Events above). Each service listens on 8080 with h2c, so a 32 MiB sync is HTTP/2 end to
+end; the startup and liveness probes read `/health/live` (D220). `max-instances` bounds the cost
+(D226), the pooler's clients ([`SUPABASE.md`](SUPABASE.md) → Connections) and scoring's order: one
+instance, one message in flight per user (D17 as amended by D218). The limits are design §3,
+pinned by `scripts/check_cloudrun.py`.
 
-  Vault (HCP): admin/ryft/{ingest,scoring,api,notify,rabbitmq,migrate,smoke}, each with auth/kubernetes
-  bound to its namespace + service account, kv/config = that workload's keys only.
-  Vault (CE, namespace vault, 3 Raft pods, KMS auto-unseal; during the migration, D191):
-  auth/kubernetes with role <svc> bound to its namespace + service account, kv-<svc>/config,
-  the same values. Each namespace's VaultConnection names exactly one of the two.
-  The Vault Secrets Operator logs in per namespace and writes Secret ryft-secrets there.
-```
+**The edge** (D242, phase `live`). `api.ryftlab.de` and `ingest.ryftlab.de` are A records at the
+load balancer's address. A URL map by host sends each to its service's serverless NEG; any other
+host is a 301 to `https://ryftlab.de/`. Cloud Armor runs six WAF rule sets in preview and one
+enforced rate rule per address (300 requests per 10 s, then `429`; a ban for 600 s after 6,000
+over the limit in 300 s). Behind it, api and ingest still limit per address themselves (D240,
+`XFF_TRUSTED_HOPS=2`) and per user (D53). The Cloud Run domain mappings stay as the way back until
+the phase `locked`.
 
-- **Identity:** each pod runs as its own service account, without an automounted
-  Kubernetes token (no workload calls the Kubernetes API). The operator requests
-  short-lived, audience-`vault` tokens for that account and logs into that namespace's
-  Vault mount (on CE: that service's role in the shared mount). Vault confirms each
-  token through the cluster's TokenReview. A role is bound to exactly one namespace and
-  one service account.
-- **Secrets:** `infra/vault` generates the database and broker passwords and writes each
-  one only into the namespaces that need it (`infra/vault/README.md`); the broker's
-  users get theirs in `ryft-rabbitmq` (`amqp-user-<service>`, for the Topology Operator).
-- **Data:** each service connects as its own Postgres role (Database roles above). Only
-  the migrate Job holds the owner.
-- **Messaging:** each service is its own RabbitMQ user without configure rights, writing
-  only its routing keys and reading only its queue, over mutual TLS with a certificate
-  of its own from the internal CA (Events above, D98, D99).
-- **Network:** default deny for ingress and egress in every namespace, then exactly
-  the flows in the drawing (`OPERATIONS.md` → Network policy). Internet egress is
-  limited to public addresses on 443/5432. Traefik limits each client IP before any
-  token is checked. `/metrics` has its own port (9090), so the metrics collector can be
-  let in without reaching the API port.
-- **Outside the RYFT namespaces:**
-  - `monitoring` runs Grafana Cloud's collector, privileged and steered from Grafana
-    Cloud (D51). It gets metrics only; RYFT's logs go to CloudWatch (`amazon-cloudwatch`,
-    Fluent Bit), KMS-encrypted and kept 14 days (D52).
-  - `ryft-web` serves the apex site and `apple-app-site-association`, without secrets:
-    the web image built from `web/` in this repository (pages, legal texts, nginx config,
-    AASA), pinned in `overlays/eks` (D106, D107, OPERATIONS → Apex site).
-  - Two operator UIs are public through Traefik, each behind its own login, a per-IP
-    rate limit and HSTS: Argo CD at `argocd.ryftlab.de` (`argocd`) and the RabbitMQ
-    management UI at `rabbitmq.ryftlab.de` (Traefik → the nodes' 15671, verified
-    against the internal CA). No IP allow-list or SSO yet (D103).
-- **Pods:** Pod Security `restricted` on every namespace. Everything runs as non-root
-  with a read-only root filesystem (the in-cluster Postgres of `local-postgres`
-  excepted), no privilege escalation, all capabilities dropped and seccomp
-  `RuntimeDefault`.
+**Logs, metrics, alerts** (D236). Logs are stdout JSON in Cloud Logging, kept in the bucket
+`ryft-logs` (europe-west1, 14 days; the `_Default` sink off; D224), with no IP address in any line
+(D222), and without Cloud Run's request log of api and ingest below 5xx (D242). Cloud Monitoring
+reads what Cloud Run and Pub/Sub measure, two log-based counters (`ryft_ticks`, `ryft_errors`) and
+uptime checks, and shows the dashboard "RYFT · Overview"; five alert policies: uptime, api's or
+ingest's 5xx share, a missing tick, dead letters held, an event older than 15 minutes. Details:
+[`OBSERVABILITY.md`](OBSERVABILITY.md).
 
-Not covered (yet): mTLS between Traefik and the services (inside the cluster that hop is
-plain HTTP), image signing and admission policy, and per-user row-level security inside
+**Data.** Postgres is the source of truth and Supabase the identity provider
+([`SUPABASE.md`](SUPABASE.md)). There is no other store: Pub/Sub holds a trigger at most 7 days (a
+dead letter 14), and nothing in an event is a health value (D218). Backups are Supabase's; the
+restore drill is D239's.
+
+**The site** (D233). ryftlab.de is the static Next.js export of `web/` (pages, the legal texts,
+the AASA, the operator's `/admin`), English only (D230), on Firebase Hosting in the project
+`ryftlab-site` without billing; `www` redirects. It holds no secret. `deploy.yml` ships it while
+`SITE_DEPLOY` is `on` and checks ryftlab.de live.
+
+<a id="namespaces-and-trust"></a>
+
+## Identities and trust
+
+Every workload is its own identity, with credentials usable only for what that workload does.
+No credential is shared, and none is broader than its user (design §5).
+
+| Identity | May |
+| --- | --- |
+| `ryft-api`, `ryft-ingest`, `ryft-scoring`, `ryft-notify` (runtime service accounts) | read the pinned versions of its own secrets (`secretAccessor` on each secret, never project-wide); publish to its own topics only (Events above, D99); log in to Postgres as its own role |
+| `ryft-migrate` | read the owner's password and the four role passwords, which it sets in Postgres; the only schema owner |
+| `ryft-push` | invoke the four services' push and tick paths: Pub/Sub signs every push and tick as it, and it is the only invoker of scoring and notify (D218) |
+| `ryft-deployer` | `deploy.yml` through Workload Identity Federation (environment `deploy`, `main` only, no key): `run.developer` on the four services and the job, `serviceAccountUser` on the five runtime accounts, `artifactregistry.writer` on `ryft`; never an IAM or admin role (D223) |
+| `hcp-terraform-plan`, `hcp-terraform-apply` | HCP Terraform's dynamic credentials, each usable only in its run phase (D223) |
+
+- **Secrets** (D222): Secret Manager. Each secret is readable only by the accounts that need it:
+  `db-password-<svc>` by that service and migrate, `db-password-owner` by migrate,
+  `supabase-secret-key`, `admin-api-key`, `apple-key-p8`, `data-key` and `posthog-project-key` by
+  api, `apns-key-p8` by notify (`infra/gcp/secrets.tf`). The user adds the values (`gcloud secrets
+  versions add`, `OPERATIONS.md` → GCP → 5); they never pass through Terraform state, a terminal or
+  argv. `deploy/run` pins each by version number, never `latest`; a role password moves with
+  `scripts/rotate_db_password.sh`.
+- **Data:** each service connects as its own Postgres role (Database roles above), with
+  `verify-full` against Supabase's CA and no password in the URL. Only migrate holds the owner.
+- **Ingress:** api and ingest are public (`allUsers` as invoker) but take requests from the load
+  balancer only, and check every `/v1` bearer themselves (Auth and users above). scoring and notify
+  have ingress `internal` and IAM as their gates, with the OIDC check on every `/push/*` and
+  `/internal/*` as the backstop.
+- **Configuration:** on Cloud Run (`K_SERVICE` or `CLOUD_RUN_JOB` set) `config` refuses the API-key
+  mode, insecure pushes and the emulator; `scripts/check_cloudrun.py` refuses those names in
+  `deploy/run` (D218, D222).
+- **Logs:** no request or response body, health value, email, token or IP address in any line
+  (D222; `OPERATIONS.md` → Data protection).
+
+Not covered (yet): egress is unrestricted, the project has no organisation and so no organisation
+policy, images are not signed (no Binary Authorization, D222), a push token is not bound to its
+body (D100 makes a replay harmless, D218), and there is no per-user row-level security inside
 the services' own roles. The services scope every query by user themselves.
 
 ## Deployment
 
-`deploy/k8s/base/<service>` holds namespace-neutral manifests for each workload. The
-four services are distroless, non-root, with a read-only FS, startup/readiness/liveness
-probes and Prometheus annotations. RabbitMQ 4.3 runs as three nodes (the Cluster
-Operator's `RabbitmqCluster`, 10 Gi each, `deploy/rabbitmq/cluster`), its exchanges,
-queues, policies, users and rights as the Topology Operator's objects
-(`deploy/rabbitmq/topology`, generated). migrate is a one-shot Job. api and ingest have their own Ingress
-(`/v1` and `/v1/sync` on one host), HPA (2–4) and PDB; scoring and notify run one
-replica each. `deploy/k8s/services/<service>`
-puts each into its namespace. `overlays/eks` composes the services on EKS, with
-Secrets from Vault through the operator; `deploy/rabbitmq` holds the broker (with
-`deploy/rabbitmq/operators`: both RabbitMQ operators run in `rabbitmq-system` and are
-scoped to `ryft-rabbitmq`, with Roles there instead of cluster-wide secret rights, T12-g).
-`overlays/local-postgres` composes them with an in-cluster Postgres, a nightly
-`pg_dump` CronJob and generated per-namespace Secrets.
+Git is the only way to production (D223). `.github/workflows/deploy.yml` deploys `main` once
+`ci.yml`'s `ci-ok` is green on the commit: it signs in as `ryft-deployer` through Workload
+Identity Federation, builds and scans the five images and pushes them by digest, renders
+`deploy/run` with `scripts/cloudrun_render.py` from `deploy/run/config.env` (values in git, no
+repository variables) and the digests, runs the job `migrate` and stops if it fails, then rolls
+scoring, notify, ingest and api, and runs `make smoke-prod`. A rollback is `gcloud run services
+update-traffic` to the previous revision; the next deploy sends all traffic to the newest again.
+`GCP_DEPLOY` switches the workflow on, `DEPLOY_HOLD_SERVICES` holds the services, `SITE_DEPLOY`
+the site (D233). `scripts/check_cloudrun.py` (`make cloudrun-check`, CI's `manifests` job) pins
+what a template may hold: the limits, ingress, account, port, probes, env and secret pins.
 
-**GitOps.** Argo CD (an add-on from `infra/aws/kubernetes`) syncs `deploy/argocd/apps`,
-one application per unit in waves: the Vault objects of each namespace, the broker,
-then `ryft-platform`, whose every sync runs migrate first (PreSync hook) and the
-in-cluster smoke last (PostSync, namespace `ryft-smoke`). CI promotes images by a PR
-that pins `overlays/eks`; its merge is the deploy, a revert plus a `# hold` the rollback
-(D94–D96, D107). Two image groups move independently: the services (from `backend/`) and
-the site (from `web/`), each when its directory differs from what runs.
-
-```
-push to main ─► CI: checks, images <sha> (changed groups) ─► PR "deploy: images <sha>" ─► merge
-                                                                                            │
-Argo CD ◄──── git (main) ◄──────────────────────────────────────────────────────────────────┘
-  wave 0  vault-<svc>      VaultConnection/Auth/StaticSecret → Secret ryft-secrets
-  wave 1  rabbitmq-operators  Cluster + Topology Operator (CRDs, rabbitmq-system)
-  wave 2  broker-rabbitmq  RabbitmqCluster, topology, client certificates
-  wave 3  ryft-platform    PreSync migrate → services, ingresses, policies → PostSync smoke
+```text
+push to main ─► ci.yml: checks ─► ci-ok ─► deploy.yml (environment deploy, WIF, main's tip only)
+                                             ├─ five images: build, scan, push by digest (Artifact Registry)
+                                             ├─ render deploy/run from config.env and the digests
+                                             ├─ job migrate (stop on failure)
+                                             ├─ scoring → notify → ingest → api (all traffic to the new revision)
+                                             ├─ make smoke-prod
+                                             └─ site (SITE_DEPLOY on): web/ → Firebase Hosting, ryftlab.de checked live
 ```
 
-Step by step, including restore: [`OPERATIONS.md`](OPERATIONS.md).
+One owner per object: CI owns the revisions and the job, Terraform (`infra/gcp`, HCP Terraform org
+`ryft-lab`, workspace `ryft-gcp`) everything else: IAM, the secret containers, the Pub/Sub
+topology, the Scheduler job, Artifact Registry, the WIF pool, the domain mappings, DNS, the log
+bucket, Cloud Monitoring and the edge. The user applies it; nothing else does. Its gates
+(`infra/gcp/gates.auto.tfvars`: `serve`, `public_invokers`, `edge`) move by reviewed one-line PRs.
+Not in Terraform: the budget (D226), HCP Terraform's own pool and accounts, the notification
+channels.
+
+Step by step, including restore: [`OPERATIONS.md`](OPERATIONS.md) → GCP.
 
 ## What to build next (in rough order of payoff)
 

@@ -1,158 +1,78 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016
-# scripts/check_policy_in_force.sh in a throwaway repository with a stubbed render (make test-scripts).
+# scripts/check_policy_in_force.sh in a throwaway repository (make test-scripts): deploy/run/config.env's
+# version (shape, calendar, listed, its English page) and, against a base ref, the draft guards.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
-tmp=$(mktemp -d); fakebin=$(mktemp -d); trap 'rm -rf "$tmp" "$fakebin"' EXIT
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail() { echo "✗ check_policy_in_force_test: $*" >&2; exit 1; }
-mkdir -p "$tmp/scripts"; cp "$HERE/scripts/check_policy_in_force.sh" "$tmp/scripts/"
-cd "$tmp"; git init -q -b main; git config user.email t@example.com; git config user.name test
+# The repository is $tmp/repo; the scratch files ($tmp/out, list.bak, l.json) stay outside it.
+mkdir -p "$tmp/repo/scripts"; cp "$HERE/scripts/check_policy_in_force.sh" "$tmp/repo/scripts/"
+cd "$tmp/repo"; git init -q -b main; git config user.email t@example.com; git config user.name test
 L=web/content/legal
-OV=deploy/k8s/overlays/eks/kustomization.yaml
+RC=deploy/run/config.env
 page() { # <lang> <version> [status]
   mkdir -p "$L/$1/privacy"; printf -- '---\ntitle: "Privacy policy"\nversion: %s\nstatus: %s\n---\n\ntext\n' "'$2'" "${3:-published}" > "$L/$1/privacy/$2.mdx"
 }
-overlay() { mkdir -p "$(dirname "$OV")"; printf 'configMapGenerator:\n  - { name: ryft-config, namespace: ryft-api, behavior: merge, literals: [PRIVACY_POLICY_VERSION=%s] }\n' "$1" > "$OV"; }
-mkdir -p $L; echo '["2026-10-20","2026-11-02","2026-12-01","2026-11-31"]' > $L/privacy-versions.json
-page en 2026-10-20 draft; page de 2026-10-20 draft
-# Cloud Run's home of the version (checked after the EKS part); its own cases are at the end.
-RC=deploy/run/config.env
 run_cfg() { mkdir -p deploy/run; printf '# fixture\nLOG_LEVEL=info\nPRIVACY_POLICY_VERSION=%s\n' "$1" > $RC; }
-run_cfg 2026-10-20
-git add -A; git commit -qm "first"; first=$(git rev-parse HEAD | cut -c1-7)
-page en 2026-11-02; page de 2026-11-02
-git add -A; git commit -qm "new text"; second=$(git rev-parse HEAD | cut -c1-7)
-page en 2026-12-01; git add -A; git commit -qm "only en"; en_only=$(git rev-parse HEAD | cut -c1-7)
-page de 2026-12-01; page en 2026-11-31; page de 2026-11-31 draft; git add -A; git commit -qm "both"; both=$(git rev-parse HEAD | cut -c1-7)
-
-# render <api-value> <ingest-value> <web-tag> [api env block] [ingest cm name in the Deployment] [ingest data extra]
-render() {
-  cat > "$tmp/rendered.yaml" <<EOF
-apiVersion: v1
-data:
-  PRIVACY_POLICY_VERSION: $1
-kind: ConfigMap
-metadata:
-  name: ryft-config-aaaaaaaaaa
-  namespace: ryft-api
----
-apiVersion: v1
-data:
-${6:-  OTHER: x}
-  PRIVACY_POLICY_VERSION: $2
-kind: ConfigMap
-metadata:
-  name: ryft-config-bbbbbbbbbb
-  namespace: ryft-ingest
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: api
-  namespace: ryft-api
-spec:
-  template:
-    spec:
-      containers:
-      - envFrom:
-        - configMapRef:
-            name: ryft-config-aaaaaaaaaa
-        - secretRef:
-            name: ryft-secrets
-${4:-        name: api}
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ingest
-  namespace: ryft-ingest
-spec:
-  template:
-    spec:
-      containers:
-      - envFrom:
-        - configMapRef:
-            name: ${5:-ryft-config-bbbbbbbbbb}
-        name: ingest
-EOF
-  # An empty web tag: no web Deployment in the render (web not deployed, D215).
-  [ -z "$3" ] || cat >> "$tmp/rendered.yaml" <<EOF
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: web
-  namespace: ryft-web
-spec:
-  template:
-    spec:
-      containers:
-      - image: ghcr.io/timkrebs/ryft/web:$3
-        name: web
-EOF
-}
-# kustomize is a fake on PATH: it prints the file render() wrote (the script has no environment hook).
-mkdir -p "$fakebin"; printf '#!/bin/sh\n[ "$1 $2" = "kustomize deploy/k8s/overlays/eks" ] || exit 2\ncat "%s/rendered.yaml"\n' "$tmp" > "$fakebin/kubectl"; chmod +x "$fakebin/kubectl"
-export PATH="$fakebin:$PATH"
 ok()  { ./scripts/check_policy_in_force.sh "${BASE:-}" >"$tmp/out" 2>&1 || fail "should pass: $1 ($(cat "$tmp/out"))"; }
-bad() { if ./scripts/check_policy_in_force.sh "${BASE:-}" >"$tmp/out" 2>&1; then fail "should fail: $1"; fi; grep -q "$2" "$tmp/out" || fail "$1: message lacks '$2': $(cat "$tmp/out")"; }
+bad() { if ./scripts/check_policy_in_force.sh "${BASE:-}" >"$tmp/out" 2>&1; then fail "should fail: $1"; fi; grep -q -- "$2" "$tmp/out" || fail "$1: message lacks '$2': $(cat "$tmp/out")"; }
 
-render '"2026-10-20"' '"2026-10-20"' "\"$first\"";  ok "the first version with the first page"
-render '"2026-11-02"' '"2026-11-02"' "\"$second\""; ok "a new version with the web commit whose newest page it is"
-render '"2026-11-02"' '"2026-11-02"' "$second";     ok "an unquoted tag"
-render '"2026-11-02"' '"2026-10-20"' "\"$second\""; bad "api and ingest differ" "must agree"
-render "'\"2026-11-02\"'" "'\"2026-11-02\"'" "\"$second\""; bad "a quoted value" "bare YYYY-MM-DD"
-render '"2026-11-02 # x"' '"2026-11-02 # x"' "\"$second\""; bad "an inline comment" "bare YYYY-MM-DD"
-render '"2026-11-31"' '"2026-11-31"' "\"$both\"";   bad "a date that does not exist" "real calendar date"
-render '"2026-12-31"' '"2026-12-31"' "\"$second\""; bad "an unlisted version" "not in"
-render '"2026-11-02"' '"2026-11-02"' "\"$first\"";  bad "web rolled back past the version" "no en page"
-render '"2026-12-01"' '"2026-12-01"' "\"$en_only\""; ok "the English page alone (English only: no German page is needed)"
-render '"2026-10-20"' '"2026-10-20"' "\"$second\""; bad "a newer page is served than the one in force" "serves 2026-11-02"
-render '"2026-10-20"' '"2026-10-20"' "\"$both\"";   bad "a newer page in en and de than the one in force" "serves 2026-12-01\|serves 2026-11-31"
-render '"2026-10-20"' '"2026-10-20"' '"f437747"';   ok "a pin outside this history with the first version"
-render '"2026-11-02"' '"2026-11-02"' '"f437747"';   bad "a pin outside this history with a newer version" "not a commit of this history"
-# web not deployed (D215): no web Deployment renders, so the overlay's pin is the image that is checked
-pin_only() { mkdir -p "$(dirname "$OV")"; printf 'images:\n  - name: ghcr.io/timkrebs/ryft/web\n    newTag: "%s"\n' "$1" > "$OV"; }
-pin_only "$second"; render '"2026-11-02"' '"2026-11-02"' ''; ok "web not rendered: the pinned commit serves the version"
-grep -q 'pinned, not deployed' "$tmp/out" || fail "web not rendered: the summary says the pin was read: $(cat "$tmp/out")"
-pin_only "$first";  render '"2026-11-02"' '"2026-11-02"' ''; bad "web not rendered: the pinned commit lacks the page" "no en page"
-pin_only "$second"; render '"2026-10-20"' '"2026-10-20"' ''; bad "web not rendered: the pin serves a newer page" "serves 2026-11-02"
-# Only the newTag right after web's "- name:" line counts (deploy_targets.sh's rule), not a comment that names web.
-printf 'images:\n  # ghcr.io/timkrebs/ryft/web\n  - name: ghcr.io/timkrebs/ryft/api\n    newTag: "%s"\n  - name: ghcr.io/timkrebs/ryft/web\n    newTag: "%s"\n' "$first" "$second" > "$OV"
-render '"2026-11-02"' '"2026-11-02"' ''; ok "web not rendered: web's own pin is read, not the newTag after a comment"
-rm -f "$OV"; render '"2026-11-02"' '"2026-11-02"' ''; bad "web neither rendered nor pinned" "neither renders nor pins"
-# the stand-ins the check must not be fooled by
-render '"2026-11-02"' '"2026-11-02"' "\"$second\"" '        env:
-        - name: PRIVACY_POLICY_VERSION
-          value: "2026-10-20"
-        name: api'
-bad "a container env entry overrides the ConfigMap" "overrides the ConfigMap"
-render '"2026-11-02"' '"2026-11-02"' "\"$second\"" '' ryft-config-cccccccccc
-bad "the Deployment reads another ConfigMap" "not the checked"
-render '"2026-11-02"' '"2026-11-02"' "\"$second\"" '' '' '  namespace: ryft-api'
-ok "a data key named namespace does not change which namespace the ConfigMap is in"
-render '"2026-10-20"' '"2026-10-20"' '"f437747"'; sed -i.bak '/^  namespace: ryft-ingest/d' "$tmp/rendered.yaml"; rm -f "$tmp/rendered.yaml.bak"
-bad "no ingest ConfigMap namespace" "no metadata namespace\|renders no PRIVACY_POLICY_VERSION"
+mkdir -p $L; echo '["2026-10-20","2026-11-02","2027-01-01","2027-02-01","2026-11-31"]' > $L/privacy-versions.json
+page en 2026-10-20 draft; page en 2026-11-02; page en 2027-01-01; page en 2027-02-01 draft; page en 2026-11-31
+run_cfg 2026-11-02
+git add -A; git commit -qm first
+BASE=
 
-# the draft guard: only a CHANGE of the version in force to a draft page is refused
-overlay 2026-10-20; git add -A; git commit -qm "overlay at 2026-10-20"; git branch -q -f base HEAD; BASE=base
-render '"2026-10-20"' '"2026-10-20"' "\"$first\"";  ok "an unchanged version in force that is a draft"
-echo '["2026-10-20","2026-11-02","2026-12-01","2026-11-31","2027-01-01","2027-02-01"]' > $L/privacy-versions.json
-page en 2027-01-01; page de 2027-01-01; git add -A; git commit -qm "published 2027-01-01"; pub=$(git rev-parse HEAD | cut -c1-7)
-render '"2027-01-01"' '"2027-01-01"' "\"$pub\""; ok "a change to a published page"
-page en 2027-02-01 draft; page de 2027-02-01; git add -A; git commit -qm "en draft"; dr=$(git rev-parse HEAD | cut -c1-7)
-render '"2027-02-01"' '"2027-02-01"' "\"$dr\""; bad "a change to a page that is a draft (a published German page does not count, English only)" "not status: published"
-page en 2027-02-01 "'draft'"; git add -A; git commit -qm "quoted draft"; dq=$(git rev-parse HEAD | cut -c1-7)
-render '"2027-02-01"' '"2027-02-01"' "\"$dq\""; bad "a quoted draft status" "not status: published"
-# the frontmatter is read the way the site reads it: only exactly "published" (after normalising) passes
+# The version itself: one bare, real, listed date with its English page.
+ok "a listed version with its published page"
+grep -q "policy in force: deploy/run/config.env 2026-11-02" "$tmp/out" || fail "the summary names the version: $(cat "$tmp/out")"
+printf 'PRIVACY_POLICY_VERSION="2026-11-02"\n' > $RC; bad "a quoted value" "deploy/run/config.env: PRIVACY_POLICY_VERSION '\"2026-11-02\"' is not a bare"
+printf 'PRIVACY_POLICY_VERSION=2026-11-02 # x\n' > $RC; bad "an inline comment" "is not a bare"
+printf 'PRIVACY_POLICY_VERSION=2026-11-02\r\n' > $RC; bad "a CRLF line" "is not a bare"
+printf 'PRIVACY_POLICY_VERSION=2026-11-02\nPRIVACY_POLICY_VERSION=2026-11-02\n' > $RC; bad "the key twice" "exactly once"
+printf 'LOG_LEVEL=info\n' > $RC; bad "no key" "exactly once"
+rm -f $RC; bad "no deploy/run/config.env" "deploy/run/config.env is missing"
+run_cfg 2026-11-31; bad "a date that does not exist" "real calendar date"
+run_cfg 2029-01-01; bad "an unlisted version" "2029-01-01 is not in"
+cp $L/privacy-versions.json "$tmp/list.bak"; jq '. + ["2029-01-01"]' "$tmp/list.bak" > $L/privacy-versions.json
+bad "a listed version without its page" "has no en page"
+rm -f $L/privacy-versions.json; run_cfg 2026-11-02; bad "no list" "privacy-versions.json is missing"
+cp "$tmp/list.bak" $L/privacy-versions.json
+ok "the version again"
+# Without a base, a draft in force passes: the guard below is about a change.
+run_cfg 2027-02-01; ok "a draft without a base"
+run_cfg 2026-11-02
+
+# The draft guard on a pull request: only a CHANGE to a draft page is refused. The tree is the first
+# commit's again, so that commit is the base.
+[ -z "$(git status --porcelain)" ] || fail "the tree should equal the first commit here: $(git status --porcelain)"
+git branch -q -f base HEAD; BASE=base
+ok "unchanged against base"
+grep -q "against base" "$tmp/out" || fail "the summary names the base: $(cat "$tmp/out")"
+run_cfg 2027-02-01; bad "a change to a version whose page is a draft" "changes PRIVACY_POLICY_VERSION from 2026-11-02 (on base) to 2027-02-01"
+run_cfg 2027-01-01; ok "a change to a published version"
+run_cfg 2026-10-20; ok "back to a version listed before base's (a draft)"
+run_cfg 2026-11-02; page en 2026-11-02 draft; bad "a published text set back to a draft in place" "cannot go back to a draft"
+page en 2026-11-02; ok "published again"
+# English only: a German page is not read, a draft there or none at all
+page de 2026-11-02 draft; ok "a German draft beside a published English page is ignored"
+rm -rf $L/de
+# An unchanged draft stays allowed.
+run_cfg 2026-10-20; git add -A; git commit -qm "base at a draft"; git branch -q -f base HEAD
+ok "an unchanged version whose page is a draft"
+run_cfg 2027-02-01; bad "from one draft to another, newer one" "is not status: published"
+run_cfg 2026-11-02; git add -A; git commit -qm "base published"; git branch -q -f base HEAD
+
+# The frontmatter is read the way the site reads it: only exactly "published" (after normalising) passes.
 n=0
 variant() { # <name> <ok|bad> <printf format of the English page>
   n=$((n + 1)); local v; v=$(printf '2028-01-%02d' "$n")
   jq --arg v "$v" '. + [$v]' $L/privacy-versions.json > "$tmp/l.json"; mv "$tmp/l.json" $L/privacy-versions.json
   mkdir -p "$L/en/privacy"
   # shellcheck disable=SC2059
-  printf -- "$3" > "$L/en/privacy/$v.mdx"; git add -A; git commit -qm "variant $1"
-  render "\"$v\"" "\"$v\"" "\"$(git rev-parse HEAD | cut -c1-7)\""
+  printf -- "$3" > "$L/en/privacy/$v.mdx"
+  run_cfg "$v"
   if [ "$2" = ok ]; then ok "$1"; else bad "$1" "not status: published"; fi
 }
 variant "status published" ok '---\nstatus: published\n---\ntext\n'
@@ -182,92 +102,14 @@ variant "published, a blank line, then another key" ok '---\nstatus: published\n
 variant "published twice (deliberately refused)" bad '---\nstatus: published\nstatus: published\n---\n'
 variant "a quote inside the value" bad '---\nstatus: pub"lished"\n---\n'
 variant "a blank inside the value" bad '---\nstatus: "pub lished"\n---\n'
-# going back to a version that was in force before (listed before the current one) is allowed, a draft or not
-overlay 2027-02-01; git add -A; git commit -qm "overlay at 2027-02-01"; git branch -q -f base HEAD
-page de 2026-10-20 draft; page en 2026-10-20 draft; git add -A; git commit -qm "old drafts" >/dev/null || true
-render '"2026-10-20"' '"2026-10-20"' '"f437747"'; ok "a change back to a version listed before the one in force (a draft)"
-overlay 2026-10-20; git add -A; git commit -qm "overlay back"; git branch -q -f base HEAD
-render '"2027-02-01"' '"2027-02-01"' "\"$dr\""; bad "forward again to a draft" "not status: published"
-# the person's policy PR: the base version in config.env changes to a page that is not published
-BC=deploy/k8s/base
-mkdir -p $BC/api $BC/ingest; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $BC/$s/config.env; done
-run_cfg 2027-01-01  # the k8s copies equal deploy/run/config.env
-git add -A; git commit -qm "base config.env"; git branch -q -f base HEAD
-render '"2026-10-20"' '"2026-10-20"' "\"$first\""; ok "config.env unchanged"
-for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-02-01\n' > $BC/$s/config.env; done
-bad "config.env moves to a version whose page is a draft" "config.env changes PRIVACY_POLICY_VERSION"
-page en 2027-02-01; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $BC/$s/config.env; done
-ok "config.env back to what base has"
-rm -f $BC/api/config.env; bad "config.env exists on base but not in this change" "exists on"
-printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $BC/api/config.env
-# the base ref must resolve and parse
+run_cfg 2026-11-02; ok "back at base's version"
+
+# The base ref must resolve and hold the file with the key: the guard cannot compare with nothing.
 BASE=origin/nope; bad "a base ref that does not resolve" "does not resolve"
 BASE=base
-printf 'configMapGenerator: []\n' > "$OV"; git add -A; git commit -qm "overlay without literal"; git branch -q -f base HEAD; BASE=base
-render '"2026-10-20"' '"2026-10-20"' "\"$first\""; ok "no literal on base yet (the PR that introduces it)"
-printf '# PRIVACY_POLICY_VERSION is pinned here\nconfigMapGenerator: []\n' > "$OV"; git add -A; git commit -qm "overlay mentions it"; git branch -q -f base HEAD
-bad "the base overlay mentions the key but nothing parses" "does not parse"
-# an unknown short SHA is not "foreign"
+rm -f $RC; git add -A; git commit -qm "no config.env"; git branch -q -f base HEAD; run_cfg 2026-11-02
+bad "a base without deploy/run/config.env" "does not exist on base"
+printf 'LOG_LEVEL=info\n' > $RC; git add -A; git commit -qm "config.env without the key"; git branch -q -f base HEAD; run_cfg 2026-11-02
+bad "a base whose config.env sets no version" "sets no PRIVACY_POLICY_VERSION"
 BASE=
-render '"2026-10-20"' '"2026-10-20"' '"abc1234"'; bad "an unknown short SHA" "not exactly one commit"
-# an in-place publish must not be undone: base pins web at a commit where the page is published
-git add -A; git commit -qm "state" >/dev/null || true
-git checkout -q -b side "$first"
-overlay_web() { mkdir -p "$(dirname "$OV")"; printf 'configMapGenerator:\n  - { name: ryft-config, namespace: ryft-api, behavior: merge, literals: [PRIVACY_POLICY_VERSION=2026-10-20] }\nimages:\n  - name: ghcr.io/timkrebs/ryft/web\n    newTag: "%s"\n' "$1" > "$OV"; }
-page en 2026-10-20; page de 2026-10-20; git add -A; git commit -qm "publish 2026-10-20 in place"; flip=$(git rev-parse HEAD | cut -c1-7)
-overlay_web "$flip"; git add -A; git commit -qm "base pins the published page"; git branch -q -f base HEAD; BASE=base
-render '"2026-10-20"' '"2026-10-20"' "\"$flip\""; ok "web stays at the commit that published the text"
-render '"2026-10-20"' '"2026-10-20"' "\"$first\""; bad "web rolled back past the in-place publish (same version label)" "bring the draft text back"
-render '"2026-10-20"' '"2026-10-20"' '"f437747"'; bad "web rolled back to the foreign image, which is a draft" "bring the draft text back"
-# a base overlay with a web entry whose tag the check cannot read refuses (it would skip the in-place guard)
-overlay_web "$flip"; sed -i.bak 's|- name: ghcr.io/timkrebs/ryft/web|- name: "ghcr.io/timkrebs/ryft/web"|' "$OV"; rm -f "$OV.bak"
-git add -A; git commit -qm "base overlay quotes the web name"; git branch -q -f base HEAD
-render '"2026-10-20"' '"2026-10-20"' "\"$flip\""; bad "a base overlay whose web entry cannot be read" "cannot read"
-overlay_web "$flip"; git add -A; git commit -qm "base overlay reads again"; git branch -q -f base HEAD
-render '"2026-10-20"' '"2026-10-20"' "\"$flip\""; ok "a readable web entry on base again"
-# and a pull request that sets the page back to a draft
-mkdir -p $BC/api $BC/ingest; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=2026-10-20\n' > $BC/$s/config.env; done
-git add -A; git commit -qm "base config.env"; git branch -q -f base HEAD
-render '"2026-10-20"' '"2026-10-20"' "\"$flip\""; ok "the published text is unchanged"
-page en 2026-10-20 draft
-bad "a published page set back to a draft in place" "cannot go back to a draft"
-git checkout -q -f main
-
-# ---- Cloud Run: deploy/run/config.env (ticket B2) -----------------------------------------------
-# main has the variants of 2028-01 (2028-01-01 published, 2028-01-04's page a draft), 2027-01-01
-# and 2027-02-01 published, 2026-10-20 a draft. The EKS part passes throughout (an unchanged overlay).
-copies() { mkdir -p $BC/api $BC/ingest; for s in api ingest; do printf 'PORT=8080\nPRIVACY_POLICY_VERSION=%s\n' "$1" > $BC/$s/config.env; done; }
-overlay 2026-10-20; run_cfg 2027-01-01; copies 2027-01-01; git add -A; git commit -qm "the Cloud Run base"; git branch -q -f base HEAD
-BASE=
-render '"2026-10-20"' '"2026-10-20"' "\"$first\""
-ok "deploy/run/config.env at a listed version with its page, the k8s copies equal it"
-grep -q "Cloud Run: deploy/run/config.env 2027-01-01" "$tmp/out" || fail "the summary names Cloud Run's version: $(cat "$tmp/out")"
-printf 'PRIVACY_POLICY_VERSION="2027-01-01"\n' > $RC; bad "a quoted value" "deploy/run/config.env: PRIVACY_POLICY_VERSION '\"2027-01-01\"' is not a bare"
-printf 'PRIVACY_POLICY_VERSION=2027-01-01 # x\n' > $RC; bad "an inline comment" "is not a bare"
-printf 'PRIVACY_POLICY_VERSION=2027-01-01\r\n' > $RC; bad "a CRLF line" "is not a bare"
-printf 'PRIVACY_POLICY_VERSION=2027-01-01\nPRIVACY_POLICY_VERSION=2027-01-01\n' > $RC; bad "the key twice" "exactly once"
-printf 'LOG_LEVEL=info\n' > $RC; bad "no key" "exactly once"
-rm -f $RC; bad "no deploy/run/config.env" "deploy/run/config.env is missing"
-run_cfg 2026-11-31; copies 2026-11-31; bad "a date that does not exist" "real calendar date"
-run_cfg 2029-01-01; copies 2029-01-01; bad "an unlisted version" "2029-01-01 is not in"
-cp $L/privacy-versions.json "$tmp/list.bak"; jq '. + ["2029-01-01"]' "$tmp/list.bak" > $L/privacy-versions.json
-bad "a listed version without its page" "has no en page"
-cp "$tmp/list.bak" $L/privacy-versions.json
-run_cfg 2027-01-01; copies 2027-02-01; bad "a k8s copy that differs" "the k8s copy must equal"
-copies 2027-01-01; ok "the copies equal it again"
-# the draft guard on a pull request, without the k8s copies (after D3) so that only Cloud Run's part speaks
-rm -rf $BC; git add -A; git commit -qm "no k8s copies"; git branch -q -f base HEAD; BASE=base
-ok "Cloud Run alone"
-run_cfg 2028-01-04; bad "a change to a version whose page is a draft" "deploy/run/config.env changes PRIVACY_POLICY_VERSION from 2027-01-01"
-run_cfg 2028-01-01; ok "a change to a published version"
-run_cfg 2026-10-20; ok "back to a version listed before the current one (a draft)"
-run_cfg 2027-01-01; page en 2027-01-01 draft; bad "a published text set back to a draft in place" "cannot go back to a draft"
-page en 2027-01-01; ok "published again"
-# English only: a German page is not read any more, a draft there or none at all
-page de 2027-01-01 draft; ok "a German draft beside a published English page is ignored"
-# the PR that introduces deploy/run/config.env: base has none, its api copy is what was published
-rm -f $RC; copies 2027-01-01; git add -A; git commit -qm "before Cloud Run"; git branch -q -f base HEAD
-run_cfg 2028-01-04; bad "introduced at a draft version" "from 2027-01-01 (base's deploy/k8s/base/api/config.env) to 2028-01-04"
-run_cfg 2027-01-01; ok "introduced at the published version"
-BASE=
-echo "✓ check_policy_in_force_test: agreement, date shape and calendar, listed, the pinned web commit serves it (newest page; the overlay's pin when web is not rendered), no environment hook, the checked ConfigMap is the one read, drafts only unchanged; deploy/run/config.env: shape, calendar, listed, pages, the k8s copies equal it, its draft and in-place guards"
+echo "✓ check_policy_in_force_test: deploy/run/config.env's shape, calendar, list and page; against a base: no draft put into force (frontmatter read as the site reads it), going back allowed, no in-place un-publish, a base that cannot be compared refused"

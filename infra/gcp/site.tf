@@ -8,8 +8,7 @@
 # The apex has no other A, AAAA or CNAME record (D215), as Firebase asks. The apex `hosting-site=`
 # string joins the apex TXT set (dns.tf). For www the wizard shows either A records (with their own
 # `hosting-site=` TXT) or one CNAME to the site's web.app name; a CNAME can't share its name with
-# anything else, so the two forms are exclusive. scripts/dns_compare.sh is runbook step 6's tool
-# (before the NS switch): run after step 10, it lists these records as added, which is expected.
+# anything else, so the two forms are exclusive.
 
 variable "site_apex_a" {
   description = "The A records the Firebase wizard shows for ryftlab.de (runbook step 10). Empty: no apex A record"

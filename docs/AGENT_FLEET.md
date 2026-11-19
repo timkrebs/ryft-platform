@@ -22,8 +22,8 @@ flowchart TB
         be[backend-engineer<br/>api · ingest · notify · events]
         sci[scoring-scientist<br/>scores · insights · model version]
         db[database-engineer<br/>migrations · grants · RLS]
-        ops[gitops-engineer<br/>deploy/ · Argo CD · CI · promote]
-        infra[infra-engineer<br/>Terraform, prepared not applied]
+        ops[gitops-engineer<br/>deploy/run · CI · deploy.yml]
+        infra[infra-engineer<br/>infra/gcp, prepared not applied]
         web[web-engineer<br/>web/ · ryftlab.de · legal]
         test[test-engineer]
     end
@@ -50,8 +50,8 @@ flowchart TB
 | `backend-engineer` | Go engineer | `backend/` (not scoring, not migrations) | session's | handlers, store, events, notify, admin |
 | `scoring-scientist` | Data scientist | `internal/scoring`, `insights`, `behavior`, `SCORING.md` | opus | anything that moves a number |
 | `database-engineer` | DBA | migrations, grants, RLS | sonnet | schema, slow query, retention |
-| `gitops-engineer` | Deployment engineer | `deploy/`, workflows, promote | sonnet | manifests, Argo CD, CI, images |
-| `infra-engineer` | Cloud/IaC engineer | `infra/` (never applies) | sonnet | Terraform, DNS, add-ons, Vault |
+| `gitops-engineer` | Deployment engineer | `deploy/`, workflows | sonnet | Cloud Run templates (`deploy/run`), CI, `deploy.yml`, images |
+| `infra-engineer` | Cloud/IaC engineer | `infra/gcp` (never applies) | sonnet | Terraform on GCP: IAM, secrets, Pub/Sub, DNS, the edge |
 | `web-engineer` | Frontend engineer | `web/` | sonnet | site, legal pages, AASA |
 | `test-engineer` | QA engineer | tests | sonnet | every behaviour change |
 | `code-reviewer` | Senior reviewer | — | opus | every PR |
@@ -72,7 +72,7 @@ Adapted from agents in [lecole/claude-code-agents](https://github.com/lecole/cla
 2. **Design / contract first** (architect, api-contract-owner) when structure or the API changes.
 3. **Build** (one writer per file set; test-engineer in parallel once interfaces are agreed).
 4. **Verify in parallel** (code-reviewer always; security-privacy-reviewer and sre by trigger).
-5. **Ship**: PR → CI green → merge → promote PR → Argo CD. Terraform: the user runs the printed commands.
+5. **Ship**: PR → CI green → merge → `deploy.yml` (Cloud Run, Firebase Hosting). Terraform: the user runs the printed commands.
 6. **Close**: STATUS, DECISIONS, OPERATIONS; one "Needs you" list.
 
 Other flows: **App request** → api-contract-owner → implementer → review → PR, then tell the app session the

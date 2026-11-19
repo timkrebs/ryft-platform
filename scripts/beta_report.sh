@@ -7,7 +7,7 @@
 #   scripts/beta_report.sh [--emails]
 #   scripts/beta_report.sh feedback [since]     # since: YYYY-MM-DD or RFC 3339, default 7 days
 #   API_URL=http://localhost:8082 ADMIN_API_KEY=dev-admin-key-change-me-0123456789abcdef scripts/beta_report.sh
-# The admin key: ADMIN_API_KEY, else infra/vault's terraform output, else Vault (scripts/lib/admin.sh).
+# The admin key: ADMIN_API_KEY from the environment (scripts/lib/admin.sh says how to read production's).
 # dup: other accounts that synced from one of this account's devices (scripts/user.sh <id>).
 set -euo pipefail
 . "$(dirname "$0")/lib/admin.sh"

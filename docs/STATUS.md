@@ -1,5 +1,11 @@
 # RYFT platform — status
 
+**Now (2026-11-19, D246):** RYFT runs on GCP only: Cloud Run (`deploy/run`, deployed by `deploy.yml`), Pub/Sub,
+Cloud DNS, the edge, Cloud Monitoring, Supabase, and the site on Firebase Hosting. Nothing in AWS is RYFT's, and the
+old HCP org `tim-krebs-org` is deleted. The sections below run newest first. Everything in them about EKS, Argo CD,
+Vault, RabbitMQ, GHCR or promote PRs is history: that code is gone since D3. The paragraph that follows is the
+October state, kept as it was written.
+
 State of the platform after go-live (M1, M1b and the zero-trust layout; 2026-10-18),
 Train (M3b, 2026-10-19; M3 itself is deferred, D58), the sleep upgrades (M4,
 2026-10-19), the push and remote-config core of M7 (2026-10-19) and the journal with
@@ -71,6 +77,47 @@ rolling update can cut an import in flight; the app resends and the stored items
 Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
+
+## D3: the EKS era removed, AWS empty (2026-11-19, D246)
+
+**The retirement is done, by hand.** You deleted the old HCP org with every state, then RYFT's AWS rest by ID:
+- the Route 53 zone `ryftlab.de` (`Z0847310CSDZ20OKMOUQ`);
+- the snapshot bucket and the budget `ryft-prod-euc1-monthly`;
+- the two Vault keys, PendingDeletion until 2026-11-26, with their aliases;
+- the EKS key, PendingDeletion until 2026-12-14.
+
+Your re-check found nothing else. **D1** (#222) is merged, **D2** (#223) is obsolete and closed, and **D3** is this PR.
+OPERATIONS → GCP 12–14 holds the IDs.
+
+**D3** (`remove: Kubernetes, Argo CD, Vault, admission, AWS (D3)`) deletes:
+- `infra/aws` and `infra/vault`;
+- `deploy/k8s`, `deploy/argocd`, `deploy/rabbitmq`, `deploy/monitoring` and `deploy/grafana`;
+- the kubectl, EKS, Vault, admission, promote and hold scripts and their tests, `trace.sh` among them;
+- CI's `monitoring` and `argocd-luatest` jobs and the four EKS-era terraform roots;
+- the Makefile's cluster, Grafana, HCP-migration, GHCR and nginx targets, the nginx web image and `REBUILD.md`;
+- the EKS-era runbooks.
+
+ARCHITECTURE, OBSERVABILITY, README and `CLAUDE.md` now describe GCP only. D246 lists what was kept on purpose and why:
+- gitleaks' allowlists, for the history scan;
+- generic `.gitignore` rules, for the leftovers in old clones;
+- `rescore_all.sh`'s compose mode;
+- the output text of `infra/gcp`, which would change the next plan.
+
+**On merge:** `deploy.yml` runs as on any push. It deploys new revisions of the same code, and the site is unchanged.
+Nothing is applied, and no Terraform changes.
+
+**Your steps after the merge:**
+1. **14.3:** delete the GitHub secrets and variables that no workflow reads. The guarded paste is in OPERATIONS →
+   GCP 14.3.
+2. **The local leftovers in your clone**, which git now ignores: in `infra/aws`, two `terraform.tfvars`, `aws.tfplan`
+   and two `.terraform/`. Delete them by hand once you no longer need them:
+   `rm -rf infra/aws`, from the repository root, after a look.
+
+**Open, no GCP successor yet (D246):**
+- a bulk rescore on Cloud Run (until then, `POST /v1/recompute` per account);
+- `learn-baselines` and `fold-workouts` as jobs;
+- an alert on a service that exits or panics;
+- runbooks for Cloud Run scaling and for adding a service.
 
 ## CI on main: the web jobs only when the web paths changed (2026-11-19, D243)
 
@@ -453,10 +500,8 @@ stays until D3), `MESSAGING_DESIGN.md`, DECISIONS D216–D219, and API.md's two 
 Open:
 - **C1**: Firebase Hosting, stacked on B. It also removes CI's EKS `images`/`promote` jobs.
 - **C2**: the privacy draft.
-- **D1–D3**: the AWS retirement. D1 (`infra/aws: allow the removal`, branch `infra/aws-allow-removal`) and D2
-  (`infra/aws: empty the root`, branch `infra/aws-empty-root`) were opened 2026-11-19. Your steps are OPERATIONS →
-  GCP 12–14, as guarded pastes: 12 and 13.1 after D1's merge, then D2's merge, then 13.2, 14.1 and 14.2. D3 comes
-  after 14.2.
+- **D1–D3**: the AWS retirement. **Done 2026-11-19**: D1 merged (#222), the AWS rest deleted by hand and D2 (#223)
+  closed as obsolete, D3 removes the code (top section, D246).
 - **No `scoring-rescore` job in `deploy/run` yet** (design §9); its env is in D222.
 - **Your steps after A2's merge:** OPERATIONS → GCP, step 7 (`make pooler-check`), then 8 and 9. Steps 0–6 could run
   since B.
@@ -1761,44 +1806,19 @@ Known gaps, accepted for the alpha:
 Local:
 
 ```bash
-make up && make smoke                 # Docker or Podman: migrate, roles, NATS users, contract checks
+make up && make smoke                 # Docker or Podman: Postgres, the Pub/Sub emulator, migrate, roles, contract checks
 make check-swift                      # optional, macOS
 ```
 
-Images (CI does this on push once the repo is on GitHub; by hand):
+Production (GCP, since D216; the runbook is [`OPERATIONS.md`](OPERATIONS.md) → GCP): a merge to main deploys.
+`deploy.yml` builds the images into Artifact Registry and rolls out new Cloud Run revisions of the four services and
+the `migrate` job. It runs the smoke and ships the site to Firebase Hosting once `SITE_DEPLOY` is `on`. Terraform
+(`infra/gcp`, workspace `ryft-gcp` in `ryft-lab`) is yours to plan and apply, as the runbook's steps say.
 
 ```bash
-make push REGISTRY=ghcr.io/timkrebs/ryft            # ingest, scoring, api, migrate: :<short-sha> and :latest
+make smoke-prod                       # after a deploy by hand (deploy.yml runs it on every push)
+make cloudrun-check                   # what CI's manifests job checks in deploy/run
 ```
 
-EKS, in order (each Terraform root applied by you from your machine; state in HCP
-Terraform; full runbook in [`OPERATIONS.md`](OPERATIONS.md#eks-apiryftlabde); the rebuild of 2026-11 follows
-[`REBUILD.md`](REBUILD.md)):
-
-```bash
-# State: HCP Terraform workspaces (execution Local), after `terraform login` and, once, `make tf-migrate-hcp`
-(cd infra/aws/dns && terraform init && terraform plan -out=tfplan && terraform apply tfplan && terraform output godaddy_instructions)
-# Every record against the new nameservers (OPERATIONS → Mail for ryftlab.de), then GoDaddy: the four printed;
-# check: dig +norecurse NS ryftlab.de @a.nic.de
-(cd infra/aws && terraform plan -out=tfplan && terraform apply tfplan)
-aws eks update-kubeconfig --region eu-central-1 --name ryft-prod-euc1 --alias ryft-prod-euc1
-(cd infra/aws/kubernetes && cp terraform.tfvars.example terraform.tfvars)      # set acme_email
-(cd infra/aws/kubernetes && terraform init && terraform plan -out=tfplan && terraform apply tfplan)
-(cd infra/vault && cp terraform.tfvars.example terraform.tfvars)               # Supabase values (SUPABASE.md)
-(cd infra/vault && export VAULT_TOKEN=… && \
-  terraform init && terraform test && terraform plan -out=tfplan && terraform apply tfplan)
-# newTag in deploy/k8s/overlays/eks/kustomization.yaml = the CI commit
-# Every cluster command names its cluster, per command (D150). ryft-prod-euc1 is the alias the
-# `aws eks update-kubeconfig` above wrote (the name from `kubectl config get-contexts -o name`, if yours differs).
-make k8s-validate && make k8s-apply-eks KUBE_CONTEXT=ryft-prod-euc1
-make monitoring-apply KUBE_CONTEXT=ryft-prod-euc1      # Grafana Cloud collector, after infra/vault has the token
-make smoke-prod                                        # after every deploy (OPERATIONS.md → Deploy and roll back)
-make alerts-apply                                      # alert rules into Grafana Cloud (OBSERVABILITY.md → Alerts)
-KUBE_CONTEXT=ryft-prod-euc1 scripts/rescore_all.sh     # after a deploy that changed scoring rules or the model version (Beta: yes)
-kubectl --context ryft-prod-euc1 -n ryft-scoring exec deploy/scoring -- /app learn-baselines   # M4, once; then weekly on its own
-```
-
+Roll back: OPERATIONS → GCP → Deploy, roll back, rotate. Rescore after a model change: OPERATIONS → Rescoring.
 Run `make smoke-supabase` only with the dedicated test user.
-
-Self-hosted (k3s etc.): `make k8s-apply-local KUBE_CONTEXT=<your local context>` (`OPERATIONS.md` → Self-hosted); it refuses a
-context that looks like EKS (a heuristic).

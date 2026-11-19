@@ -10,8 +10,8 @@
 //      has a script.
 // What stays: the HTML, CSS and fonts under _next/static, public/ and, on /admin only, the
 // admin bundle (src/admin, web D15), the one script left (the theme scripts went with the
-// light palette, web D20). scripts/csp.mjs hashes it into the admin page's CSP; every other
-// page runs no script (script-src 'none').
+// light palette, web D20). scripts/firebase-json.mjs hashes it into the admin page's CSP; every
+// other page runs no script (script-src 'none').
 import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { inlineScripts, stripRuntime } from './lib/html.mjs';

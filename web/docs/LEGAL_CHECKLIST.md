@@ -9,6 +9,13 @@ reviewer's. The drafts change only with your answers, in both languages at once:
 As of 2026-10-21; checked against `ryft-platform` `003a1a9`, `ryft-app` `1eb5192` and the
 web image built from this repository.
 
+**Since 2026-11-19 (platform D246, web D25)** the cluster on AWS, Vault, its monitoring and
+RabbitMQ, and the web image are gone: the services run on Cloud Run (platform D223) and the site
+on Firebase Hosting (web D19, platform D233). The facts below stay as checked on 2026-10-21;
+where they cite those parts, the source is `ryft-platform` `003a1a9` (git history), not this
+tree. S3, S4, S5 (logs, dead letters), S6 and the recipients in section 3 describe that setup:
+**they need checking against the current one before publishing.**
+
 Files: `content/legal/{en,de}/privacy/2026-10-20.mdx`, `…/terms/2026-10-20.mdx`,
 `…/support.mdx`, `…/impressum.mdx`. Line numbers are the same in English and German unless
 noted. 45 `TODO(user)` in all: privacy 11 + 11, terms 5 + 5, support 2 + 2, Impressum 4
@@ -30,7 +37,7 @@ reviewer. The usual ways to meet them without your private details, for that rev
 
 | Spot | Instead of your private details |
 | --- | --- |
-| Every published email (support, privacy, Impressum, `SUPPORT_EMAIL`) | An address on `ryftapp.de` (e.g. `support@`, `privacy@`) that forwards to your inbox. This needs mail for the domain (MX records in Route 53 and a forwarding or mail service). That service then receives users' emails, so it goes into privacy §5 like the others. |
+| Every published email (support, privacy, Impressum, `SUPPORT_EMAIL`) | An address on `ryftapp.de` (e.g. `support@`, `privacy@`) that forwards to your inbox. This needs mail for the domain (MX records in its DNS zone and a forwarding or mail service). That service then receives users' emails, so it goes into privacy §5 like the others. |
 | Postal address (Impressum, privacy §1, terms §1) | A business or service address that accepts legal mail for you. Whether a given one counts as *ladungsfähig* is the reviewer's call. |
 | Name | A company (e.g. a UG) as provider and controller, with its own registered address. A bigger step. |
 | Phone (Impressum's "second fast way") | Whatever the reviewer accepts in its place. The site has no forms by design. |
@@ -103,9 +110,10 @@ before the beta (D49).
   migrated by the deploy."
 - `plattform/docs/DECISIONS.md` D49, `plattform/docs/SUPABASE.md` → "Moving the project to
   Frankfurt".
-- The pooler host the services use (`plattform/infra/vault/terraform.tfvars`, host only):
+- The pooler host the services use (`plattform/deploy/run/config.env`, `SUPABASE_POOLER_HOST`;
+  on 2026-10-21 the Vault Terraform's variables at `003a1a9` held the same host):
   `aws-1-eu-central-1.pooler.supabase.com`. A Supabase pooler serves only its own region.
-- `terraform.tfvars.example` shows the same pattern (`aws-<n>-eu-central-1…`).
+- The file's comment shows the same pattern (`aws-<n>-eu-central-1…`).
 
 Needs you: **confirm the region in the Supabase dashboard** (Project Settings → General), and
 whether the old Ireland project is deleted. D49's runbook step 6 (pause it, delete it after
@@ -126,7 +134,7 @@ DPA). Needs you: which, if any (Supabase → Authentication → Emails → SMTP 
 ### S3 — AWS (privacy §5, l. 43)
 
 Verified: the cluster (`ryft-prod-euc1`), its load balancer, the KMS key and the CloudWatch
-log group are in `eu-central-1` (`plattform/infra/aws`, `infra/aws/kubernetes/logs.tf`). The
+log group are in `eu-central-1` (the AWS Terraform at `003a1a9`, its log group's file). The
 DNS zone is Amazon Route 53, a global service with no region; it holds DNS records, no
 personal data of users. The draft lists "DNS" under Frankfurt; your reviewer may want it
 worded "… load balancer, in Frankfurt; DNS through Amazon Route 53".
@@ -135,7 +143,7 @@ Needs you: the **DPA with AWS** (AWS Artifact → Agreements).
 
 ### S4 — Grafana Cloud: do logs leave the cluster? (privacy §5, l. 45; §6, l. 53)
 
-- **Metrics:** yes, always. The collector (`plattform/deploy/monitoring/k8s-monitoring.yaml`)
+- **Metrics:** yes, always. The collector (the cluster's monitoring values at `003a1a9`)
   sends cluster and service metrics to a Grafana Cloud stack in **eu-west-2 (London)**
   (`prometheus-prod-65-prod-eu-west-2.grafana.net`, l. 80). The services' metrics are
   counters and route labels, no user data (`plattform/docs/OBSERVABILITY.md` → Collection).
@@ -166,12 +174,12 @@ Needs you, one of:
   "kept for 7 days" matches. Needs you: confirm in the dashboard (Database → Backups) that
   the plan is Pro and **point-in-time recovery is off**. With PITR the retention is the
   add-on's, and the sentence changes.
-- **Logs (l. 53):** 14 days in CloudWatch (`infra/aws/kubernetes/logs.tf:57`,
+- **Logs (l. 53):** 14 days in CloudWatch (the AWS Terraform at `003a1a9`,
   `retention_in_days = 14`), plus Grafana Cloud's retention if logs go there (S4). Pod stdout
   also stays on the node until the pod goes.
 - **Correction (l. 54):** the draft says events that could not be processed stay "up to
   30 days". Since the move to RabbitMQ (D102) dead letters are kept **14 days**: the `dlq`
-  policy's `message-ttl: 1209600000` (ms) in `plattform/deploy/rabbitmq/topology/topology.yaml`,
+  policy's `message-ttl: 1209600000` (ms) in the RabbitMQ topology at `003a1a9`,
   and `OPERATIONS.md:344` ("`dlq.scoring`, `dlq.notify`, 14 days"). The text needs 14, in both
   languages. Also: events waiting for the broker are rows of `outbox` in the database
   (D101) until they are sent; whether sent rows are deleted is not documented, so ask the
@@ -179,15 +187,20 @@ Needs you, one of:
 
 ### S6 — Visitors of ryftapp.de are not covered (privacy, new text)
 
-The privacy policy describes the app. The website itself logs every request: nginx's `main`
-format in the image (`log_format main` in `/etc/nginx/nginx.conf`; `nginx/default.conf` turns
-the access log off only for `/healthz`) writes the time, the request line **with its query
-string**, status, bytes, referrer, user agent and `X-Forwarded-For`, which is the visitor's
-IP address (Traefik forwards it; the load balancer preserves client IPs,
-`infra/aws/kubernetes/addons.tf`). Fluent Bit ships every `ryft-*` namespace's container
-logs, `ryft-web` included, to CloudWatch for 14 days (`logs.tf`), and to Grafana Cloud if S4
-is "keep". Traefik's own access log is not enabled (`addons.tf`). No cookies, no analytics, no
-third-party requests (this repository's rules, tested in `e2e/behaviour.spec.ts`).
+The privacy policy describes the app. The website itself logs every request (on 2026-10-21):
+nginx's `main` format in the web image (`log_format main` in the image's own `nginx.conf`; this
+repository's server config turned the access log off only for `/healthz`) writes the time, the
+request line **with its query string**, status, bytes, referrer, user agent and
+`X-Forwarded-For`, which is the visitor's IP address (Traefik forwards it; the load balancer
+preserves client IPs, the AWS Terraform at `003a1a9`). Fluent Bit ships every `ryft-*`
+namespace's container logs, `ryft-web` included, to CloudWatch for 14 days (the same
+Terraform), and to Grafana Cloud if S4 is "keep". Traefik's own access log is not enabled
+(also there). No cookies, no analytics, no third-party requests (this repository's rules,
+tested in `e2e/behaviour.spec.ts`).
+
+Since web D19 (2026-11-16) Firebase Hosting serves the site, and since web D25 there is no
+image: the site keeps no access log of its own, and Google's edge sees the visitor's IP (web
+D19, difference 9). The paragraph on the website is still your decision.
 
 Needs you, one of:
 
@@ -256,13 +269,14 @@ Not recipients of users' personal data:
 ## 4. The version
 
 The privacy `version` is `2026-10-20`, equal to the platform's `PRIVACY_POLICY_VERSION`
-(`npm run check:policy`: both `config.env` files say `2026-10-20`). Users of the beta consented to that
+(`npm run check:policy` on 2026-10-21). Users of the beta consented to that
 version while it was a draft. Filling in the controller and the open points, and the
 corrections above (14 days; the website; Apple Health; the age), change what they agreed
 to. **Whether that needs a new version is your decision.** If yes, the text is published as
 `content/legal/{en,de}/privacy/<new date>.mdx` (the old one stays at `/privacy/2026-10-20`),
-and the platform sets `PRIVACY_POLICY_VERSION` to the same date in its api and ingest
-`config.env` (it goes into force with the web pin), so everyone is asked to consent again before the next upload.
+and `PRIVACY_POLICY_VERSION` changes to the same date in `plattform/deploy/run/config.env` and
+`docker-compose.yml`, in the same PR (the merge puts it into force: `deploy.yml` deploys the
+services and the site), so everyone is asked to consent again before the next upload.
 
 ## 5. Publishing (when every point above is answered)
 
@@ -272,5 +286,5 @@ and the platform sets `PRIVACY_POLICY_VERSION` to the same date in its api and i
    banner and `noindex` go, the sitemap lists the pages, and `/privacy/2026-10-20` stays
    reachable.
 3. `npm run check:policy`, `npm run brand`, `npm test`, build, e2e; PR
-   `legal: publish privacy, terms, support and Impressum`; merge on green; the new image goes
-   out with the platform's next pin.
+   `legal: publish privacy, terms, support and Impressum`; merge on green; the merge deploys
+   the site (`deploy.yml`'s `site` job).

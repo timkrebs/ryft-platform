@@ -1,4 +1,4 @@
-"""A GET /v1/admin/users/{id} answer (stdin) in a few lines (trace.sh; user.sh --short)."""
+"""A GET /v1/admin/users/{id} answer (stdin) in a few lines (user.sh --short)."""
 import json
 import sys
 

@@ -18,7 +18,7 @@
 // Invariants:
 //   - api is the only service that builds the Supabase admin client and the only
 //     importer of sealed, so the Supabase secret key and DATA_ENCRYPTION_KEY
-//     exist only in its namespace.
+//     exist only in its environment (Secret Manager, deploy/run/api.yaml).
 //   - Account deletion erases the rows in one transaction under the user's lock
 //     (D39), then revokes the Sign in with Apple grant, then deletes the Supabase
 //     user. Each later step is retried by the tick's reconcile until it succeeds.

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// After the build (postbuild, after csp.mjs): write firebase.json for Firebase Hosting (web D19)
-// from the export's inline-script hashes, the same two policies scripts/csp.mjs writes for nginx.
-// Git-ignored, like nginx/csp.conf: it carries this build's hashes. The rules and why they look the
-// way they do: scripts/lib/hosting.mjs (firebaseJson, exported here too for the tests).
+// After the build (postbuild, after postbuild.mjs): write firebase.json for Firebase Hosting (web
+// D19) from the export's inline-script hashes, with the two policies of scripts/lib/csp.mjs. It
+// stops the build when a marketing page carries a script (web D20) or the admin page does not carry
+// exactly one. Git-ignored: it carries this build's hashes. The rules and why they look the way
+// they do: scripts/lib/hosting.mjs (firebaseJson, exported here too for the tests).
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
