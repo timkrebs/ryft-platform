@@ -72,9 +72,34 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
-## The per-IP limit on GCP (2026-11-18)
+## `BETA_GATE` off: no invite codes (2026-11-18)
 
-**`backend: the per-IP limit in api and ingest (D53 on GCP)`** (branch `backend/ip-limit`, D240, not merged). On
+Your decision (D241, amends D238): the beta has no invite codes. `deploy/run/config.env` sets
+`BETA_GATE=off`. Every signed-in account is served and nothing is flagged; consent stays `on`, so
+nothing is synced or scored without it. Access on the server comes with App Attest, which is still to be
+decided. Until then any confirmed Supabase account with the API's address can sync its own data (D241
+names the risk). The two unused codes are revoked. OPERATIONS → GCP → The beta gate keeps its steps for
+later, behind a note (a gate starts again with `warn`). This replaces #208's open steps below (codes, the
+stop rule, the flip to `on`): there is nothing to run for them.
+
+Open, not in this PR: the site still says the beta needs an invite code (`web/messages/en.json`,
+`web/content/legal/en/support.mdx`). That needs a web PR.
+
+**On merge:** `deploy.yml` redeploys the five services (api and ingest with `BETA_GATE=off`), `migrate`
+a no-op, then `make smoke-prod`. Nothing to run. Check, from the repository root:
+
+```bash
+for s in api ingest; do
+  echo "$s $(gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod --format=json \
+    | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "BETA_GATE") | .value')"
+done                                                    # api off, ingest off
+```
+
+Rollback: a PR of the same line back to `warn`.
+
+## The per-IP limit on GCP (2026-11-18; merged and deployed, burst test passed 2026-11-19)
+
+**`backend: the per-IP limit in api and ingest (D53 on GCP)`** (#211, D240, merged and deployed). On
 Cloud Run nothing in front of api and ingest limited requests without a token. Now the services do it
 themselves, with D53's values and answer, which `API.md` already documented (changelog 2026-11-18; no contract
 change):
@@ -86,13 +111,13 @@ hops. It is 1 today and a new required key of `deploy/run/config.env`. Keys are 
 instance. `/v1/admin`'s limit shares the same client function and capped limiter. No address appears in logs or
 labels (D222).
 
-Your steps after the merge (`deploy.yml` deploys api and ingest; no migration, no apply):
-1. `gh run watch` on the merge's `deploy.yml` run: green, smoke included.
-2. OPERATIONS → GCP → **The per-IP limit**: the value check (1, 1), the burst test from your Mac (`401`s, then
-   `429 retry-after=1 … bytes=17 text/plain`, then `401` after 3 s, on both hosts), and the log check (your
-   address: 0 lines).
-3. Stop rules and the revert are there. The LB PR later sets `XFF_TRUSTED_HOPS=2` together with ingress
-   `internal-and-cloud-load-balancing` (the same section, "Behind the external Application Load Balancer").
+Done on 2026-11-19 (OPERATIONS → GCP → **The per-IP limit**): hops 1 on both; api 224 `401` and 76 `429`
+(`retry-after=1`, 17 bytes, `text/plain`), ingest 176 and 124; `401` again after 3 s; forged
+`X-Forwarded-For` lines 231 and 69, the same split; 145 `ip_limit` access lines on api, 124 on ingest;
+the address and its /24 in the services' logs 0 and 0. #213 makes the runbook's expected split follow the
+burst's pace (`50 + 20 × t`, printed by the commands) instead of a fixed range. After #213 and `live`, the
+edge's deploy PR (runbook 16.6) sets `XFF_TRUSTED_HOPS=2` together with ingress
+`internal-and-cloud-load-balancing`.
 
 ## Beta readiness, the platform's must-haves (2026-11-18)
 
