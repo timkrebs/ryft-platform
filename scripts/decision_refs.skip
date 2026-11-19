@@ -4,6 +4,7 @@
 # Superseded in full: the code it governed is gone or rewritten under a later decision.
 D15 manifest layout superseded by D44 (base/, services/, overlays/); no flat default overlay remains
 D54 S3 remote state, superseded by D56
+D57 three nodes, one per zone (superseded by D227); its only reference, infra/aws/terraform.tfvars.example, went with PR D2
 
 # A Terraform root applied by the user. The script scans .tf files too; they are left without decision comments in
 # this PR as a scope choice (the user's roots), and nothing in Go, shell or YAML follows from it.

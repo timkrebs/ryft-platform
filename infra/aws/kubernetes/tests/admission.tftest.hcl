@@ -883,11 +883,7 @@ run "argocd_and_vpc_values_follow_their_sources" {
     condition     = var.vpc_cidr == local.admission_defaults.vpcCIDR
     error_message = "the chart's default vpcCIDR differs from this root's vpc_cidr default"
   }
-
-  assert {
-    condition     = can(regex("variable \"vpc_cidr\" \\{[^}]*default\\s*=\\s*\"${replace(var.vpc_cidr, ".", "\\.")}\"", file("${path.module}/../variables.tf")))
-    error_message = "infra/aws' vpc_cidr default differs from this root's (and the chart's) copy"
-  }
+  # The cross-check with infra/aws' vpc_cidr went with PR D2 (infra/aws holds no variables.tf).
 }
 
 run "p7_has_no_projects_until_t12b" {
