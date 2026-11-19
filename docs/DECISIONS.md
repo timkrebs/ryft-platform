@@ -4897,6 +4897,12 @@ _Grafana half superseded by D236._
 - **Why:** nothing is removed before its replacement serves, and a step that can't be undone (the KMS keys) comes
   after the data key is safe.
 - **Consequences:** D3 deletes the code and manifests of the superseded decisions; until then they stay as history.
+- **Amended 2026-11-19 (PR D1):** step 13's first apply is **targeted** at the two keys and the bucket. `infra/aws`
+  still declares the VPC and EKS, and no cluster is in its state (destroyed on 11-10, and the SCP refuses
+  `eks:CreateCluster`), so the design's plain `apply` would plan to create one. The second apply (after D2) stays
+  untargeted: an empty root destroys everything in the state, leftovers of the rebuild's apply included. Before
+  step 14 deletes `ryft-prod-euc1-vault`, the data key in Secret Manager is compared with that state's
+  (`recover_data_key.sh --dry-run`), not with step 0's note. The guarded commands are in OPERATIONS → GCP 12–14.
 
 ## D228 — Exact floats through the pooler: the service roles set `extra_float_digits = 1` (amends D221)
 
