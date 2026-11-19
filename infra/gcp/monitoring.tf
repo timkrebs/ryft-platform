@@ -1,7 +1,7 @@
 # Cloud Monitoring is RYFT's only observability (D236; it supersedes D224's Grafana half). What Google
-# measures itself (Cloud Run, Pub/Sub, the uptime checks below) plus two log-based metrics counted from
-# lines the services already write. Nothing in this file has a price at RYFT's volume (D236 -> Cost),
-# so none of it waits for the alerting gate; the alert policies are in alerts.tf.
+# measures itself (Cloud Run, Pub/Sub, the uptime checks below) plus log-based metrics counted from
+# lines the services write. Nothing in this file has a price at RYFT's volume (D236 -> Cost), so none
+# of it waits for the alerting gate; the alert policies are in alerts.tf.
 
 locals {
   # The services' own lines on Cloud Run: JSON on stdout in Cloud Logging's keys (D224: `message`,
@@ -38,7 +38,7 @@ locals {
   dashboard_name = "RYFT · Overview"
 }
 
-# ---- the log-based metrics: counters of lines that exist (no Go change, D236) ------------------------
+# ---- the log-based metrics: counters of lines the services write (D236, D244) -----------------------
 # Labels hold closed sets only: never an IP, a user id, an email or a message id. The service is the
 # resource's own label (cloud_run_revision: service_name, revision_name, location), not one of ours.
 # A counter writes no point for a minute without a matching line, so "no tick" is an absent series:
@@ -76,7 +76,7 @@ resource "google_logging_metric" "ticks" {
 }
 
 # The services' ERROR lines, panics included (msg panic, D224's severity), per service: a dashboard
-# panel, no policy (the cap of five, D236).
+# panel, no policy (the cap, D236, D244).
 resource "google_logging_metric" "errors" {
   project     = var.project_id
   name        = "ryft_errors"
@@ -92,6 +92,47 @@ resource "google_logging_metric" "errors" {
     value_type   = "INT64"
     unit         = "1"
     display_name = "RYFT error lines"
+  }
+}
+
+# api's lines the operator wants to hear of at once (D244, the user's decision of 2026-11-19): condition
+# 6 (alerts.tf) fires on each, by kind. All three are INFO lines: a LOG_LEVEL above info silences them,
+# and condition 6 with them.
+#   feedback received    backend/cmd/api/feedback.go, once per report stored (POST /v1/feedback)
+#   admin signed in      once per operator session per instance: a token whose TOTP is at most 10
+#                        minutes old (a sign-in on /admin, or its re-challenge after 12 h). No key of its own
+#   admin auth rejected  adminauth.go's reject, but for reason missing (no bearer: crawlers) and expired
+#                        (the operator's own page with an old token; it refreshes once). A negative list
+#                        on purpose: a reason added later counts.
+# In Logging's query language OR binds tighter than AND, so every group has its parentheses. The label
+# kind is the line's message, a closed set of three by the filter; the lines' ids (feedback_id, user_id,
+# request_id, admin_actor) stay in the log and never become a label.
+resource "google_logging_metric" "notices" {
+  project     = var.project_id
+  name        = "ryft_notices"
+  description = "api's feedback received, admin signed in and admin auth rejected lines (not for reason missing or expired), by kind (infra/gcp, D244)"
+  filter = join("\n", [
+    "resource.type=\"cloud_run_revision\"",
+    "resource.labels.service_name=\"api\"",
+    local.log_stdout,
+    "(jsonPayload.message=\"feedback received\" OR jsonPayload.message=\"admin signed in\" OR (jsonPayload.message=\"admin auth rejected\" AND NOT jsonPayload.reason=\"missing\" AND NOT jsonPayload.reason=\"expired\"))",
+  ])
+
+  metric_descriptor {
+    metric_kind  = "DELTA"
+    value_type   = "INT64"
+    unit         = "1"
+    display_name = "RYFT notices"
+
+    labels {
+      key         = "kind"
+      value_type  = "STRING"
+      description = "The line's message: feedback received, admin signed in or admin auth rejected"
+    }
+  }
+
+  label_extractors = {
+    "kind" = "EXTRACT(jsonPayload.message)"
   }
 }
 

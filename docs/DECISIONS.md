@@ -5319,7 +5319,7 @@ _Grafana half superseded by D236._
 - **Consequences:** a Dependabot bump of an action anywhere under `.github/` runs the test on its own PR, and the next
   bump of a pinned action doesn't touch the test.
 
-## D236 — Cloud Monitoring is the only observability; Grafana Cloud out (**the user's decision**, 2026-11-17; supersedes D224's Grafana half; amended by D237)
+## D236 — Cloud Monitoring is the only observability; Grafana Cloud out (**the user's decision**, 2026-11-17; supersedes D224's Grafana half; amended by D237, D244)
 
 - **Context:** D224 had Grafana Cloud read Cloud Monitoring through `grafana-reader` (a service-account key) and take
   the app metrics by OTLP push. Runbook step 11, which would have made the key, the data source, the push, the
@@ -5871,3 +5871,107 @@ _Grafana half superseded by D236._
     message check.
   - `OPERATIONS.md` → GCP → Deploy, roll back, rotate → The site; `STATUS.md`.
   - The paths in `since-green` and in the PR filter's `web` list change together (a comment at both).
+
+## D244 — The sixth condition: feedback and admin access, one log-based counter (**the user's decision**, 2026-11-19; amends D236, builds D239's decision 3)
+
+- **Context:** since D236 no alert told the operator of a feedback (Grafana's NewFeedback) or of an admin
+  sign-in (`AdminWebUsed`, the lost-phone detection). D236's cap of five conditions is a test. D239's
+  decision 3 proposed a sixth for feedback alone and left it to the user. The user said yes on 2026-11-19,
+  with the admin page in the same condition. PR A builds it: ticket A1 the api's new line
+  (`backend/cmd/api`), ticket A2 the metric and the policy (`infra/gcp`).
+- **The kinds, and the events behind each.** All three are INFO lines on api's stdout:
+  - `feedback received` (`feedback.go`): once per report stored. Its keys (`feedback_id`, `category`,
+    `request_ids`, logx's request keys) stay in the log.
+  - `admin signed in` (A1): once per operator admin session per instance, when an operator's token passes
+    with a TOTP at most 10 minutes old. A fresh TOTP marks a session's start. The page asks for the code
+    at sign-in and again after 12 hours (`mfa_required`), and a token keeps the time of its TOTP (`amr`)
+    through its refreshes, so every later request of the session carries an older one. The line has no
+    key of its own (no `user_id`, no `admin_actor`).
+  - `admin auth rejected` (`adminauth.go`'s `reject`), but not for `reason` `missing` (no bearer: crawlers
+    on `/v1/admin/*`) or `expired` (the operator's own page with an old access token; it refreshes once and
+    goes on). A negative list on purpose: a reason added later counts by default.
+  - **Not counted:** the key's use (scripts, `make smoke-prod` with the key; each call is audited, and
+    counting it would make every script run a notice), and `admin second factor required` (a real operator
+    without a fresh second factor: an audit row, and the page handles every 12-hour re-challenge itself).
+- **The metric** `ryft_notices` (`monitoring.tf`): `DELTA`, `INT64`, like `ryft_ticks`. Its filter is
+  `resource.type="cloud_run_revision"`, `resource.labels.service_name="api"`, the stdout log, and the three
+  messages with the two reasons left out. Every OR group has its parentheses, because in Logging's query
+  language OR binds tighter than AND. One label, `kind` = `EXTRACT(jsonPayload.message)`: the three
+  messages, a closed set by the filter. Not gated, free like the others.
+- **The policy** "RYFT · Feedback and admin access" (`alerts.tf`, a third block, `count = local.alerting ?
+  1 : 0`, both channels, severity WARNING). A classic threshold on
+  `logging.googleapis.com/user/ryft_notices`: `ALIGN_SUM` over 300 s, `REDUCE_SUM` by `metric.label.kind`,
+  `> 0`, held 60 s, trigger 1, `evaluation_missing_data` `EVALUATION_MISSING_DATA_INACTIVE`, `auto_close`
+  1800 s, `notification_prompts` `["OPENED"]`. The documentation's subject is `RYFT · ${metric.label.kind}`.
+  Its text gives the first look per kind: `/admin` → Feedback or `scripts/beta_report.sh feedback`; the
+  lost-phone runbook (OPERATIONS → Beta → Admin sign-in → Lost phone, or any doubt about the admin account)
+  and `/admin` → Audit; Logs Explorer for the reason. It holds "First look" and `alert_look` like the others.
+  - **Why a classic threshold:** D236 left `increase()` over a sparse `DELTA` counter unverified, and one
+    feedback is one point. A 5-minute sum `> 0` holds for that one point.
+  - **Why missing data inactive:** without it, an incident opened by one feedback stays open until
+    `auto_close` (30 minutes without data), and a second feedback in that time falls into the open incident
+    without a notification. With `INACTIVE`, missing data counts as not firing. The incident closes once the
+    5-minute window is empty, and the next line opens a new one and notifies again. Google says the setting
+    needs a duration of at least 60 s (it is ignored at 0), hence 60 s. Only the opening is notified, so
+    there is no closing mail for every feedback.
+  - A flood (a scanner's bearers) stays one incident while the lines keep coming: the series stays above 0.
+  - **Schema:** `terraform validate` checked every field against the pinned provider, 8.11.0
+    (`.terraform.lock.hcl`). `notification_prompts`, `documentation.subject` and `evaluation_missing_data`
+    are in it, and none was left out. `terraform providers schema -json` needed an approval this headless run
+    didn't have, so validate was the check: it fails on any argument the schema lacks.
+- **The price** *(search)*: Google's pricing page (https://cloud.google.com/products/observability/pricing)
+  was read only through search snippets, on 2026-11-19. Monitoring charges for alerting no sooner than
+  2027-09-01. Then it charges $0.35 a month per metric reference in a policy, and $0.50 per million points
+  returned. This policy has one metric reference and at most three series (one per kind), usually none. So
+  it costs $0 until then and about $0.35–0.45 a month after. At most 3 series × 43,800 one-minute
+  evaluations ≈ 0.13 M points ≈ $0.07, if it is evaluated every minute. The brief's $1.50 is D236's
+  reading A, which is no longer on the page. **Unverified:** the date and both rates from the page itself,
+  how often a threshold condition is evaluated (the points), and whether the free allotment applies.
+- **Rejected:**
+  - A log-match condition: its notification may carry the line's fields, `user_id` among them (logx's
+    request keys).
+  - Three metrics, one per line: three metric references, three prices, the same signal.
+  - PromQL: `increase()` over the sparse counter is unverified (D236).
+  - A key added to each line to filter on: a change to two existing lines and their key tests, for nothing
+    the message doesn't already say.
+  - Counting the key: every script run would notify.
+  - A dashboard tile: it would change the dashboard in this plan. It is a free follow-up PR.
+- **Lost, or unchecked:**
+  - Per-instance dedupe. Two instances that serve a session's first 10 minutes write two `admin signed in`
+    lines. Within 5 minutes they are one incident; further apart, two notices. An instance that joins
+    later sees an older TOTP and writes nothing.
+  - A stolen access token whose TOTP is over 10 minutes old writes no `admin signed in`. The audit read
+    stays (OPERATIONS → Beta → Admin sign-in).
+  - A `LOG_LEVEL` above `info` silences all three lines, and the policy with them (as with condition 3).
+  - The rendering of `${metric.label.kind}` in the subject and the text. Google's documentation-variables
+    page says a label kept by `group_by` is available, and a value that doesn't start with a letter is left
+    out (all three start with one). 14a.9 checks it.
+  - The latency: a log-based metric's points arrive a minute or two after the line. With the 60 s hold
+    and the evaluation, that is about 5 minutes.
+  - The policy is created right after its metric, and a "Cannot find metric(s)" error is possible while
+    Monitoring doesn't know the new descriptor yet. 14a.9 plans again then. Not seen here.
+  - The price (above).
+- **Privacy:** no new processor: Monitoring, Logging and the Google Cloud app are Google's, as since D236.
+  `admin signed in` has no key of its own. The label holds the message only, a closed set, and no id
+  becomes a label. The mail and the push carry the policy's name, the kind and the documentation's text,
+  which names no account, no report and no reason. A test pins that: no `user_id`, `email`, `feedback_id`,
+  `request_id` or `admin_actor`, and no `${log.…}` variable. The privacy text needn't change.
+- **Plan counts:** with alerting on, 2 to add, 0 to change, 0 to destroy (`google_logging_metric.notices`,
+  `google_monitoring_alert_policy.notices[0]`). With it off, 1 to add. The same under the stop line and
+  with `serve = false`. No existing resource's address or attribute changed (comments only). The
+  `monitoring` output gains the policy and the metric. A rebuild's apply 1 is 123 to add.
+- **Tests** (`tests/monitoring.tftest.hcl`, `tests/edge.tftest.hcl`; `terraform test` 76 passed):
+  - `six_conditions_at_most`: six with every gate open, three policy blocks.
+  - Every loop over the policies includes the new one, and the output lists six.
+  - Gate off: no notices policy, and the metric exists. The stop line keeps it (five policies), and so
+    does `serve = false`.
+  - The metric's filter exactly, its one label, and the forbidden-label regex.
+  - The condition's aggregation, comparison, threshold, duration, missing data, `group_by` and trigger.
+  - The documentation's kinds, `/admin`, the script and the lost-phone runbook, with no identifier and
+    no `${log.`.
+- **Consequences:**
+  - `infra/gcp/{monitoring,alerts,outputs}.tf` and `README.md`.
+  - `OBSERVABILITY.md` → Cloud Monitoring: the third metric, six conditions, What D236 dropped, Cost.
+  - `OPERATIONS.md` → GCP → 4 (123), 11, 14a.8 (built), 14a.9 (new: the plan, the apply, a test), and
+    When an alert fires; Beta → Admin sign-in; Data protection (logs).
+  - The user's apply is 14a.9.

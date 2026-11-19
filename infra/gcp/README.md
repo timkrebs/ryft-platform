@@ -21,8 +21,8 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 | `edge.tf` | the edge (D242, from `edge = "built"` on): a global external Application Load Balancer on one IPv4 address (no IPv6), a serverless NEG and a backend service per public service, a URL map by host (anything else 301 to the site), an SSL policy (MODERN, TLS 1.2+), Certificate Manager certificates by DNS authorization in one map, HTTPS on 443 and a redirect on 80; one Cloud Armor policy: six WAF rules in preview (`local.edge_waf_preview`), an enforced rate rule per address, allow by default. Output `edge_ip` |
 | `site.tf`, `site.auto.tfvars` | the site's records on Firebase Hosting (C1, D233): the apex A set and its `hosting-site=` TXT (joins the apex TXT set), and www's A set and TXT or its CNAME, from the values the Firebase wizard shows. Empty adds nothing |
 | `logging.tf` | the bucket `ryft-logs` (europe-west1, 14 days) and the sink into it; from `edge = "built"` on two exclusions: the load balancer's requests but Cloud Armor's denials and preview matches, and api's and ingest's Cloud Run request log below 5xx (D242) |
-| `monitoring.tf` | Cloud Monitoring, RYFT's only observability (D236): the log-based metrics `ryft_ticks` (by `result`) and `ryft_errors`, the uptime checks (the site's `/`, `/privacy` and AASA always; api's and ingest's `/health/ready` while they're public; every 5 minutes from 3 locations), the dashboard "RYFT · Overview". All free at RYFT's volume, so ungated. From `edge = "built"` on: `ryft_edge_denials` and `ryft_edge_preview_matches` (by `priority`) and four edge tiles |
-| `alerts.tf` | the five alert policies, one condition each (uptime failing, 5xx over 2 %, tick missing, dead letters held, event backlog over 15 minutes), to both notification channels, the email first, then the app's; only once `alert_app_channel` is set (step 11), the tick's only while the tick runs; the plan fails if that is the email channel (D237) |
+| `monitoring.tf` | Cloud Monitoring, RYFT's only observability (D236): the log-based metrics `ryft_ticks` (by `result`), `ryft_errors` and `ryft_notices` (D244: api's `feedback received`, `admin signed in` and `admin auth rejected` but for reasons `missing` and `expired`, by `kind`), the uptime checks (the site's `/`, `/privacy` and AASA always; api's and ingest's `/health/ready` while they're public; every 5 minutes from 3 locations), the dashboard "RYFT · Overview". All free at RYFT's volume, so ungated. From `edge = "built"` on: `ryft_edge_denials` and `ryft_edge_preview_matches` (by `priority`) and four edge tiles |
+| `alerts.tf` | the six alert policies, one condition each (uptime failing, 5xx over 2 %, tick missing, dead letters held, event backlog over 15 minutes, and since D244 feedback and admin access), to both notification channels, the email first, then the app's; only once `alert_app_channel` is set (step 11), the tick's only while the tick runs; the plan fails if that is the email channel (D237). Six is the cap, a test (`six_conditions_at_most`) |
 | `checks.tf` | warnings for what fails silently: the `_Default` log sink still on, a mapping not Ready, a disabled email channel (the app's has no data source, D237: step 11.4 tests it) |
 
 ## What it does not own (design §9)
@@ -96,12 +96,13 @@ else.
 
 ## The applies
 
-The arithmetic of each count is in the runbook (steps 4, 9, 11 and the stop line).
+The arithmetic of each count is in the runbook (steps 4, 9, 11, 14a.9 and the stop line).
 
 1. **Apply 1** (`serve = false`, runbook step 4): everything except the invokers, the deployer's
-   bindings on the services and the mappings. On a rebuild today 122 to add, 0 to change, 0 to
+   bindings on the services and the mappings. On a rebuild today 123 to add, 0 to change, 0 to
    destroy: the 118 applied (116 before `posthog-project-key`, D231), less `grafana-reader` and its
-   binding, plus D236's 6 (2 log-based metrics, the site's 3 uptime checks, the dashboard).
+   binding, plus D236's 6 (2 log-based metrics, the site's 3 uptime checks, the dashboard) and
+   D244's `ryft_notices`.
 2. **Apply 2** (`serve = true`, step 9, after CI's first deploy at step 8): 15 to add (4 invoker
    bindings, 4 + 1 deployer bindings on the services and the job, 2 mappings, 2 CNAMEs, api's and
    ingest's uptime checks), 1 to change (the tick resumes), 1 to destroy (the deployer's project-wide
@@ -135,6 +136,11 @@ The arithmetic of each count is in the runbook (steps 4, 9, 11 and the stop line
    change (the two record sets, CNAME → A), 0 to destroy. `locked`: 0 to add, 0 to change, 2 to
    destroy (the mappings). Each way back is the reverse; `built` → `off` destroys the 26 (the APIs
    stay on).
+8. **The sixth condition** (D244, step 14a.9, after its PR's merge and deploy): 2 to add
+   (`google_logging_metric.notices`, `google_monitoring_alert_policy.notices[0]`), 0 to change, 0 to
+   destroy; 1 to add (the metric) with `alert_app_channel` unset. The output `monitoring` lists the
+   policy and the metric. The stop line and `serve = false` keep both (no line comes, so it is quiet):
+   their counts above are unchanged.
 
 ```bash
 cd infra/gcp
@@ -156,8 +162,9 @@ HCP too. Null (the default, unset) keeps every alert policy out; an empty string
 The apply account `hcp-terraform-apply` needs four Monitoring roles for `alerts.tf` and
 `monitoring.tf` beyond the bootstrap's (step 11.2): `roles/monitoring.uptimeCheckConfigEditor`,
 `roles/monitoring.dashboardEditor`, `roles/monitoring.alertPolicyEditor` and
-`roles/monitoring.notificationChannelViewer`. The log-based metrics need `logging.configWriter`, which
-it already holds for the bucket and the sink. The edge (D242, step 16.1) needs three more:
+`roles/monitoring.notificationChannelViewer` (`alertPolicyEditor` covers the sixth policy, D244).
+The log-based metrics need `logging.configWriter`, which it already holds for the bucket and the
+sink (and so for `ryft_notices`, D244). The edge (D242, step 16.1) needs three more:
 `roles/compute.loadBalancerAdmin`, `roles/compute.securityAdmin` (the Cloud Armor policy and its
 attachment) and `roles/certificatemanager.editor`; the plan account's `roles/viewer` covers the reads.
 
