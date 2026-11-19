@@ -40,7 +40,7 @@ func TestInstrumentLabelsByInnerRouteAcrossRequestCopies(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", copying(WithRoutes(api)))
-	h := Instrument(slog.New(slog.NewTextHandler(io.Discard, nil)), mux)
+	h := Instrument(slog.New(slog.NewTextHandler(io.Discard, nil)), nil, mux)
 
 	for _, day := range []string{"2026-10-17", "2026-10-18"} {
 		rec := httptest.NewRecorder()
@@ -58,7 +58,7 @@ func TestInstrumentLabelsByInnerRouteAcrossRequestCopies(t *testing.T) {
 }
 
 func chain(h http.Handler) http.Handler {
-	return Instrument(slog.New(slog.NewTextHandler(io.Discard, nil)), Recover(SecurityHeaders(h)))
+	return Instrument(slog.New(slog.NewTextHandler(io.Discard, nil)), nil, Recover(SecurityHeaders(h)))
 }
 
 func decodeBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]string {

@@ -37,12 +37,17 @@ func spec() app.Spec {
 		beta      config.Beta
 		adminCfg  config.Admin
 		analytics config.Analytics
+		key       adminKey // ADMIN_API_KEY as the edge limit compares it; set by Load
 	)
 	return app.Spec{
 		Name:       "api",
 		Edge:       true,
 		Outbox:     app.EventOutbox, // every event the api publishes goes through the outbox (D101)
 		TickBudget: tickBudget,
+		// The break-glass key passes the edge's per-address limit as it passes the admin limit (D222):
+		// a flood that empties the shared buckets cannot lock it out. The same comparison as the admin
+		// chain's (adminKey); app calls this only after Load has set key.
+		LimitExempt: func(r *http.Request) bool { return key.presented(r) },
 		// Before any connection (D78): without the policy version the api cannot record or
 		// check consent, and a malformed ADMIN_WEB_ORIGINS must fail at once, not behind
 		// the database wait (TestMainRefusesBadAdminOriginsBeforeConnecting).
@@ -60,6 +65,7 @@ func spec() app.Spec {
 			if adminCfg, err = config.LoadAdmin(); err != nil {
 				return app.ConfigError{Msg: "admin config", Err: err}
 			}
+			key = newAdminKey(adminCfg.Key)
 			// A host that is no https origin stops the start (D231). The line says whether a
 			// key is set, never the key or the host.
 			if analytics, err = config.LoadAnalytics(); err != nil {
@@ -134,6 +140,7 @@ func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Bet
 		gate:     beta.Gate,
 		admin:    adminCfg,
 		authMode: authCfg.Mode,
+		clients:  d.Clients,
 	})}, nil
 }
 
@@ -146,6 +153,7 @@ type muxOptions struct {
 	gate     config.Mode                 // BETA_GATE
 	admin    config.Admin
 	authMode string
+	clients  *httpx.ClientKeys // the process's (app.Deps.Clients): the admin limit keys by it
 }
 
 // newMux is the api's routes: health, the tick, /v1 behind the auth middleware and the
@@ -227,7 +235,7 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	// The operator's routes: ADMIN_API_KEY, or an allow-listed operator's Supabase token (only with
 	// Supabase auth: a local apikey stack admits the key alone); absent without a key.
 	if adminCfg.Key != "" {
-		opts := adminOptions{Key: adminCfg.Key, Origins: adminCfg.WebOrigins, Timeout: readTimeout}
+		opts := adminOptions{Key: adminCfg.Key, Origins: adminCfg.WebOrigins, Timeout: readTimeout, Clients: o.clients}
 		if o.authMode == config.AuthSupabase {
 			opts.Verifier = verifier
 		}

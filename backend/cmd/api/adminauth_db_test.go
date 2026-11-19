@@ -64,9 +64,11 @@ func newAdminDBLog(t *testing.T, log *slog.Logger, origins ...string) *adminDB {
 	if d.target, err = st.EnsureUser(ctx, store.Identity{ID: uuid.New()}); err != nil {
 		t.Fatal(err)
 	}
-	// Instrument as in main: the request id and the matched route (the audit's action) come from it.
-	d.srv = httpx.Instrument(h.log, adminRoutes(h, adminOptions{Key: testAdminKey, Verifier: d.jwks.verifier(t), Origins: origins,
-		Limiter: wide(), Timeout: 5 * time.Second}))
+	// Instrument as in main: the request id and the matched route (the audit's action) come from it, and
+	// it reads the client with the same ClientKeys as the admin limit (app.Deps.Clients).
+	clients := httpx.NewClientKeys(1)
+	d.srv = httpx.Instrument(h.log, clients, adminRoutes(h, adminOptions{Key: testAdminKey, Verifier: d.jwks.verifier(t), Origins: origins,
+		Limiter: wide(), Clients: clients, Timeout: 5 * time.Second}))
 	return d
 }
 

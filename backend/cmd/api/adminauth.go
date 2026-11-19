@@ -10,12 +10,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/timkrebs/ryft/internal/auth"
+	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
@@ -48,8 +48,12 @@ type adminOptions struct {
 	Auditor  adminAuditor  // where mfa_required refusals are recorded; default the handler's store
 	Origins  []string      // ADMIN_WEB_ORIGINS: the pages that may read the answers; empty: none
 	Timeout  time.Duration // of the routes' work
-	// Per-address limit, per pod: 10/s with bursts of 20. A test passes its own.
-	Limiter *ratelimit.Limiter
+	// Per-address limit, per pod: 10/s with bursts of 20 for at most maxAdminAddrs addresses. A test
+	// passes its own.
+	Limiter *ratelimit.Capped
+	// Clients is who a request's client is: the process's (app.Deps.Clients), so the admin limit keys
+	// by what the edge limit and the "client address" line read. nil: a set of its own, hops 1 (tests).
+	Clients *httpx.ClientKeys
 	Now     func() time.Time // default time.Now
 }
 
@@ -133,21 +137,22 @@ type adminAuditor interface {
 }
 
 type adminAuth struct {
-	keySum      [sha256.Size]byte
+	key         adminKey
 	fingerprint string
 	verifier    auth.Verifier
 	accounts    adminAccounts
 	auditor     adminAuditor // nil: no audit (tests without a database)
 	log         *slog.Logger
-	limiter     *addrLimit
+	clients     *httpx.ClientKeys
+	limiter     *ratelimit.Capped
 	mfaAudit    *ratelimit.Limiter // bounds the audit rows of mfa_required refusals per operator
 	pattern     func(*http.Request) string
 	now         func() time.Time
 }
 
 func newAdminAuth(h *handler, o adminOptions, pattern func(*http.Request) string) adminAuth {
-	a := adminAuth{keySum: sha256.Sum256([]byte(o.Key)), fingerprint: keyFingerprint(o.Key), verifier: o.Verifier,
-		accounts: o.Accounts, auditor: o.Auditor, log: h.log, pattern: pattern, now: o.Now,
+	a := adminAuth{key: newAdminKey(o.Key), fingerprint: keyFingerprint(o.Key), verifier: o.Verifier,
+		accounts: o.Accounts, auditor: o.Auditor, log: h.log, clients: o.Clients, limiter: o.Limiter, pattern: pattern, now: o.Now,
 		// A burst of 3, then one a minute, per operator and pod: a stale session that retries does not flood the table.
 		mfaAudit: ratelimit.New(1.0/60, 3)}
 	if a.accounts == nil && h.st != nil {
@@ -160,69 +165,55 @@ func newAdminAuth(h *handler, o adminOptions, pattern func(*http.Request) string
 	if a.now == nil {
 		a.now = time.Now
 	}
-	lim := o.Limiter
-	if lim == nil {
-		lim = ratelimit.New(10, 20)
+	if a.clients == nil {
+		a.clients = httpx.NewClientKeys(config.DefaultXFFTrustedHops)
 	}
-	a.limiter = newAddrLimit(lim, maxAdminAddrs, a.now)
+	if a.limiter == nil {
+		a.limiter = ratelimit.NewCapped(10, 20, maxAdminAddrs, ratelimit.Idle(adminAddrIdle), ratelimit.Clock(a.now))
+	}
 	return a
 }
 
 const (
 	// maxAdminAddrs caps the addresses the admin limit keeps a bucket for, per instance (D155): an
 	// operator's page and a script or two use a handful, and IPv6 (one /64 per address,
-	// httpx.ClientIP) gives a flood as many as it likes.
+	// httpx.ClientKeys) gives a flood as many as it likes. Beyond it the newcomers share one bucket
+	// (ratelimit.Capped), so a flood from many addresses gets 10/s together while the known ones keep
+	// theirs.
 	maxAdminAddrs = 4096
-	// adminAddrIdle is when an address no longer counts against the cap: the limiter's own idle time,
-	// after which its bucket is full again anyway.
+	// adminAddrIdle is when an address no longer counts against the cap; its bucket is full again
+	// after 2 s anyway.
 	adminAddrIdle = 10 * time.Minute
-	// adminOverflow is the one bucket every address beyond the cap shares.
-	adminOverflow = "overflow"
 )
 
-// addrLimit is the per-address limit with a cap on its addresses. An address it knows keeps its own bucket;
-// a new one gets one while fewer than max are known (an address unseen for adminAddrIdle is forgotten, swept
-// at most once a second); beyond that every new address shares the overflow bucket, so a flood from many
-// addresses gets 10/s together (it fails closed) while the known ones are not affected. The limiter's own map
-// holds no more keys than this set passed it within its idle time (it sweeps every 1024 calls).
-type addrLimit struct {
-	lim *ratelimit.Limiter
-	max int
-	now func() time.Time
-
-	mu    sync.Mutex
-	seen  map[string]time.Time // address → last request
-	swept time.Time
+// adminKey is ADMIN_API_KEY as the admin chain and the edge limit's exemption (spec) compare a bearer
+// with it: one comparison, so the two cannot drift.
+type adminKey struct {
+	sum [sha256.Size]byte
+	set bool // false: no key, the admin routes are off and no bearer is the key
 }
 
-func newAddrLimit(lim *ratelimit.Limiter, capacity int, now func() time.Time) *addrLimit {
-	return &addrLimit{lim: lim, max: capacity, now: now, seen: map[string]time.Time{}}
+func newAdminKey(key string) adminKey {
+	return adminKey{sum: sha256.Sum256([]byte(key)), set: key != ""}
 }
 
-// Allow takes a token for addr's bucket, or the overflow bucket's when addr is new and the cap is reached.
-func (l *addrLimit) Allow(addr string) (bool, time.Duration) { return l.lim.Allow(l.key(addr)) }
+// is reports whether token is the key. Hashing both sides gives ConstantTimeCompare equal lengths, so
+// the key's length is not a side channel either.
+func (k adminKey) is(token string) bool {
+	sum := sha256.Sum256([]byte(token))
+	return subtle.ConstantTimeCompare(sum[:], k.sum[:]) == 1 && k.set
+}
 
-func (l *addrLimit) key(addr string) string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	now := l.now()
-	if _, ok := l.seen[addr]; ok {
-		l.seen[addr] = now
-		return addr
+// presented reports whether r is a request to /v1/admin/ that bears the key: the edge limit passes it
+// untouched (Spec.LimitExempt), as the admin limit does (limit), so a flood that empties the shared
+// buckets cannot lock the operator's break-glass key out (D222). The path is checked first, so other
+// requests cost no hash.
+func (k adminKey) presented(r *http.Request) bool {
+	if !k.set || !strings.HasPrefix(r.URL.Path, "/v1/admin/") {
+		return false
 	}
-	if len(l.seen) >= l.max && now.Sub(l.swept) >= time.Second {
-		l.swept = now
-		for k, t := range l.seen {
-			if now.Sub(t) > adminAddrIdle {
-				delete(l.seen, k)
-			}
-		}
-	}
-	if len(l.seen) >= l.max {
-		return adminOverflow
-	}
-	l.seen[addr] = now
-	return addr
+	token, ok := auth.Bearer(r)
+	return ok && k.is(token)
 }
 
 // initAdminSeries creates the admin series at 0. increase() over a counter that is born at 1 sees no
@@ -238,8 +229,10 @@ func initAdminSeries() {
 }
 
 // limit is the per-address limit in front of the bearer check, so a flood of bad credentials costs no
-// token verification and no database call. The address (httpx.ClientIP) is only a map key here: the limit
-// never logs it and it is never a metric label. The map has a cap (addrLimit, maxAdminAddrs; D155).
+// token verification and no database call. It keys by the process's httpx.ClientKeys (an HMAC of the
+// address, never the address, and the shared fallback key when none can be read): the limit never logs
+// it and it is never a metric label. The map has a cap (ratelimit.Capped, maxAdminAddrs; D155). It sits
+// behind the edge limit of every api request (internal/app, 20/s), which the key passes too.
 //
 // A request that presents ADMIN_API_KEY passes untouched, before the limiter: one IPv6 /48 holds 65,536
 // /64 keys, enough to fill the cap and keep the shared overflow bucket empty, and the operator's
@@ -251,7 +244,7 @@ func (a adminAuth) limit(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if ok, wait := a.limiter.Allow(httpx.ClientIP(r)); !ok {
+		if ok, wait := a.limiter.Allow(a.clients.Key(r)); !ok {
 			metrics.RateLimited.WithLabelValues("admin_ip").Inc()
 			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
 			httpx.WriteError(w, http.StatusTooManyRequests, "too many requests")
@@ -326,12 +319,8 @@ func (a adminAuth) require(next http.Handler) http.Handler {
 	})
 }
 
-// isKey reports whether token is ADMIN_API_KEY. Hashing both sides gives ConstantTimeCompare equal lengths,
-// so the key's length is not a side channel either.
-func (a adminAuth) isKey(token string) bool {
-	sum := sha256.Sum256([]byte(token))
-	return subtle.ConstantTimeCompare(sum[:], a.keySum[:]) == 1
-}
+// isKey reports whether token is ADMIN_API_KEY (adminKey.is).
+func (a adminAuth) isKey(token string) bool { return a.key.is(token) }
 
 // auditMFA records the refusal of a real operator for want of a fresh second factor: who, which route,
 // 403, no details. A stolen password plus a session without the second factor is what this shows. The

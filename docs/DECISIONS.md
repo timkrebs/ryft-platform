@@ -3230,6 +3230,8 @@ Engine, and fails with the changed fields grouped by field.
 
 ## D155 — A per-address limiter on `/v1/admin/*`, keyed by the address Traefik appends
 
+*Amended by D222 (Cloud Run) and D240 (`httpx.ClientKeys`, `ratelimit.Capped`, shared with the edge limit).*
+
 - **Decision:** 10 requests a second, bursts of 20, per api pod, before the bearer check (so a flood of bad
   credentials costs no token verification and no database call); over the limit `429` with `Retry-After`. The key
   is `httpx.ClientIP`: the rightmost `X-Forwarded-For` entry, IPv6 masked to /64, else the peer.
@@ -4802,7 +4804,9 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     130.211.0.0/22 and their IPv6 /64s), and take the next entry as it is, else `RemoteAddr`; never the leftmost
     entry. A private, CGNAT, link-local or loopback entry is a client (one inside a VPC), not a hop: skipping it would
     let the forged entry to its left be the key (security review of A2). IPv6 is cut to /64.
-    `TestStepNineUnderGoogleFrontEnd` proves the choice for each shape Google could send.
+    `TestStepNineUnderGoogleFrontEnd` proves the choice for each shape Google could send. *Amended by D240:* it is
+    `httpx.ClientKeys` now, the `XFF_TRUSTED_HOPS`-th entry, with no `RemoteAddr` (a shared fallback key instead),
+    `picked` is `xff`|`fallback`, and the limits key by an HMAC of the address.
   - **No IP address in any log line** (head-architect's rule, 2026-11-15): the privacy text in force promises logs
     without them, so no address is logged, whole or as a /24 or /48. The `client address` line (info, at most once
     a minute per instance, no request ID, user, route or header) holds `picked` (`xff`|`remote`), `xff_index` (the
@@ -5526,6 +5530,103 @@ _Grafana half superseded by D236._
   `support@` (D214). The drill adds no processor and no place. The proposed counter carries no personal data.
 - **Consequences:** `OPERATIONS.md` → GCP → 14a; `STATUS.md`.
 
+## D240 — D53's per-IP limit on GCP: in api and ingest themselves, keyed by `XFF_TRUSTED_HOPS` (2026-11-18; amends D53, D155, D222)
+
+- **Context:** D53's limit (20 requests a second per client address, bursts of 50, before any token) was Traefik's
+  middleware on EKS. On Cloud Run nothing in front does it, so requests without a token reached api and ingest
+  unthrottled; max instances (api 3, ingest 2) cap the bill, not availability. `API.md` still documented it. The
+  user decided on 2026-11-18 to bring it back now; an external Application Load Balancer with Cloud Armor follows
+  in a later PR, so the limit must keep working behind it.
+- **Decision:**
+  - **Where:** `internal/app`, Edge services only (api, ingest), between SecurityHeaders and the start gate:
+    `Instrument → Recover → SecurityHeaders → limit → gate`. So the `429` carries `X-Request-ID`, the security
+    headers and an access line, and a flood during a cold start is refused at once instead of waiting for it.
+  - **Values:** D53's, 20/s, bursts of 50, a token bucket per client key, in memory per instance (stdlib).
+  - **The answer:** Traefik's, as `API.md` documents it. Status `429`, body `Too Many Requests` (no newline,
+    `text/plain; charset=utf-8`, no JSON) and no CORS headers. `Retry-After` is the wait rounded up, at least 1
+    (with 20/s it is always 1). `X-Retry-In` is the wait as a Go duration (`37.5ms`).
+  - **The client** (`httpx.ClientKeys`, one per process, shared by this limit, `/v1/admin`'s limit and the
+    sampled `client address` line, so they agree):
+    - walk `X-Forwarded-For` from the right over all its lines;
+    - skip Google's front-end ranges without counting them (as D222);
+    - the client is the `XFF_TRUSTED_HOPS`-th remaining entry, and nothing left of it is read;
+    - IPv6 is cut to its /64.
+  - **`XFF_TRUSTED_HOPS`** is 1–8, default 1. A required key of `deploy/run/config.env`, rendered into api and
+    ingest only (D238's pattern), so the count in force is the one in git. It is 1 today: Cloud Run's front end
+    appends the caller's address. Behind the external Application Load Balancer it is 2: the LB appends
+    `<client>,<lb-ip>`, which that PR's step-9-style `xff_index` check confirms.
+    - **2 only with ingress `internal-and-cloud-load-balancing`**, in the same PR. With ingress `all`, a caller
+      that reaches `run.app` or the domain mapping directly arrives with one appended entry, and a count of 2
+      would take the forged entry left of it. `scripts/check_cloudrun.py` refuses that combination.
+  - **The fallback:** a missing header, fewer countable entries than the hop count, or an entry that doesn't parse
+    before the client's is reached: one shared key (`RemoteAddr` is no longer read; it was the admin limit's
+    fallback). It is safe because on Cloud Run every request through Google's front end carries the entry Google
+    appended. Only a wrong hop count or a path that isn't Google's front end lands in the fallback. Those requests
+    share one bucket, so the limit still holds (it fails closed) and nothing a client controls becomes a key of
+    its own. `RemoteAddr` on Cloud Run is Google's front end anyway, a key every client would share.
+  - **Memory bound:** `ratelimit.Capped`, the admin limit's `addrLimit` moved into `internal/ratelimit` with a
+    configurable idle time and one map. The edge limit keeps at most 65,536 keys per instance, about 6.3 MiB at
+    the cap (measured). A key idle for a minute is dropped: its bucket is full again after 2.5 s, so nothing is
+    lost. The sweep runs every 1,024 calls, and at most once a second while the map is full.
+    - **When the map is full:** a known key keeps its bucket. Every new key shares one overflow bucket (20/s
+      together), so a flood of new addresses fails closed for the newcomers and leaves the known ones alone.
+    - The admin limit keeps its values (10/s, bursts of 20, 4,096 keys, 10 minutes) on the same type.
+  - **Keys are HMACs:** HMAC-SHA256 of the normalized address under a random 32-byte key made at start, cut to
+    16 bytes. Neither limit's map, nor a heap dump of it, holds a plain address, and a key means nothing outside
+    the process.
+  - **Exempt** (they take no token):
+    - the health paths (`/health/live`, `/health/ready`, and compose's `/healthz` and `/readyz`): Cloud Run's
+      probes arrive without `X-Forwarded-For` and would share the fallback, and the uptime checks must not fail
+      because someone floods. `/health/ready` reuses its answer for 5 s, so a flood there costs no database
+      call;
+    - `POST /internal/tick`: Pub/Sub's push of the tick, the only push api and ingest take. Its token is the
+      tick's to check. `TestEdgeLimitExemptsEveryPushOfApiAndIngest` fails if the topology gains a push to
+      either service on a path the limit counts;
+    - on api, a request to `/v1/admin/*` bearing `ADMIN_API_KEY`, compared in constant time by the admin
+      chain's own code (`Spec.LimitExempt`, `adminKey`). This keeps D222's guarantee that a flood can't lock
+      the break-glass key out.
+    - Preflights are counted like any request (Traefik counted them too).
+- **Privacy (D222):** the limit logs nothing. A refusal shows only as `ryft_rate_limited_total{class="ip"}` and as
+  the access line's `code` `ip_limit`. No address is in any log line, metric label or store, and the limit sets
+  no trace attribute (`TestEdgeLimitLogsNoAddress`). The `client address` line's `picked` is `xff` or
+  `fallback` (was `remote`).
+- **Rejected:**
+  - Counting hops without the Google-range skip. That changes what D222's step 9 proved for today's shape and
+    gains nothing at hops 1.
+  - Evicting the oldest key when the map is full (an LRU). A caller rotating /64s would evict real clients and
+    get a fresh burst of 50 for each new key: the limit fails open.
+  - `RemoteAddr` as the fallback, which keys nothing useful on Cloud Run.
+  - Plain addresses as map keys.
+  - A production switch to turn the limit off for tests.
+  - Waiting for Cloud Armor, which is the next PR and per-LB, not per-instance.
+- **Unchecked here:** the shape behind the LB (`<client>,<lb-ip>` with nothing more from Cloud Run's front end) is
+  Google's documented header for the external Application Load Balancer, not observed. That PR's `xff_index`
+  check decides between 2 and another value.
+- **Consequences:**
+  - The limits are per instance and reset at a cold start. One address gets at most max-instances × 20/s, and
+    with scale to zero usually one instance's worth.
+  - **The map can be held full from one IPv6 /48** (65,536 /64s, free from a tunnel broker). Touching each of
+    them once a minute takes about 1,100 requests a second per instance, and a little more traffic from
+    elsewhere drains the shared bucket. While that lasts, every client that is new or was idle for over a
+    minute, testers included, gets `429` on api and ingest. The known keys keep their buckets. Keying IPv6 by
+    /48, or counting a /48 once against the cap, would raise that bar. It is left for a follow-up if it is
+    ever seen. Cloud Armor's rules in front (the next PR) are the answer.
+  - **The tick is the one public path the limit doesn't guard.** A flood of fake ticks costs a token check (a
+    parse, an RSA verification for a real Google key id) and two log lines each, bounded by max instances like
+    any flood. Limiting it would let a flood that fills the map push Google's real tick into the shared
+    bucket, and the brief exempts what Google pushes.
+  - **Multi-line `X-Forwarded-For` is read last line first.** Whether Google's front end appends to the last
+    line when a client sends several isn't documented. The runbook's burst 2b sends two forged lines and
+    would show it.
+  - Requests without `X-Forwarded-For` share the fallback bucket: local compose, `make smoke`, `make load`.
+    The smoke is sequential and stays under it. `scripts/load/day.js` gives each k6 user an address of its
+    own in 198.18.0.0/15, so the load test measures the services, not this limit.
+  - Files: `internal/httpx` (`ClientKeys`; `Instrument` takes it), `internal/ratelimit` (`Capped`, `Idle`,
+    `Clock`), `internal/app` (`iplimit.go`, `Spec.LimitExempt`, `Deps.Clients`), `internal/config`
+    (`XFFTrustedHops`), `cmd/api` (`adminKey`, the admin limit on `Capped`), `scripts/cloudrun_render.py`,
+    `scripts/check_cloudrun.py`, `deploy/run/{config.env,api.yaml,ingest.yaml}`, `API.md` (2026-11-18),
+    `OBSERVABILITY.md`, `OPERATIONS.md` → GCP → The per-IP limit.
+
 ## D241 — `BETA_GATE` off: the beta has no invite codes (**the user's decision**, 2026-11-18; amends D238)
 
 - **Context:** D238 set `BETA_GATE=warn` on api and ingest, with `on` after a stop rule and a code for every
@@ -5540,7 +5641,7 @@ _Grafana half superseded by D236._
 - **Unchanged:** `CONSENT_ENFORCE` (not in `config.env`, so the default `on` holds): nothing is synced or
   scored without consent to the current policy. Also unchanged are the per-user limits, the code routes
   (`POST /v1/me/invite`, `/v1/admin/invites`) and the stored grants. An account that redeemed a code keeps
-  its row. The per-IP limit on GCP is #211 (D240), merged separately.
+  its row. The per-IP limit on GCP (#211, D240) is merged and deployed (2026-11-19), with `XFF_TRUSTED_HOPS=1`.
 - **Amends D238:** its "`on` before the beta is opened to anyone not invited" no longer holds. Who gets the
   app is TestFlight's list. The server admits any confirmed account. OPERATIONS → GCP → The beta gate keeps
   its steps for a later `warn` or `on`, behind a note that the gate is `off`.
@@ -5548,9 +5649,9 @@ _Grafana half superseded by D236._
   code") for codes nobody will hand out.
 - **The risk, which the user confirms with the PR:** anyone who signs up with Supabase (*Confirm email* is on,
   D159) and has the API's address can sync their own data after consenting. Each new account gets its own
-  per-user budget, so the per-user limits don't cap many accounts; the per-IP limit (D240, once merged) and
-  max instances cap the load and the bill. What is stored is theirs, under the same consent and deletion
-  rules. App Attest is the answer that is still to be decided.
+  per-user budget, so the per-user limits don't cap many accounts; the per-IP limit (D240) and max instances
+  cap the load and the bill. What is stored is theirs, under the same consent and deletion rules. App Attest is
+  the answer that is still to be decided.
 - **Privacy:** no new processor and no new data.
 - **Consequences:** `deploy/run/config.env`; `OPERATIONS.md` → GCP → The beta gate (the note) and Beta → The
   gates and their modes (the GCP note); `scripts/smoke_prod.sh`'s header comment; `STATUS.md`. The merge's

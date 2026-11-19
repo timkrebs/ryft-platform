@@ -642,10 +642,11 @@ for i in 1 2 3; do
 done
 ```
 
-Then which entry `httpx.ClientIP` took. api and ingest log a `client address` line for a request
-with `X-Forwarded-For`, at most once a minute per instance. It holds no address (D222: no IP
-address in any log line), only `picked` (`xff` or `remote`), `xff_index` (the picked entry's
-position from the left, from 0) and `xff_entries`. That `ClientIP` takes the right entry in each
+Then which entry `httpx.ClientKeys` took (at `XFF_TRUSTED_HOPS`, 1 here; D240). api and ingest log
+a `client address` line for a request with `X-Forwarded-For`, at most once a minute per instance.
+It holds no address (D222: no IP address in any log line), only `picked` (`xff` or `fallback`, the
+shared key when no entry would do), `xff_index` (the picked entry's position from the left, from 0)
+and `xff_entries`. That `ClientKeys` takes the right entry in each
 shape Google could send (the address appended, a hop of its own after it, nothing appended) and
 that `xff_index` points at that entry is proven by `TestStepNineUnderGoogleFrontEnd` in
 `backend/internal/httpx`. This test checks which shape Google really sends.
@@ -660,12 +661,14 @@ Your requests are the lines with `xff_entries` 3 or more (other callers send non
 own). On both services:
 - **Pass:** `picked` is `xff` and `xff_index` is `3`: the entry Google appended after your three
   is the key. `xff_entries` is 4, or more if Google adds a hop from its known front-end ranges,
-  which `ClientIP` skips.
+  which `ClientKeys` skips.
 - **Stop for testers** (not for the deploy): `xff_index` is 4 or more. Google appends a hop that
-  `ClientIP` doesn't skip, so every client would share one bucket. A PR adds the range from
+  `ClientKeys` doesn't skip, so every client would share one bucket. A PR adds the range from
   Google's published front-end ranges to `googleFrontEnds`, with a test case.
 - **Stop for testers:** `xff_entries` is 3 and `xff_index` is 2. Google appended nothing, so
   the forged entry wins: the per-address limits can be dodged. Report it before the beta opens.
+- **Stop for testers:** `picked` is `fallback`. Fewer entries arrived than `XFF_TRUSTED_HOPS`
+  expects, so every client shares the fallback bucket: the value in `deploy/run/config.env` is wrong.
 - No line with 3 or more entries on a host: send that host's loop again.
 
 3. `make smoke-supabase` against the two hosts, as the smoke user (step 9's `REF` is still set):
@@ -2671,6 +2674,130 @@ mistake needs no rollback: a new code, or `scripts/user.sh <id> --grant` (**Beta
 the smoke user, then `gh workflow run deploy.yml --ref main -R timkrebs/ryft-platform`), a tester who
 redeemed is refused (roll back, then find out why), or the `beta` line says anything but `gate on`.
 
+### The per-IP limit (D53, D240)
+
+api and ingest limit each client address to 20 requests a second, bursts of 50, per instance, before
+any token is checked (`internal/app/iplimit.go`; Traefik did it on EKS). It covers every route except
+`/health/live`, `/health/ready` (and compose's `/healthz`, `/readyz`) and `POST /internal/tick`. On
+api, a `/v1/admin/*` request that bears `ADMIN_API_KEY` passes it too. Over the limit, the answer is
+`429`, the plain-text body `Too Many Requests`, `Retry-After: 1` and `X-Retry-In: <the wait, e.g.
+37.5ms>`. The refusal is logged only on the access line (`code` `ip_limit`) and counted in
+`ryft_rate_limited_total{class="ip"}`; the address appears nowhere (D222). The client is the
+`XFF_TRUSTED_HOPS`-th `X-Forwarded-For` entry from the right, not counting Google's front-end hops.
+`deploy/run/config.env` sets it, and it is 1 while Cloud Run's front end is all that is in front.
+
+**After the deploy that brings it** (or any later change to `XFF_TRUSTED_HOPS`). Run this from your
+Mac, on your own network: it needs `curl` 7.84 or newer for `%header{}` (`curl --version`), `jq` and
+`gcloud`. The burst goes over IPv4 (`-4`), so the address the logs must not hold is one you know. In
+zsh, run `setopt interactivecomments` first: stock zsh doesn't treat `#` as a comment at the prompt,
+and the blocks below end lines with one.
+
+```bash
+# 1. The value in force, on both services:
+for s in api ingest; do
+  gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod --format=json \
+    | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "XFF_TRUSTED_HOPS") | .value'
+done                                                          # 1, then 1
+
+# 2. The burst: 300 requests without a token, 20 at a time, one host after the other.
+for H in api.ryftlab.de ingest.ryftlab.de; do
+  curl -4 -s -o /dev/null -w "%{http_code} warm-up $H\n" "https://$H/v1/me"   # wakes an instance (scale to zero)
+  sleep 3                                                     # the bucket is full again after 2.5 s
+  seq 300 | xargs -P 20 -I{} curl -4 -s -o /dev/null \
+    -w '%{http_code} retry-after=%header{retry-after} x-retry-in=%header{x-retry-in} bytes=%{size_download} %{content_type}\n' \
+    "https://$H/v1/me" > "burst-$H.txt"
+  cut -d' ' -f1,2 "burst-$H.txt" | sort | uniq -c             # the summary
+  grep -m 2 '^429' "burst-$H.txt"                             # two refusals in full
+  sleep 3; curl -4 -s -o /dev/null -w "%{http_code} after 3 s $H\n" "https://$H/v1/me"
+done
+rm -f burst-api.ryftlab.de.txt burst-ingest.ryftlab.de.txt
+```
+
+What it should show, per host (the counts vary from run to run):
+
+```text
+401 warm-up api.ryftlab.de
+  62 401 retry-after=
+ 238 429 retry-after=1
+429 retry-after=1 x-retry-in=41.3ms bytes=17 text/plain; charset=utf-8
+429 retry-after=1 x-retry-in=12.9ms bytes=17 text/plain; charset=utf-8
+401 after 3 s api.ryftlab.de
+```
+
+- The `401`s are the first 50 (the burst) plus about 20 for every second the burst took, for each
+  instance that served it. With api's concurrency of 40, one instance usually takes all of it, so
+  expect roughly 50 to 80 on api. Ingest's concurrency of 4 can start its second instance, so up to
+  about 160 there. Every other line is a `429`.
+- Every `429` has `retry-after=1`, an `x-retry-in` under `50ms`, `bytes=17` (`Too Many Requests`) and
+  `text/plain`. The `401`s are the ordinary answer to a request without a token (JSON).
+- `after 3 s` is `401` again: the limit has let go.
+
+```bash
+# 2b. Forged entries don't buy a bucket. The same burst, on api only, with two X-Forwarded-For lines of
+#     your own: a fixed one and a different IPv6 /64 per request. Google appends your real address; if a
+#     forged entry were the key, every request would have a fresh bucket and nothing would be refused.
+H=api.ryftlab.de; sleep 3
+seq 300 | xargs -P 20 -I{} curl -4 -s -o /dev/null \
+  -H 'X-Forwarded-For: 192.0.2.1' -H 'X-Forwarded-For: 2001:db8:{}::1' \
+  -w '%{http_code} retry-after=%header{retry-after}\n' "https://$H/v1/me" | sort | uniq -c
+```
+
+The same split as step 2 (roughly 50 to 80 `401`s, the rest `429 retry-after=1`).
+
+```bash
+# 3. No line of either service holds your address (D222). Cloud Run's own request log
+#    (run.googleapis.com/requests) does hold it, in httpRequest.remoteIp: that is Google's log, and
+#    the filter leaves it out. Only the services' stdout and stderr are ours.
+MYIP=$(dig +short -4 myip.opendns.com @resolver1.opendns.com); echo "$MYIP"   # your IPv4 address
+F='resource.type="cloud_run_revision" AND (resource.labels.service_name="api" OR resource.labels.service_name="ingest") AND (logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout" OR logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstderr")'
+L=(--project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=1h --limit=20000)
+gcloud logging read "$F AND jsonPayload.code=\"ip_limit\"" "${L[@]}" --format='value(resource.labels.service_name)' | sort | uniq -c
+#   about as many as step 2's 429s, on api and on ingest: the refusals are on the access lines
+gcloud logging read "$F" "${L[@]}" --format=json | grep -c -F "$MYIP"           # 0
+gcloud logging read "$F" "${L[@]}" --format=json | grep -c -F "${MYIP%.*}."     # 0 (the /24)
+unset MYIP F L
+```
+
+The same in Logs Explorer, on `ryft-logs` (project `ryftlab-prod`, the bucket's `_AllLogs` view),
+over the last hour, with your address in place of `203.0.113.7`. The quoted string on its own
+searches every field:
+
+```text
+resource.type="cloud_run_revision"
+(resource.labels.service_name="api" OR resource.labels.service_name="ingest")
+(logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout" OR logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstderr")
+"203.0.113.7"
+```
+
+Expected: no entries. Drop the last line and add `jsonPayload.code="ip_limit"`: you get the
+refusals, each with `method`, `path`, `status` 429, `code`, `request_id` and no address.
+
+**Stop if:**
+- **No `429` at all.** The limit isn't running: check step 1 and that the revision is the merge's.
+  Or the burst was too slow (fewer than ~100 requests a second): run it again from a wired connection.
+- **2b refuses nothing, or far less than step 2.** A forged entry became the key: anyone can dodge
+  this limit and `/v1/admin`'s (which read the header the same way before) by sending a new address
+  each time. Report it with the two splits (no address needed): a PR that reads the header the way
+  Google writes it follows. A revert doesn't help here.
+- **`429`s from the start, far fewer than 50 `401`s, or `after 3 s` still `429`.** Every client shares
+  one key. Run step 9's forged-entry loop and its `client address` query. `picked` `fallback` means
+  the hop count is above what Google appends. `xff_index` 4 or more means a Google hop `ClientKeys`
+  doesn't skip. Either way testers share 20 a second, so revert the PR (**Deploy, roll back, rotate
+  → By revert**) and report it.
+- **Any `grep -c` above 0.** A line holds your address. Find it (the same read, `--format=json`,
+  `grep -F`), don't copy it anywhere, and revert. That breaks the privacy text in force.
+
+**Behind the external Application Load Balancer** (the Cloud Armor PR, not built). That PR sets
+`XFF_TRUSTED_HOPS=2` in `deploy/run/config.env` **and** ingress `internal-and-cloud-load-balancing`
+on api and ingest, in the same PR. The LB appends `<client>,<lb-ip>`. With ingress `all`, a caller
+that reaches `run.app` or a domain mapping directly would get its own forged entry taken as the key,
+and `make cloudrun-check` refuses that combination. After its deploy:
+- step 9's forged-entry loop through the LB's host: `picked` `xff`, `xff_index` 3, `xff_entries` 5;
+- this burst test through it;
+- a direct request to the service's `run.app` URL is refused by Google (ingress).
+
+Undo: revert that PR, which sets both back together.
+
 ## EKS (api.ryftlab.de)
 
 **Retired.** Production moves to GCP (**GCP** above), and D3 removes this section.
@@ -4430,6 +4557,8 @@ peer if a Cloudflare tunnel targets the services directly.
 
 ### Edge rate limit
 
+*EKS only. On GCP the services enforce it themselves: GCP → The per-IP limit (D240).*
+
 Before any token is checked, Traefik limits each client IP to 20 requests a second on
 average, with bursts of 50 (`overlays/eks/ratelimit.yaml`, a `Middleware` in `ryft-api`,
 `ryft-ingest` and `ryft-web`). Each of the two Traefik replicas counts on its own, so
@@ -4694,8 +4823,10 @@ list of exact origins, e.g. `https://ryftlab.de`; empty means no browser page ca
 unaffected; a malformed value stops the api at start-up, before it waits for the database, and a
 test parses the committed line). Every `/v1/admin/*` request but one bearing `ADMIN_API_KEY` is
 limited per client address (10 a second, bursts of 20, per instance; the address is
-`httpx.ClientIP`'s, the rightmost `X-Forwarded-For` entry that isn't Google's front end; never
-logged; the map holds 4,096 addresses, newer ones share one bucket, D222). The key passes before
+`httpx.ClientKeys`'s, the `XFF_TRUSTED_HOPS`-th `X-Forwarded-For` entry from the right that isn't
+Google's front end, kept as an HMAC; never logged; the map holds 4,096 addresses, newer ones share
+one bucket, D222, D240). It sits behind the per-address limit of every route (GCP → The per-IP
+limit), which the key passes too. The key passes before
 the limiter, so a flood of new addresses can't lock the break-glass key out. Every admin log line
 carries `admin_actor` (`key:3fa1c2d9` or `user:1b2c3d4e`,
 the first 8 hex digits). The audit (`GET /v1/admin/audit`) names the actor: `actor.kind` `user` or `key`.

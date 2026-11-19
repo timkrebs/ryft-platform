@@ -97,6 +97,27 @@ done                                                    # api off, ingest off
 
 Rollback: a PR of the same line back to `warn`.
 
+## The per-IP limit on GCP (2026-11-18; merged and deployed, burst test passed 2026-11-19)
+
+**`backend: the per-IP limit in api and ingest (D53 on GCP)`** (#211, D240, merged and deployed). On
+Cloud Run nothing in front of api and ingest limited requests without a token. Now the services do it
+themselves, with D53's values and answer, which `API.md` already documented (changelog 2026-11-18; no contract
+change):
+- 20/s, bursts of 50, per client address and instance, before any token is checked;
+- `429` `Too Many Requests` with `Retry-After` and `X-Retry-In`;
+- exempt: the health paths, the tick, and `ADMIN_API_KEY` on `/v1/admin/*`.
+The client is the `XFF_TRUSTED_HOPS`-th `X-Forwarded-For` entry from the right, not counting Google's front-end
+hops. It is 1 today and a new required key of `deploy/run/config.env`. Keys are HMACs, with at most 65,536 per
+instance. `/v1/admin`'s limit shares the same client function and capped limiter. No address appears in logs or
+labels (D222).
+
+Done on 2026-11-19 (OPERATIONS → GCP → **The per-IP limit**): hops 1 on both; api 224 `401` and 76 `429`
+(`retry-after=1`, 17 bytes, `text/plain`), ingest 176 and 124; `401` again after 3 s; forged
+`X-Forwarded-For` lines 231 and 69, the same split; 145 `ip_limit` access lines on api, 124 on ingest;
+the address and its /24 in the services' logs 0 and 0. #213 makes the runbook's expected split follow the
+burst's pace (`50 + 20 × t`, printed by the commands) instead of a fixed range. The edge's deploy PR (#213,
+runbook 16.6) sets `XFF_TRUSTED_HOPS=2` together with ingress `internal-and-cloud-load-balancing`.
+
 ## Beta readiness, the platform's must-haves (2026-11-18)
 
 Four PRs from main, none merged; each had one code review (no blockers) and is green:
@@ -865,7 +886,7 @@ agreed extras):
 | Apple token revocation | `POST /v1/me/apple-authorization` exchanges the Sign in with Apple code and keeps the refresh token encrypted in `apple_tokens` (api only). `DELETE /v1/me` revokes it before deleting the Supabase user; the reconciler retries. | `internal/apple`, `internal/sealed`, migration 0010, D48 |
 | Production account checks | `make smoke-supabase` against the public host. With `SUPABASE_SECRET_KEY`, two throwaway users: row creation, isolation, deletion down to the Supabase sign-in. | `scripts/check_accounts.py` |
 | Rescore tool | `scripts/rescore_all.sh` runs `scoring rescore` in the scoring pod with its own role. | D50 |
-| Edge rate limit | 20 r/s, burst 50 per client IP (Traefik), client IPs preserved by the NLB | D53 |
+| Edge rate limit | 20 r/s, burst 50 per client IP before any token. On GCP: in api and ingest themselves, per instance, the client from `XFF_TRUSTED_HOPS` (EKS: Traefik, client IPs preserved by the NLB) | D53, D240 |
 | Logs | Fluent Bit → CloudWatch `/ryft/ryft-prod-euc1/containers`, KMS, 14 days, RYFT namespaces and Traefik only | `infra/aws/kubernetes/logs.tf`, D52 |
 | Metrics | Grafana Cloud `k8s-monitoring` in namespace `monitoring`, token from Vault, alert rules; `/metrics` on port 9090 | `deploy/monitoring`, D51 |
 | Terraform state | HCP Terraform, one workspace per root, execution Local; `make tf-migrate-hcp`; CI checks every root offline | D56 |

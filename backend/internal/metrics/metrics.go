@@ -84,10 +84,12 @@ var (
 	})
 
 	// RateLimited counts requests answered 429 by the per-instance, per-user token bucket
-	// (ingest and api, D36).
+	// (ingest and api, D36), by the per-address limit at the edge of both, before any token
+	// (ip, D53), and by the one of /v1/admin (admin_ip). It is the edge limit's only trace
+	// besides the access line's code: the limit itself logs nothing (D222).
 	RateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_rate_limited_total",
-		Help: "Requests answered 429 by the per-user limit, by class (sync, default, …), and by the per-address limit of /v1/admin (admin_ip).",
+		Help: "Requests answered 429 by the per-user limit, by class (sync, default, …), by the per-address limit at the edge of api and ingest (ip), and by the per-address limit of /v1/admin (admin_ip).",
 	}, []string{"class"})
 	// AuthFailures also counts the push and tick tokens refused on /push/* and /internal/*
 	// (Google OIDC, D218) with the same reasons: subject there is a token of another
