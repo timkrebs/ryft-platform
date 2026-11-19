@@ -15,8 +15,11 @@ renderer deploy.yml uses), parses the result with yq (mikefarah v4) and asserts,
     probe both on /health/live, the startup probe within 30 s (an instance must start while the
     database is down, so its tick logs result error; /health/ready is the uptime checks' target);
     all traffic to the latest revision;
+  - XFF_TRUSTED_HOPS other than 1 only with ingress internal-and-cloud-load-balancing on api and ingest
+    (D240: behind the load balancer; with ingress all a client reaches run.app and writes that entry);
   - the env exactly as ticket-b.md's tables (names and the values the renderer builds; api may add the
-    pin of posthog-project-key, D231; api and ingest carry BETA_GATE from config.env, D238), every
+    pin of posthog-project-key, D231; api and ingest carry BETA_GATE, D238, and XFF_TRUSTED_HOPS, D240,
+    from config.env), every
     secret pinned by a version number (never latest), each secret only in the services of the accessor
     table, and migrate's DB_PASSWORD_<SVC> pin equal to PGPASSWORD's in <svc>.yaml (design §4);
   - P5 (design §5.1): none of AUTH_MODE=apikey, ALLOW_INSECURE_APIKEY_AUTH, API_KEY, USER_ID,
@@ -54,10 +57,14 @@ MIGRATE = dict(timeout=600, memory="512Mi")
 SHARED = {"GCP_PROJECT": PROJECT, "PUBSUB_ENDPOINT": "https://europe-west1-pubsub.googleapis.com",
           "PUSH_AUDIENCE": None, "PUSH_SA_EMAIL": f"ryft-push@{PROJECT}.iam.gserviceaccount.com",
           "PUSH_SA_ID": None, "LOG_LEVEL": None, "DATABASE_URL": None}
-# BETA_GATE (D238) is the one row ticket-b.md's tables lack: the beta gate's mode from config.env, in the
-# two services that run the gate (api and ingest; scoring reads only the consent mode).
+# BETA_GATE (D238) and XFF_TRUSTED_HOPS (D240) are the rows ticket-b.md's tables lack, both from
+# config.env, both in the two public services only: the beta gate's mode (scoring reads only the consent
+# mode) and the proxies the edge limit trusts (scoring and notify are internal and run no edge limit).
 PUBLIC = {"AUTH_MODE": "supabase", "SUPABASE_PROJECT_REF": None, "PRIVACY_POLICY_VERSION": None,
-          "PRIVACY_POLICY_URL": "https://ryftlab.de/privacy", "BETA_GATE": None}
+          "PRIVACY_POLICY_URL": "https://ryftlab.de/privacy", "BETA_GATE": None, "XFF_TRUSTED_HOPS": None}
+# The only ingress under which a hop count other than 1 may run: then Cloud Run takes requests from the
+# load balancer alone, which appends the entry a second hop trusts.
+LB_INGRESS = "internal-and-cloud-load-balancing"
 PLAIN = {
     "api": {**SHARED, **PUBLIC, "ADMIN_WEB_ORIGINS": "https://ryftlab.de", "APPLE_TEAM_ID": "M77SKHKG63",
             "APPLE_KEY_ID": None, "APPLE_CLIENT_ID": "dev.timkrebs.ryft"},
@@ -127,6 +134,9 @@ def fakes(committed):
     # The committed gate mode (the lint before this has checked its shape), so the render is what deploys.
     m = re.search(r"^BETA_GATE=(.*)$", committed, re.M)
     v["BETA_GATE"] = m.group(1) if m else "off"
+    # The committed hop count likewise: check_service compares it with the ingress.
+    m = re.search(r"^XFF_TRUSTED_HOPS=(.*)$", committed, re.M)
+    v["XFF_TRUSTED_HOPS"] = m.group(1) if m else "1"
     return v
 
 
@@ -296,8 +306,14 @@ def check_service(name, doc, cfg, digest):
         if md["name"] != name:
             fail(w, f"metadata.name is {md['name']!r}, want {name!r} (the file's name)")
         if keys_exactly(f"{w} metadata.annotations", md["annotations"], ("run.googleapis.com/ingress",)):
-            if md["annotations"]["run.googleapis.com/ingress"] != e["ingress"]:
-                fail(w, f"ingress {md['annotations']['run.googleapis.com/ingress']!r}, want {e['ingress']!r}")
+            ingress = md["annotations"]["run.googleapis.com/ingress"]
+            if ingress != e["ingress"]:
+                fail(w, f"ingress {ingress!r}, want {e['ingress']!r}")
+            hops = cfg.get("XFF_TRUSTED_HOPS", "1")
+            if "XFF_TRUSTED_HOPS" in PLAIN[name] and hops != "1" and ingress != LB_INGRESS:
+                fail(w, f"XFF_TRUSTED_HOPS={hops} with ingress {ingress!r}: a count above 1 trusts the load balancer's "
+                        f"entry, so it needs ingress {LB_INGRESS!r} (D240); with any other a client reaches run.app "
+                        "directly and writes the entry the edge limit would take")
     spec = doc["spec"]
     if not keys_exactly(f"{w} spec", spec, ("template", "traffic")):
         return {}

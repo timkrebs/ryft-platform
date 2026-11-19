@@ -72,7 +72,7 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
-## The edge: a load balancer with Cloud Armor for api and ingest (2026-11-18, D242)
+## The edge: a load balancer with Cloud Armor for api and ingest (2026-11-18, D242; decided 2026-11-19)
 
 **Built in the PR, merged with `edge = "off"`, so the merge plans
 nothing new** (0 to add, 0 to change, 0 to destroy, and two moves of `api.`'s and `ingest.`'s record
@@ -91,43 +91,62 @@ sets to `google_dns_record_set.host`):
   Armor denial or preview match, and api's and ingest's Cloud Run request log below 5xx (their 5xx
   stay, for the 5xx alert; scoring's and notify's stay whole). Two log-based metrics by rule priority,
   four dashboard tiles, no alert policy (the cap of five holds).
+- The order in CI (`scripts/check_cloudrun.py`, added after #211 merged): api's and ingest's ingress
+  `internal-and-cloud-load-balancing` only at `live` or `locked` and only with `XFF_TRUSTED_HOPS`
+  above 1; `locked` only with that ingress on both; CI's `smoke` and `manifests` run when
+  `gates.auto.tfvars` changes. `clientip_test.go` pins hops 1 behind the LB (`xff_index` 4 of 5).
 - Tests: `tests/edge.tftest.hcl` (each phase, the policy's values, the exclusions, the tiles, the
   validation); every other test file pinned to `edge = "off"`. Runbook: OPERATIONS → GCP → **16**.
+
+**The user's decisions (2026-11-19, D242):** the stop line is **€45 from `built` on** (the budget's
+existing 90 % mail, no new rule; the optional €20 mail is gone from the runbook); **Cloud Run's request
+log of api and ingest is excluded below 5xx** (with `built`); **about €28 a month is accepted**.
 
 **Cost:** about $32 a month (≈ €28) from `built` on, whatever the traffic: $18.25 the two forwarding
 rules, $5 the policy, $8 its 8 rules (preview rules are billed too), under $1 requests and data (D242 →
 Cost; prices from search results).
 
 **Needs you, in order** (each in OPERATIONS → GCP → 16, with its expected counts and stop rule):
-1. **Decide** the two open items of D242 before `built`: the exclusion of api's and ingest's Cloud Run
-   request log below 5xx (it is in the code; without it every caller's IP stays in `ryft-logs` for 14
-   days) and the new stop line (proposed €45 from `built` on: the edge alone is above €20).
-2. Merge this PR (gate off). **16.0:** its plan (0/0/0 and the two moves), apply once.
-3. **16.1:** the three roles for `hcp-terraform-apply` and the permission checks.
-4. **16.2–16.4 `built`:** the one-line PR, plan (26 to add, 2 to change, 0 to destroy), apply; **right
+1. Merge #212 (`BETA_GATE` off) and its check, then this PR (gate off). **16.0:** its plan (0/0/0 and
+   the two moves), apply once.
+2. **16.1:** the three roles for `hcp-terraform-apply` and the permission checks.
+3. **16.2–16.4 `built`:** the one-line PR, plan (26 to add, 2 to change, 0 to destroy), apply; **right
    after**, 16.3: the Compute Engine default account's Editor removed, the account disabled, the
    network `default` and its firewall rules deleted; then the checks (certificates ACTIVE, the
    `--resolve` requests, 33/31 MiB, the XFF shape `xff_index 4` of 5, the WAF probe, nothing else kept).
-5. **Before `live`:** #211 merged, then the follow-up PR (not built here: #211 was still open):
-   `scripts/check_cloudrun.py` reads `edge` and allows the load balancer's ingress only at `live` or
-   `locked`, `locked` only with it on both; its test cases; CI's `smoke`/`manifests` path filters for
-   `gates.auto.tfvars`; one `clientip_test.go` case (hops 1 behind the LB picks `xff_index 4` of 5).
-   Until it merges, `make cloudrun-check` expects ingress `all` and the deploy PR can't go green.
-6. **16.5 `live`** (0/2/0; a `-/+` is a stop), then **16.6 the deploy PR**, 10 minutes to an hour
+4. **16.5 `live`** (0/2/0; a `-/+` is a stop), then **16.6 the deploy PR**, 10 minutes to an hour
    after the apply: ingress `internal-and-cloud-load-balancing` and `XFF_TRUSTED_HOPS=2` (until it is
    deployed, every request through the edge shares one bucket per instance).
-7. **16.7 `locked`** after 7 clean days (0/0/2, the mappings).
-8. WAF rules enforced one by one, each after 7 days without a preview match on a request the backend
+5. **16.7 `locked`** after 7 clean days (0/0/2, the mappings).
+6. WAF rules enforced one by one, each after 7 days without a preview match on a request the backend
    answered below 400 (scanners' 401s and 404s don't count; a line in `edge.tf` and its test pin, 0/1/0).
 
-**Privacy (an open decision, not decided here):** the load balancer's entries hold the client's IP, the
-URL and the user agent. Only those of requests Cloud Armor denied or a preview rule flagged are kept, 14
-days, in `ryft-logs` (EU). With the request-log exclusion, the only other place a client's IP is kept is
-Cloud Run's entry of a 5xx on api or ingest. C2 must name it (Google's Cloud Load Balancing and Cloud
-Armor, already a processor; security and finding server errors; IP, URL, user agent; 14 days; only
-blocked, flagged or failed requests), and design §8's "every API request's IP in Google's request logs"
-line no longer holds. This amends the head-architect's "no IP in any log
-line" for Google's load-balancer logs; the services' own lines still hold none.
+**Privacy:** from `built` on, the privacy text (C2, not this PR) must name (D242 → Privacy): the load
+balancer's and Cloud Armor's logs, only for denied or flagged requests; Cloud Run's request log, only
+for 5xx; the IP, the URL and the user agent; 14 days. Design §8's "every API request's IP in Google's
+request logs" line no longer holds then. This amends the head-architect's "no IP in any log line" for
+Google's logs; the services' own lines still hold none.
+
+## The per-IP limit on GCP (2026-11-18; merged and deployed, burst test passed 2026-11-19)
+
+**`backend: the per-IP limit in api and ingest (D53 on GCP)`** (#211, D240, merged and deployed). On
+Cloud Run nothing in front of api and ingest limited requests without a token. Now the services do it
+themselves, with D53's values and answer, which `API.md` already documented (changelog 2026-11-18; no contract
+change):
+- 20/s, bursts of 50, per client address and instance, before any token is checked;
+- `429` `Too Many Requests` with `Retry-After` and `X-Retry-In`;
+- exempt: the health paths, the tick, and `ADMIN_API_KEY` on `/v1/admin/*`.
+The client is the `XFF_TRUSTED_HOPS`-th `X-Forwarded-For` entry from the right, not counting Google's front-end
+hops. It is 1 today and a new required key of `deploy/run/config.env`. Keys are HMACs, with at most 65,536 per
+instance. `/v1/admin`'s limit shares the same client function and capped limiter. No address appears in logs or
+labels (D222).
+
+Done on 2026-11-19 (OPERATIONS → GCP → **The per-IP limit**): hops 1 on both; api 224 `401` and 76 `429`
+(`retry-after=1`, 17 bytes, `text/plain`), ingest 176 and 124; `401` again after 3 s; forged
+`X-Forwarded-For` lines 231 and 69, the same split; 145 `ip_limit` access lines on api, 124 on ingest;
+the address and its /24 in the services' logs 0 and 0. The runbook's expected split now follows the
+burst's pace (`50 + 20 × t`, printed by the commands) instead of a fixed range. The deploy PR of the edge
+(16.6) sets `XFF_TRUSTED_HOPS=2` together with ingress `internal-and-cloud-load-balancing`.
 
 ## Beta readiness, the platform's must-haves (2026-11-18)
 
@@ -897,7 +916,7 @@ agreed extras):
 | Apple token revocation | `POST /v1/me/apple-authorization` exchanges the Sign in with Apple code and keeps the refresh token encrypted in `apple_tokens` (api only). `DELETE /v1/me` revokes it before deleting the Supabase user; the reconciler retries. | `internal/apple`, `internal/sealed`, migration 0010, D48 |
 | Production account checks | `make smoke-supabase` against the public host. With `SUPABASE_SECRET_KEY`, two throwaway users: row creation, isolation, deletion down to the Supabase sign-in. | `scripts/check_accounts.py` |
 | Rescore tool | `scripts/rescore_all.sh` runs `scoring rescore` in the scoring pod with its own role. | D50 |
-| Edge rate limit | 20 r/s, burst 50 per client IP (Traefik), client IPs preserved by the NLB | D53 |
+| Edge rate limit | 20 r/s, burst 50 per client IP before any token. On GCP: in api and ingest themselves, per instance, the client from `XFF_TRUSTED_HOPS` (EKS: Traefik, client IPs preserved by the NLB) | D53, D240 |
 | Logs | Fluent Bit → CloudWatch `/ryft/ryft-prod-euc1/containers`, KMS, 14 days, RYFT namespaces and Traefik only | `infra/aws/kubernetes/logs.tf`, D52 |
 | Metrics | Grafana Cloud `k8s-monitoring` in namespace `monitoring`, token from Vault, alert rules; `/metrics` on port 9090 | `deploy/monitoring`, D51 |
 | Terraform state | HCP Terraform, one workspace per root, execution Local; `make tf-migrate-hcp`; CI checks every root offline | D56 |

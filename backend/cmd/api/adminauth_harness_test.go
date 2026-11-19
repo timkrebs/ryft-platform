@@ -188,7 +188,7 @@ func authChain(h *handler, o adminOptions) (http.Handler, *[]adminActor) {
 }
 
 // wide is a limiter no test hits by accident.
-func wide() *ratelimit.Limiter { return ratelimit.New(10000, 10000) }
+func wide() *ratelimit.Capped { return ratelimit.NewCapped(10000, 10000, maxAdminAddrs) }
 
 type answer struct {
 	status int

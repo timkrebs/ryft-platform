@@ -21,14 +21,15 @@ printf -v s '%10s' ''; akey=${s// /A}; nkey=${s// /N}
 host=aws-0-eu-central-1.pooler.supabase.com
 policy=2026-10-26
 gate=warn
+hops=1
 dg() { local s; printf -v s '%64s' ''; printf 'sha256:%s' "${s// /$1}"; }  # 64 times one hex digit
 D=(--digest "api=$(dg a)" --digest "ingest=$(dg b)" --digest "scoring=$(dg c)" --digest "notify=$(dg d)" --digest "migrate=$(dg e)")
 cfg=$tmp/config.env
 tpl=$tmp/tpl
 out=$tmp/out
 fresh() {
-  printf '%s\n' "# a fake, of the right shape" "PRIVACY_POLICY_VERSION=$policy" LOG_LEVEL=info "BETA_GATE=$gate" "GCP_PROJECT_NUMBER=$pn" \
-    "PUSH_SA_ID=$said" "SUPABASE_PROJECT_REF=$ref" "SUPABASE_POOLER_HOST=$host" "APPLE_KEY_ID=$akey" \
+  printf '%s\n' "# a fake, of the right shape" "PRIVACY_POLICY_VERSION=$policy" LOG_LEVEL=info "BETA_GATE=$gate" "XFF_TRUSTED_HOPS=$hops" \
+    "GCP_PROJECT_NUMBER=$pn" "PUSH_SA_ID=$said" "SUPABASE_PROJECT_REF=$ref" "SUPABASE_POOLER_HOST=$host" "APPLE_KEY_ID=$akey" \
     "APNS_KEY_ID=$nkey" > "$cfg"
   rm -rf "$tpl" "$out"
   mkdir "$tpl"
@@ -87,16 +88,19 @@ for s in api ingest; do
   has "$s.yaml" "name: PRIVACY_POLICY_VERSION, value: \"$policy\" }"
   has "$s.yaml" "name: SUPABASE_PROJECT_REF, value: \"$ref\" }"
   has "$s.yaml" "name: BETA_GATE, value: \"$gate\" }"
+  has "$s.yaml" "name: XFF_TRUSTED_HOPS, value: \"$hops\" }"
 done
 # The beta gate only where it is read (D238): scoring reads the consent mode alone, notify and migrate neither.
 for f in scoring notify migrate; do
   if grep -q 'BETA_GATE' "$out/$f.yaml"; then fail "$f.yaml has BETA_GATE: only api and ingest run the beta gate"; fi
+  # The hop count likewise (D240): only the two public services run the edge limit.
+  if grep -q 'XFF_TRUSTED_HOPS' "$out/$f.yaml"; then fail "$f.yaml has XFF_TRUSTED_HOPS: only api and ingest run the edge limit"; fi
 done
 has api.yaml "name: APPLE_KEY_ID, value: \"$akey\" }"
 has notify.yaml "name: APNS_KEY_ID, value: \"$nkey\" }"
 
 # No environment variable reaches the output: the same render with the placeholders' names set.
-IMAGE=x DATABASE_URL=y PUSH_AUDIENCE=z LOG_LEVEL=debug PRIVACY_POLICY_VERSION=1999-01-01 BETA_GATE=off \
+IMAGE=x DATABASE_URL=y PUSH_AUDIENCE=z LOG_LEVEL=debug PRIVACY_POLICY_VERSION=1999-01-01 BETA_GATE=off XFF_TRUSTED_HOPS=7 \
   render "${R[@]}" --out "$tmp/again" "${D[@]}" >/dev/null 2>&1 || fail "the second render failed"
 diff -r "$out" "$tmp/again" >/dev/null || fail "the environment changed the output: $(diff -r "$out" "$tmp/again")"
 
@@ -145,6 +149,27 @@ setcfg BETA_GATE -
 bad "no gate mode" "BETA_GATE is missing" "${R[@]}" --out "$out" "${D[@]}"
 setcfg BETA_GATE -
 bad "no gate mode, linted" "BETA_GATE is missing" "${R[@]}" --lint
+# XFF_TRUSTED_HOPS (D240): 1 to 8 as committed, one digit, never left to the services' default.
+for n in 2 8; do
+  setcfg XFF_TRUSTED_HOPS "$n"
+  o=$(render "${R[@]}" --out "$out" "${D[@]}" 2>&1) || fail "XFF_TRUSTED_HOPS=$n does not render: $o"
+  has api.yaml "name: XFF_TRUSTED_HOPS, value: \"$n\" }"
+  has ingest.yaml "name: XFF_TRUSTED_HOPS, value: \"$n\" }"
+  rm -rf "$out"
+  fresh
+done
+for n in 0 9 02 10 -1 ' 1' one; do
+  setcfg XFF_TRUSTED_HOPS "$n"
+  bad "a hop count of '$n'" "XFF_TRUSTED_HOPS='$n' does not have the shape 1 to 8" "${R[@]}" --out "$out" "${D[@]}"
+done
+setcfg XFF_TRUSTED_HOPS 9
+bad "a hop count of 9, linted" "XFF_TRUSTED_HOPS='9' does not have the shape" "${R[@]}" --lint
+setcfg XFF_TRUSTED_HOPS ''
+bad "an empty hop count" "XFF_TRUSTED_HOPS is empty" "${R[@]}" --out "$out" "${D[@]}"
+setcfg XFF_TRUSTED_HOPS -
+bad "no hop count" "XFF_TRUSTED_HOPS is missing" "${R[@]}" --out "$out" "${D[@]}"
+setcfg XFF_TRUSTED_HOPS -
+bad "no hop count, linted" "XFF_TRUSTED_HOPS is missing" "${R[@]}" --lint
 setcfg PRIVACY_POLICY_VERSION 2026-02-30
 bad "no calendar date" "PRIVACY_POLICY_VERSION=2026-02-30 is not a calendar date" "${R[@]}" --out "$out" "${D[@]}"
 setcfg GCP_PROJECT_NUMBER "0$pn"
@@ -189,4 +214,4 @@ usage "${R[@]}" --lint "${D[@]}"
 usage "${R[@]}" --out "$out" "${D[@]}" --force
 [ ! -e "$out" ] || fail "a usage error wrote $out"
 
-echo "✓ cloudrun_render_test: the derived values render by digest, BETA_GATE only into api and ingest, the environment changes nothing, FILL_ME_IN passes --lint and fails a render, and every wrong shape, key, digest, placeholder and \$ fails closed"
+echo "✓ cloudrun_render_test: the derived values render by digest, BETA_GATE and XFF_TRUSTED_HOPS only into api and ingest, the environment changes nothing, FILL_ME_IN passes --lint and fails a render, and every wrong shape, key, digest, placeholder and \$ fails closed"

@@ -59,7 +59,7 @@ func syncServer(t *testing.T, st *store.Store, pool *pgxpool.Pool, user model.Us
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	h := &handler{st: st, outbox: outbox.New(pool, "ingest", nil, log), log: log,
 		beta: config.Beta{Gate: config.ModeOff, Consent: config.ModeOff}}
-	return httpx.Instrument(log, httpx.Recover(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return httpx.Instrument(log, nil, httpx.Recover(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if f := httpx.Info(r.Context()); f != nil {
 			f.UserID, f.Route = user.ID.String(), "POST /v1/sync"
 		}

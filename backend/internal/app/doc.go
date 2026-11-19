@@ -18,6 +18,13 @@
 //     and is then served or answered 503 with Retry-After: 5, and a tick that
 //     waited in vain reports ryft_db_up 0 and pushes it. A signal while the start
 //     waits ends Build's context.
+//   - api and ingest (Spec.Edge) limit each client address, 20 a second with
+//     bursts of 50, before the start gate and any token (D53, D240): the key is
+//     httpx.ClientKeys' (XFF_TRUSTED_HOPS, one per process, also in Deps.Clients),
+//     the answer Traefik's plain-text 429. The health paths, the tick and
+//     Spec.LimitExempt (the api's admin key) take no token. The limit logs
+//     nothing; a refusal is ryft_rate_limited_total{class="ip"} and the access
+//     line's code ip_limit.
 //   - The metrics push is the tick's final step and runs once more after the
 //     http step at SIGTERM. On Cloud Run (K_SERVICE) there is no /metrics
 //     listener, and the ready paths answer {"error":"not ready"} with the cause

@@ -45,6 +45,9 @@ KEYS = {
     # The beta gate (D87, D238), api and ingest only: lower case, as committed; unset is no option here,
     # so the mode in force is always the one in git, never the code's default.
     "BETA_GATE": (True, r"off|warn|on", "off, warn or on"),
+    # The X-Forwarded-For entries our proxies append (D53, D240), api and ingest only: the edge limit's
+    # client is that many entries from the right. Required, so the count in force is the one in git.
+    "XFF_TRUSTED_HOPS": (True, r"[1-8]", "1 to 8, the proxies in front of api and ingest"),
     "GCP_PROJECT_NUMBER": (True, r"[1-9][0-9]{5,19}", "the project number, digits only"),
     "PUSH_SA_ID": (True, r"[1-9][0-9]{11,24}", "ryft-push's unique ID, digits only"),
     "SUPABASE_PROJECT_REF": (True, r"[a-z]{20}", "the Supabase project ref, 20 lower-case letters"),
@@ -55,7 +58,7 @@ KEYS = {
 }
 # The template placeholders, the only names ever substituted.
 VARS = ("IMAGE", "DATABASE_URL", "PUSH_AUDIENCE", "PRIVACY_POLICY_VERSION", "LOG_LEVEL", "SUPABASE_PROJECT_REF",
-        "PUSH_SA_ID", "APPLE_KEY_ID", "APNS_KEY_ID", "BETA_GATE")
+        "PUSH_SA_ID", "APPLE_KEY_ID", "APNS_KEY_ID", "BETA_GATE", "XFF_TRUSTED_HOPS")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=(.*)")
 PLACE = re.compile(r"\$\{([A-Za-z0-9_]*)\}")

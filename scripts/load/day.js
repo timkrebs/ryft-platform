@@ -106,7 +106,12 @@ function dayPayload(i, anchor) {
   return { device_id: deviceId(i), device_name: 'synth', samples, sleep, workouts };
 }
 
-const authHeaders = (i) => ({ Authorization: 'Bearer ' + API_KEY + ':' + userId(RUN, i), 'Content-Type': 'application/json' });
+// Each user gets an X-Forwarded-For address of its own in 198.18.0.0/15 (RFC 2544's benchmark range): api and
+// ingest limit every client address to 20 requests a second before the token (D240), and k6 sends from one
+// address, so without it all users would share one bucket and the test would measure that limit, not the service.
+const clientAddr = (i) => '198.' + (18 + ((i >> 16) & 1)) + '.' + ((i >> 8) & 255) + '.' + (i & 255);
+const authHeaders = (i) => ({ Authorization: 'Bearer ' + API_KEY + ':' + userId(RUN, i), 'Content-Type': 'application/json',
+  'X-Forwarded-For': clientAddr(i) });
 const addDays = (day, n) => new Date(Date.parse(day + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
 
 export function setup() {

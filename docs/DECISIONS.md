@@ -3230,6 +3230,8 @@ Engine, and fails with the changed fields grouped by field.
 
 ## D155 — A per-address limiter on `/v1/admin/*`, keyed by the address Traefik appends
 
+*Amended by D222 (Cloud Run) and D240 (`httpx.ClientKeys`, `ratelimit.Capped`, shared with the edge limit).*
+
 - **Decision:** 10 requests a second, bursts of 20, per api pod, before the bearer check (so a flood of bad
   credentials costs no token verification and no database call); over the limit `429` with `Retry-After`. The key
   is `httpx.ClientIP`: the rightmost `X-Forwarded-For` entry, IPv6 masked to /64, else the peer.
@@ -4802,7 +4804,9 @@ history). The rebuild of 2026-11-13 follows (`docs/REBUILD.md`, `docs/work/2026-
     130.211.0.0/22 and their IPv6 /64s), and take the next entry as it is, else `RemoteAddr`; never the leftmost
     entry. A private, CGNAT, link-local or loopback entry is a client (one inside a VPC), not a hop: skipping it would
     let the forged entry to its left be the key (security review of A2). IPv6 is cut to /64.
-    `TestStepNineUnderGoogleFrontEnd` proves the choice for each shape Google could send.
+    `TestStepNineUnderGoogleFrontEnd` proves the choice for each shape Google could send. *Amended by D240:* it is
+    `httpx.ClientKeys` now, the `XFF_TRUSTED_HOPS`-th entry, with no `RemoteAddr` (a shared fallback key instead),
+    `picked` is `xff`|`fallback`, and the limits key by an HMAC of the address.
   - **No IP address in any log line** (head-architect's rule, 2026-11-15): the privacy text in force promises logs
     without them, so no address is logged, whole or as a /24 or /48. The `client address` line (info, at most once
     a minute per instance, no request ID, user, route or header) holds `picked` (`xff`|`remote`), `xff_index` (the
@@ -5526,7 +5530,104 @@ _Grafana half superseded by D236._
   `support@` (D214). The drill adds no processor and no place. The proposed counter carries no personal data.
 - **Consequences:** `OPERATIONS.md` → GCP → 14a; `STATUS.md`.
 
-## D242 — The edge: an external Application Load Balancer with Cloud Armor in front of api and ingest, in four phases (2026-11-18; amends D217, D222's logging rule, D224, D226; **open for the user**: the Cloud Run request log's exclusion, the privacy amendment, the stop line)
+## D240 — D53's per-IP limit on GCP: in api and ingest themselves, keyed by `XFF_TRUSTED_HOPS` (2026-11-18; amends D53, D155, D222)
+
+- **Context:** D53's limit (20 requests a second per client address, bursts of 50, before any token) was Traefik's
+  middleware on EKS. On Cloud Run nothing in front does it, so requests without a token reached api and ingest
+  unthrottled; max instances (api 3, ingest 2) cap the bill, not availability. `API.md` still documented it. The
+  user decided on 2026-11-18 to bring it back now; an external Application Load Balancer with Cloud Armor follows
+  in a later PR, so the limit must keep working behind it.
+- **Decision:**
+  - **Where:** `internal/app`, Edge services only (api, ingest), between SecurityHeaders and the start gate:
+    `Instrument → Recover → SecurityHeaders → limit → gate`. So the `429` carries `X-Request-ID`, the security
+    headers and an access line, and a flood during a cold start is refused at once instead of waiting for it.
+  - **Values:** D53's, 20/s, bursts of 50, a token bucket per client key, in memory per instance (stdlib).
+  - **The answer:** Traefik's, as `API.md` documents it. Status `429`, body `Too Many Requests` (no newline,
+    `text/plain; charset=utf-8`, no JSON) and no CORS headers. `Retry-After` is the wait rounded up, at least 1
+    (with 20/s it is always 1). `X-Retry-In` is the wait as a Go duration (`37.5ms`).
+  - **The client** (`httpx.ClientKeys`, one per process, shared by this limit, `/v1/admin`'s limit and the
+    sampled `client address` line, so they agree):
+    - walk `X-Forwarded-For` from the right over all its lines;
+    - skip Google's front-end ranges without counting them (as D222);
+    - the client is the `XFF_TRUSTED_HOPS`-th remaining entry, and nothing left of it is read;
+    - IPv6 is cut to its /64.
+  - **`XFF_TRUSTED_HOPS`** is 1–8, default 1. A required key of `deploy/run/config.env`, rendered into api and
+    ingest only (D238's pattern), so the count in force is the one in git. It is 1 today: Cloud Run's front end
+    appends the caller's address. Behind the external Application Load Balancer it is 2: the LB appends
+    `<client>,<lb-ip>`, which that PR's step-9-style `xff_index` check confirms.
+    - **2 only with ingress `internal-and-cloud-load-balancing`**, in the same PR. With ingress `all`, a caller
+      that reaches `run.app` or the domain mapping directly arrives with one appended entry, and a count of 2
+      would take the forged entry left of it. `scripts/check_cloudrun.py` refuses that combination.
+  - **The fallback:** a missing header, fewer countable entries than the hop count, or an entry that doesn't parse
+    before the client's is reached: one shared key (`RemoteAddr` is no longer read; it was the admin limit's
+    fallback). It is safe because on Cloud Run every request through Google's front end carries the entry Google
+    appended. Only a wrong hop count or a path that isn't Google's front end lands in the fallback. Those requests
+    share one bucket, so the limit still holds (it fails closed) and nothing a client controls becomes a key of
+    its own. `RemoteAddr` on Cloud Run is Google's front end anyway, a key every client would share.
+  - **Memory bound:** `ratelimit.Capped`, the admin limit's `addrLimit` moved into `internal/ratelimit` with a
+    configurable idle time and one map. The edge limit keeps at most 65,536 keys per instance, about 6.3 MiB at
+    the cap (measured). A key idle for a minute is dropped: its bucket is full again after 2.5 s, so nothing is
+    lost. The sweep runs every 1,024 calls, and at most once a second while the map is full.
+    - **When the map is full:** a known key keeps its bucket. Every new key shares one overflow bucket (20/s
+      together), so a flood of new addresses fails closed for the newcomers and leaves the known ones alone.
+    - The admin limit keeps its values (10/s, bursts of 20, 4,096 keys, 10 minutes) on the same type.
+  - **Keys are HMACs:** HMAC-SHA256 of the normalized address under a random 32-byte key made at start, cut to
+    16 bytes. Neither limit's map, nor a heap dump of it, holds a plain address, and a key means nothing outside
+    the process.
+  - **Exempt** (they take no token):
+    - the health paths (`/health/live`, `/health/ready`, and compose's `/healthz` and `/readyz`): Cloud Run's
+      probes arrive without `X-Forwarded-For` and would share the fallback, and the uptime checks must not fail
+      because someone floods. `/health/ready` reuses its answer for 5 s, so a flood there costs no database
+      call;
+    - `POST /internal/tick`: Pub/Sub's push of the tick, the only push api and ingest take. Its token is the
+      tick's to check. `TestEdgeLimitExemptsEveryPushOfApiAndIngest` fails if the topology gains a push to
+      either service on a path the limit counts;
+    - on api, a request to `/v1/admin/*` bearing `ADMIN_API_KEY`, compared in constant time by the admin
+      chain's own code (`Spec.LimitExempt`, `adminKey`). This keeps D222's guarantee that a flood can't lock
+      the break-glass key out.
+    - Preflights are counted like any request (Traefik counted them too).
+- **Privacy (D222):** the limit logs nothing. A refusal shows only as `ryft_rate_limited_total{class="ip"}` and as
+  the access line's `code` `ip_limit`. No address is in any log line, metric label or store, and the limit sets
+  no trace attribute (`TestEdgeLimitLogsNoAddress`). The `client address` line's `picked` is `xff` or
+  `fallback` (was `remote`).
+- **Rejected:**
+  - Counting hops without the Google-range skip. That changes what D222's step 9 proved for today's shape and
+    gains nothing at hops 1.
+  - Evicting the oldest key when the map is full (an LRU). A caller rotating /64s would evict real clients and
+    get a fresh burst of 50 for each new key: the limit fails open.
+  - `RemoteAddr` as the fallback, which keys nothing useful on Cloud Run.
+  - Plain addresses as map keys.
+  - A production switch to turn the limit off for tests.
+  - Waiting for Cloud Armor, which is the next PR and per-LB, not per-instance.
+- **Unchecked here:** the shape behind the LB (`<client>,<lb-ip>` with nothing more from Cloud Run's front end) is
+  Google's documented header for the external Application Load Balancer, not observed. That PR's `xff_index`
+  check decides between 2 and another value.
+- **Consequences:**
+  - The limits are per instance and reset at a cold start. One address gets at most max-instances × 20/s, and
+    with scale to zero usually one instance's worth.
+  - **The map can be held full from one IPv6 /48** (65,536 /64s, free from a tunnel broker). Touching each of
+    them once a minute takes about 1,100 requests a second per instance, and a little more traffic from
+    elsewhere drains the shared bucket. While that lasts, every client that is new or was idle for over a
+    minute, testers included, gets `429` on api and ingest. The known keys keep their buckets. Keying IPv6 by
+    /48, or counting a /48 once against the cap, would raise that bar. It is left for a follow-up if it is
+    ever seen. Cloud Armor's rules in front (the next PR) are the answer.
+  - **The tick is the one public path the limit doesn't guard.** A flood of fake ticks costs a token check (a
+    parse, an RSA verification for a real Google key id) and two log lines each, bounded by max instances like
+    any flood. Limiting it would let a flood that fills the map push Google's real tick into the shared
+    bucket, and the brief exempts what Google pushes.
+  - **Multi-line `X-Forwarded-For` is read last line first.** Whether Google's front end appends to the last
+    line when a client sends several isn't documented. The runbook's burst 2b sends two forged lines and
+    would show it.
+  - Requests without `X-Forwarded-For` share the fallback bucket: local compose, `make smoke`, `make load`.
+    The smoke is sequential and stays under it. `scripts/load/day.js` gives each k6 user an address of its
+    own in 198.18.0.0/15, so the load test measures the services, not this limit.
+  - Files: `internal/httpx` (`ClientKeys`; `Instrument` takes it), `internal/ratelimit` (`Capped`, `Idle`,
+    `Clock`), `internal/app` (`iplimit.go`, `Spec.LimitExempt`, `Deps.Clients`), `internal/config`
+    (`XFFTrustedHops`), `cmd/api` (`adminKey`, the admin limit on `Capped`), `scripts/cloudrun_render.py`,
+    `scripts/check_cloudrun.py`, `deploy/run/{config.env,api.yaml,ingest.yaml}`, `API.md` (2026-11-18),
+    `OBSERVABILITY.md`, `OPERATIONS.md` → GCP → The per-IP limit.
+
+## D242 — The edge: an external Application Load Balancer with Cloud Armor in front of api and ingest, in four phases (2026-11-18; amends D217, D222's logging rule, D224, D226; **the user's decisions, 2026-11-19:** the stop line €45 from `built` on, Cloud Run's request log of api and ingest excluded below 5xx, about €28 a month)
 
 - **Context:** api and ingest are public on Cloud Run through domain mappings (D217), ingress `all`, and limit each
   address per instance (D53, D240). Nothing sits in front of them: no WAF, no limit across instances, and a flood
@@ -5534,6 +5635,12 @@ _Grafana half superseded by D236._
   with Cloud Armor, built so that nothing moves until it is proven, and merged with nothing planned. Prices and
   Google's limits below were read from search results (WebFetch was not available); each is marked *(search)* with
   its page.
+- **The user's decisions (2026-11-19), no longer open:**
+  1. the stop line is **€45 from `built` on**: the budget "RYFT 50 EUR"'s existing 90 % mail, so no new threshold
+     rule (below, The stop line);
+  2. **Cloud Run's request log of api and ingest is excluded below 5xx** (exclusion (2), `run-requests`, with
+     `built`);
+  3. **about €28 a month is accepted** (below, Cost).
 - **Decision:**
   - **A gate, four phases** (`edge` in `infra/gcp/gates.auto.tfvars`, `off | built | live | locked`, default `off`,
     refused unless `serve` is true; each flip a reviewed one-line PR, never a workspace variable):
@@ -5577,8 +5684,8 @@ _Grafana half superseded by D236._
     denial nor a preview match, `resource.type="http_load_balancer"` and `NOT (jsonPayload.enforcedSecurityPolicy.outcome="DENY"
     OR jsonPayload.previewSecurityPolicy.outcome="DENY")` (field names from Cloud Armor's request-logging page
     *(search)*: a throttle that exceeds logs outcome DENY with `rateLimitAction`; `previewSecurityPolicy` appears only
-    when a preview rule matched); (2) **for the user's confirmation**, Cloud Run's request log of api and ingest below
-    5xx (`logName=…/logs/run.googleapis.com%2Frequests`, `resource.labels.service_name=("api" OR "ingest")`,
+    when a preview rule matched); (2) **the user's decision (2026-11-19)**, Cloud Run's request log of api and ingest
+    below 5xx (`logName=…/logs/run.googleapis.com%2Frequests`, `resource.labels.service_name=("api" OR "ingest")`,
     `httpRequest.status<500`). Today it keeps every caller's IP, URL and user agent for 14 days. Their 5xx stay: they
     are the only record of a failure Cloud Run makes itself (a request timeout, no instance), which the services'
     access line never sees, and the 5xx alert's text reads them (`alerts.tf`, unchanged). scoring's and notify's request
@@ -5600,16 +5707,20 @@ _Grafana half superseded by D236._
     a stop.
   - **The order, and why:** `built` → `live` → the deploy PR within the hour → `locked` after 7 clean days. In `live`
     with `XFF_TRUSTED_HOPS=1` every request through the load balancer keys the in-process limit on the load balancer's
-    own address (the LB appends `<client>,<lb-ip>`; the follow-up's `clientip_test.go` case pins it): one bucket per
+    own address (the LB appends `<client>,<lb-ip>`; `clientip_test.go`'s "hops 1 behind the load balancer" pins
+    it, `xff_index` 4 of 5): one bucket per
     instance for everyone, so the deploy PR follows at once. The mappings go last: until then reverting the deploy PR
     and `live` → `built` is the whole way back with valid certificates. In `live` the mappings' certificates can no
     longer renew (DNS doesn't point at ghs), so `live` is not a place to stay for months either.
-  - **check_cloudrun's order rule** (`scripts/check_cloudrun.py`; not in this PR: it builds on #211, still open when
-    this was written, and comes in the follow-up PR, which must merge before `live`): ingress
-    `internal-and-cloud-load-balancing` on api or ingest is refused unless `edge` is `live` or `locked` (with `off` or
-    `built` DNS names the mappings, which that ingress refuses: everyone locked out); `edge = "locked"` is refused
-    unless both have it. So the order built → live → deploy PR → locked holds in CI, and the reverse for a rollback.
-    CI's `smoke` and `manifests` jobs run it when `gates.auto.tfvars` changes.
+  - **check_cloudrun's order rule** (`scripts/check_cloudrun.py`, added once #211 had merged; it reads `edge` from
+    `infra/gcp/gates.auto.tfvars`, `off` when no line sets it, and refuses a value outside the four or a second
+    line): ingress `internal-and-cloud-load-balancing` on api or ingest is refused unless `edge` is `live` or
+    `locked` (with `off` or `built` DNS names the mappings, which that ingress refuses: everyone locked out), and
+    with `XFF_TRUSTED_HOPS=1` (every client in the load balancer's one bucket); `edge = "locked"` is refused unless
+    both have it. With D240's rule (a count above 1 only with that ingress) the deploy PR is exactly the pair. So
+    the order built → live → deploy PR → locked holds in CI, and the reverse for a rollback (`live` → `built` is
+    red until the deploy PR is reverted). CI's `smoke` (its test) and `manifests` (`make cloudrun-check`) jobs run
+    when `gates.auto.tfvars` changes.
   - **The apply account's roles** (runbook GCP 16.1, as 2d): `roles/compute.loadBalancerAdmin`,
     `roles/compute.securityAdmin` (security policies; the attach needs `compute.backendServices.setSecurityPolicy` and
     `compute.securityPolicies.use`) and `roles/certificatemanager.editor` (includes `certmaps.use` and
@@ -5639,28 +5750,34 @@ _Grafana half superseded by D236._
     the rate rule, the default) = **$8**;
   - Certificate Manager: the first 100 certificates $0 (cloud.google.com/certificate-manager/pricing); 2 used: $0;
   - **total about $32 a month (≈ €28)**: $18.25 + $5 + $8 + under $1 of requests and data. $2 above the brief's
-    $25–30, because every rule is billed.
+    $25–30, because every rule is billed. **Accepted by the user (2026-11-19).**
   - In a flood, every denial and ban is a kept entry (about 1.5 KB): a million is about 1.4 GiB of Cloud Logging, inside
     the free 50 GiB a month, and about $0.72 a million beyond it (on top of Cloud Armor's $0.75 a million).
   - Unverified: whether the default rule is billed as a rule (counted here); whether preconfigured WAF evaluation adds
     a per-request fee in Standard; the global address while a forwarding rule uses it (taken as $0); DNS
     authorizations and certificate maps (no price found); europe-west1's processing rate; egress (paid through Cloud
     Run today, the same bytes).
-- **The €20 stop line** (D226) is below the edge's fixed ~€28: once `built`, the line would be crossed by the edge
-  alone. **Proposal, for the user to decide:** from `built` on, the line is **€45**: about the edge plus the old €20
-  (€48), rounded down to the 50 EUR budget's 90 % mail. The stop line's commands still close api and ingest (the
-  load balancer calls Cloud Run as `allUsers`), but the load balancer keeps billing under it; cutting its cost means
-  going back `live` → `built` → `off` (and from `locked` first to `live`).
-- **Privacy (an open decision for the user, not decided here):** the load balancer's entries hold the client's IP,
-  the URL and the user agent. Only the entries of requests Cloud Armor denied or a preview rule flagged are kept, 14
-  days, in `ryft-logs` (EU). With exclusion (2), the only other place a client's IP is stored is Cloud Run's entry of
-  a request to api or ingest that failed with a 5xx. The privacy text (C2, not this PR) must name it: Google (Cloud
-  Load Balancing and Cloud Armor, part of Google Cloud, already a processor), the purpose (security: blocking attacks
-  and abuse, and finding server errors), the IP, URL and user agent, 14 days, and only for blocked, flagged or failed
-  requests. This **amends the head-architect's "no IP in any log line"** (D222's
-  context) for Google's load-balancer logs: our own lines still hold none. Design §8's planned C2 line ("the IP
-  address and user agent of every API request, in Google's request logs, 14 days") becomes untrue with exclusion (2)
-  and needs this wording instead.
+- **The stop line** (D226): the €20 line is below the edge's fixed ~€28, so once `built` the edge alone would cross
+  it. **The user's decision (2026-11-19): from `built` on the line is €45**, which is the budget "RYFT 50 EUR"'s
+  existing 90 % mail: no new threshold rule. An optional €20 mail (`percent=0.40`) is not part of the runbook; if
+  one was added, it is removed (runbook → The stop line). Below `built` (and back at `off`) the line stays €20. The
+  stop line's commands still close api and ingest (the load balancer calls Cloud Run as `allUsers`), but the load
+  balancer keeps billing under it; cutting its cost means going back `live` → `built` → `off` (and from `locked`
+  first to `live`).
+- **Privacy:** the load balancer's entries hold the client's IP, the URL and the user agent. With the user's decision
+  (2) the stored IPs are only those of blocked, flagged or failed requests, 14 days, in `ryft-logs` (EU). **What the
+  privacy text (C2, not this PR) must name:**
+  - the load balancer's and Cloud Armor's logs (Google Cloud, already a processor), only for requests Cloud Armor
+    denied or a preview rule flagged;
+  - Cloud Run's request log, only for requests that failed with a 5xx;
+  - in each: the IP, the URL and the user agent;
+  - kept 14 days.
+
+  The purpose is security: blocking attacks and abuse, and finding server errors. This **amends the head-architect's
+  "no IP in any log line"** (D222's context) for Google's logs only: our own lines still hold none. Design §8's
+  planned C2 line ("the IP address and user agent of every API request, in Google's request logs, 14 days") is
+  untrue from `built` on and needs this list instead. Until `built` the text in force is unchanged (no edge, and
+  Cloud Run's request log is kept whole, as today).
 - **Unverified here:** every external page (search excerpts only); the backend protocol's effect on the hop to Cloud
   Run (built's 33/31 MiB check decides); that the load balancer appends exactly `<client>,<lb-ip>` (built's XFF check
   decides); that the provider changes a record set's type in place (read in its source; the plan shows it, and a
@@ -5673,5 +5790,6 @@ _Grafana half superseded by D236._
 - **Consequences:** `infra/gcp/{edge.tf,variables.tf,gates.auto.tfvars,locals.tf,project.tf,run.tf,dns.tf,logging.tf,
   monitoring.tf,outputs.tf}`, `tests/edge.tftest.hcl` and the other tests pinned to `edge = "off"`;
   `OPERATIONS.md` → GCP → 16 (and 2a, 2d, the stop line, When an alert fires); `OBSERVABILITY.md`;
-  `infra/gcp/README.md`; `STATUS.md`. The follow-up PR after #211 (before `live`): `scripts/check_cloudrun.py` and
-  its test, CI's path filters, one `clientip_test.go` case.
+  `infra/gcp/README.md`; `STATUS.md`; and, once #211 (D240) had merged, in the same PR: `scripts/check_cloudrun.py`
+  and `scripts/tests/check_cloudrun_test.sh`, CI's `smoke` and `manifests` path filters, one `clientip_test.go`
+  case.

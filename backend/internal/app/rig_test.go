@@ -148,7 +148,7 @@ func (l *recListener) Accept() (net.Conn, error) {
 // settings with ALLOW_INSECURE_PUSH, as compose runs (an unreachable emulator, as the
 // tests publish nothing).
 var insecureLocal = config.Config{
-	Port: "8080", MetricsPort: "9090",
+	Port: "8080", MetricsPort: "9090", XFFTrustedHops: config.DefaultXFFTrustedHops,
 	PubSub: config.PubSub{Project: config.EmulatorProject, EmulatorHost: "127.0.0.1:1"},
 	Push:   config.Push{AllowInsecure: true},
 }
