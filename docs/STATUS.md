@@ -72,7 +72,29 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
-## `BETA_GATE` off: no invite codes (2026-11-18)
+## CI on main: the web jobs only when the web paths changed (2026-11-19, D243)
+
+Your decision (D243, amends D107): on a push to main, `web-checks` and `web-e2e` run only when the
+web paths changed since main's last green commit. That's the newest commit whose `ci` run, from a push
+or by hand, is green. The web paths are the PR filter's `web` list: `web/**`, `docs/SCORING.md`,
+`ci.yml`, and now also the three files the hooks test runs: `.githooks/**`,
+`scripts/check_bytes.sh`, `scripts/lib/charpolicy.py`. Main's commit message keeps its brand check, now
+a step in `manifests`. It isn't the parent: a red web commit followed
+by a non-web commit would otherwise ship the red `web/` through `deploy.yml`'s `site` job. The web jobs
+run anyway when the lookup fails, nothing is green, the base isn't an ancestor or 300+ files changed.
+A manual run executes everything. Every other job still runs on every push. The 100 ms TBT budget
+stays.
+
+**On merge:** the merge itself changes `ci.yml`, so its run has both web jobs. Then
+`deploy.yml` runs as on any push: new revisions of the same code, and the site unchanged. The next non-web push
+to main shows it working, if the merge's `ci` run is green: the `changes` job carries the notice
+**web checks skipped** with the base commit, both web jobs show as skipped, and `ci-ok` is green.
+That push is the edge's `live` PR. If the merge's run is red (a TBT flake), re-run its failed jobs
+first. Otherwise the `live` push also runs the web jobs, since `ci.yml` still differs from the last
+green commit. Nothing to run otherwise. OPERATIONS → GCP → Deploy, roll back, rotate → The site →
+**What CI checks on main**.
+
+## `BETA_GATE` off: no invite codes (2026-11-18; #212, merged 2026-11-19)
 
 Your decision (D241, amends D238): the beta has no invite codes. `deploy/run/config.env` sets
 `BETA_GATE=off`. Every signed-in account is served and nothing is flagged; consent stays `on`, so
@@ -99,9 +121,9 @@ Rollback: a PR of the same line back to `warn`.
 
 ## The edge: a load balancer with Cloud Armor for api and ingest (2026-11-18, D242; decided 2026-11-19)
 
-**Built in the PR, merged with `edge = "off"`, so the merge plans
+**Built in #213 (merged 2026-11-19) with `edge = "off"`, so its merge planned
 nothing new** (0 to add, 0 to change, 0 to destroy, and two moves of `api.`'s and `ingest.`'s record
-sets to `google_dns_record_set.host`):
+sets to `google_dns_record_set.host`). **#214** (`edge = "built"`, 16.2's one-line PR) is merged too:
 - `infra/gcp/edge.tf`: a global external Application Load Balancer on one IPv4 address (no IPv6, no
   AAAA), serverless NEGs and backend services for api and ingest (every request logged), a URL map by
   host (any other host 301 to the site), TLS 1.2+ (MODERN), Certificate Manager certificates by DNS
@@ -131,11 +153,13 @@ log of api and ingest is excluded below 5xx** (with `built`); **about €28 a mo
 rules, $5 the policy, $8 its 8 rules (preview rules are billed too), under $1 requests and data (D242 →
 Cost; prices from search results).
 
+**Done:** #212 (`BETA_GATE` off), #213 (the edge, gate `off`) and #214 (gate `built`) are merged. The
+applies below are yours, and this file doesn't record them: skip any step you've already run.
+
 **Needs you, in order** (each in OPERATIONS → GCP → 16, with its expected counts and stop rule):
-1. Merge #212 (`BETA_GATE` off) and its check, then this PR (gate off). **16.0:** its plan (0/0/0 and
-   the two moves), apply once.
+1. **16.0:** #213's plan (0/0/0 and the two moves), applied once, before `built`'s.
 2. **16.1:** the three roles for `hcp-terraform-apply` and the permission checks.
-3. **16.2–16.4 `built`:** the one-line PR, plan (26 to add, 2 to change, 0 to destroy), apply; **right
+3. **16.2–16.4 `built`:** #214 is merged. Plan (26 to add, 2 to change, 0 to destroy) and apply. **Right
    after**, 16.3: the Compute Engine default account's Editor removed, the account disabled, the
    network `default` and its firewall rules deleted; then the checks (certificates ACTIVE, the
    `--resolve` requests, 33/31 MiB, the XFF shape `xff_index 4` of 5, the WAF probe, nothing else kept).
@@ -169,8 +193,8 @@ labels (D222).
 Done on 2026-11-19 (OPERATIONS → GCP → **The per-IP limit**): hops 1 on both; api 224 `401` and 76 `429`
 (`retry-after=1`, 17 bytes, `text/plain`), ingest 176 and 124; `401` again after 3 s; forged
 `X-Forwarded-For` lines 231 and 69, the same split; 145 `ip_limit` access lines on api, 124 on ingest;
-the address and its /24 in the services' logs 0 and 0. #213 makes the runbook's expected split follow the
-burst's pace (`50 + 20 × t`, printed by the commands) instead of a fixed range. After #213 and `live`, the
+the address and its /24 in the services' logs 0 and 0. #213 (merged) made the runbook's expected split follow the
+burst's pace (`50 + 20 × t`, printed by the commands) instead of a fixed range. After `live`, the
 edge's deploy PR (runbook 16.6) sets `XFF_TRUSTED_HOPS=2` together with ingress
 `internal-and-cloud-load-balancing`.
 

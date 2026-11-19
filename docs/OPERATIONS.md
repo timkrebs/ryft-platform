@@ -2537,6 +2537,28 @@ hold; runbook step 10 sets it to `on`. Its jobs, in every run:
 A run by hand always deploys the site, except while the services are held (**The hold**, above). Use
 one after `SUPPORT_EMAIL` or `TESTFLIGHT_URL` changed,
 because those aren't in `web/`. It also builds and deploys the five services from main's tip.
+`ci.yml` doesn't check the site again for a variable, so start a manual ci run before it:
+`gh workflow run ci.yml --ref main -R timkrebs/ryft-platform`. That run executes every check.
+Start `deploy.yml` only once that run is green. A red one doesn't stop later pushes from skipping the web
+jobs.
+
+**What CI checks on main (D243).** A push to main runs every check of `ci.yml`, with one
+exception: `web-checks` and `web-e2e` run only when the web paths changed since main's last green
+commit. That's the newest commit whose `ci` run, from a push or by hand, is green. The web paths
+are `ci.yml`'s `web` filter: `web/**`, `docs/SCORING.md`, `ci.yml`, `.githooks/**`,
+`scripts/check_bytes.sh` and `scripts/lib/charpolicy.py`. `manifests` checks main's commit message
+against the brand denylist on every push.
+- Not since the parent. A red web commit followed by a non-web commit would otherwise ship the red
+  `web/` through `site`.
+- When the web jobs are skipped, the `changes` job's step "The web paths since main's last green
+  commit" shows the notice **web checks skipped**, with the base commit and its run. Both web jobs
+  show as skipped, and `ci-ok` is green.
+- They run anyway when the lookup or the compare fails, when no run is green, when the base isn't
+  an ancestor, or when 300 or more files changed. The step's log says why.
+- When `web-e2e` fails on a web commit (a Lighthouse flake), re-run the failed jobs:
+  `gh run rerun <run id> --failed -R timkrebs/ryft-platform`. Until a run is green, every later
+  push to main runs the web jobs again, because the web paths still differ from the last green
+  commit.
 
 ```bash
 gh variable set SITE_DEPLOY --body on -R timkrebs/ryft-platform     # runbook step 10

@@ -5826,3 +5826,47 @@ _Grafana half superseded by D236._
   `infra/gcp/README.md`; `STATUS.md`; and, once #211 (D240) had merged, in the same PR: `scripts/check_cloudrun.py`
   and `scripts/tests/check_cloudrun_test.sh`, CI's `smoke` and `manifests` path filters, one `clientip_test.go`
   case.
+
+## D243 — On a push to main, the web jobs run only when the web paths changed since main's last green commit (**the user's decision**, 2026-11-19; amends D107)
+
+- **Context:** D107 runs every check of `ci.yml` on a push to main, `web-checks` and `web-e2e` included.
+  `web-e2e`'s Lighthouse step flakes on Total Blocking Time (#214: a median of 154 ms against 100). That turned
+  `ci-ok` red and stopped `deploy.yml` at "wait for ci-ok" on a commit that changed no web file. The edge's next
+  steps (`live`, the deploy PR, `locked`) are non-web pushes, and the deploy PR is time-bound. The user decided
+  that on main the web jobs run only when the web paths changed. The 100 ms budget stays for web changes.
+- **Decision:**
+  - On a push to main, the `changes` job's step `since-green` takes the newest green `ci` run on main. That is
+    a push or a manual run, other than the current one.
+  - The step compares that run's commit with this one through the compare API (`actions: read`,
+    `github.token`, no new secret).
+  - `web-checks` and `web-e2e` are skipped only when none of the web paths changed, a rename's old name
+    included. The web paths are the PR filter's `web` list: `web/**`, `docs/SCORING.md` and `ci.yml`.
+  - The list gains `.githooks/**`, `scripts/check_bytes.sh` and `scripts/lib/charpolicy.py`.
+    `web/tests/hooks.test.ts` runs them, and until now only main's every-push run did when a PR changed
+    them alone.
+  - When they are skipped, a `::notice` "web checks skipped" names the base commit and its run.
+  - Main's commit message keeps its brand check: a step in `manifests`, which runs on every push. Until now
+    `web-checks`' `npm run brand` did that check; its file scan covers only `web/`.
+- **Why since the last green commit, not the parent:** `deploy.yml`'s `site` job ships `web/` whenever it
+  differs from the live release. A red web commit followed by a non-web one would ship the red `web/`
+  unchecked. Counted from the last green commit, the induction holds: every green commit's web paths passed
+  `web-e2e` on a commit with the same ones.
+- **Fail-safe:** the web jobs run when:
+  - the runs or the compare can't be read;
+  - no run is green;
+  - the base commit isn't an ancestor of this one (`ahead` or `identical`, behind by 0);
+  - the compare lists no files, or 300 or more (its cap, so the list may be truncated);
+  - the step breaks or hangs (`continue-on-error`, a 2-minute timeout; `skip` is written last).
+
+  A manual run executes everything, as before. Every other job keeps running on every push to main.
+- **Accepted:**
+  - Only green runs count, so a newer red run on the same web paths doesn't stop a later skip. This covers
+    a manual run that went red after a repository variable baked into the site changed (`TESTFLIGHT_URL`,
+    `SUPPORT_EMAIL`, which are no path).
+  - After changing such a variable, run `gh workflow run ci.yml --ref main`. Don't start `deploy.yml` by
+    hand until that run is green.
+- **Consequences:**
+  - `.github/workflows/ci.yml`: the `changes` job, the `web` filter, the two web jobs' `if`, and `manifests`'
+    message check.
+  - `OPERATIONS.md` → GCP → Deploy, roll back, rotate → The site; `STATUS.md`.
+  - The paths in `since-green` and in the PR filter's `web` list change together (a comment at both).

@@ -1,7 +1,9 @@
 # One workflow for the whole repository's checks (D107). On a pull request a `changes` job picks
-# the checks the diff needs (path filters, job-level `if:`); a push to main and a manual run
-# execute every check. `ci-ok` needs them all and is the required check: a skipped check is
-# never a failed one, but a failed or cancelled one (or a failed `changes`) turns it red.
+# the checks the diff needs (path filters, job-level `if:`); a manual run executes every check,
+# and so does a push to main, except web-checks and web-e2e when the web paths are unchanged
+# since main's last green commit (D243). `ci-ok` needs them all and is the required check: a
+# skipped check is never a failed one, but a failed or cancelled one (or a failed `changes`)
+# turns it red.
 # Checks only: nothing here builds an image to deploy, pushes to a registry or opens a pull
 # request (the GHCR images and EKS's "deploy: images" PRs are gone, C1). deploy.yml deploys main:
 # it waits for this workflow's ci-ok on the commit, then ships the services to Cloud Run and the
@@ -33,16 +35,21 @@ env:
   NEXT_PUBLIC_SUPPORT_EMAIL: ${{ vars.SUPPORT_EMAIL }}
 
 jobs:
-  # Which checks does this change need? Filters only on pull requests: a push to main and a
-  # manual run execute every check, so main's ci-ok (what deploy.yml waits for) judges the whole
-  # tree. The workflow file itself is in every filter, so a change to CI runs everything. No
-  # checkout: on a pull request the filter lists the changed files through the API.
+  # Which checks does this change need? Filters on pull requests; a manual run executes every
+  # check, and a push to main every check but the web jobs, which follow `since-green` below
+  # (D243): main's ci-ok (what deploy.yml waits for) judges the whole tree either way, the web
+  # paths by the last green run that checked them. The workflow
+  # file itself is in every filter, so a change to CI runs everything. No checkout: on a pull
+  # request the filter lists the changed files through the API, on a push `since-green` compares
+  # through it.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
+      # since-green: ci.yml's runs on main (read only).
+      actions: read
     outputs:
       run_go: ${{ github.event_name != 'pull_request' || steps.filter.outputs.go == 'true' }}
       run_pkgmap: ${{ github.event_name != 'pull_request' || steps.filter.outputs.pkgmap == 'true' }}
@@ -50,7 +57,9 @@ jobs:
       run_manifests: ${{ github.event_name != 'pull_request' || steps.filter.outputs.manifests == 'true' }}
       run_terraform: ${{ github.event_name != 'pull_request' || steps.filter.outputs.terraform == 'true' }}
       run_argocd_luatest: ${{ github.event_name != 'pull_request' || steps.filter.outputs.argocd_luatest == 'true' }}
-      run_web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
+      # A pull request: the filter. A push or a manual run: true unless since-green proved the web
+      # paths unchanged since main's last green commit (a manual run has no since-green, so true).
+      run_web: ${{ github.event_name == 'pull_request' && steps.filter.outputs.web == 'true' || github.event_name != 'pull_request' && steps.since-green.outputs.skip != 'true' }}
       run_monitoring: ${{ github.event_name != 'pull_request' || steps.filter.outputs.monitoring == 'true' }}
       run_golden: ${{ github.event_name != 'pull_request' || steps.filter.outputs.golden == 'true' }}
       run_topology: ${{ github.event_name != 'pull_request' || steps.filter.outputs.topology == 'true' }}
@@ -133,10 +142,15 @@ jobs:
               # infra/aws/kubernetes' test compares its Vault address with these generated files
               - 'deploy/k8s/overlays/vault-namespaces/**'
               - '.github/workflows/ci.yml'
+            # since-green below matches the same paths on a push to main: change them together.
             web:
               - 'web/**'
               - 'docs/SCORING.md'
               - '.github/workflows/ci.yml'
+              # web/tests/hooks.test.ts runs the hooks with the byte check (web/tests/helpers/repo.ts)
+              - '.githooks/**'
+              - 'scripts/check_bytes.sh'
+              - 'scripts/lib/charpolicy.py'
             # The EKS cluster's alert rules, until D3 (RYFT on Cloud Run alerts from Cloud
             # Monitoring, infra/gcp, D236).
             monitoring:
@@ -164,6 +178,54 @@ jobs:
               - 'deploy/pubsub-emulator/**'
               - 'Makefile'
               - '.github/workflows/ci.yml'
+      # A push to main (D243, amends D107): web-checks and web-e2e run only when the web paths (the
+      # `web` filter's) changed since the newest commit on main whose ci run is green. Not since the
+      # parent: deploy.yml's site job ships web/ whenever it differs from the live release, so a red
+      # web commit and a non-web commit after it would ship the red web/ unchecked. Since the last
+      # green commit, by induction every green commit's web paths passed web-e2e on a commit with the
+      # same ones. Anything uncertain runs them: the runs or the compare cannot be read, no run is
+      # green, its commit is not an ancestor of this one, or the compare may be truncated (it lists
+      # at most 300 files). A broken or hung step runs them too (continue-on-error, its own timeout,
+      # skip written last). Main's commit message keeps its brand check in `manifests`.
+      - name: The web paths since main's last green commit
+        id: since-green
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          run_them() { echo "web-checks and web-e2e run: $*"; exit 0; }
+          # The newest green run of ci.yml on main other than this one, from a push or by hand (both
+          # run the web jobs or prove them unneeded; a pull request's run skips them by its filter).
+          base=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=100" \
+            --jq '[.workflow_runs[] | select(.head_branch == "main" and (.event == "push" or .event == "workflow_dispatch")
+                    and .status == "completed" and .conclusion == "success" and (.id | tostring) != env.RUN_ID)]
+                  | if length == 0 then "none" else (first | "\(.head_sha) \(.html_url)") end') \
+            || run_them "ci.yml's runs on main cannot be read"
+          [ "$base" != none ] || run_them "no green run of ci.yml on main"
+          read -r base_sha base_url <<<"$base"
+          [[ $base_sha =~ ^[0-9a-f]{40}$ ]] || run_them "the last green run's commit is not a SHA ($base_sha)"
+          # base...SHA: its status (ahead or identical: base is an ancestor), and the first changed
+          # web path, a rename's old name included ("-": none). The paths: the `web` filter's.
+          cmp=$(gh api "repos/$REPO/compare/$base_sha...$SHA" \
+            --jq 'if (.files | type) != "array" then "unlisted" else
+                    "\(.status) \(.behind_by) \(.files | length) " + ([.files[] | .filename, (.previous_filename // empty)]
+                    | map(select(startswith("web/") or . == "docs/SCORING.md" or . == ".github/workflows/ci.yml"
+                        or startswith(".githooks/") or . == "scripts/check_bytes.sh" or . == "scripts/lib/charpolicy.py"))
+                    | first // "-") end') \
+            || run_them "the compare of $base_sha...$SHA cannot be read"
+          read -r status behind count first <<<"$cmp"
+          [ "$status" != unlisted ] || run_them "the compare of $base_sha...$SHA lists no files"
+          case $status in ahead | identical) ;; *) run_them "the last green commit $base_sha is not an ancestor of $SHA ($status)" ;; esac
+          [ "$behind" = 0 ] || run_them "the last green commit $base_sha is not an ancestor of $SHA (behind by $behind)"
+          [[ $count =~ ^[0-9]+$ ]] && [ "$count" -lt 300 ] || run_them "$count files changed since $base_sha: the list may be truncated"
+          [ "$first" = - ] || run_them "$first changed since $base_sha, the last green commit ($base_url)"
+          echo "::notice title=web checks skipped::the web paths are unchanged since $base_sha, the last green commit on main ($base_url): web-checks and web-e2e are skipped (D243)"
+          echo "skip=true" >> "$GITHUB_OUTPUT"
 
   test:
     needs: [changes]
@@ -548,6 +610,15 @@ jobs:
       # the site (English only, D230), the k8s copies equal it, and the site has no page the
       # platform does not name (D107): consent is recorded against that version.
       - run: node web/scripts/check-policy-version.mjs --strict
+      # Main's commit message names no denylisted brand: web-checks' `npm run brand` read it on every
+      # push until the web jobs followed the web paths (D243). On a push this is what landed (a squash
+      # message edited at the merge included); on a pull request it is GitHub's test merge commit
+      # ("Merge <sha> into <sha>"), as web-checks read it, and pr-title checks the PR's own title
+      # and commits.
+      - name: Brand check (the last commit message)
+        run: |
+          git log -1 --format=%B > "$RUNNER_TEMP/message"
+          node web/scripts/check-brand.mjs --message "$RUNNER_TEMP/message"
       # deploy/run/config.env's version is a published text (its English page, in the list), the
       # k8s copies (deploy/k8s/base/{api,ingest}/config.env) equal it, and on a pull request a draft
       # text is not put into force there. Also EKS's version in force (the overlay's literals): api and
@@ -701,7 +772,8 @@ jobs:
   # moves the pin (docs/OPERATIONS.md -> GCP -> Deploy, roll back, rotate -> The app pin).
   web-checks:
     needs: [changes]
-    if: github.event_name != 'pull_request' || needs.changes.outputs.run_web == 'true'
+    # On a push to main too (D243): run_web is false only when since-green proved them unneeded.
+    if: needs.changes.outputs.run_web == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -768,7 +840,7 @@ jobs:
   # No image and no container: Hosting serves the files themselves.
   web-e2e:
     needs: [changes]
-    if: github.event_name != 'pull_request' || needs.changes.outputs.run_web == 'true'
+    if: needs.changes.outputs.run_web == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
