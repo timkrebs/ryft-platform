@@ -144,7 +144,7 @@ run "both_keys_rotate_wait_30_days_and_are_administered_by_the_account_only" {
 
   assert {
     condition = (
-      length(data.aws_iam_policy_document.vault_keys.statement) == 2 &&
+      length(data.aws_iam_policy_document.vault_keys.statement) == 1 &&
       data.aws_iam_policy_document.vault_keys.statement[0].sid == "AccountAdministers" &&
       data.aws_iam_policy_document.vault_keys.statement[0].effect == "Allow" &&
       toset(data.aws_iam_policy_document.vault_keys.statement[0].actions) == toset(["kms:*"]) &&
@@ -157,18 +157,13 @@ run "both_keys_rotate_wait_30_days_and_are_administered_by_the_account_only" {
     error_message = "the only Allow is AccountAdministers (the account root, kms:*): IAM policies decide who uses the keys, and no role is named"
   }
 
+  # The retirement (PR D1): no statement denies scheduling a key's deletion or disabling it any
+  # more, on either key, so D2's destroy can schedule both deletions.
   assert {
-    condition = (
-      data.aws_iam_policy_document.vault_keys.statement[1].sid == "NoDeletionOrDisable" &&
-      data.aws_iam_policy_document.vault_keys.statement[1].effect == "Deny" &&
-      toset(data.aws_iam_policy_document.vault_keys.statement[1].actions) == toset(["kms:ScheduleKeyDeletion", "kms:DisableKey"]) &&
-      toset(data.aws_iam_policy_document.vault_keys.statement[1].resources) == toset(["*"]) &&
-      length(data.aws_iam_policy_document.vault_keys.statement[1].principals) == 1 &&
-      one(data.aws_iam_policy_document.vault_keys.statement[1].principals).type == "AWS" &&
-      toset(one(data.aws_iam_policy_document.vault_keys.statement[1].principals).identifiers) == toset(["*"]) &&
-      length(data.aws_iam_policy_document.vault_keys.statement[1].condition) == 0
-    )
-    error_message = "both keys deny ScheduleKeyDeletion and DisableKey to every principal, unconditionally (PutKeyPolicy stays allowed: no lockout)"
+    condition = !anytrue([for s in data.aws_iam_policy_document.vault_keys.statement :
+      s.effect == "Deny" || s.sid == "NoDeletionOrDisable"
+    ])
+    error_message = "NoDeletionOrDisable is dropped (PR D1): the keys' policy denies nothing, so the destroy can schedule the deletions"
   }
 
   assert {
@@ -191,8 +186,8 @@ run "the_bucket_is_private_versioned_and_encrypted_with_the_snapshot_key" {
   command = plan
 
   assert {
-    condition     = aws_s3_bucket.vault_snapshots.bucket == "ryft-prod-euc1-vault-snapshots-123456789012" && aws_s3_bucket.vault_snapshots.force_destroy == false
-    error_message = "the bucket is <cluster>-vault-snapshots-<account id>, and Terraform never empties it"
+    condition     = aws_s3_bucket.vault_snapshots.bucket == "ryft-prod-euc1-vault-snapshots-123456789012" && aws_s3_bucket.vault_snapshots.force_destroy == true
+    error_message = "the bucket is <cluster>-vault-snapshots-<account id>, and a destroy empties it (force_destroy, PR D1: the retirement)"
   }
 
   assert {
@@ -410,7 +405,7 @@ run "the_unseal_allowlist_denies_every_other_principal_when_set" {
     condition = (
       aws_kms_key.vault_unseal.policy == data.aws_iam_policy_document.vault_unseal_key.json &&
       aws_kms_key.vault_snapshots.policy == data.aws_iam_policy_document.vault_keys.json &&
-      length(data.aws_iam_policy_document.vault_keys.statement) == 2
+      length(data.aws_iam_policy_document.vault_keys.statement) == 1
     )
     error_message = "the allowlist is on the unseal key only; the snapshot key keeps vault_keys"
   }

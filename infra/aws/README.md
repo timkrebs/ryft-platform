@@ -13,6 +13,14 @@ The zone has its own root so destroying the cluster never changes the nameserver
 GoDaddy. The add-ons have their own root because the Helm/Kubernetes providers must not
 be configured from a cluster created in the same apply.
 
+**Retiring (2026-11).** RYFT runs on GCP (D216, design `docs/work/2026-11-14-gcp`). The
+retirement order is D227's. **PR D1** dropped `NoDeletionOrDisable` from the keys' policy, set
+`force_destroy = true` on the snapshot bucket and dropped `prevent_destroy` from the zone.
+`docs/OPERATIONS.md` → GCP steps 12–14 then destroy what is left: the zone and its records (E),
+then the keys, the aliases, the bucket and the budget. That takes two applies of this root,
+before and after **PR D2**, which empties it. **PR D3** deletes these directories. The rest of
+this file describes the EKS era.
+
 ```
 infra/aws/
 ├── terraform.tf providers.tf locals.tf main.tf variables.tf outputs.tf
@@ -36,7 +44,7 @@ infra/aws/
 
 | Resource | Name / value |
 | --- | --- |
-| Hosted zone | `ryftlab.de` (D213), `prevent_destroy`; CAA `issue`/`issuewild` `letsencrypt.org`; mail (D214): Microsoft 365 through GoDaddy as code in `dns/mail.tf` (MX, the apex TXT set with the tenant verification and SPF, DMARC `p=quarantine`, the DKIM `selector2` CNAME, autodiscover, the Skype/Teams CNAMEs and SRVs), no tfvars |
+| Hosted zone | `ryftlab.de` (D213), without `prevent_destroy` since PR D1 (the retirement); CAA `issue`/`issuewild` `letsencrypt.org`; mail (D214): Microsoft 365 through GoDaddy as code in `dns/mail.tf` (MX, the apex TXT set with the tenant verification and SPF, DMARC `p=quarantine`, the DKIM `selector2` CNAME, autodiscover, the Skype/Teams CNAMEs and SRVs), no tfvars |
 | VPC | `ryft-prod-euc1`, `10.0.0.0/16`, 3 AZs: private `/20` subnets for nodes and pods, public `/24` subnets for load balancers, one NAT gateway, flow logs (30 days) |
 | EKS cluster | `ryft-prod-euc1`, Kubernetes 1.36, public API endpoint restricted to `endpoint_public_access_cidrs`, secrets encrypted with KMS, audit/api/authenticator logs |
 | Node group | `ryft-prod-euc1-default-…`: 3 × t3.large (AL2023), one per zone |
@@ -45,8 +53,8 @@ infra/aws/
 | Argo CD (Helm) | `argo-cd` 10.10.5 in `argocd`, non-HA, no SSO. Its ClusterRoles are **narrowed** (T12-f, D120): the controller has only the kinds that `deploy/argocd/apps` renders, no `secrets`, no `pods/exec`, no `pods/ephemeralcontainers`, nothing on `ValidatingAdmissionPolicy`/`-Binding`, no `escalate` on a ClusterRole and `bind` on one only (`messaging-topology-metrics-auth-role`; `escalate`/`bind` on the four operator Roles by name), `get`/`list`/`watch` on Applications cluster-wide (strict mode drops a kind it cannot list, silently); the server is read-only cluster-wide. This narrows what Argo CD can grant itself; it does not stop a stolen controller token from writing ConfigMaps and workloads in other namespaces (`aws-auth` included), nor from writing a ClusterRole and binding it to `system:serviceaccounts` (the controller's RBAC-kind rules have no `resourceNames`): the workload and RBAC writes close only with the admission policies P6 and P12 both in Deny and this change applied (what stays open even then: OPERATIONS, "What stays open"); `resource.respectRBAC: strict`; the ApplicationSet controller is at 0 replicas. The rules and their reasons are in `docs/OPERATIONS.md` (Deploy and roll back). A new kind in a synced path needs its rule in `kubernetes/argocd.tf` first |
 | StorageClass | `gp3-encrypted` (default): gp3, encrypted, `WaitForFirstConsumer`, `Retain` |
 | IAM | cluster/node roles; Pod Identity roles for EBS CSI, the LB controller, ExternalDNS and cert-manager (the last two scoped to the zone) |
-| Vault keys (`vault.tf`) | KMS `alias/ryft-prod-euc1-vault-unseal` (Vault CE's auto-unseal, used only with `vault_seal = "awskms"` in `kubernetes/`; under the default Shamir seal it is kept unused, D208, about $1 a month) and `alias/ryft-prod-euc1-vault-snapshots` (the bucket): yearly rotation, 30-day deletion window, `prevent_destroy`. The key policy lets the account administer them and names no role, so IAM policies decide who uses them (the Pod Identity roles are in `kubernetes/`). It denies `ScheduleKeyDeletion` and `DisableKey` to everyone (`NoDeletionOrDisable`; see Destroying). The unseal key can additionally be limited to listed principals (below) |
-| Vault snapshots (`vault.tf`) | S3 `ryft-prod-euc1-vault-snapshots-<account id>`, `prevent_destroy`: versioned, SSE-KMS with the snapshot key and the S3 bucket key, all four public access blocks, `BucketOwnerEnforced`; under `snapshots/` objects expire after 30 days, old versions 7 days later, incomplete uploads after 1; the policy denies requests without TLS, any `PutObject` that does not name the snapshot key's ARN (very likely also multipart part uploads, which send no key header: the job uploads with one `put-object`), and any `PutObject` without `If-None-Match` (`DenyPutWithoutIfNoneMatch`: create-only, no identity can overwrite a snapshot; CopyObject and part uploads are refused too) |
+| Vault keys (`vault.tf`) | KMS `alias/ryft-prod-euc1-vault-unseal` (Vault CE's auto-unseal, used only with `vault_seal = "awskms"` in `kubernetes/`; under the default Shamir seal it is kept unused, D208, about $1 a month) and `alias/ryft-prod-euc1-vault-snapshots` (the bucket): yearly rotation, 30-day deletion window, `prevent_destroy`. The key policy lets the account administer them and names no role, so IAM policies decide who uses them (the Pod Identity roles are in `kubernetes/`). Until PR D1 it denied `ScheduleKeyDeletion` and `DisableKey` to everyone (`NoDeletionOrDisable`); D1 dropped that for the retirement (see Destroying). The unseal key can additionally be limited to listed principals (below) |
+| Vault snapshots (`vault.tf`) | S3 `ryft-prod-euc1-vault-snapshots-<account id>`, `prevent_destroy`, `force_destroy = true` since PR D1 (a destroy empties it): versioned, SSE-KMS with the snapshot key and the S3 bucket key, all four public access blocks, `BucketOwnerEnforced`; under `snapshots/` objects expire after 30 days, old versions 7 days later, incomplete uploads after 1; the policy denies requests without TLS, any `PutObject` that does not name the snapshot key's ARN (very likely also multipart part uploads, which send no key header: the job uploads with one `put-object`), and any `PutObject` without `If-None-Match` (`DenyPutWithoutIfNoneMatch`: create-only, no identity can overwrite a snapshot; CopyObject and part uploads are refused too) |
 
 Request path: app → `api.ryftlab.de` (Route 53 alias, written by ExternalDNS) → NLB →
 Traefik (Let's Encrypt certificate, TLS) → `/v1/sync` ingest pods, `/v1` api pods.
@@ -426,14 +434,20 @@ To keep a resource in AWS but drop it from this root, replace its block with a `
 block: `removed { from = aws_kms_key.vault_unseal  lifecycle { destroy = false } }`
 (one per resource; the plan shows "will no longer be managed", no destroy).
 
-Removing them for good is deliberate and takes separate, reviewed steps:
+Removing them for good is deliberate and takes separate, reviewed steps. These are the
+retirement's PRs D1 and D2, run as `docs/OPERATIONS.md` → GCP step 13 (since D1 the
+paragraphs above about `NoDeletionOrDisable` describe the time before it):
 
-1. A pull request drops `NoDeletionOrDisable` from `vault_keys` (and, for the bucket,
-   sets `force_destroy = true`). You apply it: only the key policies and the bucket's
-   `force_destroy` change. `force_destroy` must be in the state before the bucket is
-   destroyed, so it needs this apply of its own. From then on, deleting the bucket
-   deletes **every object version at once**: there is no window for snapshots.
-2. A second pull request deletes the resources (or `vault.tf`). You plan, read the
+1. **PR D1** drops `NoDeletionOrDisable` from `vault_keys` and, for the bucket, sets
+   `force_destroy = true`. You apply it **targeted at the two keys and the bucket**: the
+   root still declares the VPC and EKS, and no cluster is in the state (the decommission
+   destroyed it, and an SCP now refuses `eks:CreateCluster`), so a plain apply would try
+   to create one. Only the key
+   policies and the bucket's `force_destroy` change. `force_destroy` must be in the state
+   before the bucket is destroyed, so it needs this apply of its own. From then on,
+   deleting the bucket deletes **every object version at once**: there is no window for
+   snapshots.
+2. **PR D2** deletes every resource file, so the root declares nothing. You plan, read the
    destroy lines, and apply. A KMS key is not deleted at once: it is scheduled for
    deletion in 30 days and unusable from that moment. Within the window,
    `aws kms cancel-key-deletion --key-id <arn>` and then `aws kms enable-key --key-id
