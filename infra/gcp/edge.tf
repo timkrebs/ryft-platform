@@ -3,8 +3,8 @@
 #   built   everything in this file; nothing points at it (DNS still names the domain mappings);
 #   live    api. and ingest. are A records at its address (dns.tf);
 #   locked  the domain mappings are gone (run.tf), after the deploy PR's ingress
-#           internal-and-cloud-load-balancing and XFF_TRUSTED_HOPS=2 (scripts/check_cloudrun.py is
-#           to enforce that order: the follow-up after #211, D242).
+#           internal-and-cloud-load-balancing and XFF_TRUSTED_HOPS=2 (scripts/check_cloudrun.py
+#           enforces that order against this gate, D242).
 # The sink's exclusions are in logging.tf, the two log-based metrics and the dashboard's tiles in
 # monitoring.tf.
 #

@@ -34,7 +34,7 @@ locals {
     # line never sees and the 5xx alert's text sends you to (alerts.tf: httpRequest.status>=500). An
     # entry without a status is kept too (the comparison fails). scoring's and notify's request logs
     # stay whole: their callers are Pub/Sub's pushes, Google's addresses, and the event backlog alert
-    # reads their 429s. For the user's confirmation (D242).
+    # reads their 429s. The user's decision, 2026-11-19 (D242).
     "run-requests" = {
       description = "Cloud Run's request log of api and ingest below 5xx, with every caller's IP (infra/gcp, D242)"
       query = join("\n", [

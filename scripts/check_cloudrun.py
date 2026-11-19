@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """What deploy/run must hold before deploy.yml may apply it (CI's manifests job, make cloudrun-check).
 
-  python3 -I scripts/check_cloudrun.py [--dir deploy/run]
+  python3 -I scripts/check_cloudrun.py [--dir deploy/run] [--gates infra/gcp/gates.auto.tfvars]
 
 It lints the committed config.env (FILL_ME_IN may be left; a wrong shape fails), then renders every
 template with fake values of the right shape and fake digests (scripts/cloudrun_render.py, the
@@ -10,13 +10,19 @@ renderer deploy.yml uses), parses the result with yq (mikefarah v4) and asserts,
     request-based billing (cpu-throttling true) and startup CPU boost; the migrate job's 600 s, 512 MiB,
     one task and no retry (maxRetries 0: a retry is a second failed owner login, and failed logins
     feed Supavisor's circuit breaker);
-  - ingress all on api and ingest, internal on scoring and notify; the service account
+  - ingress internal on scoring and notify; the service account
     ryft-<svc>@ryftlab-prod.iam.gserviceaccount.com; one port, h2c 8080; the startup and the liveness
     probe both on /health/live, the startup probe within 30 s (an instance must start while the
     database is down, so its tick logs result error; /health/ready is the uptime checks' target);
     all traffic to the latest revision;
+  - api's and ingest's ingress against the gate edge in infra/gcp/gates.auto.tfvars (D242): all, or
+    internal-and-cloud-load-balancing only while edge is live or locked (before that api. and ingest.
+    reach Cloud Run through the domain mappings, which that ingress refuses), and locked only with
+    it (the mappings are gone, and run.app must not take what Cloud Armor never saw);
   - XFF_TRUSTED_HOPS other than 1 only with ingress internal-and-cloud-load-balancing on api and ingest
-    (D240: behind the load balancer; with ingress all a client reaches run.app and writes that entry);
+    (D240: behind the load balancer; with ingress all a client reaches run.app and writes that entry),
+    and that ingress only with a count other than 1 (D242: at 1 the edge limit would key every request
+    on the load balancer's own address, one bucket for every client);
   - the env exactly as ticket-b.md's tables (names and the values the renderer builds; api may add the
     pin of posthog-project-key, D231; api and ingest carry BETA_GATE, D238, and XFF_TRUSTED_HOPS, D240,
     from config.env), every
@@ -46,9 +52,9 @@ SERVICES = ("api", "ingest", "scoring", "notify")
 FILES = SERVICES + ("migrate",)
 PROJECT = "ryftlab-prod"
 REGISTRY = f"europe-west1-docker.pkg.dev/{PROJECT}/ryft"
-EXPECT = {  # design §3
-    "api": dict(timeout=60, concurrency=40, memory="512Mi", max_scale="3", ingress="all"),
-    "ingest": dict(timeout=120, concurrency=4, memory="1Gi", max_scale="2", ingress="all"),
+EXPECT = {  # design §3; api's and ingest's ingress follows the gate edge (check_edge_ingress, D242)
+    "api": dict(timeout=60, concurrency=40, memory="512Mi", max_scale="3"),
+    "ingest": dict(timeout=120, concurrency=4, memory="1Gi", max_scale="2"),
     "scoring": dict(timeout=300, concurrency=4, memory="512Mi", max_scale="1", ingress="internal"),
     "notify": dict(timeout=60, concurrency=10, memory="256Mi", max_scale="1", ingress="internal"),
 }
@@ -65,6 +71,12 @@ PUBLIC = {"AUTH_MODE": "supabase", "SUPABASE_PROJECT_REF": None, "PRIVACY_POLICY
 # The only ingress under which a hop count other than 1 may run: then Cloud Run takes requests from the
 # load balancer alone, which appends the entry a second hop trusts.
 LB_INGRESS = "internal-and-cloud-load-balancing"
+# The gate edge (D242, infra/gcp/variables.tf): its values, its default when the line is absent, and the
+# phases in which api. and ingest. resolve to the load balancer, the only ones that allow LB_INGRESS.
+GATES = ROOT / "infra/gcp/gates.auto.tfvars"
+EDGE_PHASES = ("off", "built", "live", "locked")
+EDGE_LIVE = ("live", "locked")
+EDGE_LINE = re.compile(r'\s*edge\s*=\s*"([^"]*)"\s*(?:(?:#|//).*)?')
 PLAIN = {
     "api": {**SHARED, **PUBLIC, "ADMIN_WEB_ORIGINS": "https://ryftlab.de", "APPLE_TEAM_ID": "M77SKHKG63",
             "APPLE_KEY_ID": None, "APPLE_CLIENT_ID": "dev.timkrebs.ryft"},
@@ -138,6 +150,50 @@ def fakes(committed):
     m = re.search(r"^XFF_TRUSTED_HOPS=(.*)$", committed, re.M)
     v["XFF_TRUSTED_HOPS"] = m.group(1) if m else "1"
     return v
+
+
+def edge_phase(path):
+    """The gate edge as committed (D242): variables.tf's default, off, when no line sets it; None after a finding."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        fail(str(path), f"cannot read it ({e.strerror}): api's and ingest's ingress follows its gate edge (D242)")
+        return None
+    lines = [(n, line) for n, line in enumerate(text.split("\n"), 1) if re.match(r"\s*edge\s*=", line)]
+    if not lines:
+        return "off"
+    if len(lines) > 1:
+        fail(path.name, f"edge is set on lines {', '.join(str(n) for n, _ in lines)}: once (Terraform refuses a second)")
+        return None
+    n, line = lines[0]
+    m = EDGE_LINE.fullmatch(line)
+    if not m or m.group(1) not in EDGE_PHASES:
+        fail(f"{path.name}:{n}", f"{line.strip()!r}: edge must be one of {', '.join(EDGE_PHASES)}, quoted (D242)")
+        return None
+    return m.group(1)
+
+
+def check_edge_ingress(w, ingress, hops, edge):
+    """api's and ingest's ingress against the hop count (D240) and the gate edge (D242)."""
+    if ingress not in ("all", LB_INGRESS):
+        fail(w, f"ingress {ingress!r}, want 'all' or {LB_INGRESS!r} behind the load balancer (design §3, D242)")
+        return
+    if hops != "1" and ingress != LB_INGRESS:
+        fail(w, f"XFF_TRUSTED_HOPS={hops} with ingress {ingress!r}: a count above 1 trusts the load balancer's "
+                f"entry, so it needs ingress {LB_INGRESS!r} (D240); with any other a client reaches run.app "
+                "directly and writes the entry the edge limit would take")
+    if ingress == LB_INGRESS:
+        if edge not in EDGE_LIVE:
+            fail(w, f"ingress {LB_INGRESS!r} with edge = {edge!r}: only once api. and ingest. resolve to the load "
+                    "balancer (edge live or locked, D242); until then they reach Cloud Run through the domain "
+                    "mappings, which this ingress refuses")
+        if hops == "1":
+            fail(w, f"ingress {LB_INGRESS!r} with XFF_TRUSTED_HOPS=1: behind the load balancer the last entry is its "
+                    "own address, so the edge limit would put every client into one bucket (D242); set 2 in the same PR")
+    elif edge == "locked":
+        fail(w, f"ingress {ingress!r} with edge = 'locked': the domain mappings are gone, and run.app would still take "
+                f"requests that never passed Cloud Armor; ingress {LB_INGRESS!r} (the deploy PR, runbook GCP 16.6) "
+                "comes before locked (D242)")
 
 
 def jsons(raw, dups):
@@ -294,7 +350,7 @@ def check_probe(where, probe, path, startup):
                     "(the startup probe waits for /health/live only; each failed start is billed)")
 
 
-def check_service(name, doc, cfg, digest):
+def check_service(name, doc, cfg, digest, edge):
     e = EXPECT[name]
     w = f"{name}.yaml"
     if not keys_exactly(w, doc, ("apiVersion", "kind", "metadata", "spec")):
@@ -307,13 +363,10 @@ def check_service(name, doc, cfg, digest):
             fail(w, f"metadata.name is {md['name']!r}, want {name!r} (the file's name)")
         if keys_exactly(f"{w} metadata.annotations", md["annotations"], ("run.googleapis.com/ingress",)):
             ingress = md["annotations"]["run.googleapis.com/ingress"]
-            if ingress != e["ingress"]:
+            if "XFF_TRUSTED_HOPS" in PLAIN[name]:
+                check_edge_ingress(w, ingress, cfg.get("XFF_TRUSTED_HOPS", "1"), edge)
+            elif ingress != e["ingress"]:
                 fail(w, f"ingress {ingress!r}, want {e['ingress']!r}")
-            hops = cfg.get("XFF_TRUSTED_HOPS", "1")
-            if "XFF_TRUSTED_HOPS" in PLAIN[name] and hops != "1" and ingress != LB_INGRESS:
-                fail(w, f"XFF_TRUSTED_HOPS={hops} with ingress {ingress!r}: a count above 1 trusts the load balancer's "
-                        f"entry, so it needs ingress {LB_INGRESS!r} (D240); with any other a client reaches run.app "
-                        "directly and writes the entry the edge limit would take")
     spec = doc["spec"]
     if not keys_exactly(f"{w} spec", spec, ("template", "traffic")):
         return {}
@@ -405,6 +458,7 @@ def check_migrate(doc, cfg, digest):
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--dir", default=str(ROOT / "deploy/run"))
+    p.add_argument("--gates", default=str(GATES), help="infra/gcp's gates (the gate edge, D242)")
     a = p.parse_args(argv)
     d = Path(a.dir)
     yq = shutil.which("yq")
@@ -419,6 +473,7 @@ def main(argv):
         fail(f"{d}/{f}", "not a file deploy/run may hold (the five templates and config.env); nothing renders it")
     for f in sorted(want - have):
         fail(f"{d}/{f}", "missing")
+    edge = edge_phase(Path(a.gates))
     if errs:
         return report()
     # P5 in config.env, by name (the renderer refuses unknown keys too, with a less specific message).
@@ -457,7 +512,7 @@ def main(argv):
             doc = load(yq, out / f"{n}.yaml")
             if doc is None:
                 continue
-            pins[n] = check_migrate(doc, per, digests[n]) if n == "migrate" else check_service(n, doc, per, digests[n])
+            pins[n] = check_migrate(doc, per, digests[n]) if n == "migrate" else check_service(n, doc, per, digests[n], edge)
     # design §4: a role's pin in migrate equals the service's own, or the next deploy sets the role back.
     for s in SERVICES:
         mine, theirs = pins.get(s, {}).get("PGPASSWORD"), pins.get("migrate", {}).get(f"DB_PASSWORD_{s.upper()}")
@@ -473,8 +528,8 @@ def report():
         print(f"{'::error title=deploy/run::' if gha else '✗ '}{e}", file=sys.stderr)
     if errs:
         return 1
-    print("check_cloudrun: api, ingest, scoring, notify and migrate render; limits, ingress, accounts, h2c, probes, env, "
-          "secret pins (by number, migrate = the services), accessors and P5 hold")
+    print("check_cloudrun: api, ingest, scoring, notify and migrate render; limits, ingress (against the gate edge), "
+          "accounts, h2c, probes, env, secret pins (by number, migrate = the services), accessors and P5 hold")
     return 0
 
 

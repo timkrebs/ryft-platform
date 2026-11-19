@@ -949,7 +949,8 @@ preview rule flagged: those keep the client's IP, the URL and the user agent for
 What no sink takes is stored nowhere (`_Default` is off). The services' own lines (`stdout`,
 `stderr`) and the log-based metrics are unchanged; the access line `http` has each request's
 status. Cloud Armor logs at `NORMAL`, never `VERBOSE`
-(matched body snippets). The privacy text (C2) must name this (D242, an open decision).
+(matched body snippets). The exclusion of api's and ingest's request log below 5xx is the user's
+decision (2026-11-19). The privacy text (C2) must name what stays (D242 → Privacy has the list).
 OPERATIONS → Data protection (logs) has the two exceptions (a panic's stack, a pgx
 encode error), the tests that pin the rule and what older lines still hold. The lines
 tie `user_id` to paths with dates, so limit who can read them and keep them no longer

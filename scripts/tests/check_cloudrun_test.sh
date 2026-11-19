@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# scripts/check_cloudrun.py against copies of deploy/run: the committed templates pass, and each
+# scripts/check_cloudrun.py against copies of deploy/run (and of infra/gcp/gates.auto.tfvars, whose gate
+# edge api's and ingest's ingress follows, D242): the committed templates pass, and each
 # mutation of a copy fails with its own message (design §3's limits, ingress, accounts, the h2c port,
 # probes, ticket-b.md's env and secret tables, the pins, P5, the key allowlist and the YAML shape).
 # The fake values the check renders with are its own, built at run time.
@@ -31,7 +32,29 @@ if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>&1 | grep -q mikefarah; t
 fi
 
 d=$tmp/run
-fresh() { rm -rf "$d"; cp -R "$HERE/deploy/run" "$d"; }
+g=$tmp/gates.auto.tfvars  # a copy of infra/gcp's gates: api's and ingest's ingress follows its edge (D242)
+# fresh: new copies in one starting shape, whatever phase of runbook GCP 16 is committed: edge off, ingress
+# all on api and ingest, one hop. So a PR that moves the gate or makes the deploy PR keeps this test green;
+# the committed tree itself is checked as it is (below, before the first fresh).
+fresh() {
+  rm -rf "$d"; cp -R "$HERE/deploy/run" "$d"; cp "$HERE/infra/gcp/gates.auto.tfvars" "$g"
+  edge_is off
+  baseline config.env '^XFF_TRUSTED_HOPS=' 'XFF_TRUSTED_HOPS=1'
+  baseline api.yaml '^ *run[.]googleapis[.]com/ingress:' '    run.googleapis.com/ingress: all'
+  baseline ingest.yaml '^ *run[.]googleapis[.]com/ingress:' '    run.googleapis.com/ingress: all'
+}
+# baseline <file> <regex> <line>: the copy's one line matching <regex> becomes <line>.
+baseline() {
+  awk -v re="$2" -v to="$3" '$0 ~ re { $0 = to; n++ } { print } END { exit n == 1 ? 0 : 3 }' "$d/$1" > "$d/$1.new" ||
+    fail "fixture: deploy/run/$1 has no single line matching $2"
+  mv "$d/$1.new" "$d/$1"
+}
+# edge_is <phase>: the gates copy's one edge line set to <phase> (any text, quoted).
+edge_is() {
+  awk -v to="$1" '/^edge *=/ { $0 = "edge = \"" to "\""; n++ } { print } END { exit n == 1 ? 0 : 3 }' "$g" > "$g.new" ||
+    fail "fixture: infra/gcp/gates.auto.tfvars has no single edge line"
+  mv "$g.new" "$g"
+}
 one_line() { # <file> <marker>: the marker is on exactly one line of the copy
   [ "$(grep -cF -- "$2" "$d/$1")" = 1 ] || fail "fixture: '$2' is not on exactly one line of deploy/run/$1"
 }
@@ -76,7 +99,7 @@ pin_of() { sed -nE "s/.*name: $2, key: \"([0-9]+)\".*/\1/p" "$d/$1"; }
 # fresh copy.
 bad() {
   local rc=0 out
-  out=$(check --dir "$d" 2>&1) || rc=$?
+  out=$(check --dir "$d" --gates "$g" 2>&1) || rc=$?
   [ "$rc" = 1 ] || fail "$1: want exit 1, got $rc: $out"
   case $out in *"$2"*) ;; *) fail "$1: the findings do not say '$2': $out" ;; esac
   if [ -n "${3:-}" ]; then
@@ -86,7 +109,7 @@ bad() {
 }
 ok() {
   local rc=0 out
-  out=$(check --dir "$d" 2>&1) || rc=$?
+  out=$(check --dir "$d" --gates "$g" 2>&1) || rc=$?
   [ "$rc" = 0 ] || fail "$1: want exit 0, got $rc: $out"
   fresh
 }
@@ -193,8 +216,7 @@ drop config.env 'BETA_GATE='
 bad "config.env without the gate mode" "BETA_GATE is missing"
 # The edge limit's hop count (D240): config.env's in api and ingest, nowhere else, never written into a
 # template, and above 1 only behind the load balancer (ingress internal-and-cloud-load-balancing).
-hops=$(sed -n 's/^XFF_TRUSTED_HOPS=//p' "$HERE/deploy/run/config.env")
-[ "$hops" = 1 ] || fail "fixture: deploy/run/config.env has XFF_TRUSTED_HOPS='$hops', want 1 (Cloud Run's front end)"
+hops=1  # every copy's (fresh): the committed count may be 2 once the edge's deploy PR is in (runbook GCP 16.6)
 drop api.yaml 'name: XFF_TRUSTED_HOPS,'
 bad "api without the hop count" "api.yaml env: XFF_TRUSTED_HOPS is missing"
 drop ingest.yaml 'name: XFF_TRUSTED_HOPS,'
@@ -213,11 +235,59 @@ edit config.env 'XFF_TRUSTED_HOPS=' "$hops" 2
 bad "two hops with ingress all on api" "api.yaml: XFF_TRUSTED_HOPS=2 with ingress 'all'"
 edit config.env 'XFF_TRUSTED_HOPS=' "$hops" 2
 bad "two hops with ingress all on ingest" "ingest.yaml: XFF_TRUSTED_HOPS=2 with ingress 'all'"
-# Behind the load balancer two hops are no finding of their own (the ingress is design §3's, so it is one).
 edit config.env 'XFF_TRUSTED_HOPS=' "$hops" 2
-edit api.yaml 'run.googleapis.com/ingress' 'all' 'internal-and-cloud-load-balancing'
-edit ingest.yaml 'run.googleapis.com/ingress' 'all' 'internal-and-cloud-load-balancing'
-bad "two hops behind the load balancer" "api.yaml: ingress 'internal-and-cloud-load-balancing', want 'all'" "XFF_TRUSTED_HOPS=2 with"
+edge_is live
+bad "two hops with ingress all, edge live" "api.yaml: XFF_TRUSTED_HOPS=2 with ingress 'all'"
+
+# The edge (D242): api's and ingest's ingress against the gate in infra/gcp/gates.auto.tfvars.
+# lb <hops>: the deploy PR of runbook GCP 16.6 on the copy (both services behind the load balancer).
+lb() {
+  edit config.env 'XFF_TRUSTED_HOPS=' "$hops" "$1"
+  edit api.yaml 'run.googleapis.com/ingress' 'all' 'internal-and-cloud-load-balancing'
+  edit ingest.yaml 'run.googleapis.com/ingress' 'all' 'internal-and-cloud-load-balancing'
+}
+for phase in off built live locked; do
+  # Every phase allows today's shape but locked, where the mappings are gone.
+  edge_is "$phase"
+  if [ "$phase" = locked ]; then
+    bad "ingress all with edge locked" "api.yaml: ingress 'all' with edge = 'locked'"
+  else
+    ok "ingress all, one hop, edge $phase"
+  fi
+done
+for phase in off built; do
+  edge_is "$phase"; lb 2
+  bad "the load balancer's ingress with edge $phase" \
+    "api.yaml: ingress 'internal-and-cloud-load-balancing' with edge = '$phase'" "XFF_TRUSTED_HOPS=2 with"
+done
+for phase in live locked; do
+  edge_is "$phase"; lb 2
+  ok "the load balancer's ingress and two hops, edge $phase"
+done
+edge_is live; lb 3
+ok "the load balancer's ingress and three hops, edge live (built's XFF check decides the count)"
+edge_is live; lb 1
+bad "the load balancer's ingress with one hop" "api.yaml: ingress 'internal-and-cloud-load-balancing' with XFF_TRUSTED_HOPS=1"
+edge_is locked; lb 2
+edit ingest.yaml 'run.googleapis.com/ingress' 'internal-and-cloud-load-balancing' 'all'
+bad "edge locked with ingest still on ingress all" "ingest.yaml: ingress 'all' with edge = 'locked'" "api.yaml: ingress"
+edge_is live
+edit api.yaml 'run.googleapis.com/ingress' 'all' 'internal'
+bad "api internal, edge live" "api.yaml: ingress 'internal', want 'all' or"
+edge_is live
+edit scoring.yaml 'run.googleapis.com/ingress' 'internal' 'internal-and-cloud-load-balancing'
+bad "scoring behind the load balancer" "scoring.yaml: ingress 'internal-and-cloud-load-balancing', want 'internal'"
+edge_is on
+bad "a gate value outside the four" "edge must be one of off, built, live, locked"
+printf 'edge = "live"\n' >> "$g"
+bad "the gate set twice" "edge is set on lines"
+grep -v '^edge' "$g" > "$g.new"; mv "$g.new" "$g"
+ok "no edge line (variables.tf's default, off)"
+grep -v '^edge' "$g" > "$g.new"; mv "$g.new" "$g"
+lb 2
+bad "the load balancer's ingress with no edge line" "api.yaml: ingress 'internal-and-cloud-load-balancing' with edge = 'off'"
+rm "$g"
+bad "the gates missing" "cannot read it"
 
 # P5 (design §5.1): never on Cloud Run, in a template or in config.env.
 add ingest.yaml 'name: LOG_LEVEL,' '- { name: PORT, value: "8080" }'
@@ -333,4 +403,4 @@ bad "a placeholder outside the list" "placeholder(s) outside the fixed list: HOM
 add migrate.yaml 'name: LOG_LEVEL,' '- { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }'
 bad "migrate with an audience" "migrate is no push target"
 
-echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env (BETA_GATE and XFF_TRUSTED_HOPS from config.env in api and ingest only, two hops only behind the load balancer), P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"
+echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env (BETA_GATE and XFF_TRUSTED_HOPS from config.env in api and ingest only, two hops only behind the load balancer), the load balancer's ingress only at edge live or locked and with more than one hop, locked only behind it, P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"

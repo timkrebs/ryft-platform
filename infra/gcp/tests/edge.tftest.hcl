@@ -426,7 +426,7 @@ run "built_logs_keep_only_denials_and_preview_matches" {
         "resource.labels.service_name=(\"api\" OR \"ingest\")",
         "httpRequest.status<500",
     ])]
-    error_message = "api's and ingest's Cloud Run request log goes below 5xx (every caller's IP, URL and user agent; the user's confirmation, D242); their 5xx and scoring's and notify's stay"
+    error_message = "api's and ingest's Cloud Run request log goes below 5xx (every caller's IP, URL and user agent; the user's decision, D242); their 5xx and scoring's and notify's stay"
   }
 
   # Neither drops the services' own lines, the metrics' and the runbook's source.

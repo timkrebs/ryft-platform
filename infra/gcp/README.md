@@ -60,8 +60,10 @@ The €20 stop line) remove `allUsers` by hand at once; `public_invokers = false
 that, so the next apply neither undoes them nor adds it back.
 
 `edge` (D242, runbook step 16) is `off` unless `serve` is true, and moves one phase a PR, back the
-same way. `scripts/check_cloudrun.py` is to hold `deploy/run`'s ingress to it: that order rule
-comes in the follow-up PR after #211 (D242), before `live`.
+same way. `scripts/check_cloudrun.py` (`make cloudrun-check`, CI's `manifests` job, which a change
+of `gates.auto.tfvars` selects) holds `deploy/run`'s ingress to it: api's and ingest's
+`internal-and-cloud-load-balancing` only at `live` or `locked` and with `XFF_TRUSTED_HOPS` above 1,
+and `locked` only with it on both (D242).
 
 | `edge` | The load balancer and Cloud Armor | `api.`, `ingest.` in DNS | Domain mappings | The sink |
 | --- | --- | --- | --- | --- |

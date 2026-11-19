@@ -51,8 +51,9 @@ last: until then reverting the deploy PR and `live` → `built` is the full way 
 5. `live`: A records at the address, TTL 300, no CNAME at those names; the mappings still there.
 6. `locked`: no mapping; the A records stay.
 7. `edge != "off"` without `serve = true` is refused at plan time.
-8. check_cloudrun (after #211): LB-only ingress refused unless `edge` is `live` or `locked`; `edge = "locked"`
-   refused with ingress `all`; its test has a case for each; CI runs it when `gates.auto.tfvars` changes.
+8. check_cloudrun (after #211; built into #213 on 2026-11-19 once #211 had merged): LB-only ingress refused
+   unless `edge` is `live` or `locked`, and with `XFF_TRUSTED_HOPS=1`; `edge = "locked"` refused with ingress
+   `all`; its test has a case for each; CI runs it when `gates.auto.tfvars` changes.
 9. The keep list test: 16 APIs at `off`, 18 at `built`+.
 10. No alert condition added (the cap-of-five test unchanged and green).
 11. `terraform init -backend=false`, `fmt -check`, `validate`, `test` green; `make cloudrun-check`; CI green.
@@ -81,6 +82,11 @@ through their carrier's NAT64. Once `locked`, no /48 or /64 reaches D240's map.
 - Privacy: LB logs hold the client IP, URL and user agent. Only deny and preview entries are kept (14 days).
   C2 must name them. With api's and ingest's Cloud Run request log excluded below 5xx, the other place an IP
   is stored is their 5xx entries (and scoring's and notify's, which hold Pub/Sub's addresses).
+
+### The user's decisions (2026-11-19)
+The stop line €45 from `built` on (the budget's 90 % mail, no new rule; the optional €20 mail out of the
+runbook); Cloud Run's request log of api and ingest excluded below 5xx; about €28 a month accepted. Recorded
+in D242, OPERATIONS (16, the stop line), STATUS.
 
 ### Needs the user
 - Merge PR A, then PR B (gate off). Grant the apply SA's roles (runbook). Then each phase is a one-line PR,

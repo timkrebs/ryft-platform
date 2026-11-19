@@ -144,9 +144,10 @@ labels (D222).
 Done on 2026-11-19 (OPERATIONS → GCP → **The per-IP limit**): hops 1 on both; api 224 `401` and 76 `429`
 (`retry-after=1`, 17 bytes, `text/plain`), ingest 176 and 124; `401` again after 3 s; forged
 `X-Forwarded-For` lines 231 and 69, the same split; 145 `ip_limit` access lines on api, 124 on ingest;
-the address and its /24 in the services' logs 0 and 0. The runbook's expected split now follows the
-burst's pace (`50 + 20 × t`, printed by the commands) instead of a fixed range. The deploy PR of the edge
-(16.6) sets `XFF_TRUSTED_HOPS=2` together with ingress `internal-and-cloud-load-balancing`.
+the address and its /24 in the services' logs 0 and 0. #213 makes the runbook's expected split follow the
+burst's pace (`50 + 20 × t`, printed by the commands) instead of a fixed range. After #213 and `live`, the
+edge's deploy PR (runbook 16.6) sets `XFF_TRUSTED_HOPS=2` together with ingress
+`internal-and-cloud-load-balancing`.
 
 ## Beta readiness, the platform's must-haves (2026-11-18)
 

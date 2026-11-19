@@ -1718,10 +1718,14 @@ one line, and back the same way. Never set it as a workspace variable.
 | (deploy PR) | ingress and `XFF_TRUSTED_HOPS=2` in `deploy/run`, within the hour after `live` | no Terraform | revert it |
 | `locked` | `edge = "locked"`, after 7 clean days | the two domain mappings destroyed | `live` (costly) |
 
-`make cloudrun-check` enforces the order (D242): the load balancer's ingress only while `edge` is
-`live` or `locked`, and `locked` only with that ingress on both. **Not yet:** that rule comes in the
-follow-up PR after #211 (the per-IP limit); until it is merged `scripts/check_cloudrun.py` still
-expects ingress `all`, so the deploy PR (16.6) can't go green. Merge the follow-up before 16.5.
+`make cloudrun-check` (CI's `manifests` job, which a change of `gates.auto.tfvars` selects)
+enforces the order (D242): the load balancer's ingress only while `edge` is `live` or `locked` and
+only with `XFF_TRUSTED_HOPS` above 1, and `locked` only with that ingress on both. A step out of
+order is a red PR, not a broken production. But two PRs green on their own can be wrong together
+(a `live` → `built` PR opened before the deploy PR merged, say), and no apply runs the check: before
+every plan below, right after `git pull`, run `make cloudrun-check`. **Stop if** it is red.
+From `built` on the stop line is **€45**, the budget's 90 % mail (the user's decision, D242;
+**The €20 stop line** → With the edge).
 The address is never written into any file; below it is `<ip>`, and in a shell `$IP`.
 
 Run from the repository root on an up-to-date main, in bash or zsh (zsh: `setopt
@@ -2051,7 +2055,9 @@ Then the uptime checks green and `make smoke-prod`.
   hours): `api.` and `ingest.` fail TLS for that long. This is the one costly step, which is why
   `locked` waits 7 clean days. Take it only if the edge itself is the problem.
 - **The deploy PR, reverted** (before `live` → `built`, which `make cloudrun-check` refuses while
-  the ingress is the load balancer's): ingress `all` and `XFF_TRUSTED_HOPS=1` again. No Terraform.
+  the ingress is the load balancer's; and only after `locked` → `live`, since at `locked` the revert is
+  red): ingress `all` and `XFF_TRUSTED_HOPS=1` again. No Terraform. `locked` → `live` costs nothing
+  until you go on to `built`.
 - **`live` → `built`:** 0 to add, 2 to change (A back to CNAME, `ghs.googlehosted.com.`), 0 to
   destroy (a `-/+` is a stop, as in 16.5). Clients follow within 5 minutes. Clean only while the
   mappings' certificates still hold: in `live` they can't renew.
@@ -2604,7 +2610,9 @@ beyond the tokens (that's the user's call, in its own PR). To roll back, revert 
 ### The €20 stop line
 
 The budget "RYFT 50 EUR" emails, but it caps nothing (design §7). Max-instances is the hard cap.
-At €20 actual spend in a month (Billing → Reports, project `ryftlab-prod`):
+At €20 actual spend in a month (Billing → Reports, project `ryftlab-prod`), and **from
+`edge = "built"` on at €45**, the budget's own 90 % mail (the user's decision, D242; **With the
+edge**, below):
 
 ```bash
 for svc in api ingest; do
@@ -2672,17 +2680,19 @@ a failed step: `invite email purge failed` or `reconcile deletions`. Don't resum
 job on its own: the pause follows `public_invokers`, so the next apply pauses it again. The tick
 resumes with the undo above.
 
-An email of its own at €20 is optional. It is one more rule on the same budget:
-`gcloud billing budgets update "$BUDGET" --add-threshold-rule=percent=0.40` (step 3's `$BUDGET`).
+The €20 line has no email of its own: you read it off Billing → Reports. The budget's rules stay
+step 3's `0.1, 0.5, 0.9, 1.0`. If a `0.4` rule was added earlier (an older version of this page
+offered one), remove it: Billing → Budgets & alerts → "RYFT 50 EUR" → Edit → Actions, delete the
+40 % row, Save. Then step 3's `describe` must show `0.1, 0.5, 0.9, 1.0` again.
 
 **With the edge** (step 16, from `edge = "built"` on). The load balancer and Cloud Armor cost about
-€28 a month on their own, whatever the traffic (D242 → Cost), so the edge alone crosses €20. D242
-proposes a line of **€45** from `built` on (about the edge plus the old €20, rounded down to the
-budget's 90 % mail); until you decide, €20 holds and is crossed by the edge. The commands above
-still close api and ingest: the load balancer calls Cloud Run without a token, as `allUsers`, so
-through it too everyone gets 403. But the load balancer keeps billing under the stop line. Cutting
-its cost is the edge's way back, one PR a step: `locked` → `live` (only if it is `locked`; 16.8's
-costly step), the deploy PR reverted, `live` → `built`, `built` → `off` (16.8).
+€28 a month on their own, whatever the traffic (D242 → Cost, accepted by the user on 2026-11-19), so
+the edge alone would cross €20. **From `built` on the line is €45** (the user's decision, D242): that
+is the budget's existing 90 % mail, so no new rule. Back at `off` the line is €20 again. The
+commands above still close api and ingest: the load balancer calls Cloud Run without a token, as
+`allUsers`, so through it too everyone gets 403. But the load balancer keeps billing under the stop
+line. Cutting its cost is the edge's way back, one PR a step: `locked` → `live` (only if it is
+`locked`; 16.8's costly step), the deploy PR reverted, `live` → `built`, `built` → `off` (16.8).
 
 ### Dead letters and the outbox
 
@@ -3092,9 +3102,12 @@ done                                                          # 1, then 1
 for H in api.ryftlab.de ingest.ryftlab.de; do
   curl -4 -s -o /dev/null -w "%{http_code} warm-up $H\n" "https://$H/v1/me"   # wakes an instance (scale to zero)
   sleep 3                                                     # the bucket is full again after 2.5 s
+  t0=$(date +%s)
   seq 300 | xargs -P 20 -I{} curl -4 -s -o /dev/null \
     -w '%{http_code} retry-after=%header{retry-after} x-retry-in=%header{x-retry-in} bytes=%{size_download} %{content_type}\n' \
     "https://$H/v1/me" > "burst-$H.txt"
+  t=$(( $(date +%s) - t0 )); [ "$t" -gt 0 ] || t=1
+  echo "$H: 300 in about $t s ($(( 300 / t )) a second): about $(( 50 + 20 * t )) 401s for each instance that served it"
   cut -d' ' -f1,2 "burst-$H.txt" | sort | uniq -c             # the summary
   grep -m 2 '^429' "burst-$H.txt"                             # two refusals in full
   sleep 3; curl -4 -s -o /dev/null -w "%{http_code} after 3 s $H\n" "https://$H/v1/me"
@@ -3106,17 +3119,21 @@ What it should show, per host (the counts vary from run to run):
 
 ```text
 401 warm-up api.ryftlab.de
-  62 401 retry-after=
- 238 429 retry-after=1
+api.ryftlab.de: 300 in about 9 s (33 a second): about 230 401s for each instance that served it
+ 224 401 retry-after=
+  76 429 retry-after=1
 429 retry-after=1 x-retry-in=41.3ms bytes=17 text/plain; charset=utf-8
 429 retry-after=1 x-retry-in=12.9ms bytes=17 text/plain; charset=utf-8
 401 after 3 s api.ryftlab.de
 ```
 
 - The `401`s are the first 50 (the burst) plus about 20 for every second the burst took, for each
-  instance that served it. With api's concurrency of 40, one instance usually takes all of it, so
-  expect roughly 50 to 80 on api. Ingest's concurrency of 4 can start its second instance, so up to
-  about 160 there. Every other line is a `429`.
+  instance that served it: the printed `50 + 20 × t`. So the split depends on how fast your
+  connection sends the 300, not on a fixed range. The counts above are from the run of 2026-11-19 at
+  about 33 a second (api 224 and 76, ingest 176 and 124). With api's concurrency of 40 one instance
+  usually takes all of it, so api's `401`s are about the printed number or fewer. Ingest's
+  concurrency of 4 can start its second instance, so up to twice that there (never more than 300).
+  Every other line is a `429`.
 - Every `429` has `retry-after=1`, an `x-retry-in` under `50ms`, `bytes=17` (`Too Many Requests`) and
   `text/plain`. The `401`s are the ordinary answer to a request without a token (JSON).
 - `after 3 s` is `401` again: the limit has let go.
@@ -3125,13 +3142,15 @@ What it should show, per host (the counts vary from run to run):
 # 2b. Forged entries don't buy a bucket. The same burst, on api only, with two X-Forwarded-For lines of
 #     your own: a fixed one and a different IPv6 /64 per request. Google appends your real address; if a
 #     forged entry were the key, every request would have a fresh bucket and nothing would be refused.
-H=api.ryftlab.de; sleep 3
+H=api.ryftlab.de; sleep 3; t0=$(date +%s)
 seq 300 | xargs -P 20 -I{} curl -4 -s -o /dev/null \
   -H 'X-Forwarded-For: 192.0.2.1' -H 'X-Forwarded-For: 2001:db8:{}::1' \
   -w '%{http_code} retry-after=%header{retry-after}\n' "https://$H/v1/me" | sort | uniq -c
+t=$(( $(date +%s) - t0 )); [ "$t" -gt 0 ] || t=1; echo "about $t s: about $(( 50 + 20 * t )) 401s"
 ```
 
-The same split as step 2 (roughly 50 to 80 `401`s, the rest `429 retry-after=1`).
+About the same split as step 2's api line at the same pace (`401`s about `50 + 20 × t` for the
+seconds this burst took, the rest `429 retry-after=1`).
 
 ```bash
 # 3. No line of either service holds your address (D222). Cloud Run's own request log
@@ -3163,7 +3182,8 @@ refusals, each with `method`, `path`, `status` 429, `code`, `request_id` and no 
 
 **Stop if:**
 - **No `429` at all.** The limit isn't running: check step 1 and that the revision is the merge's.
-  Or the burst was too slow (fewer than ~100 requests a second): run it again from a wired connection.
+  Or the burst was too slow: when the printed `50 + 20 × t` is 300 or more (about 24 a second or
+  less, for each instance), nothing is refused. Run it again from a wired connection.
 - **2b refuses nothing, or far less than step 2.** A forged entry became the key: anyone can dodge
   this limit and `/v1/admin`'s (which read the header the same way before) by sending a new address
   each time. Report it with the two splits (no address needed): a PR that reads the header the way
