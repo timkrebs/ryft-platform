@@ -5948,8 +5948,12 @@ _Grafana half superseded by D236._
     out (all three start with one). 14a.9 checks it.
   - The latency: a log-based metric's points arrive a minute or two after the line. With the 60 s hold
     and the evaluation, that is about 5 minutes.
-  - The policy is created right after its metric, and a "Cannot find metric(s)" error is possible while
-    Monitoring doesn't know the new descriptor yet. 14a.9 plans again then. Not seen here.
+  - One incident per kind: while one is open (its line in the last 5 minutes), another line of that kind
+    notifies nothing of its own. A second sign-in within about 5 minutes of yours, someone else's, is no
+    second notice: read the incident's chart (two points) and the audit after every sign-in alert.
+  - The policy is created right after its metric, and a "Cannot find metric(s)" error is likely while
+    Monitoring doesn't know the new descriptor yet: the pinned provider (8.11.0) retries only concurrent
+    edits, not that error (the review read it in the provider). 14a.9 plans again then. Not seen here.
   - The price (above).
 - **Privacy:** no new processor: Monitoring, Logging and the Google Cloud app are Google's, as since D236.
   `admin signed in` has no key of its own. The label holds the message only, a closed set, and no id
@@ -5966,6 +5970,11 @@ _Grafana half superseded by D236._
   - Gate off: no notices policy, and the metric exists. The stop line keeps it (five policies), and so
     does `serve = false`.
   - The metric's filter exactly, its one label, and the forbidden-label regex.
+  - The three messages and the two excluded reasons are the strings the api writes (`feedback.go`,
+    `adminauth.go`, `internal/auth/supabase.go`), so a rename in Go fails the test instead of silencing
+    the condition.
+  - Go (`backend/cmd/api`): one `admin signed in` per operator and TOTP time, the window's edges and the
+    30 s skew, and the line holds no `user_id` or `admin_actor`.
   - The condition's aggregation, comparison, threshold, duration, missing data, `group_by` and trigger.
   - The documentation's kinds, `/admin`, the script and the lost-phone runbook, with no identifier and
     no `${log.`.

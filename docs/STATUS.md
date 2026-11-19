@@ -88,7 +88,8 @@ the next one notifies again. The price: nothing until 2027-09-01 at the earliest
 **Your steps** (OPERATIONS → GCP → 14a.9, each with its Stop if):
 1. `terraform -chdir=infra/gcp plan`: `2 to add, 0 to change, 0 to destroy`
    (`google_logging_metric.notices`, `google_monitoring_alert_policy.notices[0]`). Anything else: stop.
-2. `apply`. If Google answers "Cannot find metric(s)" for the new metric, plan and apply again (14a.9).
+2. `apply`. Likely the first time: Google answers "Cannot find metric(s)" for the new metric, because the
+   provider doesn't retry it. Wait two minutes, then plan (1 to add) and apply again (14a.9).
 3. The test: one feedback from the smoke user, one admin sign-in on ryftlab.de/admin, one wrong admin key.
    Expected: per kind one mail to ryft-timkrebs and one push in the Google Cloud app within about 5
    minutes. Resolve the test feedback in `/admin`.

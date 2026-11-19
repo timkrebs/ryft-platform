@@ -619,6 +619,19 @@ run "the_log_based_metrics" {
     )) == 0
     error_message = "no label extracts an IP, a user, an email, a message id, a device or a token"
   }
+
+  # The filter matches strings the api writes: a message or a reason renamed in Go would silence the
+  # sixth condition with no test failing (D244). Pinned to the lines that write them.
+  assert {
+    condition = (
+      strcontains(file("${path.module}/../../backend/cmd/api/feedback.go"), "h.log.InfoContext(r.Context(), \"feedback received\",") &&
+      strcontains(file("${path.module}/../../backend/cmd/api/adminauth.go"), "a.log.InfoContext(r.Context(), \"admin signed in\")") &&
+      strcontains(file("${path.module}/../../backend/cmd/api/adminauth.go"), "a.log.InfoContext(r.Context(), \"admin auth rejected\", \"reason\", reason)") &&
+      strcontains(file("${path.module}/../../backend/cmd/api/adminauth.go"), "a.reject(w, r, \"missing\")") &&
+      strcontains(file("${path.module}/../../backend/internal/auth/supabase.go"), "Unauthorized(\"expired\",")
+    )
+    error_message = "ryft_notices' messages and excluded reasons are the ones the api writes (feedback.go, adminauth.go, internal/auth/supabase.go)"
+  }
 }
 
 run "the_dashboard" {

@@ -1750,8 +1750,8 @@ token; it refreshes once). The key's own use and `admin second factor required` 
    ```
 
    If the metric is created but the policy fails with `Cannot find metric(s) that match type =
-   "logging.googleapis.com/user/ryft_notices"` (Monitoring hadn't seen the new metric yet; possible, not
-   seen here): wait two minutes, plan again with `-out=notices.tfplan` (1 to add, the policy alone), and
+   "logging.googleapis.com/user/ryft_notices"` (Monitoring hadn't seen the new metric yet; likely, since
+   the pinned provider doesn't retry that error, and not yet seen here): wait two minutes, plan again with `-out=notices.tfplan` (1 to add, the policy alone), and
    apply that.
    **Stop if** the second plan isn't "No changes" (a field the API rewrites: report the diff, it is this
    PR's bug), or the apply fails otherwise.
@@ -1763,15 +1763,15 @@ token; it refreshes once). The key's own use and `admin second factor required` 
    # a. A feedback from the smoke user (as step 9 signs it in; the publishable key: Supabase ->
    #    Project Settings -> API Keys).
    REF=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env); KEY='<the publishable key>'
-   read -r "?smoke user's email: " SMOKE_EMAIL; read -rs "?its password: " SMOKE_PASSWORD; echo
-   TOKEN=$(printf '%s' "$SMOKE_PASSWORD" | jq -Rs --arg e "$SMOKE_EMAIL" '{email: $e, password: .}' |
+   read -r "?smoke user's email: " SMOKE_EMAIL; export SMOKE_EMAIL; read -rs "?its password: " SMOKE_PASSWORD; echo
+   TOKEN=$(printf '%s' "$SMOKE_PASSWORD" | jq -Rs '{email: env.SMOKE_EMAIL, password: .}' |
      curl -fsS "https://$REF.supabase.co/auth/v1/token?grant_type=password" -H "apikey: $KEY" \
        -H 'Content-Type: application/json' --data-binary @- | jq -r .access_token)
-   unset SMOKE_PASSWORD
-   [ "${#TOKEN}" -gt 100 ] && echo 'signed in' || echo 'sign-in failed: stop here'
-   printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -o /dev/null -w '%{http_code}\n' -H @- \
+   unset SMOKE_PASSWORD SMOKE_EMAIL
+   # Sends the feedback only after a sign-in; else it prints the failure and sends nothing.
+   [ "${#TOKEN}" -gt 100 ] && printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -o /dev/null -w '%{http_code}\n' -H @- \
      -H 'Content-Type: application/json' -d '{"message": "runbook 14a.9: a test of the alert, not a report", "category": "other"}' \
-     https://api.ryftlab.de/v1/feedback                 # 204
+     https://api.ryftlab.de/v1/feedback || echo 'sign-in failed: stop here'   # 204
    unset TOKEN
 
    # b. An admin sign-in: https://ryftlab.de/admin in a new tab, the password, then the code. Keep the tab.
@@ -2974,7 +2974,7 @@ data stops, without a closing notice.
 | RYFT · Tick missing (critical; only while the tick runs) | a service without a tick of `result` ok for 45 minutes (three ticks), held 5 | Logs Explorer `jsonPayload.message="tick"` for the service: `result` error and its `err` name the step (the outbox sweep, the purges, the reconcile, a database that is down). No line at all: the Scheduler job `ryft-tick` (`gcloud scheduler jobs describe ryft-tick --location=europe-west1 --project=ryftlab-prod`), then the subscription `tick-<service>`. A `LOG_LEVEL` above `info` silences the line, and this policy with it |
 | RYFT · Dead letters held (warning) | a hold subscription (`dlq-*-hold`) holds a letter, held 5 minutes | `scripts/dlq.sh --project ryftlab-prod list`, the cause in the consumer's log by `messageId` (**Dead letters and the outbox**) |
 | RYFT · Event backlog over 15 minutes (warning) | an event subscription's oldest unacked event is over 15 minutes old, held 5 | the consumer's request log (429, 5xx) and its max instances; it dead-letters after 20 attempts, and then the policy above fires |
-| RYFT · Feedback and admin access (warning; D244) | a line of one kind on api in the last 5 minutes, held 1: `feedback received`, `admin signed in` (an operator session begun, per instance), or `admin auth rejected` but for `reason` `missing` and `expired`. One incident per kind; it stays one while the lines keep coming | by the kind in the subject. **feedback received**: `/admin` → Feedback, or `scripts/beta_report.sh feedback` (GCP 14a.8); Resolve it once read. **admin signed in**: if it wasn't you, **Beta → Admin sign-in → Lost phone, or any doubt about the admin account**, at once, then `/admin` → Audit. **admin auth rejected**: Logs Explorer `resource.labels.service_name="api" jsonPayload.message="admin auth rejected"`, its `reason`: `not_a_token` a scanner or a wrong key; `signature`, `unknown_key` a forged or foreign token; `role`, `not_admin`, `not_allowed` a valid token that isn't an operator's. Many, or ongoing: the admin routes' per-address limit answers them with `429` (**Beta → Admin sign-in**) |
+| RYFT · Feedback and admin access (warning; D244) | a line of one kind on api in the last 5 minutes, held 1: `feedback received`, `admin signed in` (an operator session begun, per instance), or `admin auth rejected` but for `reason` `missing` and `expired`. One incident per kind; it stays one while the lines keep coming | by the kind in the subject. **feedback received**: `/admin` → Feedback, or `scripts/beta_report.sh feedback` (GCP 14a.8); Resolve it once read. **admin signed in**: if it wasn't you, **Beta → Admin sign-in → Lost phone, or any doubt about the admin account**, at once, then `/admin` → Audit. **admin auth rejected**: Logs Explorer `resource.labels.service_name="api" jsonPayload.message="admin auth rejected"`, its `reason`: `not_a_token` a scanner or a wrong key; `signature`, `unknown_key` a forged or foreign token; `role`, `not_admin`, `not_allowed` a valid token that isn't an operator's; any other reason (`malformed`, `issuer`, `audience`, `key_mismatch`, …, `internal/auth/supabase.go`) a token that isn't one of the project's. Many, or ongoing: the admin routes' per-address limit answers them with `429` (**Beta → Admin sign-in**) |
 
 What no policy covers since D236 (OBSERVABILITY → Cloud Monitoring → What D236 dropped): a slow
 sync (ingest's p95 panel), 429s (their panel), APNs, the admin page's other events (`admin second
