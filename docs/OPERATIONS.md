@@ -1872,7 +1872,7 @@ IP=$(terraform -chdir=infra/gcp output -raw edge_ip)
 for h in api ingest; do
   curl -sS -o /dev/null -w "%{http_code} $h\n" --resolve "$h.ryftlab.de:443:$IP" "https://$h.ryftlab.de/health/ready"   # 200
   curl -sS -o /dev/null -w "%{http_code} %{redirect_url}\n" --resolve "$h.ryftlab.de:80:$IP" "http://$h.ryftlab.de/health/ready"
-                                                    # 301 https://<host>/health/ready
+                                                    # 301 https://<host>:443/health/ready (Google writes the port: the same URL)
   curl -sS -o /dev/null --tlsv1.2 --tls-max 1.2 -w "%{http_code} TLS 1.2 $h\n" --resolve "$h.ryftlab.de:443:$IP" "https://$h.ryftlab.de/health/ready"   # 200
   curl -sS -o /dev/null --tlsv1.0 --tls-max 1.1 --resolve "$h.ryftlab.de:443:$IP" "https://$h.ryftlab.de/health/ready" \
     && echo "TLS 1.1 ACCEPTED $h" || echo "TLS 1.1 refused $h"                                                       # refused
@@ -1917,7 +1917,8 @@ gcloud logging read 'resource.type="cloud_run_revision" AND jsonPayload.message=
   cap: **stop** before `live` (a contract change, as step 9's stop rule).
 - **2. Pass:** on both services `picked` `xff`, `xff_index` `4`, `xff_entries` `5`: the load balancer
   appends exactly `<client>,<lb-ip>`, and with hops 1 the key is its own address. That is the shape
-  `XFF_TRUSTED_HOPS=2` (the deploy PR) expects. **Stop** on any other shape (report the three
+  `XFF_TRUSTED_HOPS=2` (the deploy PR) expects. If a service's line is missing, run the query again
+  after a minute: log entries arrive with a delay. **Stop** on any other shape (report the three
   numbers; no address is in the line).
 
 Then Cloud Armor and the logs (each `gcloud logging read` prints the priority and outcome only,
@@ -2014,7 +2015,8 @@ gcloud logging read 'resource.type="cloud_run_revision" AND jsonPayload.message=
 ```
 
 Then step 9's forged-entry loop and query again, without `--resolve` (DNS points at the edge now):
-`picked` `xff`, `xff_index` `3`, `xff_entries` `5` on both, the client's own address is the key.
+`picked` `xff`, `xff_index` `3`, `xff_entries` `5` on both, the client's own address is the key
+(a service's line missing: the query again after a minute, as in 16.4).
 The run's smoke must have passed (`gh run view <run id> -R timkrebs/ryft-platform`). The tick is a
 Pub/Sub push to `run.app`; Pub/Sub in the same project counts as internal for this ingress
 *(search: docs.cloud.google.com/run/docs/securing/ingress)*, which the tick line proves.
@@ -2027,6 +2029,8 @@ sets both lines back together (16.8).
 no 5xx alert, the dashboard's Cloud Armor tiles without denials of real users (429s at priority
 2000 for the app's own traffic), no tester locked out. A PR with `edge = "locked"`, one line
 (`make cloudrun-check` refuses it unless api and ingest both have the load balancer's ingress).
+On the same day, read the WAF rules' preview matches on real traffic, per rule (**Enforcing a WAF
+rule**, below). A match there doesn't hold up `locked`. It keeps that rule in preview.
 
 ```bash
 git switch main && git pull
@@ -2070,18 +2074,28 @@ Then the uptime checks green and `make smoke-prod`.
 days of real traffic with no preview match at its priority **on a request the backend answered
 below 400**. Scanners probe a public host every day, and their probes get 401 (no token) or 404, so
 "no match at all" would never come. The app's real requests carry a token and succeed: a match
-among those is a false positive that enforcing would turn into a `403` for a tester. The count
-prints no entry:
+among those is a false positive that enforcing would turn into a `403` for a tester.
+
+The read covers the last 7 days and all six rules at once. It prints a count and a priority per rule,
+never an entry or `httpRequest`. Run it no earlier than 7 days after `live`'s apply: until then the
+window still holds requests from before `live`, among them 16.4's probe (a match at 1000 that got a `200`).
 
 ```bash
-gcloud logging read 'resource.type="http_load_balancer" AND jsonPayload.previewSecurityPolicy.priority=1000 AND httpRequest.status<400' \
-  --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=7d --limit=100000 \
-  --format='value(timestamp)' | wc -l                # 0
+L=(--project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=7d --limit=100000)
+# 1. Real traffic: preview matches on requests the backend answered below 400, per priority.
+gcloud logging read 'resource.type="http_load_balancer" AND jsonPayload.previewSecurityPolicy.outcome="DENY" AND httpRequest.status<400' \
+  "${L[@]}" --format='value(jsonPayload.previewSecurityPolicy.priority)' | sort | uniq -c
+                                                    # "<count> <priority>" per rule with a match; a priority not listed: 0
+# 2. For context only: every preview match, scanners' 401s and 404s included, per priority.
+gcloud logging read 'resource.type="http_load_balancer" AND jsonPayload.previewSecurityPolicy.outcome="DENY"' \
+  "${L[@]}" --format='value(jsonPayload.previewSecurityPolicy.priority)' | sort | uniq -c
+unset L
 ```
 
-The dashboard's "Cloud Armor: denials and preview matches" tile counts all of them, scanners
-included, so it is no substitute for this count. If the count isn't 0, the rule stays in preview for
-another 7 days.
+The priorities: 1000 `sqli`, 1001 `xss`, 1002 `lfi`, 1003 `rce`, 1004 `scannerdetection`, 1005
+`protocolattack`. The rule next in order may be enforced once read 1 doesn't list its priority. The
+dashboard's "Cloud Armor: denials and preview matches" tile counts all of them, scanners included, so
+it is no substitute for read 1. If read 1 lists the rule, it stays in preview for another 7 days.
 
 A PR sets that set's line in `local.edge_waf_preview` (`infra/gcp/edge.tf`) to `false`, and its pin in
 `tests/edge.tftest.hcl` (`the_policy`) with it. Its plan: 0 to add, 1 to change (the policy, in

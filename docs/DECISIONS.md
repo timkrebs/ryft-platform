@@ -5826,6 +5826,7 @@ _Grafana half superseded by D236._
   `infra/gcp/README.md`; `STATUS.md`; and, once #211 (D240) had merged, in the same PR: `scripts/check_cloudrun.py`
   and `scripts/tests/check_cloudrun_test.sh`, CI's `smoke` and `manifests` path filters, one `clientip_test.go`
   case.
+- **Status:** `live` since 2026-11-19 (#216 applied, the deploy PR #217 merged); `locked` after 7 clean days.
 
 ## D243 — On a push to main, the web jobs run only when the web paths changed since main's last green commit (**the user's decision**, 2026-11-19; amends D107)
 
