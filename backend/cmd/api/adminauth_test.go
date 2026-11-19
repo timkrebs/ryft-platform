@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/timkrebs/ryft/internal/httpx"
+	"github.com/timkrebs/ryft/internal/logx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/ratelimit"
@@ -241,6 +244,60 @@ func TestAdminMFAFreshness(t *testing.T) {
 	}
 	if n := len(*actors); n != 4 {
 		t.Errorf("the handler ran %d times, want 4", n)
+	}
+}
+
+// D244: "admin signed in" marks the start of an admin session: a TOTP under 10 minutes old, once per
+// operator and TOTP time on an instance, and never twice before the window has closed, the 30 s skew
+// included. Every request gets a token of its own, as the page's refreshed tokens keep the TOTP time.
+func TestAdminSignedInOncePerSession(t *testing.T) {
+	jwks := newJWKSStub(t, false)
+	op, op2 := uuid.New(), uuid.New()
+	base := time.Now().Truncate(time.Second) // TOTP times are whole seconds
+	type req struct {
+		user     uuid.UUID
+		totp, at time.Duration // the TOTP's time and the clock's, from base
+	}
+	const m = time.Minute
+	cases := []struct {
+		name string
+		reqs []req
+		want int
+	}{
+		{"a TOTP a minute old: one line over three requests", []req{{op, -m, 0}, {op, -m, time.Second}, {op, -m, 5 * m}}, 1},
+		{"a TOTP 11 minutes old: no sign-in", []req{{op, -11 * m, 0}, {op, -11 * m, m}}, 0},
+		{"a re-challenge, a new TOTP time: a new line", []req{{op, -m, 0}, {op, -m, m}, {op, 12 * time.Hour, 12*time.Hour + 30*time.Second},
+			{op, 12 * time.Hour, 12*time.Hour + 2*m}}, 2},
+		// Within the window of the first: only the TOTP time in the key tells the two apart.
+		{"signed out and in again minutes later: a new line", []req{{op, -m, 0}, {op, 2 * m, 3 * m}, {op, 2 * m, 4 * m}}, 2},
+		{"a second operator: a line of its own", []req{{op, -m, 0}, {op2, -m, time.Second}, {op2, -m, 2 * time.Second}, {op, -m, 3 * time.Second}}, 2},
+		// The token is back after 10.5 minutes, the window is closed by then.
+		{"the clock past the window, the same TOTP: none again", []req{{op, -m, 0}, {op, -m, 11 * m}, {op, -m, 20 * m}, {op, -m, time.Hour}}, 1},
+		{"a TOTP 20 s in the future: one line, none again before the window closes", []req{{op, 20 * time.Second, 0},
+			{op, 20 * time.Second, 5 * m}, {op, 20 * time.Second, 10*m + 19*time.Second}}, 1},
+		// The arithmetic's edge: the first request 30 s before the TOTP, then the window's last instant and its end.
+		{"a TOTP 30 s in the future, the window's last instant", []req{{op, 30 * time.Second, 0},
+			{op, 30 * time.Second, 10*m + 30*time.Second - time.Nanosecond}, {op, 30 * time.Second, 10*m + 30*time.Second}}, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf, now := &bytes.Buffer{}, base
+			h := quietHandler()
+			h.log = logx.NewWriter(buf, "api", slog.LevelInfo)
+			srv, _ := authChain(h, adminOptions{Key: testAdminKey, Verifier: jwks.verifier(t), Accounts: newFakeAccounts(op, op2),
+				Now: func() time.Time { return now }})
+			for i, rq := range tc.reqs {
+				now = base.Add(rq.at)
+				c := adminClaims(rq.user)
+				c["amr"] = []map[string]any{{"method": "totp", "timestamp": base.Add(rq.totp).Unix()}}
+				if a := do(srv, "GET", "/v1/admin/flags", jwks.sign(t, c), ""); a.status != 204 {
+					t.Fatalf("request %d: %d %s", i, a.status, a.body)
+				}
+			}
+			if n := strings.Count(buf.String(), `"msg":"admin signed in"`); n != tc.want {
+				t.Errorf("admin signed in lines: %d, want %d\n%s", n, tc.want, buf.String())
+			}
+		})
 	}
 }
 

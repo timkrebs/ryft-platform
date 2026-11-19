@@ -1,5 +1,5 @@
-# Cloud Monitoring (D236, D237): the alerting gate, the app channel by id, the cap of five conditions,
-# the uptime checks, the log-based metrics and the dashboard, and that Grafana is gone. Plan-only,
+# Cloud Monitoring (D236, D237, D244): the alerting gate, the app channel by id, the cap of six
+# conditions, the uptime checks, the log-based metrics and the dashboard, and that Grafana is gone. Plan-only,
 # mocked: this machine has real gcloud credentials, and a real provider here could create what it
 # tests. Every channel in these runs is in the fake project fake-for-tests; the real app channel is a
 # workspace variable and in no committed file.
@@ -79,9 +79,10 @@ run "alerting_off_while_the_app_channel_is_unset" {
       var.alert_app_channel == null &&
       length(data.google_monitoring_notification_channel.email) == 0 &&
       length(google_monitoring_alert_policy.uptime) == 0 &&
-      length(google_monitoring_alert_policy.promql) == 0
+      length(google_monitoring_alert_policy.promql) == 0 &&
+      length(google_monitoring_alert_policy.notices) == 0
     )
-    error_message = "gate off (alert_app_channel null): no channel is read and no alert policy exists"
+    error_message = "gate off (alert_app_channel null): no channel is read and no alert policy exists, the notices policy neither"
   }
 
   # What costs nothing does not wait for the gate.
@@ -90,14 +91,18 @@ run "alerting_off_while_the_app_channel_is_unset" {
       length(google_monitoring_uptime_check_config.this) == 5 &&
       google_logging_metric.ticks.name == "ryft_ticks" &&
       google_logging_metric.errors.name == "ryft_errors" &&
+      google_logging_metric.notices.name == "ryft_notices" &&
       jsondecode(google_monitoring_dashboard.overview.dashboard_json).displayName == "RYFT · Overview"
     )
-    error_message = "gate off: the five uptime checks, both log-based metrics and the dashboard exist anyway"
+    error_message = "gate off: the five uptime checks, the three log-based metrics (ryft_notices too) and the dashboard exist anyway"
   }
 
   assert {
-    condition     = output.monitoring.alerting == false && length(output.monitoring.policies) == 0
-    error_message = "the monitoring output says alerting is off and lists no policy"
+    condition = (
+      output.monitoring.alerting == false && length(output.monitoring.policies) == 0 &&
+      output.monitoring.log_metrics == tolist(["ryft_errors", "ryft_notices", "ryft_ticks"])
+    )
+    error_message = "the monitoring output says alerting is off, lists no policy, and the three log-based metrics"
   }
 }
 
@@ -124,7 +129,7 @@ run "alerting_on_once_the_app_channel_is_set" {
   # the user can read the id there (D237: not sensitive).
   assert {
     condition = alltrue([
-      for p in concat(google_monitoring_alert_policy.uptime, values(google_monitoring_alert_policy.promql)) :
+      for p in concat(google_monitoring_alert_policy.uptime, google_monitoring_alert_policy.notices, values(google_monitoring_alert_policy.promql)) :
       p.notification_channels == tolist([data.google_monitoring_notification_channel.email[0].name, var.alert_app_channel]) &&
       p.notification_channels == tolist(["projects/fake-for-tests/notificationChannels/1", "projects/fake-for-tests/notificationChannels/2"]) &&
       !issensitive(p.notification_channels)
@@ -135,14 +140,15 @@ run "alerting_on_once_the_app_channel_is_set" {
   assert {
     condition = (
       length(google_monitoring_alert_policy.uptime) == 1 &&
-      toset(keys(google_monitoring_alert_policy.promql)) == toset(["http-5xx", "dead-letters", "push-backlog", "tick-missing"])
+      toset(keys(google_monitoring_alert_policy.promql)) == toset(["http-5xx", "dead-letters", "push-backlog", "tick-missing"]) &&
+      length(google_monitoring_alert_policy.notices) == 1
     )
-    error_message = "gate on, ticking: the uptime policy and the four PromQL policies"
+    error_message = "gate on, ticking: the uptime policy, the four PromQL policies and the notices policy"
   }
 
   assert {
     condition = alltrue([
-      for p in concat(google_monitoring_alert_policy.uptime, values(google_monitoring_alert_policy.promql)) :
+      for p in concat(google_monitoring_alert_policy.uptime, google_monitoring_alert_policy.notices, values(google_monitoring_alert_policy.promql)) :
       length(p.notification_channels) == 2 &&
       p.project == "ryftlab-prod" && p.combiner == "OR" && length(p.conditions) == 1 &&
       contains(["CRITICAL", "WARNING"], p.severity) &&
@@ -157,15 +163,18 @@ run "alerting_on_once_the_app_channel_is_set" {
   assert {
     condition = (
       output.monitoring.alerting == true &&
-      length(output.monitoring.policies) == 5 &&
-      length(distinct(output.monitoring.policies)) == 5
+      length(output.monitoring.policies) == 6 &&
+      length(distinct(output.monitoring.policies)) == 6 &&
+      contains(output.monitoring.policies, "RYFT · Feedback and admin access")
     )
-    error_message = "the monitoring output lists the five policies, each its own name"
+    error_message = "the monitoring output lists the six policies, each its own name, the notices policy among them"
   }
 }
 
-# The price is per condition (D236 -> Cost): five at most, with everything on, in two resource blocks.
-run "five_conditions_at_most" {
+# The price is per condition (D236 -> Cost, D244 -> The price): six at most, with everything on, in three
+# resource blocks. Five until the user's decision of 2026-11-19 (D244): feedback and admin access had no
+# alert since D236, and the sixth is the notices policy. A seventh is a decision again, not a line.
+run "six_conditions_at_most" {
   command = plan
 
   variables {
@@ -176,18 +185,18 @@ run "five_conditions_at_most" {
 
   assert {
     condition = length(flatten([
-      for p in concat(google_monitoring_alert_policy.uptime, values(google_monitoring_alert_policy.promql)) : p.conditions
-    ])) == 5
-    error_message = "five conditions with every gate open, never more: a sixth is a decision (D236), not a line"
+      for p in concat(google_monitoring_alert_policy.uptime, google_monitoring_alert_policy.notices, values(google_monitoring_alert_policy.promql)) : p.conditions
+    ])) == 6
+    error_message = "six conditions with every gate open, never more: the sixth was the user's decision (D244), a seventh is a decision too, not a line"
   }
 
   assert {
     condition = (
-      length(regexall("(?m)^\\s*resource\\s+\"google_monitoring_alert_policy\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 2 &&
+      length(regexall("(?m)^\\s*resource\\s+\"google_monitoring_alert_policy\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 3 &&
       length(regexall("(?m)^\\s*resource\\s+\"google_monitoring_notification_channel\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0 &&
       length(regexall("(?m)^\\s*data\\s+\"google_monitoring_notification_channel\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
     )
-    error_message = "the alert policies are alerts.tf's two blocks; no channel is made here (the user's, by hand), and only the email's is looked up (the app's is an id, D237)"
+    error_message = "the alert policies are alerts.tf's three blocks; no channel is made here (the user's, by hand), and only the email's is looked up (the app's is an id, D237)"
   }
 
   # Evaluated every minute at the most often, every 5 minutes but for the 5xx ratio.
@@ -273,6 +282,52 @@ run "the_conditions" {
     ])
     error_message = "condition 5: an event subscription's oldest unacked event over 900 s; no tick, no hold"
   }
+
+  # 6 (D244): a classic threshold, not PromQL (one feedback is one point of a sparse DELTA counter). Any
+  # line of ryft_notices in 5 minutes, one series per kind, held 60 s; missing data closes it, so the
+  # next line is a new incident and a new notification.
+  assert {
+    condition = (
+      length(google_monitoring_alert_policy.notices[0].conditions[0].condition_prometheus_query_language) == 0 &&
+      length(google_monitoring_alert_policy.notices[0].conditions[0].condition_threshold) == 1 &&
+      alltrue([
+        for c in google_monitoring_alert_policy.notices[0].conditions[0].condition_threshold :
+        c.filter == "metric.type=\"logging.googleapis.com/user/ryft_notices\" AND resource.type=\"cloud_run_revision\"" &&
+        c.comparison == "COMPARISON_GT" && c.threshold_value == 0 && c.duration == "60s" &&
+        c.evaluation_missing_data == "EVALUATION_MISSING_DATA_INACTIVE" &&
+        [for a in c.aggregations : [a.alignment_period, a.per_series_aligner, a.cross_series_reducer]] == [["300s", "ALIGN_SUM", "REDUCE_SUM"]] &&
+        c.aggregations[0].group_by_fields == tolist(["metric.label.kind"]) &&
+        [for t in c.trigger : t.count] == [1]
+      ])
+    )
+    error_message = "condition 6: ryft_notices summed over 300 s, by metric.label.kind, > 0 held 60 s, missing data inactive, trigger 1"
+  }
+
+  assert {
+    condition = (
+      google_monitoring_alert_policy.notices[0].display_name == "RYFT · Feedback and admin access" &&
+      google_monitoring_alert_policy.notices[0].severity == "WARNING" &&
+      [for s in google_monitoring_alert_policy.notices[0].alert_strategy : s.notification_prompts] == [tolist(["OPENED"])]
+    )
+    error_message = "the notices policy: its name, severity WARNING, and only the opening notified (no closing mail for every feedback)"
+  }
+
+  # The kind in the subject and the text (a label group_by keeps, which Google renders); a first look per
+  # kind; no identifier and no ${log.*} variable, which would put the line's fields into the mail.
+  assert {
+    condition = length(google_monitoring_alert_policy.notices[0].documentation) == 1 && alltrue([
+      for d in google_monitoring_alert_policy.notices[0].documentation : (
+        strcontains(d.subject, "$${metric.label.kind}") && strcontains(d.content, "$${metric.label.kind}") &&
+        alltrue([for k in ["feedback received", "admin signed in", "admin auth rejected"] : strcontains(d.content, "**${k}**")]) &&
+        strcontains(d.content, "/admin -> Feedback") && strcontains(d.content, "scripts/beta_report.sh feedback") &&
+        strcontains(d.content, "Lost phone, or any doubt about the admin account") && strcontains(d.content, "/admin -> Audit") &&
+        strcontains(d.content, "jsonPayload.message=\"admin auth rejected\"") &&
+        length(regexall("(?i)user_id|email|feedback_id|request_id|admin_actor", "${d.subject} ${d.content}")) == 0 &&
+        !strcontains("${d.subject} ${d.content}", "$${log.")
+      )
+    ])
+    error_message = "the notices policy's documentation: the kind, the three kinds with /admin, the script, the lost-phone runbook and the reject line; no identifier, no $${log.*} variable"
+  }
 }
 
 # The stop line pauses the tick and closes api and ingest to everyone: neither has anything to alert on.
@@ -288,9 +343,11 @@ run "the_stop_line_drops_the_tick_policy_and_the_service_checks" {
   assert {
     condition = (
       toset(keys(google_monitoring_alert_policy.promql)) == toset(["http-5xx", "dead-letters", "push-backlog"]) &&
-      length(google_monitoring_alert_policy.uptime) == 1
+      length(google_monitoring_alert_policy.uptime) == 1 &&
+      length(google_monitoring_alert_policy.notices) == 1 &&
+      length(output.monitoring.policies) == 5
     )
-    error_message = "the stop line: no tick-missing policy (the tick is paused), the other four stay"
+    error_message = "the stop line: no tick-missing policy (the tick is paused), the other five stay, the notices policy among them"
   }
 
   assert {
@@ -314,6 +371,11 @@ run "serve_false_has_no_tick_policy_and_no_service_checks" {
       toset(keys(google_monitoring_uptime_check_config.this)) == toset(["ryft-site-home", "ryft-site-privacy", "ryft-site-aasa"])
     )
     error_message = "serve = false: no tick policy, and no check on hosts that do not exist yet"
+  }
+
+  assert {
+    condition     = length(google_monitoring_alert_policy.notices) == 1 && google_logging_metric.notices.name == "ryft_notices"
+    error_message = "serve = false: the notices policy and its metric stay (no line comes, so it is quiet)"
   }
 }
 
@@ -389,7 +451,7 @@ run "a_number_that_only_ends_alike_is_another_channel" {
 
   assert {
     condition = alltrue([
-      for p in concat(google_monitoring_alert_policy.uptime, values(google_monitoring_alert_policy.promql)) :
+      for p in concat(google_monitoring_alert_policy.uptime, google_monitoring_alert_policy.notices, values(google_monitoring_alert_policy.promql)) :
       p.notification_channels == tolist(["projects/fake-for-tests/notificationChannels/1", "projects/fake-for-tests/notificationChannels/11"])
     ])
     error_message = "channel 11 is another channel than 1: the plan goes on, both in every policy"
@@ -520,12 +582,55 @@ run "the_log_based_metrics" {
     error_message = "ryft_errors counts the services' own ERROR lines (not Cloud Run's request log), without a label"
   }
 
+  # D244: api's stdout only, the three messages, and the reject line but for reasons missing and expired
+  # (a negative list: a new reason counts). Every OR group in parentheses: in Logging's query language OR
+  # binds tighter than AND.
+  assert {
+    condition = (
+      google_logging_metric.notices.filter == join("\n", [
+        "resource.type=\"cloud_run_revision\"",
+        "resource.labels.service_name=\"api\"",
+        "logName=\"projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout\"",
+        "(jsonPayload.message=\"feedback received\" OR jsonPayload.message=\"admin signed in\" OR (jsonPayload.message=\"admin auth rejected\" AND NOT jsonPayload.reason=\"missing\" AND NOT jsonPayload.reason=\"expired\"))",
+      ]) &&
+      !strcontains(google_logging_metric.notices.filter, "%2Fstderr") &&
+      !strcontains(google_logging_metric.notices.filter, "run.googleapis.com%2Frequests") &&
+      !strcontains(google_logging_metric.notices.filter, "admin second factor required")
+    )
+    error_message = "ryft_notices counts api's stdout lines feedback received, admin signed in and admin auth rejected (not for reason missing or expired), nothing else"
+  }
+
+  assert {
+    condition = (
+      google_logging_metric.notices.label_extractors == tomap({ kind = "EXTRACT(jsonPayload.message)" }) &&
+      [for d in google_logging_metric.notices.metric_descriptor : [d.metric_kind, d.value_type]] == [["DELTA", "INT64"]] &&
+      [for l in google_logging_metric.notices.metric_descriptor[0].labels : l.key] == ["kind"]
+    )
+    error_message = "ryft_notices has one label, kind, the line's message (a closed set of three by the filter)"
+  }
+
   assert {
     condition = length(regexall(
       "(?i)ip|user|email|mail|message_id|messageid|device|token",
-      join(" ", concat(keys(google_logging_metric.ticks.label_extractors), values(google_logging_metric.ticks.label_extractors))),
+      join(" ", concat(
+        keys(google_logging_metric.ticks.label_extractors), values(google_logging_metric.ticks.label_extractors),
+        keys(google_logging_metric.notices.label_extractors), values(google_logging_metric.notices.label_extractors),
+      )),
     )) == 0
     error_message = "no label extracts an IP, a user, an email, a message id, a device or a token"
+  }
+
+  # The filter matches strings the api writes: a message or a reason renamed in Go would silence the
+  # sixth condition with no test failing (D244). Pinned to the lines that write them.
+  assert {
+    condition = (
+      strcontains(file("${path.module}/../../backend/cmd/api/feedback.go"), "h.log.InfoContext(r.Context(), \"feedback received\",") &&
+      strcontains(file("${path.module}/../../backend/cmd/api/adminauth.go"), "a.log.InfoContext(r.Context(), \"admin signed in\")") &&
+      strcontains(file("${path.module}/../../backend/cmd/api/adminauth.go"), "a.log.InfoContext(r.Context(), \"admin auth rejected\", \"reason\", reason)") &&
+      strcontains(file("${path.module}/../../backend/cmd/api/adminauth.go"), "a.reject(w, r, \"missing\")") &&
+      strcontains(file("${path.module}/../../backend/internal/auth/supabase.go"), "Unauthorized(\"expired\",")
+    )
+    error_message = "ryft_notices' messages and excluded reasons are the ones the api writes (feedback.go, adminauth.go, internal/auth/supabase.go)"
   }
 }
 

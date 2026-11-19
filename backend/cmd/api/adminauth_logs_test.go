@@ -36,6 +36,9 @@ var adminLogKeys = logcheck.Lines{
 		"xff_entries": logcheck.CountMax(64)},
 	"http":                logcheck.HTTP(append([]string{"mfa_required", "key_only", "jwks_unavailable", "jwks_refresh_limited", "account_check"}, adminRejectReasons...)...),
 	"admin auth rejected": {"reason": logcheck.Enum(adminRejectReasons...)},
+	// The start of an operator's admin session (D244): nothing of its own, and logged before the user id is
+	// on the request (the test checks it has none).
+	"admin signed in": {},
 	"admin second factor required": {"reason": logcheck.Enum("mfa_missing", "mfa_stale"),
 		"admin_actor": logcheck.Pattern(actorLabel)},
 	"admin auth unavailable":       {"reason": logcheck.Enum("jwks_unavailable", "jwks_refresh_limited", "account_check")},
@@ -171,6 +174,30 @@ func TestAdminLogsHoldNoTokensEmailsOrAddresses(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), `"user_id":"`+d.op.String()+`"`) {
 		t.Error("a token caller's request carries its user id like any user route")
+	}
+
+	// One "admin signed in" for the operator's several requests with the one token (D244), on the first of
+	// them (the first access line with the operator's user id), and none for the key, aal1, the stale TOTP,
+	// the refused bearers or the outage. It names nobody: no user id, no actor, and no route yet.
+	signIns := out["admin signed in"]
+	if len(signIns) != 1 {
+		t.Fatalf("admin signed in lines: %d, want 1: %v", len(signIns), signIns)
+	}
+	l := signIns[0]
+	for _, k := range []string{"user_id", "admin_actor", "admin_key", "route"} {
+		if _, ok := l[k]; ok {
+			t.Errorf("the sign-in line carries %s: %v", k, l)
+		}
+	}
+	var first map[string]any
+	for _, h := range out["http"] {
+		if h["user_id"] == d.op.String() {
+			first = h
+			break
+		}
+	}
+	if first == nil || l["request_id"] == nil || l["request_id"] != first["request_id"] || first["status"] != float64(200) {
+		t.Errorf("the sign-in line is not the operator's first authorized request: %v, first %v", l, first)
 	}
 }
 

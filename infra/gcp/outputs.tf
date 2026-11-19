@@ -59,10 +59,11 @@ output "monitoring" {
     policies = sort(concat(
       [for p in google_monitoring_alert_policy.uptime : p.display_name],
       [for p in google_monitoring_alert_policy.promql : p.display_name],
+      [for p in google_monitoring_alert_policy.notices : p.display_name],
     ))
     uptime_checks = sort(keys(google_monitoring_uptime_check_config.this))
     log_metrics = sort(concat(
-      [google_logging_metric.ticks.name, google_logging_metric.errors.name],
+      [google_logging_metric.ticks.name, google_logging_metric.errors.name, google_logging_metric.notices.name],
       [for m in google_logging_metric.edge : m.name],
     ))
     dashboard = local.dashboard_name

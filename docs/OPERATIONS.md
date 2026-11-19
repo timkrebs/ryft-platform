@@ -222,7 +222,7 @@ tfc_var github_repository_owner_id "$OWNER_ID" terraform
 
 # 2f. Connect and plan once (speculative: it proves the plan SA's sign-in).
 terraform -chdir=infra/gcp init                     # connects to ryft-gcp, which 2b made
-terraform -chdir=infra/gcp plan                     # 122 to add (step 4)
+terraform -chdir=infra/gcp plan                     # 123 to add (step 4)
 ```
 
 - **APIs.** Without `--force`, `gcloud services disable` refuses a service that was used in
@@ -283,8 +283,8 @@ rm infra/gcp/apply-1.tfplan
 ```
 
 ```text
-# Apply 1: 122 to add, 0 to change, 0 to destroy (on a rebuild today; the first apply 1 was 118, with
-# grafana-reader and its monitoring.viewer and without D236's 6).
+# Apply 1: 123 to add, 0 to change, 0 to destroy (on a rebuild today; the first apply 1 was 118, with
+# grafana-reader and its monitoring.viewer and without D236's 6 and D244's 1).
 #   16 APIs + 3 audit configs (Secret Manager, STS, IAM) + 2 service agents                  = 21
 #    7 accounts + 1 token creator + 1 run.developer + 5 actAs                                = 14  (35)
 #    1 GitHub pool + 1 provider + 1 workloadIdentityUser                                     =  3  (38)
@@ -294,6 +294,7 @@ rm infra/gcp/apply-1.tfplan
 #    1 zone + 12 record sets (CAA, MX, apex TXT, DMARC, 6 CNAME, 2 SRV)                      = 13 (114)
 #    1 log bucket + 1 sink                                                                   =  2 (116)
 #    2 log-based metrics + 3 uptime checks (the site's) + 1 dashboard (D236)                 =  6 (122)
+#    1 log-based metric (ryft_notices, D244)                                                 =  1 (123)
 ```
 
 The site's uptime checks fail until step 10 serves it. Nothing pages: no alert policy exists before
@@ -323,7 +324,7 @@ Pub/Sub's service agent can take a minute to exist. If the apply fails on
 `service-<number>@gcp-sa-pubsub.iam.gserviceaccount.com`, wait, then plan and apply again. The
 new plan holds only what is left.
 
-**Stop if** the plan has any change or destroy, or the add count isn't 122.
+**Stop if** the plan has any change or destroy, or the add count isn't 123.
 
 ### 5. Secret values
 
@@ -988,10 +989,12 @@ you sign in. Testers wait for C2 in force (step 15).
 ### 11. Observability on Cloud Monitoring *(D236)*
 
 Cloud Monitoring is RYFT's only observability (D236, which supersedes D224's Grafana half): what
-Google measures itself (Cloud Run, Pub/Sub), two log-based metrics counted from lines the services
-already write, five uptime checks, the dashboard "RYFT · Overview" and five alert policies, all in
-`infra/gcp` (`monitoring.tf`, `alerts.tf`). The policies notify two channels you made by hand in
-the console: the email `ryft-timkrebs` and the Google Cloud app's. What each policy means and its
+Google measures itself (Cloud Run, Pub/Sub), log-based metrics counted from lines the services
+write, five uptime checks, the dashboard "RYFT · Overview" and six alert policies, all in
+`infra/gcp` (`monitoring.tf`, `alerts.tf`). Step 11 built five, with two metrics; the sixth, feedback
+and admin access on a third metric, is your decision of 2026-11-19 (D244) and its own apply, step
+14a.9. Six is the cap, a test (`six_conditions_at_most`). The policies notify two channels you made
+by hand in the console: the email `ryft-timkrebs` and the Google Cloud app's. What each policy means and its
 first look: **When an alert fires**, below; the whole picture: OBSERVABILITY → Cloud Monitoring.
 The Grafana steps that stood here (the reader key, the data source, the OTLP push, the synthetics,
 the app rules) never ran, and are gone with D236.
@@ -1093,7 +1096,7 @@ on `monitoring.*` (the four roles above); or `grafana-reader` has a key (delete 
 ```bash
 terraform -chdir=infra/gcp apply monitoring.tfplan
 rm infra/gcp/monitoring.tfplan
-terraform -chdir=infra/gcp output monitoring        # alerting true, the 5 policies, the 5 checks, the 2 metrics
+terraform -chdir=infra/gcp output monitoring        # alerting true, the 5 policies, the 5 checks, the 2 metrics (6 and 3 since 14a.9)
 terraform -chdir=infra/gcp plan                     # No changes
 ```
 
@@ -1284,8 +1287,9 @@ is done. In this order:
    rule.
 
 A wrong id is fixed the same way: the variable's right value in HCP, then 5 and 6 (again 0 to add,
-5 to change, 0 to destroy, each policy's second entry). Unsetting the variable is no way back: it
-turns the gate off and destroys the five policies. Neither is reverting the PR after 4: the old
+5 to change, 0 to destroy, each policy's second entry; 6 to change once 14a.9 is applied). Unsetting
+the variable is no way back: it turns the gate off and destroys the five policies (six after
+14a.9). Neither is reverting the PR after 4: the old
 code's gate reads `alert_app_channel_name`, so add that variable back first (11.1's old value), or
 its plan destroys the five as well.
 
@@ -1548,10 +1552,11 @@ Resources are still in that state: find out why first.
 
 ### 14a. Before testers: auth mail, the restore drill, feedback
 
-Three things to do before step 15 (D239). They change no Terraform, no service and no site. They can run
-now, in any order. Testers who sign up by email need 14a.1 to 14a.4 first. *Confirm email* is on
-(SUPABASE.md), and until then nobody outside the Supabase team gets the confirmation mail. Sign in with
-Apple sends no mail.
+Three things to do before step 15 (D239). 14a.1 to 14a.8 change no Terraform, no service and no site.
+They can run now, in any order. 14a.9, the sixth alert condition for feedback and admin access (D244),
+is a plan and an apply after its PR's merge and deploy. Testers who sign up by email need 14a.1 to 14a.4
+first. *Confirm email* is on (SUPABASE.md), and until then nobody outside the Supabase team gets the
+confirmation mail. Sign in with Apple sends no mail.
 
 The external sources were read through search results only, on 2026-11-18. WebFetch was refused in that
 session, so each claim below names its page and is marked *(search)*.
@@ -1862,10 +1867,25 @@ compose stack and `make smoke-supabase` against the copy step 3 forbids.
   one, `user_id`, `route`, and the trace, `logging.googleapis.com/trace`). It never
   carries the message, the diagnostics or the device fields (**Data protection (logs)**; `writeLogKeys` in
   `backend/cmd/api/logs_test.go` pins it). The line stays in `ryft-logs` for 14 days.
-- **Today nothing tells you.** On EKS, Grafana's NewFeedback alert on `ryft_feedback_received_total` did
-  (D83). D236 dropped it, because nothing reads the app's metrics on Cloud Run (OBSERVABILITY → What D236
-  dropped). The dashboard has no feedback panel, and its logs panel shows ERROR lines only; this line is
-  INFO. You see feedback only when you look:
+- **How you hear of it: the sixth alert condition** (built, D244, your decision of 2026-11-19; applied
+  and tested in 14a.9). On EKS, Grafana's NewFeedback alert on `ryft_feedback_received_total` told you
+  (D83); D236 dropped it, because nothing reads the app's metrics on Cloud Run.
+  - A third log-based counter, `ryft_notices` (`infra/gcp/monitoring.tf`), counts this line on api's
+    stdout, and two admin lines with it (14a.9). Its one label is `kind`, the line's message, a closed set
+    of three. No id becomes a label, and no category either.
+  - The policy **RYFT · Feedback and admin access** (`alerts.tf`, warning, both channels) fires on any
+    such line in the last 5 minutes, one incident per kind, and notifies the opening only. It closes by
+    itself about 5 minutes after the last line, so the next feedback opens a new incident and notifies
+    again. Its mail and push name the policy and the kind (`feedback received`), never the report, its
+    category or the account.
+  - The price (D244 → The price; Google's pricing page through search snippets, *(search)*): $0 until
+    2027-09-01, then about $0.35–0.45 a month. D239's proposal's $1.50 was D236's reading A, which the
+    page no longer shows.
+  - No dashboard panel: one would change the dashboard (a free follow-up). Its logs panel shows ERROR
+    lines only, and this line is INFO.
+  - Rejected (D244): a log-match condition (its notification may carry the line's fields, the user id
+    among them); a counter per line; PromQL over the sparse counter.
+- **Where to look**, when it fires or at any time (the alert says only that one came):
   1. `/admin` → Feedback: the last 30 days, each with Resolve (**Beta → Admin sign-in**).
   2. The script, with the admin key from 1Password (item "RYFT ADMIN_API_KEY"), pasted at a hidden prompt:
 
@@ -1876,25 +1896,118 @@ compose stack and `make smoke-supabase` against the copy step 3 forbids.
      unset ADMIN_API_KEY
      ```
   3. Logs Explorer, `jsonPayload.message="feedback received"`: the count and the categories, no text.
-- **The cheapest way to be told** (a proposal, not built; D239) is a sixth alert condition:
-  - A third log-based counter, `ryft_feedback`, counts the line `feedback received` on api's stdout. Its
-    one label is `category`, a closed set. No id becomes a label, so neither the metric nor the alert holds
-    personal data.
-  - A policy "RYFT · New feedback" fires on any increase in 10 minutes, at severity warning, to both
-    channels, and closes by itself. A panel "Feedback per day, by category" from the same counter is free.
-  - The price is $1.50 a month under D236's reading A. Google's pricing page now reads differently
-    ([Google Cloud Observability pricing](https://cloud.google.com/products/observability/pricing), as of
-    2026-11-18, *(search)*): Monitoring starts charging for alerting no sooner than 2027-09-01, at $0.35 a
-    month per metric reference and $0.50 per million points returned. That would make the condition free
-    until then and about $0.35 a month after. Neither price is verified here.
-  - It needs your decision. The cap of five is a test (`five_conditions_at_most` in
-    `infra/gcp/tests/monitoring.tftest.hcl`), and a sixth condition is a decision (D236). After it, a PR in
-    `infra/gcp` (the counter, the policy, the test at six, OBSERVABILITY) and your apply.
-  - Rejected: the dashboard alone and `/admin` alone (both wait for you to look); a log-match condition
-    (its notification may carry the line's fields, the user id among them; not checked).
 
 **Stop if** a `feedback received` line in Logs Explorer shows a key that isn't listed above, such as a
-message or an email. That is a bug in the api: report it, and build no counter on that line.
+message or an email. That is a bug in the api: report it. The counter reads only the line's message, but
+the line itself is in `ryft-logs`.
+
+**14a.9 The sixth condition: the plan, the apply, a test** *(D244)*. After the PR with `ryft_notices`
+and the api's line `admin signed in` is merged, and `deploy.yml`'s run for that merge has shipped the api
+with the line (without it the kind `admin signed in` never comes). What it counts, all on api's stdout:
+`feedback received` (14a.8), `admin signed in` (once per operator session per instance: a token whose
+TOTP is at most 10 minutes old, so a sign-in on `/admin` or its re-challenge after 12 hours), and `admin
+auth rejected` but for `reason` `missing` (no bearer: crawlers) and `expired` (your own page with an old
+token; it refreshes once). The key's own use and `admin second factor required` are not counted
+(**Beta → Admin sign-in** → Alerts).
+
+1. **The plan**, from main:
+
+   ```bash
+   git switch main && git pull
+   gh run list --workflow=deploy.yml --branch=main --limit=1      # the merge's run: completed, success
+   terraform -chdir=infra/gcp plan -out=notices.tfplan
+   ```
+
+   ```text
+   # Step 14a.9's plan (alert_app_channel set): 2 to add, 0 to change, 0 to destroy.
+   #   read: data.google_monitoring_notification_channel.email[0] (ryft-timkrebs)
+   #   + google_logging_metric.notices               ryft_notices, the label kind                 = 1
+   #   + google_monitoring_alert_policy.notices[0]   RYFT · Feedback and admin access (WARNING)   = 1 (2) to add
+   #   Changes to Outputs: monitoring (policies + "RYFT · Feedback and admin access", log_metrics + "ryft_notices")
+   # With alert_app_channel unset (the gate off): 1 to add, the metric alone. Under the stop line: the same.
+   ```
+
+   Read in the plan: the metric's `filter` names `resource.labels.service_name="api"`, the stdout log,
+   the three messages and `NOT jsonPayload.reason="missing" AND NOT jsonPayload.reason="expired"`; its
+   `label_extractors` is `kind = "EXTRACT(jsonPayload.message)"`. The policy's `notification_channels`
+   is the email channel's name, then `<the app channel's id>` (D237); its `condition_threshold` is
+   `ALIGN_SUM` over `300s`, `REDUCE_SUM` by `metric.label.kind`, `COMPARISON_GT` 0, `duration` `60s`,
+   `evaluation_missing_data` `EVALUATION_MISSING_DATA_INACTIVE`; `alert_strategy` is `auto_close`
+   `1800s` and `notification_prompts` `["OPENED"]`. No change to the five policies, the uptime checks,
+   the dashboard, the other log-based metrics, the log bucket and sink, the edge, DNS, the invokers, the
+   secrets, Pub/Sub, WIF or the deployer.
+
+   **Stop if** the counts aren't your gate's line above; anything changes or is destroyed; any other
+   policy is in the plan; the plan fails on the email channel (11.2's stop rule); or a 403 on
+   `logging.*` or `monitoring.*` (11.2's roles; `logging.configWriter` from step 2d).
+2. **The apply**:
+
+   ```bash
+   terraform -chdir=infra/gcp apply notices.tfplan
+   rm infra/gcp/notices.tfplan
+   terraform -chdir=infra/gcp output monitoring        # 6 policies, the new one among them; ryft_notices among log_metrics
+   terraform -chdir=infra/gcp plan                     # No changes
+   ```
+
+   If the metric is created but the policy fails with `Cannot find metric(s) that match type =
+   "logging.googleapis.com/user/ryft_notices"` (Monitoring hadn't seen the new metric yet; likely, since
+   the pinned provider doesn't retry that error, and not yet seen here): wait two minutes, plan again with `-out=notices.tfplan` (1 to add, the policy alone), and
+   apply that.
+   **Stop if** the second plan isn't "No changes" (a field the API rewrites: report the diff, it is this
+   PR's bug), or the apply fails otherwise.
+3. **The test, each kind once.** In a new zsh, from the repository's root. Note the time. The password
+   goes through a hidden prompt and `printf` (a builtin) into `jq`'s stdin, the token through `curl -H
+   @-`: neither reaches the screen, the history or argv.
+
+   ```bash
+   # a. A feedback from the smoke user (as step 9 signs it in; the publishable key: Supabase ->
+   #    Project Settings -> API Keys).
+   REF=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env); KEY='<the publishable key>'
+   read -r "?smoke user's email: " SMOKE_EMAIL; export SMOKE_EMAIL; read -rs "?its password: " SMOKE_PASSWORD; echo
+   TOKEN=$(printf '%s' "$SMOKE_PASSWORD" | jq -Rs '{email: env.SMOKE_EMAIL, password: .}' |
+     curl -fsS "https://$REF.supabase.co/auth/v1/token?grant_type=password" -H "apikey: $KEY" \
+       -H 'Content-Type: application/json' --data-binary @- | jq -r .access_token)
+   unset SMOKE_PASSWORD SMOKE_EMAIL
+   # Sends the feedback only after a sign-in; else it prints the failure and sends nothing.
+   [ "${#TOKEN}" -gt 100 ] && printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -o /dev/null -w '%{http_code}\n' -H @- \
+     -H 'Content-Type: application/json' -d '{"message": "runbook 14a.9: a test of the alert, not a report", "category": "other"}' \
+     https://api.ryftlab.de/v1/feedback || echo 'sign-in failed: stop here'   # 204
+   unset TOKEN
+
+   # b. An admin sign-in: https://ryftlab.de/admin in a new tab, the password, then the code. Keep the tab.
+
+   # c. One wrong admin key (no secret: a made-up value):
+   printf 'Authorization: Bearer %s\n' runbook-14a9-not-the-key | curl -sS -o /dev/null -w '%{http_code}\n' -H @- \
+     https://api.ryftlab.de/v1/admin/flags              # 401, the line's reason not_a_token
+
+   # The three lines (the time, the message, the reason; no id is printed):
+   gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="api" AND (jsonPayload.message="feedback received" OR jsonPayload.message="admin signed in" OR jsonPayload.message="admin auth rejected")' \
+     --project=ryftlab-prod --freshness=30m --limit=20 --format='value(timestamp,jsonPayload.message,jsonPayload.reason)'
+   ```
+
+   One line of each, the reject's reason `not_a_token`. Lines with reason `missing` or `expired` may be
+   there too (crawlers, your page): they aren't counted.
+4. **Expected:** per kind, within about 5 minutes of its line (the log-based metric's lag of a minute or
+   two, the 60 s hold, the evaluation), one mail to `ryft-timkrebs` and one push in the Google Cloud app,
+   each naming **RYFT · Feedback and admin access** and the kind, the subject `RYFT · <kind>`: three of
+   each. Monitoring → Alerting → Incidents lists three, one per kind. Each closes by itself about 5
+   minutes after its line, with no closing notice (only the opening is notified). No mail or push names
+   an account, the report's text or a reason. Whether Google renders `${metric.label.kind}` in the
+   subject isn't verified (D244): if a subject shows the variable as written, or nothing, the incident's
+   page names the kind; note it in STATUS.md, it is no stop.
+5. **Clean up:** in the admin tab, Feedback → the test report ("runbook 14a.9: …") → **Resolve**, then
+   **Sign out**. Note in STATUS.md the date and, per kind, the minutes from the line to the mail and to
+   the push.
+
+**Stop if** a kind's mail or push hasn't come 15 minutes after its line. Look in this order:
+- **Its line** (3's `gcloud logging read`). No `admin signed in`: the serving api lacks it (the merge's
+  `deploy.yml` run), or the code was entered more than 10 minutes before the page's first call (sign in
+  again, in a new tab). No line of any kind: a `LOG_LEVEL` above `info` in `deploy/run`.
+- **Its point:** Monitoring → Metrics explorer → `logging/user/ryft_notices`, by `kind`. A line but no
+  point: the metric's filter doesn't match the line. Report it, with the line's keys (not their values).
+- **Its incident:** Monitoring → Alerting → **RYFT · Feedback and admin access**, the condition's chart.
+  A point but no incident: report it.
+- **Its delivery:** an incident but no mail or push: 11.4's stop rule (the channel).
 
 ### 15. Testers
 
@@ -3047,11 +3160,12 @@ is gone. The tick's clean deletes it 7 days after it was published.
 
 ### When an alert fires
 
-Cloud Monitoring's five policies (`infra/gcp/alerts.tf`, D236) reach the email `ryft-timkrebs`
+Cloud Monitoring's six policies (`infra/gcp/alerts.tf`, D236, D244) reach the email `ryft-timkrebs`
 and the Google Cloud app. Each notification links its incident (Monitoring → Alerting →
-Incidents), which names the series that crossed: the check, the service or the subscription. The
-dashboard **RYFT · Overview** has the context of all five. An incident closes by itself once its
-query returns nothing, or 30 minutes after its data stops.
+Incidents), which names the series that crossed: the check, the service, the subscription or the
+kind. The dashboard **RYFT · Overview** has the context of the first five. An incident closes by
+itself once its query returns nothing, or 30 minutes after its data stops; the sixth's when its
+data stops, without a closing notice.
 
 | Policy | Fires when | First look |
 | --- | --- | --- |
@@ -3060,11 +3174,13 @@ query returns nothing, or 30 minutes after its data stops.
 | RYFT · Tick missing (critical; only while the tick runs) | a service without a tick of `result` ok for 45 minutes (three ticks), held 5 | Logs Explorer `jsonPayload.message="tick"` for the service: `result` error and its `err` name the step (the outbox sweep, the purges, the reconcile, a database that is down). No line at all: the Scheduler job `ryft-tick` (`gcloud scheduler jobs describe ryft-tick --location=europe-west1 --project=ryftlab-prod`), then the subscription `tick-<service>`. A `LOG_LEVEL` above `info` silences the line, and this policy with it |
 | RYFT · Dead letters held (warning) | a hold subscription (`dlq-*-hold`) holds a letter, held 5 minutes | `scripts/dlq.sh --project ryftlab-prod list`, the cause in the consumer's log by `messageId` (**Dead letters and the outbox**) |
 | RYFT · Event backlog over 15 minutes (warning) | an event subscription's oldest unacked event is over 15 minutes old, held 5 | the consumer's request log (429, 5xx) and its max instances; it dead-letters after 20 attempts, and then the policy above fires |
+| RYFT · Feedback and admin access (warning; D244) | a line of one kind on api in the last 5 minutes, held 1: `feedback received`, `admin signed in` (an operator session begun, per instance), or `admin auth rejected` but for `reason` `missing` and `expired`. One incident per kind; it stays one while the lines keep coming | by the kind in the subject. **feedback received**: `/admin` → Feedback, or `scripts/beta_report.sh feedback` (GCP 14a.8); Resolve it once read. **admin signed in**: if it wasn't you, **Beta → Admin sign-in → Lost phone, or any doubt about the admin account**, at once, then `/admin` → Audit. **admin auth rejected**: Logs Explorer `resource.labels.service_name="api" jsonPayload.message="admin auth rejected"`, its `reason`: `not_a_token` a scanner or a wrong key; `signature`, `unknown_key` a forged or foreign token; `role`, `not_admin`, `not_allowed` a valid token that isn't an operator's; any other reason (`malformed`, `issuer`, `audience`, `key_mismatch`, …, `internal/auth/supabase.go`) a token that isn't one of the project's. Many, or ongoing: the admin routes' per-address limit answers them with `429` (**Beta → Admin sign-in**) |
 
 What no policy covers since D236 (OBSERVABILITY → Cloud Monitoring → What D236 dropped): a slow
-sync (ingest's p95 panel), 429s (their panel), APNs, feedback and admin events, the www redirect and
+sync (ingest's p95 panel), 429s (their panel), APNs, the admin page's other events (`admin second
+factor required`, `admin auth unavailable`: **Beta → Admin sign-in** → Alerts), the www redirect and
 the certificate's days left (its panel; Google renews it, and a failed renewal fails TLS, which the
-uptime checks see).
+uptime checks see). Feedback and the admin sign-ins have the sixth policy since D244.
 
 ### The beta gate: warn, then on (D238)
 
@@ -5451,12 +5567,14 @@ For key callers (scripts, `make smoke-prod`) three small things change: more tha
 second from one address now get `429`, the `401` text is `admin key or admin sign-in required`,
 and the scheme `bearer` in lower case is accepted. Granting access is two statements in the
 SQL editor, as the owner, by id; they are one trust domain (the Supabase project owner), and the
-row exists so that revoking takes effect at once, not so that two parties must agree. **No alert
-notices an admin sign-in any more** (D236): `AdminWebUsed` (the lost-phone detection) and
-`AdminUnauthorized` were app-metric rules in Grafana Cloud, which is gone, and Cloud Monitoring has
-five conditions, none of them this. So a use you didn't make is noticed only by looking. After any
-session, and weekly while a row exists, read the audit (`GET /v1/admin/audit`, `actor.kind` `user`)
-or Logs Explorer on `ryft-logs`:
+row exists so that revoking takes effect at once, not so that two parties must agree. **An alert
+notices each admin session begun** (D244: the sixth condition, **RYFT · Feedback and admin access**,
+kind `admin signed in`). The api writes `admin signed in` once per operator session per instance,
+when a token passes with a TOTP at most 10 minutes old: a sign-in on the page, or its re-challenge
+after 12 hours. One that wasn't you is the lost-phone case (below). It doesn't see a token already in
+a session (a stolen access token whose TOTP is older) or the key's use. So still, after any session
+and weekly while a row exists, read the audit (`GET /v1/admin/audit`, `actor.kind` `user`) or Logs
+Explorer on `ryft-logs`:
 
 ```text
 resource.type="cloud_run_revision" resource.labels.service_name="api" jsonPayload.admin_actor:"user:"
@@ -5487,8 +5605,8 @@ the first 8 hex digits). The audit (`GET /v1/admin/audit`) names the actor: `act
 
 **Setting up the operator account (once, in this order).** Before step 1 the Supabase project must be set as
 SUPABASE.md → checklist says for the admin page (Data API off, TOTP on, maximum enrolled factors 1, *Confirm
-email* and *Secure email change* on). Read the paragraph above about noticing a use first: since D236 no
-alert does.
+email* and *Secure email change* on). Read the paragraph above about noticing a use first: since D244 the
+sixth condition notices each session begun, and not every use.
 
 1. **A dedicated admin account:** Supabase → Authentication → Users → *Add user*, an address used for nothing
    else and **not** your Apple ID address (Supabase links identities of the same verified email, so an app sign-in
@@ -5575,13 +5693,17 @@ it is recorded).
 no-store`, `/` keeps `connect-src 'none'`, the api rolled with `ADMIN_WEB_ORIGINS` (`"web_origins":1`, the `OPTIONS`
 preflight `204` with `access-control-allow-origin: https://ryftlab.de`), and the operator's sign-in on the page worked.
 
-**Alerts.** None since D236 (the two below were Grafana rules, gone with it; the log lines they
-counted remain, so read them in Logs Explorer). `AdminUnauthorized` was more than 20 requests with
-a bad bearer in 10 minutes, a scanner or a stale or foreign token: the `admin auth rejected` lines.
-The api never sees a guessed password, that is Supabase Auth: read Supabase → Logs → Auth for
-sign-in attacks. `AdminWebUsed` was the page being used; if it was not you, act (below). A real operator refused
-for want of a fresh second factor (`mfa_required`) is deliberately in neither alert; it is in the
-audit (`actor.kind` `user`, status `403`) and in CloudWatch. A `503` on an admin route with a token
+**Alerts.** On GCP one since D244: **RYFT · Feedback and admin access** (GCP → When an alert
+fires), whose kinds `admin signed in` and `admin auth rejected` stand in for Grafana's two rules
+that D236 dropped. `AdminWebUsed` was the page being used; now each session begun is one notice
+(`admin signed in`, no key of its own on the line). If it was not you, act (below).
+`AdminUnauthorized` was more than 20 requests with a bad bearer in 10 minutes, a scanner or a stale
+or foreign token; now any one `admin auth rejected` notifies, but for `reason` `missing` (no bearer:
+crawlers) and `expired` (your own page with an old token; it refreshes once), and stays one
+incident while they keep coming. The api never sees a guessed password, that is Supabase Auth: read
+Supabase → Logs → Auth for sign-in attacks. A real operator refused for want of a fresh second
+factor (`mfa_required`, the line `admin second factor required`) is deliberately not counted; it is
+in the audit (`actor.kind` `user`, status `403`) and in the logs. A `503` on an admin route with a token
 means the api could not complete the check: a signing-key fetch that failed or took longer than a
 second, the allow-list lookup in the database, or an unknown key id inside the refresh limit
 (above). It is not proof of an outage (`Retry-After: 5`; `AuthUnavailable` pages for a failed fetch,
@@ -5672,8 +5794,8 @@ curl -s -H "Authorization: Bearer $ADMIN" $API/v1/admin/users/53d437eb | jq
 
 **Feedback** (`POST /v1/feedback`, 10 per tester a day) carries `request_ids`: search the
 logs for them (`{namespace="ryft-api"} |= "<request id>"`, and the same id in ingest and
-scoring) to see what the tester saw. `ryft_feedback_received_total` going up alerts the
-operator (Monitoring).
+scoring) to see what the tester saw. On GCP the sixth condition tells the operator of each
+one (D244, GCP 14a.8); on EKS `ryft_feedback_received_total` going up did (Monitoring).
 
 ## Two accounts for one person
 
@@ -7947,7 +8069,11 @@ scripts/seed_demo.py`.
   and device id, a training import's counts (`train import`: source, result, items per
   status, days), which day was scored by which model (`scored day`: `day`,
   `model_version`, `inputs_changed`), a push's category and day, errors with their
-  cause. Paths carry dates and resource ids (`/v1/days/2026-10-19`,
+  cause. The api's `admin signed in` (D244), once per operator session per instance,
+  has no key of its own: only what every line has and what logx adds from the request,
+  as on every line. Cloud Monitoring's `ryft_notices` counts it, `feedback received`
+  and `admin auth rejected` by their message alone, and its alert names the policy and
+  that message, no key of the line (GCP → 14a.9). Paths carry dates and resource ids (`/v1/days/2026-10-19`,
   `/v1/workouts/<uuid>`), so the lines still show when someone used the app and which
   days they opened: personal data, read and kept as below.
 - **Never logged:** health values (no score, sample, sleep or workout value, baseline,

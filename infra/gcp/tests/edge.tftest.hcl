@@ -141,8 +141,8 @@ run "off_is_as_before_the_edge" {
   }
 
   assert {
-    condition     = output.edge_ip == null && output.monitoring.log_metrics == tolist(["ryft_errors", "ryft_ticks"])
-    error_message = "edge off: no address, and the log-based metrics of D236 only"
+    condition     = output.edge_ip == null && output.monitoring.log_metrics == tolist(["ryft_errors", "ryft_notices", "ryft_ticks"])
+    error_message = "edge off: no address, and the log-based metrics of D236 and D244 only"
   }
 }
 
@@ -464,12 +464,12 @@ run "built_logs_keep_only_denials_and_preview_matches" {
   }
 
   assert {
-    condition     = output.monitoring.log_metrics == tolist(["ryft_edge_denials", "ryft_edge_preview_matches", "ryft_errors", "ryft_ticks"])
-    error_message = "the monitoring output lists the four log-based metrics"
+    condition     = output.monitoring.log_metrics == tolist(["ryft_edge_denials", "ryft_edge_preview_matches", "ryft_errors", "ryft_notices", "ryft_ticks"])
+    error_message = "the monitoring output lists the five log-based metrics"
   }
 }
 
-# ---- the dashboard's tiles, and no sixth alert ----------------------------------------------------------------
+# ---- the dashboard's tiles, and no alert of the edge's own ----------------------------------------------------
 
 run "built_dashboard_has_the_edge_tiles" {
   command = plan
@@ -539,7 +539,7 @@ run "built_dashboard_has_the_edge_tiles" {
   }
 }
 
-run "built_with_alerting_still_has_five_conditions" {
+run "built_with_alerting_still_has_six_conditions" {
   command = plan
 
   variables {
@@ -549,9 +549,9 @@ run "built_with_alerting_still_has_five_conditions" {
 
   assert {
     condition = length(flatten([
-      for p in concat(google_monitoring_alert_policy.uptime, values(google_monitoring_alert_policy.promql)) : p.conditions
-    ])) == 5
-    error_message = "the edge adds no alert condition: five, the cap (D236)"
+      for p in concat(google_monitoring_alert_policy.uptime, google_monitoring_alert_policy.notices, values(google_monitoring_alert_policy.promql)) : p.conditions
+    ])) == 6
+    error_message = "the edge adds no alert condition: six, the cap (D236, D244)"
   }
 }
 
