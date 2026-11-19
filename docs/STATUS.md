@@ -72,6 +72,31 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## `BETA_GATE` off: no invite codes (2026-11-18)
+
+Your decision (D241, amends D238): the beta has no invite codes. `deploy/run/config.env` sets
+`BETA_GATE=off`. Every signed-in account is served and nothing is flagged; consent stays `on`, so
+nothing is synced or scored without it. Access on the server comes with App Attest, which is still to be
+decided. Until then any confirmed Supabase account with the API's address can sync its own data (D241
+names the risk). The two unused codes are revoked. OPERATIONS → GCP → The beta gate keeps its steps for
+later, behind a note (a gate starts again with `warn`). This replaces #208's open steps below (codes, the
+stop rule, the flip to `on`): there is nothing to run for them.
+
+Open, not in this PR: the site still says the beta needs an invite code (`web/messages/en.json`,
+`web/content/legal/en/support.mdx`). That needs a web PR.
+
+**On merge:** `deploy.yml` redeploys the five services (api and ingest with `BETA_GATE=off`), `migrate`
+a no-op, then `make smoke-prod`. Nothing to run. Check, from the repository root:
+
+```bash
+for s in api ingest; do
+  echo "$s $(gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod --format=json \
+    | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "BETA_GATE") | .value')"
+done                                                    # api off, ingest off
+```
+
+Rollback: a PR of the same line back to `warn`.
+
 ## The edge: a load balancer with Cloud Armor for api and ingest (2026-11-18, D242; decided 2026-11-19)
 
 **Built in the PR, merged with `edge = "off"`, so the merge plans

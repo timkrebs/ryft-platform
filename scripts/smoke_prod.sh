@@ -12,8 +12,8 @@
 #
 # It then reports what the gates do (on, warn or off): it withdraws the smoke user's
 # consent for one sync and, with ADMIN_API_KEY, its beta access for one read, and
-# restores both. SMOKE_EXPECT_GATES=on fails unless both are on (before the first
-# external invite: docs/OPERATIONS.md → Beta).
+# restores both. SMOKE_EXPECT_GATES=on fails unless both are on (EKS, before the first
+# external invite: docs/OPERATIONS.md → Beta). On GCP the invite gate is off (D241).
 set -euo pipefail
 API=${API_URL:-https://api.ryftlab.de}
 INGEST=${INGEST_URL:-https://ingest.ryftlab.de}   # its own host on Cloud Run (design §3: HTTP/2 end to end for 32 MiB syncs)
