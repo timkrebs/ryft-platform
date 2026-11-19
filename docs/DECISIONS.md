@@ -5871,3 +5871,196 @@ _Grafana half superseded by D236._
     message check.
   - `OPERATIONS.md` → GCP → Deploy, roll back, rotate → The site; `STATUS.md`.
   - The paths in `since-green` and in the PR filter's `web` list change together (a comment at both).
+
+## D245 — App Attest: the contract first, `403 app_attest_required`, an HMAC app token checked without a database read (**the user's decision**, 2026-11-19; amends D241)
+
+- **Context:** since D241 the server admits any confirmed Supabase account, and nothing tells the TestFlight app
+  from a script with a valid session. The user decided on 2026-11-19: App Attest, yes; the contract first and docs
+  only, so the app can start; the server in a brief of its own, shipped in mode `off`. The head architect's draft
+  is the base; every change to it is listed below with its reason. No external page was read in this run: there
+  was no web search tool, and `curl` needs approval. Apple's behaviour here is Apple's documentation as known
+  (*unverified*, listed below); the server PR checks it against a real device's attestation before `warn`.
+- **Decision (the contract):** `API.md` → Conventions → App Attest, the Errors paragraph, the Swift mirror and the
+  changelog of 2026-11-19:
+  - `POST /v1/app-attest/challenge` (no body) → `200 {challenge, expires_at}`. Opaque, single use, for the account,
+    5 minutes; at most 5 open per account. Any call that names it uses it up, whatever it answers.
+  - `POST /v1/app-attest/keys` `{key_id, attestation, challenge}` → `201 {key_id}`. Apple's seven attestation checks:
+    the chain to Apple's App Attestation Root CA, held by the server; the nonce in extension
+    `1.2.840.113635.100.8.2`; the key id against the certificate's key and the credential id; the RP ID hash of
+    `M77SKHKG63.dev.timkrebs.ryft` (the AASA's and `infra/gcp/monitoring.tf`'s `local.app_id`); counter 0; the AAGUID.
+    The key is stored per account and key id. At most 10 keys per account (the eleventh deletes the least recently
+    used), and a key unused for 90 days is deleted.
+  - `POST /v1/app-attest/token` `{key_id, challenge, assertion}` → `200 {token, expires_at, ttl_sec}`, 3600 s. The
+    key is looked up (`404 app_attest_key_unknown`), then the challenge, the signature over the nonce, the RP ID
+    hash, and a counter above the stored one, which is then kept.
+  - **Client data, byte-exact:** `clientDataHash` = SHA-256 of the UTF-8 bytes of the challenge string as received,
+    for the attestation and the assertion alike. The challenge is never decoded. Today it is 32 random bytes in
+    base64url without padding (43 characters), which the server PR keeps; the app may not rely on that. `key_id` is
+    `generateKey()`'s string unchanged, standard base64 with padding (44 characters, 32 bytes). The attestation and
+    the assertion are `base64EncodedString()` of the CBOR. One rule for both steps, so the app has one hash to get
+    right.
+  - **The header** `X-RYFT-App-Token` on every request to api and ingest, opaque to the app (at most 512 characters).
+- **The token (the server's, opaque to the app):**
+  - **Format:** `v1.<kid>.<body>.<mac>`. `kid` is 8 lower-case hex digits naming a ring key. `body` is base64url
+    without padding of 48 bytes: the account id (16), the first 16 bytes of SHA-256 of the decoded key id, and the
+    issue and expiry times (8 each, Unix seconds, big-endian). `mac` is HMAC-SHA256 under the ring key of
+    `ryft-app-token/v1/` ‖ `kid` ‖ `.` ‖ `body`, in base64url (43 characters). About 120 characters in all.
+  - **The check** (api and ingest, stdlib only, no database, no network): the version; a known `kid`; the MAC with
+    `hmac.Equal`; not expired; issued at most 60 s in the future; the account id equals the bearer's `sub`. A
+    deleted key's tokens run out within the hour: the price of no lookup.
+  - **The ring:** the Secret Manager secret `app-attest-token-keys` in `ryftlab-prod`. The container is `infra/gcp`'s,
+    the user's Terraform; the value is the operator's, never in git. It holds 1 to 3 lines `<kid>:<base64 of 32 random
+    bytes>`. The first line signs (api); every line verifies (api and ingest). It is rendered as
+    `APP_ATTEST_TOKEN_KEYS` into both services at a pinned version, as `posthog-project-key` is (D231).
+  - **Rotation, planned:** three version pins in three PRs, so no token meets a service that cannot verify it:
+    1. the new key as a second line (verify only);
+    2. the new key first (api signs with it, ingest already verifies it);
+    3. at least an hour after (2) is deployed, without the old key.
+  - **Rotation in an emergency** (a leaked key): one version with a fresh key alone. Every token in use fails, and
+    under `on` each install gets one `403 app_attest_required`, fetches a token and sends again: one challenge and
+    one token per device. A leaked ring key alone opens nothing, since the bearer is still required: it is App
+    Attest `off` for whoever also holds a session.
+- **Modes and configuration** (required lines of `deploy/run/config.env`, D238's reason: the mode in force is the one
+  in git):
+  - `APP_ATTEST=off|warn|on`, api and ingest.
+    - `off`: no check, the header is not read; the three routes serve once the ring is set.
+    - `warn`: the token is checked and nothing is refused. The access line gets `app_attest` with the reason
+      (`missing`, `invalid`, `expired`, `other_account`); a valid token adds nothing. The counter
+      `ryft_app_attest_refusals_total{reason,mode,service}` counts it too.
+    - `on`: `403 app_attest_required`, logged the same way.
+  - `APP_ATTEST_EXEMPT_USERS`, api and ingest: comma-separated lower-case UUIDs, at most 5, may be empty. On GCP it
+    holds the smoke user's id, so `deploy.yml`'s smoke and `make smoke-prod` pass under `on`. The id of a test
+    account names nobody and is no secret.
+  - `APP_ATTEST_APP_ID=M77SKHKG63.dev.timkrebs.ryft` and `APP_ATTEST_ENVIRONMENTS=production` (`production` or
+    `production,development`), api.
+  - The code's defaults (local compose): `off`, no exempt user, `production,development`. The routes answer `501`
+    without a ring.
+  - **Order** `off` → `warn` → `on`. The rollback is the line back.
+- **Exempt** (as written in `API.md`):
+  - the health paths (`/health/live`, `/health/ready`, `/healthz`, `/readyz`) and `/metrics`: no bearer;
+  - `POST /internal/tick`: Pub/Sub's push with its own token, the only push api and ingest take (D240);
+  - **all** of `/v1/admin/*` with either bearer, preflights included: the site's `/admin` page calls it from a
+    browser (`web/scripts/lib/csp.mjs`: `connect-src` is the Supabase auth path and `<api>/v1/admin/` only), which
+    can never attest. The other pages' `connect-src` is `'none'`, so the site calls nothing else;
+  - the three App Attest routes, which are how a token is had;
+  - `DELETE /v1/me`, `POST /v1/me/apple-authorization` and `DELETE /v1/me/consent`, which covers the lead's
+    "data-subject routes". Erasure, its Apple half (Apple requires the revocation at deletion, and the code
+    expires in 5 minutes, which a failed attestation must not eat) and the withdrawal of consent (Art. 7(3)) may
+    not depend on Apple's service, the device, or the server's token path. A bug in the token path under `on` must
+    never trap someone who wants out. They only remove, and they still need a valid session. A stolen session can
+    already change the account's email at Supabase, so the exemption adds little to it;
+  - `POST /v1/feedback`: the report path has to work exactly when attestation fails. It is capped at 10 a day per
+    account;
+  - the accounts in `APP_ATTEST_EXEMPT_USERS`.
+  - **Not exempt: the export.** The app has no export route; it builds the file from `GET /v1/me`, `/v1/days`,
+    `/v1/workouts` and `/v1/sessions` (`DataExport.swift`), the reads App Attest is for. Portability from a device
+    that cannot attest goes through support, as any request from outside the app does.
+- **Changed from the draft:**
+  1. `403`, not `401`, for `app_attest_required`. Today's builds refresh the session on a `401` and sign out on
+     the second (`APIClient.swift`, API.md → Authentication). A `403` with a code they don't know reads to them as a
+     built-in's `403`, never a sign-out. The same shape as `invite_required` and `mfa_required`.
+  2. `app_attest_key_unknown` (`404`) is answered only on `POST /v1/app-attest/token`. Data routes check the
+     token without a database read, so they cannot know it, and their own `404`s mean something else (a resource,
+     an unknown route). The challenge and keys routes have no key to miss. The app branches on the code before its
+     "404 = not live" rule.
+  3. `422`, not `400`, for `app_attest_invalid`. API.md's `400` is a malformed request (a client bug), `422` a
+     well-formed value that fails, as for the refused credentials of `POST /v1/me/apple-authorization` and
+     `POST /v1/me/invite`. A malformed field stays `400` without a code.
+  4. `challenge_expired` became `app_attest_challenge_invalid` (`422`). It follows the codes' feature prefix
+     (`import_in_progress`, `import_not_enabled`), and one code covers unknown, used, expired and another
+     account's, whose remedy is the same.
+  5. The token answer gains `ttl_sec` (3600): the app counts the hour on its own clock, as with `GET /v1/config`'s
+     `ttl_sec`, instead of comparing `expires_at` with a device clock that may be off.
+  6. The exemptions above: all of `/v1/admin/*` and not only the key; the three data-subject routes;
+     `POST /v1/feedback`.
+  7. The three routes are outside the beta gate. Under `BETA_GATE=on`, `POST /v1/me/invite` needs a token and a
+     token needs the routes, so a gated route would be a deadlock. The `invite_required` row's route list gains
+     them in the server PR.
+  8. Refusing `off` → `on` is a new check, not "as D238 did". D238 states the order in the runbook and in
+     `config.env`'s comment, and no check enforces it: `scripts/check_cloudrun.py` reads `BETA_GATE` only to render.
+     The server PR adds a rule in `check_cloudrun.py` against the PR's base (`git show <base>:deploy/run/config.env`).
+  9. `warn` logs a reason, not one code `app_attest`. The stop rule must tell "no header" (a simulator, an old
+     build) from "a bad token" (a bug, or a forgery). The counter isn't read on Cloud Run (D236), so the access
+     lines are the record.
+  10. Keys are capped at 10 per account and deleted 90 days after their last use, not only at the account's
+      deletion: data minimisation. The app's `app_attest_key_unknown` path covers it, and a TestFlight build expires
+      in 90 days anyway.
+  11. Development attestations are a config list, `APP_ATTEST_ENVIRONMENTS`, `production` on GCP. The app sets the
+      entitlement to `production` in every build that talks to production, so a debug build from Xcode attests too
+      *(unverified)*.
+  12. Until the privacy text names App Attest, the routes answer `501` (no ring). So nothing is stored before the
+      text is in force, and the app, which calls the challenge route first, never attests at Apple before then.
+- **The checkers (this PR is docs only):**
+  - `TestAPIDocExamples` (`backend/internal/model/apidoc_examples_test.go`) needs a `model` type for every fenced
+    `json` block. Its mechanism for a documented type the code lacks (`docExampleAllowList` with `missingType`) is an
+    edit of that Go test file. So the examples are fenced `http` exchanges, as in Admin routes, with their JSON
+    bodies. The server PR adds the model types, turns them into annotated `json` blocks, and drops "not served yet".
+  - `TestAPIDocErrorCodesMatchCode` pins Errors' `code` table and the mirror's `APIErrorCode` to the `model.Code*`
+    constants, and the status table to the codes the services send. So the four codes are a paragraph in Errors, a
+    table in App Attest and a comment after the enum, not rows or cases. The server PR adds them with the constants.
+  - `scripts/decision_refs.sh` warns that no code mentions D245 until the server PR (a warning, exit 0).
+- **Rejected:**
+  - `401` (above).
+  - A response header under `warn`, or `app_attest_required` in `X-RYFT-Gate`. The app renews by `ttl_sec`, so there
+    is nothing for it to do; the app reads `X-RYFT-Gate`'s values as onboarding screens; and an additive header can
+    come later.
+  - A database read per request (a token table, or an assertion on every request): the brief wants none, and an HMAC
+    costs microseconds.
+  - A signed JWT (ES256): api would hold the private key and ingest the public one, which separates them a little
+    better, at the cost of a JOSE library or hand-rolled JOSE. Both services are ours, and HMAC is the stdlib's.
+  - Apple's receipt and fraud metric. At the beta's size there is nothing to act on, and it adds a call to Apple and
+    stored data per device.
+  - A purpose tag in the assertion's client data. The challenge is single use and per account, so a tag guards
+    nothing, and one hashing rule for both steps is the fewer bug.
+  - A token from `POST /v1/app-attest/keys`: one way to a token, so the counter's first step is always an assertion.
+  - Exempting the export's reads (above).
+- **Privacy, what the privacy text (C2) must say before the ring is set:**
+  - The app uses Apple's App Attest to prove to RYFT's servers that a request comes from the genuine app on a genuine
+    Apple device. The device talks to Apple for the attestation, under Apple's terms; RYFT's servers never contact
+    Apple for it. C2 decides how to name Apple's role; there is no new processor on the server side.
+  - RYFT stores, per account and app install: the key id (per device and install), the public key, a counter, the
+    environment, and when the key was attested and last used. Challenges are kept 5 minutes. There is no receipt, no
+    device model and no address; the app holds the token for an hour, and the server stores none.
+  - Kept until the account is deleted, the key is replaced, or 90 days after the key's last use.
+  - The purpose is security: refusing requests that do not come from the app (scripted access with a valid account,
+    abuse).
+  - **The account wipe:** `DELETE /v1/me` deletes the keys and the challenges; an account merge
+    (`POST /v1/admin/users/{id}/merge-into/{to}`) deletes the merged account's keys. `delete_test.go`'s `owned` count
+    covers both tables. The app's export doesn't include them (a device credential, like push tokens); an Art. 15
+    request lists them.
+  - The text and `PRIVACY_POLICY_VERSION` change in the same PR (`CLAUDE.md`), before `warn`.
+- **Stop rules** (proposed; the server PR writes them into OPERATIONS → GCP):
+  - `off` → `warn`: the text is in force, the ring is set, the attesting build is on TestFlight, and the operator's
+    own device shows accepted tokens (its lines carry no `app_attest`).
+  - `warn` → `on`: 7 days of warn lines with nothing but known non-app clients (the simulator), every tester on the
+    attesting build (TestFlight's list), and `make smoke-prod` green.
+- **Unverified (Apple, as known; no page was read):**
+  - the attestation's seven steps, the OID, the nonce, the AAGUIDs `appattestdevelop` and `appattest` + seven `0x00`;
+  - counter 0 at attestation and a rising counter on assertions;
+  - that the assertion's signature is ECDSA P-256 in DER over `nonce`, verified with SHA-256 (the server PR pins it
+    with a real assertion);
+  - that "SHA-256 of the public key" means the 65-byte uncompressed point;
+  - that `generateKey`'s id is standard base64 with padding;
+  - that TestFlight and App Store builds always attest in production, that Xcode builds attest in development unless
+    the entitlement says `production`, and that a development-signed build may set it;
+  - `DCError.invalidKey` after a reinstall or a restore onto another device; `serverUnavailable` → the same key
+    later; any other error → a new key; whether an attested key can be attested again;
+  - that `generateAssertion` needs no network, and works in the background (HealthKit's background delivery);
+  - Apple's advice of one key per user per device;
+  - the receipt and its risk metric;
+  - an attestation's size (a few KiB).
+- **Consequences:**
+  - This PR: `API.md` (Screens, Conventions → App token, Errors → App Attest, Conventions → App Attest, Endpoints,
+    the Swift mirror, the changelog of 2026-11-19).
+  - **The server PR:**
+    - a pure `internal/appattest` (the checks, Apple's root pinned, tests from a real device's attestation and
+      assertion) and the token functions with a calibration test of the format;
+    - a migration of `app_attest_keys` and `app_attest_challenges` (only the challenge's SHA-256 stored), grants, RLS,
+      the deletion and the merge;
+    - the middleware in api and ingest, with tests for each exempt route and for the order (`401` before `403`);
+    - the `model.Code*` constants, Errors' rows, the mirror's cases and the model types;
+    - `deploy/run/config.env`, `scripts/cloudrun_render.py` and `scripts/check_cloudrun.py` (the keys, the pin, the
+      order rule), and the secret's container in `infra/gcp` (the user's Terraform);
+    - `OBSERVABILITY.md`, `OPERATIONS.md` and `STATUS.md`.
+  - **D241's** "access on the server is to come with App Attest, which is still to be decided" is decided here.
+    Until `on`, D241's risk stands.
