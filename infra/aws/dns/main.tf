@@ -8,10 +8,12 @@ locals {
   })
 }
 
-# The public zone for the whole domain. GoDaddy stays the registrar; its nameservers are
-# switched once to the four Route 53 assigns here (see outputs).
-# Long-lived on purpose: recreating it would assign new nameservers and need another change at
-# GoDaddy, so it lives outside the cluster's root module.
+# The public zone for the whole domain. GoDaddy stays the registrar. Since the DNS move (OPERATIONS →
+# GCP step 6) its nameservers are Cloud DNS's (infra/gcp/dns.tf), so nothing resolves through this
+# zone any more.
+#
+# The retirement (design docs/work/2026-11-14-gcp, PR D1): no prevent_destroy, so step 12 (E) can
+# destroy the zone and its records with `plan -destroy`. A revert would block E again.
 #
 # The previous zone (aws_route53_zone.this, the old domain) left this configuration with D213: the
 # next plan destroys it and its records. prevent_destroy guards only a resource that is still
@@ -21,10 +23,6 @@ resource "aws_route53_zone" "ryftlab_de" {
   comment = "RYFT public zone, managed by infra/aws/dns"
 
   tags = local.tags
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 # Only Let's Encrypt (cert-manager in the cluster) may issue certificates for the domain and its
