@@ -34,6 +34,9 @@ const (
 	adminMFAMaxAge = 12 * time.Hour
 	// adminMFASkew is how far in the future the TOTP time may lie (clock skew, as the verifier's leeway).
 	adminMFASkew = 30 * time.Second
+	// adminSignInWindow is how young the token's TOTP must be for a request to start an admin session
+	// ("admin signed in", D244): the page calls /v1/admin/* right after the challenge.
+	adminSignInWindow = 10 * time.Minute
 	// adminRole is the app_metadata.role of an operator.
 	adminRole = "admin"
 	// adminMaxToken bounds the work a bearer can cost, as auth.Middleware does.
@@ -146,6 +149,7 @@ type adminAuth struct {
 	clients     *httpx.ClientKeys
 	limiter     *ratelimit.Capped
 	mfaAudit    *ratelimit.Limiter // bounds the audit rows of mfa_required refusals per operator
+	signIns     *ratelimit.Limiter // one "admin signed in" line per operator and TOTP time (signedIn)
 	pattern     func(*http.Request) string
 	now         func() time.Time
 }
@@ -165,6 +169,9 @@ func newAdminAuth(h *handler, o adminOptions, pattern func(*http.Request) string
 	if a.now == nil {
 		a.now = time.Now
 	}
+	// A burst of 1 that refills only after the window and the skew: see signedIn.
+	signInSpan := adminSignInWindow + adminMFASkew
+	a.signIns = ratelimit.New(1/signInSpan.Seconds(), 1, ratelimit.Idle(signInSpan), ratelimit.Clock(a.now))
 	if a.clients == nil {
 		a.clients = httpx.NewClientKeys(config.DefaultXFFTrustedHops)
 	}
@@ -312,6 +319,7 @@ func (a adminAuth) require(next http.Handler) http.Handler {
 			a.auditMFA(r, p.UserID)
 			return
 		}
+		a.signedIn(r, p) // before the user id is on the request: the line names nobody
 		if ri := httpx.Info(r.Context()); ri != nil {
 			ri.UserID = p.UserID.String()
 		}
@@ -359,6 +367,22 @@ func (a adminAuth) mfaProblem(p auth.Principal) string {
 		return "mfa_stale"
 	}
 	return ""
+}
+
+// signedIn logs "admin signed in", the start of an operator's admin session, for the operator's alert (D244):
+// the page calls /v1/admin/* right after the TOTP, and a re-challenge is a new TOTP time, so a new session; a
+// request 10 minutes or more after the TOTP is no sign-in. One line per (operator, TOTP time) and instance: the
+// first request takes the only token, which is back only after window + skew, the longest a session's first and
+// last request inside the window lie apart (the TOTP may be up to adminMFASkew ahead). Another instance may log
+// the session again, which the alert can take. The line carries nothing of its own.
+func (a adminAuth) signedIn(r *http.Request, p auth.Principal) {
+	if a.now().Sub(p.MFAAt) >= adminSignInWindow {
+		return
+	}
+	if ok, _ := a.signIns.Allow(p.UserID.String() + "/" + strconv.FormatInt(p.MFAAt.Unix(), 10)); !ok {
+		return
+	}
+	a.log.InfoContext(r.Context(), "admin signed in")
 }
 
 func (a adminAuth) pass(w http.ResponseWriter, r *http.Request, next http.Handler, act adminActor) {

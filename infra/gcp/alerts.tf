@@ -1,6 +1,6 @@
-# Cloud Monitoring's alert policies (D236): five conditions, one policy each, all to both channels. The
-# cap is five (tests/monitoring.tftest.hcl): every condition has a monthly price (D236 -> Cost), and a
-# sixth needs a decision, not a line here.
+# Cloud Monitoring's alert policies (D236, D244): six conditions, one policy each, all to both channels.
+# The cap is six (tests/monitoring.tftest.hcl): every condition has a monthly price (D236 -> Cost, D244
+# -> The price), and a seventh needs a decision, not a line here. The sixth was the user's (2026-11-19).
 #
 # Gated: nothing in this file exists until alert_app_channel is set (local.alerting, runbook step
 # 11.1). Then the email channel is read by its display name: none, or two with that name, fails the
@@ -11,7 +11,9 @@
 #
 # Queries are PromQL on Google's metric names, the threshold part of the query (any series it returns is
 # an open incident). Condition 1 is a classic threshold: check_passed is a BOOL, which PromQL can't count
-# per location without a cast. First looks: docs/OPERATIONS.md -> GCP -> When an alert fires.
+# per location without a cast. Condition 6 is one too: a single feedback is one point of a sparse DELTA
+# counter, and increase() over one was never verified (D236). First looks: docs/OPERATIONS.md -> GCP ->
+# When an alert fires.
 
 data "google_monitoring_notification_channel" "email" {
   count = local.alerting ? 1 : 0
@@ -190,4 +192,66 @@ resource "google_monitoring_alert_policy" "promql" {
   }
 
   depends_on = [google_logging_metric.ticks]
+}
+
+# Condition 6 (D244): a line of ryft_notices (monitoring.tf) in the last 5 minutes, one series per kind
+# (feedback received, admin signed in, admin auth rejected). Held 60 s, the shortest that lets missing
+# data count: once 5 minutes pass without a line the series has no data, INACTIVE closes the incident,
+# and the next line opens a new one and notifies again (with the default, an open incident would swallow
+# it until auto_close). Only the opening is notified: no closing mail for every feedback. Gated by
+# alerting alone, like 1, 2, 4 and 5: under the stop line or with serve = false no line comes, so it
+# stays quiet, and the flips don't destroy and recreate it. Documentation variables: Google renders
+# ${metric.label.kind}, a label group_by keeps; written $${...} here so Terraform leaves it alone. No
+# ${log.*} variable: the line's fields stay out of the notification.
+resource "google_monitoring_alert_policy" "notices" {
+  count = local.alerting ? 1 : 0
+
+  project               = var.project_id
+  display_name          = "RYFT · Feedback and admin access"
+  combiner              = "OR"
+  severity              = "WARNING"
+  notification_channels = local.alert_channels
+
+  conditions {
+    display_name = "A feedback, an admin sign-in or a refused admin bearer, by kind"
+
+    condition_threshold {
+      filter                  = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.notices.name}\" AND resource.type=\"cloud_run_revision\""
+      comparison              = "COMPARISON_GT"
+      threshold_value         = 0
+      duration                = "60s"
+      evaluation_missing_data = "EVALUATION_MISSING_DATA_INACTIVE"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_SUM"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.kind"]
+      }
+
+      trigger {
+        count = 1
+      }
+    }
+  }
+
+  alert_strategy {
+    auto_close           = "1800s"
+    notification_prompts = ["OPENED"]
+  }
+
+  documentation {
+    mime_type = "text/markdown"
+    subject   = "RYFT · $${metric.label.kind}"
+    content = trimspace(<<-EOT
+      **$${metric.label.kind}** on api: a notice, not an outage. It closes by itself about 5 minutes after the last such line. First look, by kind:
+
+      - **feedback received**: a tester sent a report. ryftlab.de/admin -> Feedback (Resolve it there once read), or `scripts/beta_report.sh feedback`.
+      - **admin signed in**: an operator session began on ryftlab.de/admin (password and a fresh TOTP). If it wasn't you: docs/OPERATIONS.md -> Beta -> Admin sign-in -> Lost phone, or any doubt about the admin account, at once; then /admin -> Audit.
+      - **admin auth rejected**: an admin route refused a bearer (not a missing or an expired one). Logs Explorer: `jsonPayload.message="admin auth rejected"`, its `reason`.
+
+      ${local.alert_look}.
+    EOT
+    )
+  }
 }

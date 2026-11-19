@@ -10,5 +10,5 @@
 //     value copied to another row does not open.
 //   - Every ciphertext starts with a version byte so the key can be rotated.
 //
-// See docs/ARCHITECTURE.md → Namespaces and trust; D48.
+// See docs/ARCHITECTURE.md → Identities and trust; D48.
 package sealed

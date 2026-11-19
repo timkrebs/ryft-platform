@@ -2,8 +2,8 @@
 
 RYFT on Cloud Run has one observability: **Cloud Monitoring** (D236, which supersedes D224's
 Grafana half). Nothing scrapes the services and nothing is pushed: what Google measures itself
-(Cloud Run, Pub/Sub), two log-based metrics counted from lines the services already write, uptime
-checks from outside, the dashboard "RYFT · Overview" and five alert policies, all in `infra/gcp`
+(Cloud Run, Pub/Sub), log-based metrics counted from lines the services write, uptime
+checks from outside, the dashboard "RYFT · Overview" and six alert policies (D244), all in `infra/gcp`
 (**Cloud Monitoring** below). Logs are JSON (`slog`) on stdout, in Cloud Logging's bucket
 `ryft-logs` for 14 days (**Logs** below). Without Cloud Run (compose) each service serves
 `GET /metrics` on its own port, **9090** (`METRICS_PORT`, no auth), apart from the API and
@@ -14,7 +14,7 @@ them their sections here.
 ## Cloud Monitoring (Cloud Run, D236)
 
 Everything here is `infra/gcp`: `monitoring.tf` (the log-based metrics, the uptime checks, the
-dashboard; free at RYFT's volume, so always there) and `alerts.tf` (the five policies; only once
+dashboard; free at RYFT's volume, so always there) and `alerts.tf` (the six policies; only once
 the workspace variable `alert_app_channel` is set, the app channel's resource name, runbook GCP step
 11.1, D237). The user applies it (OPERATIONS → GCP → 11).
 
@@ -28,17 +28,19 @@ the workspace variable `alert_app_channel` is set, the app channel's resource na
 | Uptime checks | `monitoring.googleapis.com/uptime_check/check_passed`, `…/time_until_ssl_cert_expires` | `check_id`, `checker_location` | policy 1, the dashboard |
 | Log-based | `logging_googleapis_com:user_ryft_ticks` | `result` (ours), `service_name` (the resource's) | policy 3, the dashboard |
 | Log-based | `logging_googleapis_com:user_ryft_errors` | `service_name` (the resource's) | the dashboard |
+| Log-based (D244) | `logging.googleapis.com/user/ryft_notices` (a classic filter, not PromQL) | `kind` (ours) | policy 6 |
 | Load balancer (from `edge = "built"`, D242) | `loadbalancing_googleapis_com:https_request_count` (`https_lb_rule`) | `backend_target_name`, `response_code_class` (a number: `500`), `response_code` | the dashboard |
 | Cloud Armor (the same) | `networksecurity_googleapis_com:https_request_count` (`network_security_policy`) | `backend_target_name`, `blocked` | the dashboard |
 | Log-based (the same) | `logging_googleapis_com:user_ryft_edge_denials`, `…_preview_matches` | `priority` (ours) | the dashboard |
 
 ### The log-based metrics
 
-Two counters (`DELTA`, `INT64`) of lines the services already write: no Go change, nothing pushed.
-Both read only the services' own stream on Cloud Run (`resource.type="cloud_run_revision"`, the
-`run.googleapis.com/stdout` log, and for errors `stderr` too), never Cloud Run's request log. **No
-label may carry an IP, a user id, an email or a message id**: `ryft_ticks` has one label of its
-own, `result`, a closed set (`tests/monitoring.tftest.hcl` pins it); the service is the resource's
+Three counters (`DELTA`, `INT64`) of lines the services write, nothing pushed. D236's two needed no
+Go change; D244's counts one new api line too. All three read only the services' own stream on Cloud
+Run (`resource.type="cloud_run_revision"`, the `run.googleapis.com/stdout` log, and for errors
+`stderr` too), never Cloud Run's request log. **No label may carry an IP, a user id, an email or a
+message id**: `ryft_ticks` has one label of its own, `result`, and `ryft_notices` one, `kind`, each
+a closed set (`tests/monitoring.tftest.hcl` pins both); the service is the resource's
 `service_name`.
 
 - **`ryft_ticks`**: one per `POST /internal/tick` a service handled, from the line `tick`
@@ -46,7 +48,17 @@ own, `result`, a closed set (`tests/monitoring.tftest.hcl` pins it); the service
   stay in the log). It is logged at `info`, so a `LOG_LEVEL` above `info` silences it and policy 3
   fires for every service.
 - **`ryft_errors`**: every line at `severity>=ERROR`, panics included (the line `panic` with its
-  `stack`). A panel, no policy (the cap of five).
+  `stack`). A panel, no policy (the cap).
+- **`ryft_notices`** (D244): api's lines the operator wants to hear of at once, by `kind`, the
+  line's message: `feedback received` (`backend/cmd/api/feedback.go`, once per report stored),
+  `admin signed in` (once per operator session per instance: a token whose TOTP is at most 10
+  minutes old, so a sign-in on `/admin` or its re-challenge after 12 hours; no key of its own) and
+  `admin auth rejected` (`adminauth.go`'s `reject`), but not for `reason` `missing` (no bearer:
+  crawlers) or `expired` (the operator's own page with an old token, which refreshes once). The
+  reasons are left out by a negative list on purpose: a reason added later counts. Not counted: the
+  key's own use (scripts, smoke) and `admin second factor required` (in the audit). The filter
+  names api only. All three lines are INFO, so a `LOG_LEVEL` above `info` silences them and policy
+  6. No panel (it would change the dashboard; a free follow-up).
 
 A counter writes no point for a minute without a matching line, so "no tick" is an absent series:
 policy 3 names every service and asks for each. A log-based metric counts from its creation on,
@@ -99,17 +111,18 @@ here, and nothing at `off`:
   `priority`, a closed set: 1000 to 1005 the WAF sets (sqli, xss, lfi, rce, scannerdetection,
   protocolattack), 2000 the rate rule. Never the IP (`rateLimitAction.key` holds it), a URL or a
   user agent.
-- **No alert policy** (the cap of five, D236). A WAF rule's preview matches decide when it is
+- **No alert policy** (the cap, D236, D244). A WAF rule's preview matches decide when it is
   enforced (runbook GCP 16 → Enforcing a WAF rule); the uptime checks keep their URLs and reach the
   services through the edge once `live`.
 
 ### The alert policies
 
-Five conditions, one policy each, to both channels: the email `ryft-timkrebs` and the Google Cloud
+Six conditions, one policy each, to both channels: the email `ryft-timkrebs` and the Google Cloud
 app's (made by hand; the app channel by its resource name, the workspace variable
-`alert_app_channel`, not sensitive and in no file, D237). Five is the cap (`tests/monitoring.tftest.hcl`): each condition
-has a price, and a sixth is a decision. Each policy's documentation is its first look; the table
-with the commands is OPERATIONS → GCP → When an alert fires.
+`alert_app_channel`, not sensitive and in no file, D237). Six is the cap
+(`tests/monitoring.tftest.hcl`): each condition has a price, and the sixth was the user's decision
+(2026-11-19, D244); a seventh is a decision too. Each policy's documentation is its first look; the
+table with the commands is OPERATIONS → GCP → When an alert fires.
 
 | # | Policy | Query and threshold | Evaluated, held | Severity |
 | --- | --- | --- | --- | --- |
@@ -118,10 +131,13 @@ with the commands is OPERATIONS → GCP → When an alert fires.
 | 3 | RYFT · Tick missing | each of api, ingest, scoring, notify (`label_replace(vector(1), …)`) `unless` it has `increase(user_ryft_ticks{result="ok"}[45m]) > 0`: no ok tick in three ticks, an absent series included. Only while the tick runs (not under `serve = false` or the stop line) | every 300 s, 300 s | critical |
 | 4 | RYFT · Dead letters held | `max by (subscription_id) (num_undelivered_messages{the hold subscriptions}) > 0` | every 300 s, 300 s | warning |
 | 5 | RYFT · Event backlog over 15 minutes | `max by (subscription_id) (oldest_unacked_message_age{the event subscriptions}) > 900`: a consumer that is down or fails every push, before its 20 attempts run out and policy 4 fires | every 300 s, 300 s | warning |
+| 6 | RYFT · Feedback and admin access (D244) | `user/ryft_notices`, `ALIGN_SUM` over 300 s, `REDUCE_SUM` by `metric.label.kind`, `> 0`: a feedback, an admin session begun or a refused admin bearer in the last 5 minutes, one series per kind. A classic threshold, not PromQL: one feedback is one point of a sparse `DELTA` counter, and `increase()` over one was never verified (D236). `evaluation_missing_data` `INACTIVE`: once 5 minutes pass without a line the incident closes, so the next line is a new incident and a new notification; only the opening is notified (`notification_prompts` `OPENED`) | 60 s | warning |
 
 The subscriptions are named from the topology (`pubsub.auto.tfvars.json`), so a new consumer is in
 4 and 5 without an edit. Incidents close when the query returns nothing, or 30 minutes after their
-data stops. A disabled channel is `checks.tf`'s `alert_channels_enabled` warning.
+data stops; policy 6's when its data stops. Policy 6's subject and text name the kind
+(`${metric.label.kind}`, a label its `group_by` keeps) and never a field of the line (no `${log.…}`
+variable). A disabled channel is `checks.tf`'s `alert_channels_enabled` warning.
 
 ### What D236 dropped, and what covers it
 
@@ -138,7 +154,9 @@ Grafana's five Cloud Monitoring rules went with Grafana Cloud:
 | Panics | the `ryft_errors` panel and the logs panel; a panic that ends the process is a 5xx (policy 2) or a backlog (policy 5) |
 | SyncSlow, Saturated, RateLimited | panels (p95, 429s) |
 | SiteCertificateExpiring | the certificate panel; a certificate that lapses fails TLS, which every check validates (policy 1) |
-| **Lost**: TextRefusedByDatabase, NoSync, APNsFailing, PushFailing, APNsRejectsOurKey, NewFeedback, AdminUnauthorized, AdminWebUsed, SiteProbeFlapping, SiteWwwRedirectBroken, SyntheticsMissing (nothing to miss), OutboxStuck (the outbox queries in OPERATIONS) | nothing; each was an app metric that nothing reads on Cloud Run now |
+| NewFeedback, AdminWebUsed (the lost-phone detection) | policy 6 since D244, from the lines `feedback received` and `admin signed in` instead of the app metrics: every report and every operator session begun (per instance) |
+| AdminUnauthorized (over 20 bad bearers in 10 minutes) | policy 6 since D244, stricter: any `admin auth rejected` but for `reason` `missing` and `expired`, one incident while they keep coming |
+| **Lost**: TextRefusedByDatabase, NoSync, APNsFailing, PushFailing, APNsRejectsOurKey, SiteProbeFlapping, SiteWwwRedirectBroken, SyntheticsMissing (nothing to miss), OutboxStuck (the outbox queries in OPERATIONS) | nothing; each was an app metric that nothing reads on Cloud Run now |
 
 ### Error Reporting
 
@@ -153,7 +171,8 @@ list, the line's key) and a privacy check.
 
 | Item | Price | RYFT |
 | --- | --- | --- |
-| Alert conditions, reading A (the brief's: $1.50 a condition) | $1.50 × 5 | **$7.50** (about €6.50–7) |
+| Alert conditions, reading A (the brief's: $1.50 a condition; no longer on Google's page, D244) | $1.50 × 5 | **$7.50** (about €6.50–7) |
+| Policy 6 (D244; Google's pricing page through search snippets, 2026-11-19, *(search)*, not verified: alerting charged no sooner than 2027-09-01, then $0.35 a month per metric reference in a policy and $0.50 per million points returned) | 1 metric reference, at most 3 series (one per kind), usually none | **$0** until then, about **$0.35–0.45** after |
 | Alert conditions, reading B (possibly from May 2026: $0.10 a condition, $0.35 per million time series returned; not verified here) | $0.10 × 5 + series | $0.50 + about $0.21 = **about $0.70** |
 | Time series returned (reading B) | at most: 5xx 43,800 evaluations × 6 series, ticks 8,760 × 4, holds 8,760 × 2, backlog 8,760 × 6, uptime 43,800 × 5 | about 0.6 million, at most |
 | Uptime check executions | free up to 1 million (not verified here) | 131,400: $0 |
@@ -162,7 +181,9 @@ list, the line's key) and a privacy check.
 | The edge (D242, from `built`; not observability, listed for the budget) | forwarding rules, Cloud Armor's policy and rules, requests (D242 → Cost) | about $32 (≈ €28) |
 
 Before D236 the same was free in Grafana Cloud's tier. The delta is $7.50 (reading A) or about
-$0.70 (reading B) a month; the user accepted about €6 (2026-11-17).
+$0.70 (reading B) a month; the user accepted about €6 (2026-11-17). Policy 6 adds $0 until
+2027-09-01 and about $0.35–0.45 a month after (D244 → The price; the date, both rates, how often a
+threshold condition is evaluated and whether a free allotment applies are unverified).
 
 ### The OTLP push (dormant)
 
@@ -246,7 +267,7 @@ app rules', gone with D236 (**Cloud Monitoring → What D236 dropped, and what c
 | `ryft_db_ping_failures_total` | counter | `service` | all | Failed pings of the tick's db step: Supabase or its pooler unreachable, or the role refused. |
 | `ryft_ticks_total` | counter | `service`, `result` | all | `POST /internal/tick` handled after authentication (D219), one per tick: `ok` (every step succeeded), `error` (a step failed or panicked, or the budget ran out before a step began; the tick still answers `204`), `overlap` (a tick was still running in this instance: answered `204` at once). Counted before the tick's metrics push, so the push carries it. A token refused on the tick counts in `ryft_auth_failures_total`, not here. `TickMissing` reads it. |
 | `ryft_users_by_last_sync` | gauge | `age` | scoring | Accounts by the age of their newest device sync (every 15 min): `under_6h`, `6h_to_24h`, `1d_to_3d`, `over_3d`, `never`. Counts only, no user ids. |
-| `ryft_feedback_received_total` | counter | `category` | api | Reports stored by `POST /v1/feedback` (`bug`, `idea`, `data`, `other`). Until D236 the alert on any increase was how the operator heard about them (D83); nothing reads this counter now, so nothing tells him: OPERATIONS → GCP → 14a.8. Read them with `scripts/beta_report.sh feedback` or `/admin`. |
+| `ryft_feedback_received_total` | counter | `category` | api | Reports stored by `POST /v1/feedback` (`bug`, `idea`, `data`, `other`). Until D236 the alert on any increase was how the operator heard about them (D83); nothing reads this counter now. Since D244 the sixth condition counts the api's `feedback received` line instead (`ryft_notices`, OPERATIONS → GCP → 14a.8). Read them with `scripts/beta_report.sh feedback` or `/admin`. |
 | `ryft_push_notifications_total` | counter | `category`, `result` | notify | One per notification decided: `category` `MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE` or `REFRESH` (the silent push); `result` `sent`, `failed` (no device reached), `muted` (category off), `quiet` (dropped in quiet hours), `deferred` (morning push held until they end), `duplicate` (already sent that day), `throttled` (a silent refresh within 5 minutes of the last), `stale` (old day or session, deleted user), `import` (`SESSION_SCORED` only: an imported session, never announced, D125; scoring sends none for an import, so this counts only a re-complete of an imported session), `no_token` (no registered device), `unconfigured` (no APNs key: counted, not sent). An import's days end in one `REFRESH` once scored, like a sync's. |
 | `ryft_apns_responses_total` | counter | `push_type`, `status` | notify | APNs answers per device request: `alert` or `background`, HTTP status (`200`, `400`, `403`, `410`, `429`, `5xx`) or `error` (no answer). |
 | `ryft_push_tokens_pruned_total` | counter | — | notify | Device tokens dropped because APNs said they are gone. |
@@ -260,7 +281,7 @@ app rules', gone with D236 (**Cloud Monitoring → What D236 dropped, and what c
 
 ## Alerts
 
-**RYFT on Cloud Run** alerts from Cloud Monitoring only: the five policies of `infra/gcp/alerts.tf`
+**RYFT on Cloud Run** alerts from Cloud Monitoring only: the six policies of `infra/gcp/alerts.tf` (the sixth since D244)
 (**Cloud Monitoring → The alert policies**, above; first looks in OPERATIONS → GCP → When an alert
 fires). The app rules that stood here (Grafana Cloud's ruler, on the OTLP push) were never loaded
 on Cloud Run and went with D236, and so did Grafana's five rules on Cloud Monitoring
