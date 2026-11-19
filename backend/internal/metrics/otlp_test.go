@@ -444,21 +444,34 @@ func TestOTLPHonoursContext(t *testing.T) {
 			t.Error("a request after the context ended")
 		}
 	})
+	// No clock: the context ends only once the gateway holds the request, and the gateway
+	// answers only after Push has returned. A 50 ms timeout with a handler that also
+	// returned on r.Context().Done() let the server answer 200 before the client's
+	// deadline on a slow -race runner (Push = nil, main's CI on a96d235).
 	t.Run("ends during the request", func(t *testing.T) {
-		release := make(chan struct{})
+		entered, release := make(chan struct{}), make(chan struct{})
+		var once sync.Once
 		g := newGateway(t, func(w http.ResponseWriter, r *http.Request) {
-			select {
-			case <-r.Context().Done():
-			case <-release:
-			}
+			once.Do(func() { close(entered) })
+			<-release
 		})
 		t.Cleanup(func() { close(release) }) // before the server's Close (cleanups run last first)
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		go func() {
+			select {
+			case <-entered:
+				cancel()
+			case <-ctx.Done(): // the subtest ended without a request (its defer)
+			}
+		}()
 		began := time.Now()
 		err := pusher(t, g, smallRegistry(), quiet()).Push(ctx)
-		if !errors.Is(err, context.DeadlineExceeded) {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Push = %v", err)
+		}
+		if len(g.seen()) != 1 {
+			t.Errorf("%d requests, want 1: the context must end during the request", len(g.seen()))
 		}
 		if took := time.Since(began); took > 5*time.Second {
 			t.Errorf("Push returned after %s", took)
