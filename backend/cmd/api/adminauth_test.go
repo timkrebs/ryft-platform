@@ -110,7 +110,7 @@ func TestAdminRejectionDiffersOnlyByRequestID(t *testing.T) {
 	jwks := newJWKSStub(t, false)
 	srv, _ := authChain(quietHandler(), adminOptions{Key: testAdminKey, Verifier: jwks.verifier(t), Accounts: newFakeAccounts()})
 	log := quietHandler().log
-	chain := httpx.Instrument(log, srv)
+	chain := httpx.Instrument(log, nil, srv)
 	norm := func(a answer) string {
 		id := a.header.Get(httpx.RequestIDHeader)
 		if id == "" || !strings.Contains(a.body, id) {
@@ -351,7 +351,7 @@ func TestAdminActorIsTheTokenUser(t *testing.T) {
 func TestAdminPerAddressLimit(t *testing.T) {
 	jwks := newJWKSStub(t, false)
 	cv := &countingVerifier{next: jwks.verifier(t)}
-	lim := ratelimit.New(0.001, 3) // a burst of 3 and no refill within the test
+	lim := ratelimit.NewCapped(0.001, 3, maxAdminAddrs) // a burst of 3 and no refill within the test
 	srv := adminRoutes(quietHandler(), adminOptions{Key: testAdminKey, Verifier: cv, Accounts: newFakeAccounts(), Limiter: lim,
 		Origins: []string{"https://ryftlab.de"}, Timeout: time.Second})
 	tok := jwks.sign(t, appClaims(uuid.New()))

@@ -238,7 +238,7 @@ func TestBoundInvitesRefuseWhileTheProjectDoesNotConfirmEmails(t *testing.T) {
 	} {
 		h := quietHandler()
 		h.st, h.binding = d.st, fixedBinding(c.state)
-		srv := adminRoutes(h, adminOptions{Key: testAdminKey, Limiter: ratelimit.New(1000, 1000), Timeout: 5 * time.Second})
+		srv := adminRoutes(h, adminOptions{Key: testAdminKey, Limiter: ratelimit.NewCapped(1000, 1000, maxAdminAddrs), Timeout: 5 * time.Second})
 		a := do(srv, "POST", "/v1/admin/invites", testAdminKey, `{"email": "anna@example.com"}`)
 		if a.status != 422 || !strings.Contains(a.body, `"error":"`+c.want+`"`) || a.code() != "" {
 			t.Errorf("%s: create with an email: %d %s", c.state, a.status, a.body)

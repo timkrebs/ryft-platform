@@ -37,7 +37,20 @@ type Config struct {
 	DBMaxConns  int // pool size; small because Supavisor session mode holds a server connection per client connection (D34)
 	PubSub      PubSub
 	Push        Push
+	// XFFTrustedHops is XFF_TRUSTED_HOPS, 1 to 8 (default 1): how many X-Forwarded-For entries,
+	// counted from the right after Google's own hops, our proxies append; the client is the last of
+	// them (httpx.ClientKeys, the per-address limits of api and ingest). 1 on Cloud Run, whose front
+	// end appends the caller's address; 2 behind the external Application Load Balancer, which
+	// appends <client>,<lb-ip>, and only together with ingress internal-and-cloud-load-balancing:
+	// with ingress all a caller reaching run.app directly makes its own forged entry the key (D240).
+	XFFTrustedHops int
 }
+
+// DefaultXFFTrustedHops is XFF_TRUSTED_HOPS when unset: Cloud Run's front end appends one entry.
+const DefaultXFFTrustedHops = 1
+
+// MaxXFFTrustedHops bounds XFF_TRUSTED_HOPS: no chain of our proxies is longer.
+const MaxXFFTrustedHops = 8
 
 // DefaultPubSubEndpoint is Pub/Sub's regional endpoint in the services' region:
 // ordering needs every message of a key published in the same region (D218).
@@ -201,16 +214,17 @@ type Auth struct {
 }
 
 // Load reads the settings common to all services. It refuses what cannot run (no
-// DATABASE_URL, a Pub/Sub or push setting loadPubSub refuses) so the service fails at
-// start-up, before it connects to anything, instead of limping. service picks the pool
-// size: scoring and notify hold fewer connections.
+// DATABASE_URL, a Pub/Sub or push setting loadPubSub refuses, XFF_TRUSTED_HOPS outside
+// 1 to 8) so the service fails at start-up, before it connects to anything, instead of
+// limping. service picks the pool size: scoring and notify hold fewer connections.
 func Load(service string) (Config, error) {
 	c := Config{
-		ServiceName: service,
-		Port:        getenv("PORT", "8080"),
-		MetricsPort: getenv("METRICS_PORT", "9090"),
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		DBMaxConns:  4,
+		ServiceName:    service,
+		Port:           getenv("PORT", "8080"),
+		MetricsPort:    getenv("METRICS_PORT", "9090"),
+		DatabaseURL:    os.Getenv("DATABASE_URL"),
+		DBMaxConns:     4,
+		XFFTrustedHops: DefaultXFFTrustedHops,
 	}
 	var err error
 	if c.PubSub, c.Push, err = loadPubSub(); err != nil {
@@ -228,6 +242,15 @@ func Load(service string) (Config, error) {
 			return c, fmt.Errorf("DB_MAX_CONNS must be 1-100, got %q", v)
 		}
 		c.DBMaxConns = n
+	}
+	// A wrong hop count moves the limits' key: one too many makes a caller's forged entry its key,
+	// so anything but a whole number in range stops the start.
+	if v := os.Getenv("XFF_TRUSTED_HOPS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > MaxXFFTrustedHops {
+			return c, fmt.Errorf("XFF_TRUSTED_HOPS must be 1-%d (the X-Forwarded-For entries our proxies append), got %q", MaxXFFTrustedHops, v)
+		}
+		c.XFFTrustedHops = n
 	}
 	return c, nil
 }

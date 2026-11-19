@@ -101,7 +101,7 @@ printf -v s '%20s' ''; ref=${s// /q}
 printf -v s '%10s' ''; akey=${s// /A}; nkey=${s// /N}
 {
   printf '%s\n' "PRIVACY_POLICY_VERSION=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' "$HERE/deploy/run/config.env")" LOG_LEVEL=info \
-    BETA_GATE=on
+    BETA_GATE=on XFF_TRUSTED_HOPS=1
   printf 'GCP_PROJECT_NUMBER=7%011d\nPUSH_SA_ID=1%020d\n' 0 0
   printf '%s\n' "SUPABASE_PROJECT_REF=$ref" SUPABASE_POOLER_HOST=aws-0-eu-central-1.pooler.supabase.com \
     "APPLE_KEY_ID=$akey" "APNS_KEY_ID=$nkey"
@@ -191,6 +191,33 @@ edit config.env 'BETA_GATE=' "$gate" 'enforce'
 bad "a gate mode outside off|warn|on" "BETA_GATE='enforce' does not have the shape off, warn or on"
 drop config.env 'BETA_GATE='
 bad "config.env without the gate mode" "BETA_GATE is missing"
+# The edge limit's hop count (D240): config.env's in api and ingest, nowhere else, never written into a
+# template, and above 1 only behind the load balancer (ingress internal-and-cloud-load-balancing).
+hops=$(sed -n 's/^XFF_TRUSTED_HOPS=//p' "$HERE/deploy/run/config.env")
+[ "$hops" = 1 ] || fail "fixture: deploy/run/config.env has XFF_TRUSTED_HOPS='$hops', want 1 (Cloud Run's front end)"
+drop api.yaml 'name: XFF_TRUSTED_HOPS,'
+bad "api without the hop count" "api.yaml env: XFF_TRUSTED_HOPS is missing"
+drop ingest.yaml 'name: XFF_TRUSTED_HOPS,'
+bad "ingest without the hop count" "ingest.yaml env: XFF_TRUSTED_HOPS is missing"
+edit api.yaml 'name: XFF_TRUSTED_HOPS,' '${XFF_TRUSTED_HOPS}' 3
+bad "a hop count written into the template" "XFF_TRUSTED_HOPS='3', want '1'"
+add scoring.yaml 'name: LOG_LEVEL,' '- { name: XFF_TRUSTED_HOPS, value: "${XFF_TRUSTED_HOPS}" }'
+bad "scoring with the hop count" "XFF_TRUSTED_HOPS is not in ticket-b.md's env table for scoring"
+add notify.yaml 'name: LOG_LEVEL,' '- { name: XFF_TRUSTED_HOPS, value: "${XFF_TRUSTED_HOPS}" }'
+bad "notify with the hop count" "XFF_TRUSTED_HOPS is not in ticket-b.md's env table for notify"
+edit config.env 'XFF_TRUSTED_HOPS=' "$hops" 9
+bad "a hop count outside 1-8" "XFF_TRUSTED_HOPS='9' does not have the shape 1 to 8"
+drop config.env 'XFF_TRUSTED_HOPS='
+bad "config.env without the hop count" "XFF_TRUSTED_HOPS is missing"
+edit config.env 'XFF_TRUSTED_HOPS=' "$hops" 2
+bad "two hops with ingress all on api" "api.yaml: XFF_TRUSTED_HOPS=2 with ingress 'all'"
+edit config.env 'XFF_TRUSTED_HOPS=' "$hops" 2
+bad "two hops with ingress all on ingest" "ingest.yaml: XFF_TRUSTED_HOPS=2 with ingress 'all'"
+# Behind the load balancer two hops are no finding of their own (the ingress is design §3's, so it is one).
+edit config.env 'XFF_TRUSTED_HOPS=' "$hops" 2
+edit api.yaml 'run.googleapis.com/ingress' 'all' 'internal-and-cloud-load-balancing'
+edit ingest.yaml 'run.googleapis.com/ingress' 'all' 'internal-and-cloud-load-balancing'
+bad "two hops behind the load balancer" "api.yaml: ingress 'internal-and-cloud-load-balancing', want 'all'" "XFF_TRUSTED_HOPS=2 with"
 
 # P5 (design §5.1): never on Cloud Run, in a template or in config.env.
 add ingest.yaml 'name: LOG_LEVEL,' '- { name: PORT, value: "8080" }'
@@ -306,4 +333,4 @@ bad "a placeholder outside the list" "placeholder(s) outside the fixed list: HOM
 add migrate.yaml 'name: LOG_LEVEL,' '- { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }'
 bad "migrate with an audience" "migrate is no push target"
 
-echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env (BETA_GATE from config.env in api and ingest only), P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"
+echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env (BETA_GATE and XFF_TRUSTED_HOPS from config.env in api and ingest only, two hops only behind the load balancer), P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"

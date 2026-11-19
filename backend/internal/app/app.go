@@ -101,9 +101,16 @@ const (
 
 // Spec describes one service. The zero durations take the defaults.
 type Spec struct {
-	Name   string     // api | ingest | scoring | notify: logger, config.Load, transport, tick label, outbox publisher, metrics
-	Edge   bool       // Instrument, Recover, SecurityHeaders (api, ingest); else Recover only and a 2 s HTTP shutdown
+	Name string // api | ingest | scoring | notify: logger, config.Load, transport, tick label, outbox publisher, metrics
+	// Edge is api and ingest: Instrument, Recover, SecurityHeaders and the per-address limit (iplimit.go)
+	// in front of the start gate; else Recover only and a 2 s HTTP shutdown.
+	Edge   bool
 	Outbox OutboxKind // which outbox app builds (and, with Parts.Routes, sweeps)
+	// LimitExempt passes a request the edge limit would count, besides the health paths and the tick that
+	// no service's limit counts (limitExempt). The api passes /v1/admin/ with ADMIN_API_KEY as the
+	// bearer, so a flood cannot lock the break-glass key out (D222). It runs before the limit on every
+	// request, so it must be cheap; app reads it after Load, so it may use what Load set. nil: none.
+	LimitExempt func(*http.Request) bool
 
 	// Load reads the service's own settings before anything connects (D78): an error
 	// ends the process at once, not behind the start-up retries. Wrap it in
@@ -159,6 +166,10 @@ type Deps struct {
 	// push routes (Bus.Push) and notify's wait sender.
 	Bus    *eventbus.Transport
 	Outbox *outbox.Outbox // per Spec.Outbox; nil for NoOutbox
+	// Clients is who a request's client is (XFF_TRUSTED_HOPS), the process's one: the edge limit and
+	// Instrument's "client address" line use it, and so must any other limit keyed by address (the
+	// api's /v1/admin), so they all agree.
+	Clients *httpx.ClientKeys
 	// Tick builds POST /internal/tick from exactly these steps, within Spec.TickBudget,
 	// with the metrics push as its final step: for a service that mounts its own routes
 	// (Parts.Handler). With Parts.Routes app builds the tick itself.
@@ -232,6 +243,7 @@ type seams struct {
 	startDone    func()                             // a test hook: the start is over and its watcher has ended
 	serverExit   func(server string)                // a test hook: a server's Serve has returned
 	bounded      func(step string, d time.Duration) // a test hook: every bound a step waits
+	limitClock   func() time.Time                   // the edge limit's clock; nil: time.Now
 	readyTimeout time.Duration
 	startWait    time.Duration
 	retryEvery   time.Duration // the least time between two logins while the start holds (defaultLoginRetryEvery)
@@ -285,10 +297,11 @@ func otlpPush(service string, log *slog.Logger) (func(context.Context) error, er
 
 // service is one Run: what it has opened so far and the tiers it has started.
 type service struct {
-	s   Spec
-	e   seams
-	log *slog.Logger
-	cfg config.Config
+	s       Spec
+	e       seams
+	log     *slog.Logger
+	cfg     config.Config
+	clients *httpx.ClientKeys // from cfg.XFFTrustedHops, made with the settings
 
 	life       context.Context // ends after the http step (or a signal during start): Build and the transport run on it
 	endLife    context.CancelFunc
@@ -436,6 +449,7 @@ func (r *service) start(ctx context.Context) (err error) {
 		r.logSetup(ctx, "config", err)
 		return err
 	}
+	r.clients = httpx.NewClientKeys(r.cfg.XFFTrustedHops)
 	if r.s.Load != nil {
 		if err = r.s.Load(r.log); err != nil {
 			r.logSetup(ctx, "config", err)
@@ -482,7 +496,7 @@ func (r *service) start(ctx context.Context) (err error) {
 		r.logSetup(ctx, "events", err)
 		return err
 	}
-	deps := Deps{Log: r.log, Config: r.cfg, Pool: r.pool, Bus: r.bus, Outbox: ob, Tick: r.tick}
+	deps := Deps{Log: r.log, Config: r.cfg, Pool: r.pool, Bus: r.bus, Outbox: ob, Tick: r.tick, Clients: r.clients}
 	parts, err := r.s.Build(r.life, deps)
 	if err == nil {
 		var h http.Handler
@@ -609,7 +623,7 @@ func (r *service) listen(ctx context.Context) error {
 	r.gate.every = orDefault(r.e.retryEvery, defaultLoginRetryEvery)
 	handler := httpx.Recover(r.gate)
 	if r.s.Edge {
-		handler = httpx.Instrument(r.log, httpx.Recover(httpx.SecurityHeaders(r.gate)))
+		handler = r.edge(r.gate)
 	}
 	addr := ":" + r.cfg.Port
 	ln, err := r.e.listen(ctx, addr)
@@ -631,6 +645,21 @@ func (r *service) listen(ctx context.Context) error {
 	})
 	r.log.Info("listening", "addr", addr)
 	return nil
+}
+
+// edge is api's and ingest's chain in front of next (the start gate): Instrument (the
+// request id, the access line, the sampled "client address" line), Recover,
+// SecurityHeaders, then the per-address limit. The limit is inside them, so its 429
+// carries the request id and the security headers and is logged with its code; it is
+// outside the gate, so a flood during the start is refused at once instead of waiting
+// for it.
+func (r *service) edge(next http.Handler) http.Handler {
+	now := r.e.limitClock
+	if now == nil {
+		now = time.Now
+	}
+	limit := newIPLimit(r.clients, r.s.LimitExempt, now)
+	return httpx.Instrument(r.log, r.clients, httpx.Recover(httpx.SecurityHeaders(limit.wrap(next))))
 }
 
 // server is httpx.Server with a write timeout no shorter than the tick's budget plus

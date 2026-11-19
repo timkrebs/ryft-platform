@@ -45,6 +45,7 @@ spec:
             - { name: PRIVACY_POLICY_VERSION, value: "${PRIVACY_POLICY_VERSION}" }
             - { name: PRIVACY_POLICY_URL, value: "https://ryftlab.de/privacy" }
             - { name: BETA_GATE, value: "${BETA_GATE}" }
+            - { name: XFF_TRUSTED_HOPS, value: "${XFF_TRUSTED_HOPS}" }
             - { name: GCP_PROJECT, value: ryftlab-prod }
             - { name: PUBSUB_ENDPOINT, value: "https://europe-west1-pubsub.googleapis.com" }
             - { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }

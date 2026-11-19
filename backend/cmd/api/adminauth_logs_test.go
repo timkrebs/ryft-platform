@@ -30,9 +30,9 @@ var adminRejectReasons = []string{"missing", "not_a_token", "expired", "signatur
 // request's (docs/OPERATIONS.md → Data protection (logs)): the actor as a pseudonymous short id, a reason from
 // a closed set, counts. Never a token, an email, an address (whole or in part), a note or a code.
 var adminLogKeys = logcheck.Lines{
-	// Instrument's sampled line (runbook step 9): which X-Forwarded-For entry ClientIP took and how many
-	// there were, non-personal counts and a closed set, never the address (D222).
-	"client address": {"picked": logcheck.Enum("xff", "remote"), "xff_index": logcheck.CountMax(64),
+	// Instrument's sampled line (runbook step 9): which X-Forwarded-For entry httpx.ClientKeys took and how
+	// many there were, non-personal counts and a closed set, never the address (D222).
+	"client address": {"picked": logcheck.Enum("xff", "fallback"), "xff_index": logcheck.CountMax(64),
 		"xff_entries": logcheck.CountMax(64)},
 	"http":                logcheck.HTTP(append([]string{"mfa_required", "key_only", "jwks_unavailable", "jwks_refresh_limited", "account_check"}, adminRejectReasons...)...),
 	"admin auth rejected": {"reason": logcheck.Enum(adminRejectReasons...)},
@@ -102,8 +102,9 @@ func TestAdminLogsHoldNoTokensEmailsOrAddresses(t *testing.T) {
 
 	// An outage of the signing keys, and a flood.
 	down := newJWKSStub(t, true)
-	outage := httpx.Instrument(log, adminRoutes(quietLogged(log), adminOptions{Key: testAdminKey, Verifier: down.verifier(t),
-		Accounts: newFakeAccounts(d.op), Limiter: ratelimit.New(0.001, 1), Timeout: time.Second}))
+	clients := httpx.NewClientKeys(1)
+	outage := httpx.Instrument(log, clients, adminRoutes(quietLogged(log), adminOptions{Key: testAdminKey, Verifier: down.verifier(t),
+		Accounts: newFakeAccounts(d.op), Limiter: ratelimit.NewCapped(0.001, 1, maxAdminAddrs), Clients: clients, Timeout: time.Second}))
 	if a := do(outage, "GET", "/v1/admin/flags", down.sign(t, adminClaims(d.op)), "", "X-Forwarded-For", ip); a.status != 503 {
 		t.Fatalf("outage: %d", a.status)
 	}

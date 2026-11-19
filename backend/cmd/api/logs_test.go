@@ -56,7 +56,7 @@ func writeServer(t *testing.T, st *store.Store, user model.User, day string) (fe
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	h := &handler{st: st, log: log, cache: newInsightCache()}
 	serve := func(route string, fn http.HandlerFunc, pathValues ...string) http.Handler {
-		return httpx.Instrument(log, httpx.Recover(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		return httpx.Instrument(log, nil, httpx.Recover(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if f := httpx.Info(r.Context()); f != nil {
 				f.UserID, f.Route = user.ID.String(), route
 			}

@@ -54,7 +54,7 @@ func TestRemoteConfigAnalytics(t *testing.T) {
 			mux := newMux(h, muxOptions{log: log, verifier: auth.NewAPIKey(apiKey, uuid.New()),
 				ready: func(context.Context) error { return nil }, tick: http.NotFoundHandler(),
 				gate: config.ModeOff, authMode: config.AuthAPIKey})
-			srv := httpx.Instrument(log, httpx.Recover(httpx.SecurityHeaders(mux)))
+			srv := httpx.Instrument(log, nil, httpx.Recover(httpx.SecurityHeaders(mux)))
 
 			req := httptest.NewRequest(http.MethodGet, "/v1/config", nil)
 			req.Header.Set("Authorization", "Bearer "+apiKey+":"+uuid.NewString())

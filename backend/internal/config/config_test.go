@@ -369,10 +369,28 @@ var pubsubKeys = []string{"GCP_PROJECT", "PUBSUB_ENDPOINT", "PUBSUB_EMULATOR_HOS
 // shell cannot change the outcome.
 func setPubSubEnv(t *testing.T, env map[string]string) {
 	t.Helper()
-	for _, k := range append([]string{"PORT", "METRICS_PORT", "DB_MAX_CONNS"}, pubsubKeys...) {
+	for _, k := range append([]string{"PORT", "METRICS_PORT", "DB_MAX_CONNS", "XFF_TRUSTED_HOPS"}, pubsubKeys...) {
 		t.Setenv(k, env[k])
 	}
 	t.Setenv("DATABASE_URL", "postgres://x")
+}
+
+// XFF_TRUSTED_HOPS (D240): 1 when unset (Cloud Run's front end), 2 behind the load balancer, up to 8;
+// anything else stops the start, since a wrong count moves the per-address limits' key.
+func TestLoadXFFTrustedHops(t *testing.T) {
+	local := map[string]string{"PUBSUB_EMULATOR_HOST": "pubsub:8085", "ALLOW_INSECURE_PUSH": "true"}
+	for v, want := range map[string]int{"": 1, "1": 1, "2": 2, "8": 8} {
+		setPubSubEnv(t, with(local, "XFF_TRUSTED_HOPS", v))
+		if cfg, err := Load("api"); err != nil || cfg.XFFTrustedHops != want {
+			t.Errorf("XFF_TRUSTED_HOPS=%q: %d, %v; want %d", v, cfg.XFFTrustedHops, err, want)
+		}
+	}
+	for _, v := range []string{"0", "9", "-1", "1.5", "two", " 2", "2 ", "0x2", "+2x"} {
+		setPubSubEnv(t, with(local, "XFF_TRUSTED_HOPS", v))
+		if _, err := Load("ingest"); err == nil || !strings.Contains(err.Error(), "XFF_TRUSTED_HOPS must be 1-8") {
+			t.Errorf("XFF_TRUSTED_HOPS=%q: %v, want the config error", v, err)
+		}
+	}
 }
 
 // cloudRun is production's push configuration (deploy/run): the service's run.app URL,
