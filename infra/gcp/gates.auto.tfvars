@@ -13,4 +13,4 @@ public_invokers = true
 # The edge (D242, OPERATIONS -> GCP -> 16): off, built, live, locked, one step a PR, and back the
 # same way. built: the load balancer and Cloud Armor, nothing pointing at it. live: api. and ingest.
 # at its address. locked: the domain mappings gone (only after the deploy PR's ingress).
-edge = "built"
+edge = "live"
