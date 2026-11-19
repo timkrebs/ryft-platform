@@ -8,9 +8,13 @@
 #
 # prevent_destroy on both keys and the bucket: Terraform refuses a plan that destroys or
 # replaces them while the block is in the file. It is no guard against deleting the block
-# (or vault.tf, or reverting the PR that added it): the protection goes with it. The keys'
-# own policy is the guard that holds then (NoDeletionOrDisable below). Removing them on
-# purpose: README → Destroying.
+# (or vault.tf, or reverting the PR that added it): the protection goes with it.
+#
+# The retirement (design docs/work/2026-11-14-gcp, PR D1): the keys' policy no longer denies
+# ScheduleKeyDeletion and DisableKey (NoDeletionOrDisable is gone), and the bucket has
+# force_destroy = true. OPERATIONS → GCP step 13's first apply puts both into AWS and the
+# state; PR D2 then deletes this file, and the second apply destroys the keys (scheduled,
+# 30 days), the aliases and the bucket with every object version. README → Destroying.
 
 locals {
   # At most 49 characters (S3 allows 63): modules/eks caps local.name at 20.
@@ -38,22 +42,9 @@ data "aws_iam_policy_document" "vault_keys" {
     }
   }
 
-  # Nobody, the account root and Terraform included, may schedule a key's deletion or
-  # disable it. A destroy that slips past prevent_destroy (a revert, a deleted block)
-  # fails here instead of starting the 30-day clock. To delete or disable a key on
-  # purpose, a reviewed change drops this statement and is applied first (PutKeyPolicy
-  # stays with the account, so there is no lockout): README → Destroying.
-  statement {
-    sid       = "NoDeletionOrDisable"
-    effect    = "Deny"
-    actions   = ["kms:ScheduleKeyDeletion", "kms:DisableKey"]
-    resources = ["*"]
-
-    principals {
-      type        = "AWS"
-      identifiers = ["*"]
-    }
-  }
+  # NoDeletionOrDisable (a Deny of kms:ScheduleKeyDeletion and kms:DisableKey for every
+  # principal) is dropped for the retirement (PR D1): D2's destroy has to schedule both
+  # keys' deletion. Applied before D2, alone (step 13's first apply).
 }
 
 # The unseal key: the same, plus, once var.vault_unseal_allowed_principal_arns is set, a
@@ -146,8 +137,11 @@ resource "aws_kms_alias" "vault_snapshots" {
 # namespace vault puts one object under snapshots/ every 6 hours, with a single PUT that
 # names the snapshot key. Restores read through the account's own IAM identities.
 resource "aws_s3_bucket" "vault_snapshots" {
-  bucket        = local.vault_snapshots_bucket
-  force_destroy = false
+  bucket = local.vault_snapshots_bucket
+  # The retirement (PR D1): a destroy empties the bucket, every object version included.
+  # Only the state's value counts at destroy time, so step 13's first apply writes it there
+  # before D2 removes this block.
+  force_destroy = true
   tags          = local.tags
 
   lifecycle {

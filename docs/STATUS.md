@@ -477,7 +477,10 @@ stays until D3), `MESSAGING_DESIGN.md`, DECISIONS D216–D219, and API.md's two 
 Open:
 - **C1**: Firebase Hosting, stacked on B. It also removes CI's EKS `images`/`promote` jobs.
 - **C2**: the privacy draft.
-- **D1–D3**: the AWS retirement.
+- **D1–D3**: the AWS retirement. D1 (`infra/aws: allow the removal`, branch `infra/aws-allow-removal`) and D2
+  (`infra/aws: empty the root`, branch `infra/aws-empty-root`) were opened 2026-11-19. Your steps are OPERATIONS →
+  GCP 12–14, as guarded pastes: 12 and 13.1 after D1's merge, then D2's merge, then 13.2, 14.1 and 14.2. D3 comes
+  after 14.2.
 - **No `scoring-rescore` job in `deploy/run` yet** (design §9); its env is in D222.
 - **Your steps after A2's merge:** OPERATIONS → GCP, step 7 (`make pooler-check`), then 8 and 9. Steps 0–6 could run
   since B.

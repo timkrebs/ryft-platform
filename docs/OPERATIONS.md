@@ -80,7 +80,7 @@ on Pub/Sub and Cloud Run.
 | 9 | Apply 2: invokers and mappings, then `make smoke-supabase` | step 8 |
 | 10 | The site and the app | waits for C1 |
 | 11 | Observability on Cloud Monitoring (D236) | the PR "observability on Cloud Monitoring" merged; step 10 done (the site's uptime checks). 11.6 waits for 11.4, 11.7 for D3 if EKS still sends to Grafana Cloud, 11.8 (once) for the PR "infra: the app alert channel by id" and 11.6's first apply |
-| 12–14 | Old org: retire Route 53, AWS and the old workspaces | after step 10, with D1, D2, D3 |
+| 12–14 | Old org: retire Route 53, AWS and the old workspaces | after step 10: 12 and 13.1 with D1 merged; 13.2 with D2, merged after 13.1's apply; 14.1–14.2 after 12 and 13; 14.3 after D3 |
 | 15 | Testers | step 10 done, C2 in force |
 | 16 | The edge (D242): built, live, the deploy PR, locked | step 9 done, the PR "infra: the edge" merged, 16.1's roles; each phase after the one before it (`locked` after 7 clean days) |
 
@@ -1293,62 +1293,262 @@ the variable is no way back: it turns the gate off and destroys the five policie
 code's gate reads `alert_app_channel_name`, so add that variable back first (11.1's old value), or
 its plan destroys the five as well.
 
-### 12. E, old org: Route 53
+### 12–14. The retirement, old org (D227)
 
-At least 48 h after step 6's switch, with D1 merged (not built yet: it drops `prevent_destroy`
-from the zone in `infra/aws/dns`). `infra/aws/dns` runs locally (execution mode Local), with the
-AWS credentials it always used.
+What is left of RYFT in AWS account `173003892479` (the HashiCorp org's: nothing of RYFT's may
+stay there) and in `tim-krebs-org`:
+
+| Step | Root / workspace | What goes | Needs |
+| --- | --- | --- | --- |
+| 12 (E) | `infra/aws/dns` / `ryft-prod-euc1-dns` | the Route 53 zone `ryftlab.de` and its 12 record sets | ≥ 48 h after step 6's switch, mail fine all along, PR D1 merged |
+| 13.1 | `infra/aws` / `ryft-prod-euc1-platform` | nothing yet: both key policies lose `NoDeletionOrDisable`, the bucket gets `force_destroy` | PR D1 merged |
+| 13.2 | the same | the two Vault keys (scheduled, 30 days), their aliases, the snapshot bucket with its 6 settings, the AWS budget | 13.1 applied, then PR D2 merged |
+| 14.1–14.2 | the four `ryft-prod-euc1-*` workspaces | the workspaces, the old data key's state among them | 12 and 13 applied; 14.1 passed in the same shell |
+| 14.3 | GitHub | the AWS and GHCR secrets, the old promote App's key | PR D3 merged |
+
+Each step is two pastes. The plan paste checks the preconditions, plans into a file and checks
+that plan; read its output. The apply paste then applies exactly that file and checks the result.
+A failed check prints `STOP: …`: do nothing further, and send the output.
+
+**The session shell**, once, from the repository's root (zsh or bash, `INTERACTIVE_COMMENTS` on,
+as above):
+- **AWS:** credentials for account `173003892479` in this shell, the way the EKS steps had them
+  (environment or profile). `infra/aws` and `infra/aws/dns` run with execution mode Local, so
+  Terraform uses these credentials directly and HCP holds only the state. `aws_ok` checks the
+  account before every plan and apply.
+- **The old org's token:** the API token of your user in `tim-krebs-org` (app.terraform.io →
+  User settings → Tokens, signed in as that user; the token step 0 used). `read -rs` keeps it
+  off the screen and out of the history. It is never exported: `old_org` hands it to one command
+  at a time, so every other command keeps your `ryft-lab` login.
 
 ```bash
-dig +norecurse NS ryftlab.de @a.nic.de                # still the four ns-cloud-* servers
- TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws/dns init
- TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws/dns apply -destroy
+printf 'tim-krebs-org token: '; read -rs OLD_TOKEN; echo
+old_org() { TF_TOKEN_app_terraform_io="$OLD_TOKEN" "$@"; }
+aws_ok() { [ "$(aws sts get-caller-identity --query Account --output text 2>/dev/null)" = 173003892479 ]; }
+clean_main() { [ -z "$(git status --porcelain --untracked-files=no)" ] && [ "$(git rev-parse --abbrev-ref HEAD)" = main ] && git pull -q --ff-only; }
+# kms_open <alias>: the key's live policy is readable and no longer holds NoDeletionOrDisable.
+kms_open() { P=$(aws kms get-key-policy --region eu-central-1 --key-id "$1" --policy-name default --query Policy --output text) && printf '%s' "$P" | grep -q AccountAdministers && ! printf '%s' "$P" | grep -q NoDeletionOrDisable; }
 ```
 
-Read every line before `yes`.
+### 12. E, old org: Route 53
 
-**Stop if** mail failed during the 48 h, or the plan lists anything but the zone and its
-records.
+At least 48 h after step 6's switch, and only if mail worked the whole time. PR D1 dropped
+`prevent_destroy` from the zone. The plan paste also checks two things. DENIC must delegate to
+the four `ns-cloud-e*` servers, with no `awsdns` left. And the zone must hold no record set
+outside the state: one set that Terraform doesn't manage (an old `_acme-challenge` or ExternalDNS
+record) would make the zone's delete fail after its records are gone.
+
+```bash
+# 12, the plan: 0 to add, 0 to change, 13 to destroy (the zone, CAA, MX, the apex TXT, DMARC, 6 CNAMEs, 2 SRVs).
+if [ -n "$OLD_TOKEN" ] && clean_main && aws_ok \
+  && ! grep -Eq '^[[:space:]]*prevent_destroy' infra/aws/dns/main.tf \
+  && [ "$(dig +norecurse +noall +authority NS ryftlab.de @a.nic.de | grep -c 'ns-cloud-e[1-4]\.googledomains\.com')" = 4 ] \
+  && ! dig +norecurse +noall +authority NS ryftlab.de @a.nic.de | grep -q awsdns \
+  && old_org terraform -chdir=infra/aws/dns init -input=false \
+  && Z=$(old_org terraform -chdir=infra/aws/dns output -raw zone_id) && [ -n "$Z" ] \
+  && [ "$(aws route53 list-resource-record-sets --hosted-zone-id "$Z" --query 'ResourceRecordSets[].[Name,Type]' --output text | grep -cvE '^ryftlab\.de\.[[:space:]]+(NS|SOA)$')" = "$(old_org terraform -chdir=infra/aws/dns state list | grep -c '^aws_route53_record\.')" ] \
+  && old_org terraform -chdir=infra/aws/dns plan -destroy -input=false -out=e.tfplan \
+  && old_org terraform -chdir=infra/aws/dns show -json e.tfplan | jq -e '[.resource_changes[] | select(.mode == "managed" and .change.actions != ["no-op"])] | length == 13 and all(.change.actions == ["delete"] and (.address | test("^aws_route53_(zone\\.ryftlab_de|record\\..+)$")))' >/dev/null; then
+  echo "12: the plan destroys the zone and its 12 record sets, nothing else. Read it above, then paste the apply."
+else
+  echo "STOP: a check failed, or the plan isn't 13 deletes of the zone and its records. Apply nothing."
+fi
+```
+
+If only the record-set count differs, list the zone's sets (`aws route53 list-resource-record-sets
+--hosted-zone-id "$Z" --query 'ResourceRecordSets[].[Name,Type]' --output text`) and compare
+them with `old_org terraform -chdir=infra/aws/dns state list`. Delete a set the state lacks in the
+Route 53 console (the zone has served nothing since step 6), then run the plan paste again.
+
+```bash
+# 12, the apply: exactly e.tfplan; then no zone ryftlab.de in Route 53 and an empty state.
+if [ -n "$OLD_TOKEN" ] && aws_ok && [ -f infra/aws/dns/e.tfplan ]; then
+  old_org terraform -chdir=infra/aws/dns apply -input=false e.tfplan && rm infra/aws/dns/e.tfplan \
+  && [ -z "$(old_org terraform -chdir=infra/aws/dns state list)" ] \
+  && [ -z "$(aws route53 list-hosted-zones-by-name --dns-name ryftlab.de --query "HostedZones[?Name=='ryftlab.de.'].Id" --output text)" ] \
+  && echo "12 done: no Route 53 zone ryftlab.de; ryft-prod-euc1-dns manages nothing" \
+  || echo "STOP: the apply or a check after it failed. Send the output."
+else
+  echo "STOP: no e.tfplan (run the plan paste), or the AWS account isn't 173003892479."
+fi
+```
+
+**Stop if** mail failed during the 48 h, or a paste says STOP.
 
 ### 13. D, old org: the Vault keys, the bucket, the AWS budget
 
-The README's two-PR route (`infra/aws/README.md`). D1 and D2 aren't built yet. With D1 merged:
+The README's two-PR route (`infra/aws/README.md` → Destroying), in two applies:
+- **13.1, with D1 merged:** the plan is **targeted** at the two keys and the bucket (D227,
+  amended). The root still declares the VPC and EKS, and no cluster is in its state, so an
+  untargeted plan would try to create one, and the SCP refuses `eks:CreateCluster`.
+- **13.2, with D2 merged:** D2 merges only after 13.1 is applied. A plain plan of the now empty
+  root then destroys everything the state holds.
+
+The plan pastes print the state first. Expect 11 resources:
+- `aws_kms_key` and `aws_kms_alias`, each `.vault_unseal` and `.vault_snapshots`;
+- `aws_s3_bucket.vault_snapshots`, with its `_lifecycle_configuration`, `_ownership_controls`,
+  `_policy`, `_public_access_block`, `_server_side_encryption_configuration` and `_versioning`.
+
+Add `aws_budgets_budget.monthly[0]` if the rebuild's tfvars named a budget address, and five
+`data.` entries. Anything under `module.network` or `module.eks` was left over by the rebuild's
+apply of 2026-11-14, which stopped at the SCP. It is RYFT's own, since this state created it.
+13.1 leaves it alone, and 13.2 destroys it with the rest.
 
 ```bash
- TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws init
- TF_TOKEN_app_terraform_io='<old token>' terraform -chdir=infra/aws apply
+# 13.1, the plan: 0 to add, 3 to change, 0 to destroy: both keys' policy (without NoDeletionOrDisable), the bucket's force_destroy.
+if [ -n "$OLD_TOKEN" ] && clean_main && aws_ok \
+  && ! grep -Eq 'sid[[:space:]]*=[[:space:]]*"NoDeletionOrDisable"' infra/aws/vault.tf \
+  && grep -Eq '^[[:space:]]*force_destroy[[:space:]]*=[[:space:]]*true' infra/aws/vault.tf \
+  && old_org terraform -chdir=infra/aws init -input=false \
+  && old_org terraform -chdir=infra/aws state list \
+  && old_org terraform -chdir=infra/aws plan -input=false -out=d1.tfplan \
+       -target=aws_kms_key.vault_unseal -target=aws_kms_key.vault_snapshots -target=aws_s3_bucket.vault_snapshots \
+  && old_org terraform -chdir=infra/aws show -json d1.tfplan | jq -e '[.resource_changes[] | select(.mode == "managed" and .change.actions != ["no-op"])] as $c | ($c | map(.address) | sort) == ["aws_kms_key.vault_snapshots", "aws_kms_key.vault_unseal", "aws_s3_bucket.vault_snapshots"] and ($c | all(.change.actions == ["update"])) and ($c | map(select(.type == "aws_kms_key")) | all(.change.after.policy | contains("NoDeletionOrDisable") | not)) and ($c | map(select(.type == "aws_s3_bucket")) | all(.change.after.force_destroy == true))' >/dev/null; then
+  echo "13.1: the plan updates the two key policies and the bucket's force_destroy, nothing else. Read it, then paste the apply."
+else
+  echo "STOP: a check failed, or the plan isn't those 3 updates (a + means a key or the bucket isn't in the state). Apply nothing."
+fi
 ```
 
-Only the two key policies and the bucket's `force_destroy` change. With D2 merged, run the same
-`apply` again. It holds destroys only: the keys (scheduled, 30 days), the aliases, the bucket,
-the AWS budget.
+```bash
+# 13.1, the apply: exactly d1.tfplan; then both live key policies deny nothing, and the state holds force_destroy = true.
+if [ -n "$OLD_TOKEN" ] && aws_ok && [ -f infra/aws/d1.tfplan ]; then
+  old_org terraform -chdir=infra/aws apply -input=false d1.tfplan && rm infra/aws/d1.tfplan \
+  && kms_open alias/ryft-prod-euc1-vault-unseal && kms_open alias/ryft-prod-euc1-vault-snapshots \
+  && [ "$(old_org terraform -chdir=infra/aws state show -no-color aws_s3_bucket.vault_snapshots | grep -Ec '^[[:space:]]*force_destroy[[:space:]]*=[[:space:]]*true')" = 1 ] \
+  && echo "13.1 done: D2 may merge now" \
+  || echo "STOP: the apply or a check after it failed. Send the output, and don't merge D2."
+else
+  echo "STOP: no d1.tfplan (run the plan paste), or the AWS account isn't 173003892479."
+fi
+```
 
-**Stop if** the first plan shows anything but those three changes; or the second shows a `+` or
-`~`, or a resource that isn't RYFT's (a shared account: check by IDs, never by tag).
+Then merge D2. On main with it:
+
+```bash
+# 13.2, the plan: 0 to add, 0 to change, 12 to destroy (11 without a budget; more with module leftovers, counted).
+if [ -n "$OLD_TOKEN" ] && clean_main && aws_ok \
+  && [ ! -e infra/aws/vault.tf ] && [ ! -e infra/aws/main.tf ] && [ ! -e infra/aws/budget.tf ] \
+  && kms_open alias/ryft-prod-euc1-vault-unseal && kms_open alias/ryft-prod-euc1-vault-snapshots \
+  && old_org terraform -chdir=infra/aws init -input=false \
+  && old_org terraform -chdir=infra/aws state list \
+  && old_org terraform -chdir=infra/aws plan -input=false -out=d2.tfplan \
+  && old_org terraform -chdir=infra/aws show -json d2.tfplan | jq -er '
+       [.resource_changes[] | select(.mode == "managed")] as $c
+       | [.prior_state.values.root_module | recurse(.child_modules[]?) | .resources[]? | select(.mode == "managed")] as $s
+       | if ($c | length) > 0 and ($c | length) == ($s | length)
+           and ($c | all(.change.actions == ["delete"]))
+           and ($c | all(.address | test("^(aws_kms_(key|alias)\\.vault_(unseal|snapshots)|aws_s3_bucket[a-z_]*\\.vault_snapshots|aws_budgets_budget\\.monthly\\[0\\]|module\\.(network|eks)\\..+)$")))
+           and ([$s[] | select(.address == "aws_s3_bucket.vault_snapshots") | .values.force_destroy] == [true])
+         then "\($c | length) to destroy, \([$c[] | select(.address | startswith("module."))] | length) of them left over by the rebuild (module.network, module.eks)"
+         else false end'; then
+  echo "13.2: destroys only, each one in this state. Read the plan, then paste the apply."
+else
+  echo "STOP: a check failed, or the plan holds a + or ~, an address this root never had, or a bucket without force_destroy. Apply nothing."
+fi
+```
+
+```bash
+# 13.2, the apply: exactly d2.tfplan; then an empty state, both keys PendingDeletion, no aliases, bucket or budget.
+if [ -n "$OLD_TOKEN" ] && aws_ok && [ -f infra/aws/d2.tfplan ] \
+  && KEYS=$(old_org terraform -chdir=infra/aws show -json d2.tfplan | jq -r '.prior_state.values.root_module.resources[] | select(.mode == "managed" and .type == "aws_kms_key") | .values.arn') \
+  && [ "$(printf '%s\n' "$KEYS" | grep -c '^arn:aws:kms:eu-central-1:173003892479:key/')" = 2 ]; then
+  old_org terraform -chdir=infra/aws apply -input=false d2.tfplan && rm infra/aws/d2.tfplan \
+  && [ -z "$(old_org terraform -chdir=infra/aws state list)" ] \
+  && [ "$(printf '%s\n' "$KEYS" | while read -r k; do aws kms describe-key --region eu-central-1 --key-id "$k" --query KeyMetadata.KeyState --output text; done | grep -cx PendingDeletion)" = 2 ] \
+  && ! aws kms list-aliases --region eu-central-1 --query 'Aliases[].AliasName' --output text | grep -q 'alias/ryft-prod-euc1-vault-' \
+  && ! aws s3api head-bucket --bucket ryft-prod-euc1-vault-snapshots-173003892479 2>/dev/null \
+  && ! aws budgets describe-budget --account-id 173003892479 --budget-name ryft-prod-euc1-monthly >/dev/null 2>&1 \
+  && git checkout -q -- infra/aws/.terraform.lock.hcl \
+  && echo "13 done: both keys PendingDeletion (30 days), no aliases, bucket or budget; ryft-prod-euc1-platform manages nothing" \
+  || echo "STOP: the apply or a check after it failed. Send the output."
+else
+  echo "STOP: no d2.tfplan (run the plan paste), the AWS account isn't 173003892479, or the plan lacks the two Vault keys."
+fi
+```
+
+13.2's `init` adds a provider to `infra/aws/.terraform.lock.hcl` when a leftover in the state
+needs one (`tls`, `cloudinit`, …). The apply paste puts the committed file back at its end, so 14.1
+finds a clean tree. `infra/aws/aws.tfplan`, the rebuild's saved plan of 2026-11-14, if it is still
+in your checkout: delete it (`rm infra/aws/aws.tfplan`). It is never to be applied.
+
+Within the 30 days, `aws kms cancel-key-deletion` and then `aws kms enable-key` bring a key back
+(README → Destroying).
+
+**Stop if** 13.1's plan is anything but those three updates; 13.2's plan holds a `+` or `~`, or
+an address this root never had. It's a shared account: Terraform deletes by the IDs in this
+state, never by tag.
 
 ### 14. Old org: the old workspaces
 
-Do this only after step 5's data-key check (design §5.3 step 4) has passed, and E and D are
-applied. `ryft-prod-euc1-vault` holds the old data key's state, its only other copy. Safe delete
-refuses a workspace that still manages resources.
+Only after 12 and 13 are applied. `ryft-prod-euc1-vault` holds the old data key's state. Apart
+from 1Password, that is the only other copy of the key Secret Manager serves. Step 5 compared
+Secret Manager with step 0's note, so **14.1** compares it once more with the state itself, just
+before that state goes (design §5.3 step 4). `recover_data_key.sh --dry-run` writes nothing and
+prints the newest key's fingerprint. The version `deploy/run/api.yaml` pins is hashed the same
+way. Neither the key nor a fingerprint reaches the screen: both stay in variables. The `gcloud`
+commands use your own login, as in step 5.
 
 ```bash
-read -rs OLD_TOKEN                                   # the tim-krebs-org token: not echoed
-for w in ryft-prod-euc1-dns ryft-prod-euc1-platform ryft-prod-euc1-kubernetes ryft-prod-euc1-vault; do
-  printf 'Authorization: Bearer %s\n' "$OLD_TOKEN" | curl -q -sS -o /dev/null -w "%{http_code} $w\n" -H @- -X POST \
-    "https://app.terraform.io/api/v2/organizations/tim-krebs-org/workspaces/$w/actions/safe-delete"
-done                                                 # 2xx each; a 409 is a refusal
-unset OLD_TOKEN
+# 14.1, the data key: Secret Manager's pinned version equals the old state's key (fingerprint, 32 bytes).
+if [ -n "$OLD_TOKEN" ] && clean_main \
+  && N=$(sed -n 's/.*name: data-key, key: "\([0-9][0-9]*\)".*/\1/p' deploy/run/api.yaml) && [ -n "$N" ] \
+  && OLD_FP=$(old_org scripts/recover_data_key.sh --dry-run | sed -n 's/^sha256: *\([0-9a-f]\{16\}\) .*/\1/p') && [ -n "$OLD_FP" ] \
+  && NEW_FP=$(gcloud secrets versions access "$N" --secret=data-key --project=ryftlab-prod | shasum -a 256 | cut -c1-16) \
+  && [ "$OLD_FP" = "$NEW_FP" ] \
+  && [ "$(gcloud secrets versions access "$N" --secret=data-key --project=ryftlab-prod | base64 -d | wc -c | tr -d ' ')" = 32 ]; then
+  DATA_KEY_CHECKED=$N; echo "14.1: data-key version $N is the old state's key. 14.2 may run in this shell."
+else
+  echo "STOP: Secret Manager's data key isn't the old state's, or a check failed. Delete no workspace: the old state may hold the only key that opens the stored Apple tokens."
+fi
+unset OLD_FP NEW_FP
 ```
 
-Then merge D3 (not built yet), and delete the AWS and GHCR secrets in GitHub:
+**14.2** checks that each workspace manages nothing (HCP's `resource-count`), then safe-deletes
+them in order, the vault workspace last, and stops at the first refusal. The token reaches curl
+through stdin, never argv.
 
 ```bash
-gh secret list; gh secret list --env deploy
-gh secret delete <name>                              # each AWS and GHCR one; add --env deploy for the environment's
+# 14.2, the workspaces: each at resource-count 0, then a safe delete each, ryft-prod-euc1-vault last.
+ws_empty() { printf 'Authorization: Bearer %s\n' "$OLD_TOKEN" | curl -q -sS -f -H @- "https://app.terraform.io/api/v2/organizations/tim-krebs-org/workspaces/$1" | jq -e '.data.attributes["resource-count"] == 0' >/dev/null || { echo "$1: manages resources, or isn't readable"; false; }; }
+safe_delete() { C=$(printf 'Authorization: Bearer %s\n' "$OLD_TOKEN" | curl -q -sS -o /dev/null -w '%{http_code}' -H @- -X POST "https://app.terraform.io/api/v2/organizations/tim-krebs-org/workspaces/$1/actions/safe-delete"); case "$C" in 2??) echo "$1: deleted ($C)" ;; *) echo "$1: refused ($C)"; false ;; esac; }
+if [ -n "$OLD_TOKEN" ] && [ -n "${DATA_KEY_CHECKED:-}" ] \
+  && ws_empty ryft-prod-euc1-dns && ws_empty ryft-prod-euc1-platform \
+  && ws_empty ryft-prod-euc1-kubernetes && ws_empty ryft-prod-euc1-vault; then
+  safe_delete ryft-prod-euc1-dns && safe_delete ryft-prod-euc1-platform \
+  && safe_delete ryft-prod-euc1-kubernetes && safe_delete ryft-prod-euc1-vault \
+  && unset OLD_TOKEN DATA_KEY_CHECKED && echo "14.2 done: the four old workspaces are gone" \
+  || echo "STOP: a safe delete was refused (its code is above). Find out why before anything else."
+else
+  echo "STOP: 14.1 hasn't passed in this shell, or a workspace still manages resources (12 or 13 not applied)."
+fi
 ```
 
-**Stop if** a safe delete is refused. Resources are still in that state: find out why first.
+**14.3, after D3 is merged:** the AWS and GHCR secrets, and `RYFT_DEPLOY_APP_KEY`, the old
+promote App's key. No job has read it since C1 (#194). The paste deletes a name only where no
+workflow on main reads it. Afterwards the repository and `deploy` list none of them, and
+`deploy` keeps `SUPABASE_ANON_KEY`, `SMOKE_EMAIL` and `SMOKE_PASSWORD`, which `deploy.yml` reads.
+Then delete the App's private keys in its settings, or the App itself (The `deploy` environment
+and the App key, step 6).
+
+```bash
+# 14.3, GitHub: AWS_*, GHCR_* and RYFT_DEPLOY_APP_KEY, in the repository and in the environment deploy.
+if gh auth status >/dev/null 2>&1 && clean_main; then
+  used=$(git grep -h -o -E 'secrets\.[A-Za-z0-9_]+' -- .github/workflows | sed 's/^secrets\.//' | sort -u)
+  gh secret list -R timkrebs/ryft-platform | awk '{print $1}' | grep -E '^(AWS_|GHCR_)|^RYFT_DEPLOY_APP_KEY$' | while read -r s; do
+    if printf '%s\n' "$used" | grep -qx "$s"; then echo "kept $s: a workflow on main reads it"; else gh secret delete "$s" -R timkrebs/ryft-platform && echo "deleted $s"; fi
+  done
+  gh secret list --env deploy -R timkrebs/ryft-platform | awk '{print $1}' | grep -E '^(AWS_|GHCR_)|^RYFT_DEPLOY_APP_KEY$' | while read -r s; do
+    if printf '%s\n' "$used" | grep -qx "$s"; then echo "kept $s (deploy): a workflow on main reads it"; else gh secret delete "$s" --env deploy -R timkrebs/ryft-platform && echo "deleted $s (deploy)"; fi
+  done
+  gh secret list -R timkrebs/ryft-platform && gh secret list --env deploy -R timkrebs/ryft-platform
+else
+  echo "STOP: gh isn't signed in, or this isn't a clean, current main."
+fi
+```
+
+**Stop if** 14.1 says STOP, a workspace still manages resources, or a safe delete is refused.
+Resources are still in that state: find out why first.
 
 ### 14a. Before testers: auth mail, the restore drill, feedback
 

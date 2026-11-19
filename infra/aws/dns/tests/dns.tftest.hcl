@@ -1,6 +1,19 @@
-# Plan-only (the zone has prevent_destroy); the AWS provider is mocked. The file sets no variables: the
-# defaults are the production values (D213 the domain, D214 the Microsoft 365 records).
+# Plan-only; the AWS provider is mocked. The file sets no variables: the defaults are the production
+# values (D213 the domain, D214 the Microsoft 365 records).
 mock_provider "aws" {}
+
+# The retirement (PR D1): step 12 (E) destroys the zone, so no block of this root may carry
+# prevent_destroy (Terraform would refuse the destroy plan). Comments don't count.
+run "nothing_refuses_the_retirement" {
+  command = plan
+
+  assert {
+    condition = alltrue([for f in fileset(path.module, "*.tf") :
+      !can(regex("(?m)^[ \\t]*prevent_destroy\\s*=\\s*true", file("${path.module}/${f}")))
+    ])
+    error_message = "no prevent_destroy in infra/aws/dns (PR D1): step 12 destroys the zone and its records"
+  }
+}
 
 run "zone_and_caa_for_the_domain" {
   command = plan
@@ -24,8 +37,7 @@ run "zone_and_caa_for_the_domain" {
 }
 
 # D213: the previous zone left the configuration, so the plan destroys it. One zone is configured, and it
-# is not at the old address (a zone still at aws_route53_zone.this would be replaced in place, which
-# prevent_destroy refuses).
+# is not at the old address (a zone still at aws_route53_zone.this would be replaced in place).
 run "the_old_zone_is_gone" {
   command = plan
 
