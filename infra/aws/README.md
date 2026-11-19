@@ -1,12 +1,19 @@
 # RYFT on AWS (EKS)
 
+> **`infra/aws` is empty since PR D2** (the retirement, design `docs/work/2026-11-14-gcp`, D227).
+> It declares nothing but its `cloud` block (`tim-krebs-org` / `ryft-prod-euc1-platform`) and the AWS
+> provider. Its one job left is `docs/OPERATIONS.md` → GCP 13.2, the plan that destroys what its state
+> still holds: Vault's two keys (scheduled, 30 days), their aliases, the snapshot bucket and the budget.
+> D2 merges only after 13.1's apply. Below is the documentation of the EKS era, kept until PR D3 deletes
+> these directories. Its `vault.tf`, `main.tf` and `modules/` are in git history.
+
 Terraform for running the RYFT platform (`deploy/k8s`) on EKS behind
 `https://api.ryftlab.de`. Three root modules with separate state, applied in order:
 
 | Root | What | Lifetime |
 | --- | --- | --- |
 | `infra/aws/dns` | Route 53 zone `ryftlab.de` (D213), CAA (Let's Encrypt only), the Microsoft 365 mail records (D214) | long-lived; survives cluster rebuilds |
-| `infra/aws` | VPC + EKS cluster `ryft-prod-euc1`, node group, core add-ons; Vault's KMS keys and snapshot bucket | the cluster; the Vault keys and bucket outlive it (`prevent_destroy`) |
+| `infra/aws` | nothing since PR D2; until then the VPC + EKS cluster `ryft-prod-euc1`, node group, core add-ons, Vault's KMS keys and snapshot bucket | until OPERATIONS → GCP 13.2 has destroyed its state's resources |
 | `infra/aws/kubernetes` | in-cluster edge: AWS Load Balancer Controller, Traefik (NLB, HTTPS only), cert-manager + Let's Encrypt issuers, ExternalDNS, encrypted default StorageClass | the cluster's add-ons |
 
 The zone has its own root so destroying the cluster never changes the nameservers at
@@ -15,15 +22,8 @@ be configured from a cluster created in the same apply.
 
 ```
 infra/aws/
-├── terraform.tf providers.tf locals.tf main.tf variables.tf outputs.tf
-├── vault.tf                   Vault's unseal key, snapshot key and snapshot bucket (prevent_destroy)
-├── terraform.tfvars.example   copy to terraform.tfvars (git-ignored)
-├── modules/
-│   ├── network/               VPC, subnets, NAT, flow logs   (terraform-aws-modules/vpc v6)
-│   └── eks/                   cluster, node group, add-ons, EBS CSI Pod Identity role
-│                                                             (terraform-aws-modules/eks v21)
-├── tests/ryft.tftest.hcl      terraform test, providers mocked
-├── tests/vault.tftest.hcl     the Vault keys and bucket (mocked; greps prevent_destroy)
+├── terraform.tf providers.tf  the cloud block and the AWS provider, nothing else (PR D2)
+├── tests/empty.tftest.hcl     the root declares nothing; the cloud block names the old workspace
 ├── dns/                       root: zone + CAA + mail records      (tests/dns.tftest.hcl)
 └── kubernetes/                root: Pod Identity roles, Helm releases, StorageClass
     ├── charts/cluster-issuers local chart: letsencrypt-staging / letsencrypt-prod (DNS-01)
