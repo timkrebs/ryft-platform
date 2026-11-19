@@ -7,6 +7,7 @@
 #                                          deployer's run.developer on the four services and the job only
 #   serve = true,  public_invokers = false the 20 EUR stop line: ryft-push alone on every service, the
 #                                          tick paused, the rest stays
+# The edge stays off here (its phases are tests/edge.tftest.hcl), whatever gates.auto.tfvars holds.
 mock_provider "google" {
   mock_data "google_logging_sink" {
     defaults = {
@@ -45,18 +46,20 @@ variables {
   github_repository_id       = "100000001"
   github_repository_owner_id = "200000002"
   google_site_verification   = "google-site-verification=example-only"
+  edge                       = "off"
 }
 
-run "the_gates_file_sets_both_gates" {
+run "the_gates_file_sets_the_three_gates" {
   command = plan
 
   assert {
     condition = (
       length(regexall("(?m)^serve\\s*=\\s*(true|false)\\s*$", file("${path.module}/gates.auto.tfvars"))) == 1 &&
       length(regexall("(?m)^public_invokers\\s*=\\s*(true|false)\\s*$", file("${path.module}/gates.auto.tfvars"))) == 1 &&
-      length(regexall("(?m)^[a-z_]+\\s*=", file("${path.module}/gates.auto.tfvars"))) == 2
+      length(regexall("(?m)^edge\\s*=\\s*\"(off|built|live|locked)\"\\s*$", file("${path.module}/gates.auto.tfvars"))) == 1 &&
+      length(regexall("(?m)^[a-z_]+\\s*=", file("${path.module}/gates.auto.tfvars"))) == 3
     )
-    error_message = "gates.auto.tfvars sets serve and public_invokers, once each, and nothing else"
+    error_message = "gates.auto.tfvars sets serve, public_invokers and edge (D242), once each, and nothing else"
   }
 }
 
@@ -72,7 +75,7 @@ run "apply_1_serve_false" {
     condition = (
       length(google_cloud_run_v2_service_iam_binding.invoker) == 0 &&
       length(google_cloud_run_domain_mapping.host) == 0 &&
-      length(google_dns_record_set.mapping) == 0
+      length(google_dns_record_set.host) == 0
     )
     error_message = "apply 1: no invoker binding (the services do not exist yet), no mapping, no mapping record"
   }
@@ -178,10 +181,10 @@ run "apply_2_serve_true_public_true" {
 
   assert {
     condition = (
-      toset(keys(google_dns_record_set.mapping)) == toset(["api", "ingest"]) &&
-      google_dns_record_set.mapping["api"].name == "api.ryftlab.de." &&
-      google_dns_record_set.mapping["ingest"].name == "ingest.ryftlab.de." &&
-      alltrue([for r in google_dns_record_set.mapping : r.type == "CNAME" && r.rrdatas == tolist(["ghs.googlehosted.com."])])
+      toset(keys(google_dns_record_set.host)) == toset(["api", "ingest"]) &&
+      google_dns_record_set.host["api"].name == "api.ryftlab.de." &&
+      google_dns_record_set.host["ingest"].name == "ingest.ryftlab.de." &&
+      alltrue([for r in google_dns_record_set.host : r.type == "CNAME" && r.ttl == 300 && r.rrdatas == tolist(["ghs.googlehosted.com."])])
     )
     error_message = "apply 2: one CNAME per mapped host, its target read from the mapping's (mocked) status"
   }
@@ -226,7 +229,7 @@ run "stop_line_serve_true_public_false" {
   assert {
     condition = (
       length(google_cloud_run_domain_mapping.host) == 2 &&
-      length(google_dns_record_set.mapping) == 2 &&
+      length(google_dns_record_set.host) == 2 &&
       length(google_cloud_run_v2_service_iam_member.deployer_run_developer) == 4 &&
       length(google_cloud_run_v2_job_iam_member.deployer_run_developer) == 1
     )

@@ -5659,3 +5659,170 @@ _Grafana half superseded by D236._
 - **Open, not here:** the site still tells testers the beta needs an invite code (`web/messages/en.json`,
   `web/content/legal/en/support.mdx`). Under `off` the app never asks for one. That text is a web PR of its
   own (the site is out of this one's scope).
+
+## D242 — The edge: an external Application Load Balancer with Cloud Armor in front of api and ingest, in four phases (2026-11-18; amends D217, D222's logging rule, D224, D226; **the user's decisions, 2026-11-19:** the stop line €45 from `built` on, Cloud Run's request log of api and ingest excluded below 5xx, about €28 a month)
+
+- **Context:** api and ingest are public on Cloud Run through domain mappings (D217), ingress `all`, and limit each
+  address per instance (D53, D240). Nothing sits in front of them: no WAF, no limit across instances, and a flood
+  spread over instances meets each instance's own bucket. The head-architect's brief (2026-11-18) asks for an edge
+  with Cloud Armor, built so that nothing moves until it is proven, and merged with nothing planned. Prices and
+  Google's limits below were read from search results (WebFetch was not available); each is marked *(search)* with
+  its page.
+- **The user's decisions (2026-11-19), no longer open:**
+  1. the stop line is **€45 from `built` on**: the budget "RYFT 50 EUR"'s existing 90 % mail, so no new threshold
+     rule (below, The stop line);
+  2. **Cloud Run's request log of api and ingest is excluded below 5xx** (exclusion (2), `run-requests`, with
+     `built`);
+  3. **about €28 a month is accepted** (below, Cost).
+- **Decision:**
+  - **A gate, four phases** (`edge` in `infra/gcp/gates.auto.tfvars`, `off | built | live | locked`, default `off`,
+    refused unless `serve` is true; each flip a reviewed one-line PR, never a workspace variable):
+
+    | Phase | The apply | One step back |
+    | --- | --- | --- |
+    | `off` | nothing: the plan of the merge is today's (no edge resource, 16 APIs, the sink and dashboard as they are) | — |
+    | `built` | the load balancer, Cloud Armor, the certificates, `compute` and `certificatemanager` on the keep list, the sink's two exclusions, two log-based metrics, four dashboard tiles. Nothing points at it | `off`: all destroyed; the two APIs stay on (`disable_on_destroy = false`) |
+    | `live` | `api.` and `ingest.` become A records at its IPv4 address (TTL 300); the mappings stay as the way back | `built`: A back to CNAME |
+    | (deploy PR) | ingress `internal-and-cloud-load-balancing` and `XFF_TRUSTED_HOPS=2` on api and ingest, within the hour after `live` | revert it |
+    | `locked` | the two domain mappings destroyed, after 7 clean days | `live`: the mappings come back, but their certificates issue only once DNS points at ghs again |
+  - **The load balancer** (`infra/gcp/edge.tf`): global external Application LB (`EXTERNAL_MANAGED`), one global IPv4
+    address (Premium, as every global address is), a serverless NEG and a backend service per service (the policy,
+    `log_config` 1.0, no health check, no `timeout_sec`, no CDN; protocol `HTTP`, the API's default, because Google's
+    setup with a serverless NEG passes none and documents it as ignored *(search)*), a URL map by host (any other host
+    is a 301 to `https://ryftlab.de/` and reaches no backend), an SSL policy `MODERN` with TLS 1.2 at least (Google's
+    default admits 1.0), Certificate Manager certificates by DNS authorization in one certificate map (both go ACTIVE
+    while DNS still names the mappings), 443 and a redirect on 80 on the same address.
+  - **The policy** (Cloud Armor Standard, one policy, rules inline): six WAF rules, one per preconfigured set
+    (`sqli`, `xss`, `lfi`, `rce`, `scannerdetection`, `protocolattack`, all `v33-stable`, sensitivity 1,
+    `deny(403)`), **in preview**, at priorities 1000 to 1005, each enforced on its own later by one line of a local
+    map; one **enforced** `rate_based_ban` at 2000 keyed on `IP`; the default rule allow (no geo blocking); JSON
+    parsing `STANDARD`, log level `NORMAL` (VERBOSE would log matched body snippets: health data). The WAF rules come
+    first because a throttle's conform action `allow` ends the evaluation.
+  - **The rate values:** 300 requests per 10 s per address, then `deny(429)`; a ban at 6,000 per 300 s, for 600 s.
+    300 is above the most D53's in-process bucket admits in 10 s (50 + 20 × 10 = 250), so the instance's limit acts
+    first; above one user's per-user ceilings on both hosts together (API.md: api 60 + 10/s = 160 per 10 s, ingest's
+    sync 60 + 2/s = 80: 240); below three api instances' worth (750), so a flood spread over instances ends at the
+    edge. The ban counts only the requests over the rate limit (the API reference *(search)*): 6,000 of them in five
+    minutes is about 50 a second sustained, which no app does. Within Google's limits *(search)*:
+    `interval_sec` one of 10, 30, 60, 120, 180, 240, 300, 600, 900, 1200, 1800, 2700, 3600; a `rate_based_ban`'s counts
+    1 to 10,000; `ban_duration_sec` one of 60, 120, 180, 240, 300, 600, …. The uptime checks (2 hosts × 3 locations
+    every 5 minutes), the smoke (sequential) and the tick (Pub/Sub to `run.app`, never through the edge) are nowhere
+    near it.
+  - **IPv4 only:** no IPv6 address and no AAAA. Cloud Armor documents no prefix key for a rate limit *(search: ALL,
+    IP, HTTP-HEADER, XFF-IP, HTTP-COOKIE, HTTP-PATH, SNI, REGION-CODE, TLS JA3/JA4, USER-IP, ASN)*, so an IPv6 client
+    would get a key per address of its /64. IPv6-only phones come in through their carrier's NAT64. Once `locked`, no
+    /48 can fill D240's map.
+  - **Logs** (`logging.tf`): the load balancer logs every request (sample 1.0), and from `built` on the sink
+    `ryft-logs` takes everything except two exclusions: (1) the load balancer's entries that are neither a Cloud Armor
+    denial nor a preview match, `resource.type="http_load_balancer"` and `NOT (jsonPayload.enforcedSecurityPolicy.outcome="DENY"
+    OR jsonPayload.previewSecurityPolicy.outcome="DENY")` (field names from Cloud Armor's request-logging page
+    *(search)*: a throttle that exceeds logs outcome DENY with `rateLimitAction`; `previewSecurityPolicy` appears only
+    when a preview rule matched); (2) **the user's decision (2026-11-19)**, Cloud Run's request log of api and ingest
+    below 5xx (`logName=…/logs/run.googleapis.com%2Frequests`, `resource.labels.service_name=("api" OR "ingest")`,
+    `httpRequest.status<500`). Today it keeps every caller's IP, URL and user agent for 14 days. Their 5xx stay: they
+    are the only record of a failure Cloud Run makes itself (a request timeout, no instance), which the services'
+    access line never sees, and the 5xx alert's text reads them (`alerts.tf`, unchanged). scoring's and notify's request
+    logs stay whole: their callers are Pub/Sub's pushes from Google's addresses, and the event backlog alert reads their
+    429s. Without (2), an IP would be kept for every request to api and ingest. What no sink takes is stored nowhere
+    (`_Default` is off, `_Required` takes audit logs only).
+  - **Enforcing a WAF rule** (runbook 16 → Enforcing a WAF rule): after 7 days with no preview match, at that rule's
+    priority, on a request the backend answered below 400. The app's real requests carry a token and succeed;
+    scanners probe a public host every day and get 401 or 404. "No match at all" would never come.
+  - **Metrics and tiles** (`monitoring.tf`, from `built` on): `ryft_edge_denials` and `ryft_edge_preview_matches`,
+    counted from the kept entries, one label `priority` (a closed set: 1000 to 1005, 2000), never the IP (the rate
+    rule's `rateLimitAction.key` holds it), a URL or a user agent; tiles for the load balancer's requests by backend
+    and code class, its 429s by backend, Cloud Armor's blocked or not by backend, and the denials and preview matches
+    by priority. **No alert policy** (the cap of five stays). At `off` the dashboard is today's, byte for byte.
+  - **DNS** (`dns.tf`): one record set per host whose type and data follow the gate (`google_dns_record_set.host`,
+    moved from `.mapping`), because Cloud DNS can't hold a CNAME and an A at one name, and two resources could create
+    the A first. `type` isn't ForceNew: the provider writes the change as one Cloud DNS change (delete the CNAME, add
+    the A), so `live`'s plan is 0/2/0. A `-/+` would leave a gap that resolvers cache as NXDOMAIN: the runbook makes it
+    a stop.
+  - **The order, and why:** `built` → `live` → the deploy PR within the hour → `locked` after 7 clean days. In `live`
+    with `XFF_TRUSTED_HOPS=1` every request through the load balancer keys the in-process limit on the load balancer's
+    own address (the LB appends `<client>,<lb-ip>`; `clientip_test.go`'s "hops 1 behind the load balancer" pins
+    it, `xff_index` 4 of 5): one bucket per
+    instance for everyone, so the deploy PR follows at once. The mappings go last: until then reverting the deploy PR
+    and `live` → `built` is the whole way back with valid certificates. In `live` the mappings' certificates can no
+    longer renew (DNS doesn't point at ghs), so `live` is not a place to stay for months either.
+  - **check_cloudrun's order rule** (`scripts/check_cloudrun.py`, added once #211 had merged; it reads `edge` from
+    `infra/gcp/gates.auto.tfvars`, `off` when no line sets it, and refuses a value outside the four or a second
+    line): ingress `internal-and-cloud-load-balancing` on api or ingest is refused unless `edge` is `live` or
+    `locked` (with `off` or `built` DNS names the mappings, which that ingress refuses: everyone locked out), and
+    with `XFF_TRUSTED_HOPS=1` (every client in the load balancer's one bucket); `edge = "locked"` is refused unless
+    both have it. With D240's rule (a count above 1 only with that ingress) the deploy PR is exactly the pair. So
+    the order built → live → deploy PR → locked holds in CI, and the reverse for a rollback (`live` → `built` is
+    red until the deploy PR is reverted). CI's `smoke` (its test) and `manifests` (`make cloudrun-check`) jobs run
+    when `gates.auto.tfvars` changes.
+  - **The apply account's roles** (runbook GCP 16.1, as 2d): `roles/compute.loadBalancerAdmin`,
+    `roles/compute.securityAdmin` (security policies; the attach needs `compute.backendServices.setSecurityPolicy` and
+    `compute.securityPolicies.use`) and `roles/certificatemanager.editor` (includes `certmaps.use` and
+    `dnsauthorizations.create` *(search)*), with a `gcloud iam roles describe` check. The plan account's
+    `roles/viewer` covers the reads (16.1 checks it).
+- **Rejected:**
+  - Two WAF rules with three sets each: $4 a month cheaper, but a set could not be enforced on its own.
+  - `XFF_IP` as the rate key: a client writes `X-Forwarded-For`.
+  - IPv6 on the load balancer: no prefix key (above).
+  - The throttle before the WAF rules (a lower priority number): its conform `allow` would end the evaluation, and the
+    WAF rules would never run.
+  - A custom role for the apply account: one more object to maintain by hand for an account that already holds
+    `projectIamAdmin` (2d's note: owner-equivalent in effect); predefined roles, the narrowest that cover it.
+- **The Compute Engine API's side effects** (a project without an organisation): enabling it creates the default
+  service account `<number>-compute@developer.gserviceaccount.com` with **Editor** *(search,
+  docs.cloud.google.com/compute/docs/access/service-accounts)* and usually the network `default` with four firewall
+  rules. Nothing here uses either. Runbook 16.3, right after `built`'s apply, removes the binding, disables the
+  account and deletes the rules and the network. `infra/gcp` manages no project-level binding authoritatively
+  (`tests/iam.tftest.hcl` refuses a `google_project_iam_binding` or `_policy`), so nothing fights that.
+- **Cost a month** (prices *(search)*):
+  - forwarding rules: $0.025 an hour for the first 5 (both rules fit) = **$18.25** at 730 hours; $0.01 an hour for
+    each beyond (cloud.google.com/load-balancing/pricing);
+  - data processing: $0.008 per GiB in and out on that page's example; outbound $0.008–0.012 by region (Google's 2022
+    announcement); europe-west1's rate unverified; under $0.10 at the beta's volume;
+  - Cloud Armor Standard (cloud.google.com/armor/pricing): a policy $0.006849315 an hour (**$5.00**), a rule
+    $0.001369863 an hour ($1.00), $0.75 per million requests. The page bills rules in preview the same. 8 rules (6 WAF,
+    the rate rule, the default) = **$8**;
+  - Certificate Manager: the first 100 certificates $0 (cloud.google.com/certificate-manager/pricing); 2 used: $0;
+  - **total about $32 a month (≈ €28)**: $18.25 + $5 + $8 + under $1 of requests and data. $2 above the brief's
+    $25–30, because every rule is billed. **Accepted by the user (2026-11-19).**
+  - In a flood, every denial and ban is a kept entry (about 1.5 KB): a million is about 1.4 GiB of Cloud Logging, inside
+    the free 50 GiB a month, and about $0.72 a million beyond it (on top of Cloud Armor's $0.75 a million).
+  - Unverified: whether the default rule is billed as a rule (counted here); whether preconfigured WAF evaluation adds
+    a per-request fee in Standard; the global address while a forwarding rule uses it (taken as $0); DNS
+    authorizations and certificate maps (no price found); europe-west1's processing rate; egress (paid through Cloud
+    Run today, the same bytes).
+- **The stop line** (D226): the €20 line is below the edge's fixed ~€28, so once `built` the edge alone would cross
+  it. **The user's decision (2026-11-19): from `built` on the line is €45**, which is the budget "RYFT 50 EUR"'s
+  existing 90 % mail: no new threshold rule. An optional €20 mail (`percent=0.40`) is not part of the runbook; if
+  one was added, it is removed (runbook → The stop line). Below `built` (and back at `off`) the line stays €20. The
+  stop line's commands still close api and ingest (the load balancer calls Cloud Run as `allUsers`), but the load
+  balancer keeps billing under it; cutting its cost means going back `live` → `built` → `off` (and from `locked`
+  first to `live`).
+- **Privacy:** the load balancer's entries hold the client's IP, the URL and the user agent. With the user's decision
+  (2) the stored IPs are only those of blocked, flagged or failed requests, 14 days, in `ryft-logs` (EU). **What the
+  privacy text (C2, not this PR) must name:**
+  - the load balancer's and Cloud Armor's logs (Google Cloud, already a processor), only for requests Cloud Armor
+    denied or a preview rule flagged;
+  - Cloud Run's request log, only for requests that failed with a 5xx;
+  - in each: the IP, the URL and the user agent;
+  - kept 14 days.
+
+  The purpose is security: blocking attacks and abuse, and finding server errors. This **amends the head-architect's
+  "no IP in any log line"** (D222's context) for Google's logs only: our own lines still hold none. Design §8's
+  planned C2 line ("the IP address and user agent of every API request, in Google's request logs, 14 days") is
+  untrue from `built` on and needs this list instead. Until `built` the text in force is unchanged (no edge, and
+  Cloud Run's request log is kept whole, as today).
+- **Unverified here:** every external page (search excerpts only); the backend protocol's effect on the hop to Cloud
+  Run (built's 33/31 MiB check decides); that the load balancer appends exactly `<client>,<lb-ip>` (built's XFF check
+  decides); that the provider changes a record set's type in place (read in its source; the plan shows it, and a
+  `-/+` is a stop); the
+  Cloud Monitoring name of the log-based metrics' resource (the tile has no `monitored_resource` selector);
+  `networksecurity…/https/request_count`'s labels; which certificate an unknown SNI gets; how long a
+  domain-mapping certificate lasts once it can't renew; that Pub/Sub's push from this project counts as internal
+  traffic under the new ingress *(search: docs.cloud.google.com/run/docs/securing/ingress)*, which the deploy PR's tick
+  check decides.
+- **Consequences:** `infra/gcp/{edge.tf,variables.tf,gates.auto.tfvars,locals.tf,project.tf,run.tf,dns.tf,logging.tf,
+  monitoring.tf,outputs.tf}`, `tests/edge.tftest.hcl` and the other tests pinned to `edge = "off"`;
+  `OPERATIONS.md` → GCP → 16 (and 2a, 2d, the stop line, When an alert fires); `OBSERVABILITY.md`;
+  `infra/gcp/README.md`; `STATUS.md`; and, once #211 (D240) had merged, in the same PR: `scripts/check_cloudrun.py`
+  and `scripts/tests/check_cloudrun_test.sh`, CI's `smoke` and `manifests` path filters, one `clientip_test.go`
+  case.

@@ -97,6 +97,61 @@ done                                                    # api off, ingest off
 
 Rollback: a PR of the same line back to `warn`.
 
+## The edge: a load balancer with Cloud Armor for api and ingest (2026-11-18, D242; decided 2026-11-19)
+
+**Built in the PR, merged with `edge = "off"`, so the merge plans
+nothing new** (0 to add, 0 to change, 0 to destroy, and two moves of `api.`'s and `ingest.`'s record
+sets to `google_dns_record_set.host`):
+- `infra/gcp/edge.tf`: a global external Application Load Balancer on one IPv4 address (no IPv6, no
+  AAAA), serverless NEGs and backend services for api and ingest (every request logged), a URL map by
+  host (any other host 301 to the site), TLS 1.2+ (MODERN), Certificate Manager certificates by DNS
+  authorization, 443 and a redirect on 80. One Cloud Armor policy: six WAF rules (sqli, xss, lfi, rce,
+  scannerdetection, protocolattack; v33-stable, sensitivity 1) **in preview**, one **enforced** rate
+  rule per address (300 per 10 s → 429; a ban once 6,000 requests over that rate come within 300 s,
+  for 10 minutes), allow by default.
+- The gate `edge` in `gates.auto.tfvars`: `off` → `built` → `live` → `locked`, one line a PR; refused
+  unless `serve` is true. `dns.tf` turns `api.`/`ingest.` into A records at `live`; `run.tf` drops the
+  domain mappings at `locked`.
+- The sink `ryft-logs`, from `built` on: everything but the load balancer's entries that are no Cloud
+  Armor denial or preview match, and api's and ingest's Cloud Run request log below 5xx (their 5xx
+  stay, for the 5xx alert; scoring's and notify's stay whole). Two log-based metrics by rule priority,
+  four dashboard tiles, no alert policy (the cap of five holds).
+- The order in CI (`scripts/check_cloudrun.py`, added after #211 merged): api's and ingest's ingress
+  `internal-and-cloud-load-balancing` only at `live` or `locked` and only with `XFF_TRUSTED_HOPS`
+  above 1; `locked` only with that ingress on both; CI's `smoke` and `manifests` run when
+  `gates.auto.tfvars` changes. `clientip_test.go` pins hops 1 behind the LB (`xff_index` 4 of 5).
+- Tests: `tests/edge.tftest.hcl` (each phase, the policy's values, the exclusions, the tiles, the
+  validation); every other test file pinned to `edge = "off"`. Runbook: OPERATIONS → GCP → **16**.
+
+**The user's decisions (2026-11-19, D242):** the stop line is **€45 from `built` on** (the budget's
+existing 90 % mail, no new rule; the optional €20 mail is gone from the runbook); **Cloud Run's request
+log of api and ingest is excluded below 5xx** (with `built`); **about €28 a month is accepted**.
+
+**Cost:** about $32 a month (≈ €28) from `built` on, whatever the traffic: $18.25 the two forwarding
+rules, $5 the policy, $8 its 8 rules (preview rules are billed too), under $1 requests and data (D242 →
+Cost; prices from search results).
+
+**Needs you, in order** (each in OPERATIONS → GCP → 16, with its expected counts and stop rule):
+1. Merge #212 (`BETA_GATE` off) and its check, then this PR (gate off). **16.0:** its plan (0/0/0 and
+   the two moves), apply once.
+2. **16.1:** the three roles for `hcp-terraform-apply` and the permission checks.
+3. **16.2–16.4 `built`:** the one-line PR, plan (26 to add, 2 to change, 0 to destroy), apply; **right
+   after**, 16.3: the Compute Engine default account's Editor removed, the account disabled, the
+   network `default` and its firewall rules deleted; then the checks (certificates ACTIVE, the
+   `--resolve` requests, 33/31 MiB, the XFF shape `xff_index 4` of 5, the WAF probe, nothing else kept).
+4. **16.5 `live`** (0/2/0; a `-/+` is a stop), then **16.6 the deploy PR**, 10 minutes to an hour
+   after the apply: ingress `internal-and-cloud-load-balancing` and `XFF_TRUSTED_HOPS=2` (until it is
+   deployed, every request through the edge shares one bucket per instance).
+5. **16.7 `locked`** after 7 clean days (0/0/2, the mappings).
+6. WAF rules enforced one by one, each after 7 days without a preview match on a request the backend
+   answered below 400 (scanners' 401s and 404s don't count; a line in `edge.tf` and its test pin, 0/1/0).
+
+**Privacy:** from `built` on, the privacy text (C2, not this PR) must name (D242 → Privacy): the load
+balancer's and Cloud Armor's logs, only for denied or flagged requests; Cloud Run's request log, only
+for 5xx; the IP, the URL and the user agent; 14 days. Design §8's "every API request's IP in Google's
+request logs" line no longer holds then. This amends the head-architect's "no IP in any log line" for
+Google's logs; the services' own lines still hold none.
+
 ## The per-IP limit on GCP (2026-11-18; merged and deployed, burst test passed 2026-11-19)
 
 **`backend: the per-IP limit in api and ingest (D53 on GCP)`** (#211, D240, merged and deployed). On

@@ -85,6 +85,8 @@ jobs:
               - 'scripts/**'
               # the Cloud Run script tests copy the templates (check_cloudrun, cloudrun_render, rotate_db_password)
               - 'deploy/run/**'
+              # and check_cloudrun's test copies the gates: api's and ingest's ingress follows edge (D242)
+              - 'infra/gcp/gates.auto.tfvars'
               - 'docker-compose.yml'
               - 'Makefile'
               # compose's emulator runs it
@@ -113,6 +115,8 @@ jobs:
               - 'backend/internal/events/pubsub/**'
               - 'backend/cmd/pubsub-topology/**'
               - 'infra/gcp/pubsub.auto.tfvars.json'
+              # make cloudrun-check reads the gate edge (D242): a PR moving it must pass with deploy/run
+              - 'infra/gcp/gates.auto.tfvars'
               - 'backend/go.mod'
               - 'web/content/legal/**'
               - 'web/scripts/check-policy-version.mjs'

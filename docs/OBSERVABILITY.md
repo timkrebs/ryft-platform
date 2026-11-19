@@ -28,6 +28,9 @@ the workspace variable `alert_app_channel` is set, the app channel's resource na
 | Uptime checks | `monitoring.googleapis.com/uptime_check/check_passed`, `…/time_until_ssl_cert_expires` | `check_id`, `checker_location` | policy 1, the dashboard |
 | Log-based | `logging_googleapis_com:user_ryft_ticks` | `result` (ours), `service_name` (the resource's) | policy 3, the dashboard |
 | Log-based | `logging_googleapis_com:user_ryft_errors` | `service_name` (the resource's) | the dashboard |
+| Load balancer (from `edge = "built"`, D242) | `loadbalancing_googleapis_com:https_request_count` (`https_lb_rule`) | `backend_target_name`, `response_code_class` (a number: `500`), `response_code` | the dashboard |
+| Cloud Armor (the same) | `networksecurity_googleapis_com:https_request_count` (`network_security_policy`) | `backend_target_name`, `blocked` | the dashboard |
+| Log-based (the same) | `logging_googleapis_com:user_ryft_edge_denials`, `…_preview_matches` | `priority` (ours) | the dashboard |
 
 ### The log-based metrics
 
@@ -76,6 +79,29 @@ by service and result; the oldest unacked event and the undelivered events per e
 the dead letters held per hold subscription; ERROR lines per hour by service; uptime (the share of
 locations passing) and the certificate's days left, by check; and a logs panel of the services'
 `severity>=ERROR` lines from `ryft-logs`. ingest's p95 is what SyncSlow paged on (10 s).
+
+### The edge (D242)
+
+From `edge = "built"` on (`infra/gcp/edge.tf`, runbook GCP 16) api and ingest can sit behind a
+global external Application Load Balancer with Cloud Armor; from `live` on they do. What it adds
+here, and nothing at `off`:
+
+- **Four tiles** after the PromQL tiles above: the load balancer's requests per second by backend
+  (`ryft-edge-api`, `ryft-edge-ingest`) and code class; its 429s per second by backend (Cloud
+  Armor's and the services' own, as the client got them); Cloud Armor's requests per second,
+  blocked or not, by backend; and Cloud Armor's denials and preview matches per hour by rule
+  priority (series by `priority` and `kind`, `denied` or `preview`). The rest of the dashboard and
+  the logs panel are unchanged.
+- **Two log-based counters** (`DELTA`, `INT64`), from the load balancer's request log
+  (`resource.type="http_load_balancer"`): `ryft_edge_denials` (`enforcedSecurityPolicy.outcome`
+  DENY: an enforced WAF rule's 403, the rate rule's 429 and ban) and `ryft_edge_preview_matches`
+  (`previewSecurityPolicy.outcome` DENY: what a preview rule would have refused). One label,
+  `priority`, a closed set: 1000 to 1005 the WAF sets (sqli, xss, lfi, rce, scannerdetection,
+  protocolattack), 2000 the rate rule. Never the IP (`rateLimitAction.key` holds it), a URL or a
+  user agent.
+- **No alert policy** (the cap of five, D236). A WAF rule's preview matches decide when it is
+  enforced (runbook GCP 16 → Enforcing a WAF rule); the uptime checks keep their URLs and reach the
+  services through the edge once `live`.
 
 ### The alert policies
 
@@ -133,6 +159,7 @@ list, the line's key) and a privacy check.
 | Uptime check executions | free up to 1 million (not verified here) | 131,400: $0 |
 | Log-based metrics (chargeable ingestion, 150 MiB free) | 8 bytes a point | at most about 4 MB (every series, every minute; in practice far less): $0 |
 | Dashboard | free | $0 |
+| The edge (D242, from `built`; not observability, listed for the budget) | forwarding rules, Cloud Armor's policy and rules, requests (D242 → Cost) | about $32 (≈ €28) |
 
 Before D236 the same was free in Grafana Cloud's tier. The delta is $7.50 (reading A) or about
 $0.70 (reading B) a month; the user accepted about €6 (2026-11-17).
@@ -911,6 +938,19 @@ Never logged: health values (scores, samples, sleep, workouts, baselines, the le
 sleep need, the readiness state), tokens (APNs device tokens included), the
 `Authorization` header, email addresses, IP addresses (whole or as a network, D222),
 device names, request bodies, feedback text.
+
+**Google's request logs on GCP** (not ours, D242). Until the edge is built, Cloud Run's request
+log (`run.googleapis.com/requests`) lands in `ryft-logs` with every caller's IP, URL and user
+agent, 14 days. From `edge = "built"` on, the sink `ryft-logs` excludes api's and ingest's entries
+below 5xx (their 5xx stay: the only record of a failure Cloud Run makes itself, and what the 5xx
+alert's text reads; scoring's and notify's stay whole, their callers are Pub/Sub's pushes). It also
+excludes the load balancer's request log, except the entries of requests Cloud Armor denied or a
+preview rule flagged: those keep the client's IP, the URL and the user agent for 14 days in the EU.
+What no sink takes is stored nowhere (`_Default` is off). The services' own lines (`stdout`,
+`stderr`) and the log-based metrics are unchanged; the access line `http` has each request's
+status. Cloud Armor logs at `NORMAL`, never `VERBOSE`
+(matched body snippets). The exclusion of api's and ingest's request log below 5xx is the user's
+decision (2026-11-19). The privacy text (C2) must name what stays (D242 → Privacy has the list).
 OPERATIONS → Data protection (logs) has the two exceptions (a panic's stack, a pgx
 encode error), the tests that pin the rule and what older lines still hold. The lines
 tie `user_id` to paths with dates, so limit who can read them and keep them no longer

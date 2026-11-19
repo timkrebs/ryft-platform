@@ -45,6 +45,9 @@ variables {
   site_www_a     = []
   site_www_txt   = ""
   site_www_cname = ""
+  # api. and ingest.'s records follow the edge (tests/edge.tftest.hcl); here off, whatever
+  # gates.auto.tfvars holds.
+  edge = "off"
 }
 
 run "zone_for_the_domain" {

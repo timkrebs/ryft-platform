@@ -41,6 +41,8 @@ variables {
   github_repository_id       = "100000001"
   github_repository_owner_id = "200000002"
   google_site_verification   = "google-site-verification=example-only"
+  # The edge's phases are tests/edge.tftest.hcl; here off, whatever gates.auto.tfvars holds.
+  edge = "off"
 
   # A valid small topology; the runs below break one rule each.
   pubsub_topics = {

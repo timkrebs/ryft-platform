@@ -202,6 +202,11 @@ func TestStepNineUnderGoogleFrontEnd(t *testing.T) {
 		{"hops 2: the LB appends the client and its own address", 2, []string{forged + ", 198.51.100.20, 34.120.0.5"}, "198.51.100.20", "xff", 3, 5},
 		{"hops 2: and a Google hop after the LB's entry", 2, []string{forged + ", 198.51.100.20, 34.120.0.5, 35.191.3.4"}, "198.51.100.20", "xff", 3, 6},
 		{"hops 2: an IPv6 caller", 2, []string{forged + ", 2001:db8:5:6::1, 34.120.0.5"}, "2001:db8:5:6::", "xff", 3, 5},
+		// Through the load balancer at hops 1 (edge built, and live until the deploy PR; runbook GCP 16.4):
+		// the LB's own address is the key (index 4 of 5), one bucket for every client. Expected at built;
+		// it is why the deploy PR follows live within the hour, and why check_cloudrun refuses the LB's
+		// ingress at hops 1 (D242).
+		{"hops 1 behind the load balancer: its own address", 0, []string{forged + ", 198.51.100.20, 34.120.0.5"}, "34.120.0.5", "xff", 4, 5},
 
 		// Stop: a hop of Google's outside the known ranges is picked (index past the forged three, one
 		// bucket for every client).

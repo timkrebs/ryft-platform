@@ -59,6 +59,9 @@ variables {
   github_repository_id       = "100000001"
   github_repository_owner_id = "200000002"
   google_site_verification   = "google-site-verification=example-only"
+  # The dashboard and the metrics as before D242, whatever gates.auto.tfvars holds; the edge's tiles and
+  # metrics are tests/edge.tftest.hcl's.
+  edge = "off"
 }
 
 # ---- the gate -----------------------------------------------------------------------------------------

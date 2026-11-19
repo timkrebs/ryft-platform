@@ -40,6 +40,9 @@ variables {
   github_repository_id       = "100000001"
   github_repository_owner_id = "200000002"
   google_site_verification   = "google-site-verification=example-only"
+  # The keep list and the sink as before D242, whatever gates.auto.tfvars holds; the edge's phases are
+  # tests/edge.tftest.hcl.
+  edge = "off"
 }
 
 run "no_key_and_no_secret_value_in_state" {
@@ -115,8 +118,8 @@ run "apis_keep_list" {
       "dns.googleapis.com", "iam.googleapis.com", "iamcredentials.googleapis.com", "logging.googleapis.com",
       "monitoring.googleapis.com", "pubsub.googleapis.com", "run.googleapis.com", "secretmanager.googleapis.com",
       "serviceusage.googleapis.com", "sts.googleapis.com",
-    ])
-    error_message = "exactly runbook step 2a's keep list (no container scanning, no Cloud Build)"
+    ]) && length(google_project_service.keep) == 16
+    error_message = "edge off: exactly runbook step 2a's keep list of 16 (no container scanning, no Cloud Build, no Compute Engine)"
   }
 
   assert {
@@ -189,12 +192,17 @@ run "logs_in_the_eu_for_14_days" {
     error_message = "the bucket ryft-logs in europe-west1 keeps 14 days (the privacy text)"
   }
 
+  # No inclusion filter: the one `filter =` in logging.tf is the exclusions' (D242), and with the edge
+  # off there is none.
   assert {
     condition = (
       google_logging_project_sink.ryft_logs.destination == "logging.googleapis.com/projects/ryftlab-prod/locations/europe-west1/buckets/ryft-logs" &&
-      length(regexall("(?m)^\\s*filter\\s*=", file("${path.module}/logging.tf"))) == 0
+      length(regexall("(?m)^\\s*filter\\s*=", file("${path.module}/logging.tf"))) == 1 &&
+      length(regexall("(?m)^\\s*content\\s*\\{[^}]*\\n\\s*filter\\s*=\\s*exclusions\\.value\\.query\\n", file("${path.module}/logging.tf"))) == 1 &&
+      google_logging_project_sink.ryft_logs.filter == null &&
+      length(google_logging_project_sink.ryft_logs.exclusions) == 0
     )
-    error_message = "the sink routes everything (no filter) into ryft-logs"
+    error_message = "the sink routes everything into ryft-logs: no inclusion filter, and with the edge off no exclusion"
   }
 
   assert {

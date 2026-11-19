@@ -59,4 +59,11 @@ locals {
   # The alerting gate (alerts.tf, runbook step 11): the alert policies and the email channel's data
   # source exist once alert_app_channel is set (null is unset, D237).
   alerting = var.alert_app_channel != null
+
+  # The edge's phases (var.edge, D242), each including the ones after it. built: the load balancer,
+  # Cloud Armor and what logs and shows them (edge.tf, logging.tf, monitoring.tf). live: api. and
+  # ingest. resolve to it (dns.tf). locked: the domain mappings are gone (run.tf).
+  edge_built  = contains(["built", "live", "locked"], var.edge)
+  edge_live   = contains(["live", "locked"], var.edge)
+  edge_locked = var.edge == "locked"
 }

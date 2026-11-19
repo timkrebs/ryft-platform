@@ -61,9 +61,19 @@ output "monitoring" {
       [for p in google_monitoring_alert_policy.promql : p.display_name],
     ))
     uptime_checks = sort(keys(google_monitoring_uptime_check_config.this))
-    log_metrics   = sort([google_logging_metric.ticks.name, google_logging_metric.errors.name])
-    dashboard     = local.dashboard_name
+    log_metrics = sort(concat(
+      [google_logging_metric.ticks.name, google_logging_metric.errors.name],
+      [for m in google_logging_metric.edge : m.name],
+    ))
+    dashboard = local.dashboard_name
   }
+}
+
+output "edge_ip" {
+  description = "The edge's IPv4 address (D242): null while edge is off. Runbook step 16 reads it with terraform output -raw edge_ip; it goes into no file"
+  value       = one(google_compute_global_address.edge[*].address)
+  # Not a secret, but no apply's summary or remote run log prints it: -raw still does.
+  sensitive = true
 }
 
 output "name_servers" {

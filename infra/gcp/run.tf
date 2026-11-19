@@ -29,8 +29,14 @@ resource "google_cloud_run_v2_service_iam_binding" "invoker" {
 # Preview in europe-west1 (D217). The caller must be a verified owner of ryftlab.de in Search Console:
 # runbook step 6 adds hcp-terraform-apply@ryftlab-prod.iam.gserviceaccount.com as one, or this fails.
 # Google issues the certificate once the CNAME (dns.tf) resolves: 15 minutes to 24 hours.
+#
+# The edge (D242): from edge = live, DNS names the load balancer, not ghs.googlehosted.com, so a
+# mapping's certificate can no longer renew; the mappings stay through live as the way back while their
+# certificates still hold. locked removes them. Going back from locked re-creates them, but their
+# certificates issue only once DNS points at ghs again (live -> built): an outage of up to the issuance
+# time, which is why locked waits for 7 clean days (runbook step 16).
 resource "google_cloud_run_domain_mapping" "host" {
-  for_each = var.serve ? local.mapped_hosts : {}
+  for_each = var.serve && !local.edge_locked ? local.mapped_hosts : {}
 
   project  = var.project_id
   location = var.region

@@ -82,6 +82,7 @@ on Pub/Sub and Cloud Run.
 | 11 | Observability on Cloud Monitoring (D236) | the PR "observability on Cloud Monitoring" merged; step 10 done (the site's uptime checks). 11.6 waits for 11.4, 11.7 for D3 if EKS still sends to Grafana Cloud, 11.8 (once) for the PR "infra: the app alert channel by id" and 11.6's first apply |
 | 12–14 | Old org: retire Route 53, AWS and the old workspaces | after step 10, with D1, D2, D3 |
 | 15 | Testers | step 10 done, C2 in force |
+| 16 | The edge (D242): built, live, the deploy PR, locked | step 9 done, the PR "infra: the edge" merged, 16.1's roles; each phase after the one before it (`locked` after 7 clean days) |
 
 Each step ends with its stop rule. A stop means: do nothing further, find the cause, then start
 that step again.
@@ -140,6 +141,9 @@ KEEP=(artifactregistry.googleapis.com billingbudgets.googleapis.com cloudbilling
   cloudresourcemanager.googleapis.com cloudscheduler.googleapis.com cloudtrace.googleapis.com dns.googleapis.com
   iam.googleapis.com iamcredentials.googleapis.com logging.googleapis.com monitoring.googleapis.com
   pubsub.googleapis.com run.googleapis.com secretmanager.googleapis.com serviceusage.googleapis.com sts.googleapis.com)
+# Once the edge is built (step 16, edge = built or later), two more stay on: without them the loop below would
+# try to switch off the load balancer's APIs. The line reads the committed gate (run from the repository root).
+grep -qx 'edge = "off"' infra/gcp/gates.auto.tfvars || KEEP+=(certificatemanager.googleapis.com compute.googleapis.com)
 gcloud services enable "${KEEP[@]}" --project="$P"
 for s in $(gcloud services list --enabled --project="$P" --format='value(config.name)'); do
   case " ${KEEP[*]} " in *" $s "*) continue ;; esac
@@ -185,13 +189,17 @@ for r in roles/monitoring.uptimeCheckConfigEditor roles/monitoring.dashboardEdit
          roles/monitoring.alertPolicyEditor roles/monitoring.notificationChannelViewer; do
   gcloud projects add-iam-policy-binding "$P" --member="serviceAccount:$APPLY_SA" --role="$r" --condition=None
 done
+# The edge's (D242; on ryftlab-prod granted at step 16.1): the load balancer, Cloud Armor's policy, the certificates.
+for r in roles/compute.loadBalancerAdmin roles/compute.securityAdmin roles/certificatemanager.editor; do
+  gcloud projects add-iam-policy-binding "$P" --member="serviceAccount:$APPLY_SA" --role="$r" --condition=None
+done
 PS=principalSet://iam.googleapis.com/projects/$PN/locations/global/workloadIdentityPools/$POOL
 gcloud iam service-accounts add-iam-policy-binding "$PLAN_SA" --project="$P" \
   --role=roles/iam.workloadIdentityUser --member="$PS/attribute.terraform_run_phase/plan"
 gcloud iam service-accounts add-iam-policy-binding "$APPLY_SA" --project="$P" \
   --role=roles/iam.workloadIdentityUser --member="$PS/attribute.terraform_run_phase/apply"
 gcloud projects get-iam-policy "$P" --flatten='bindings[].members' --filter="bindings.members:$APPLY_SA" \
-  --format='value(bindings.role)'                   # the sixteen roles above, never roles/owner
+  --format='value(bindings.role)'                   # the nineteen roles above, never roles/owner
 
 # 2e. The workspace's variables (none sensitive; each prints 201, a 422 means the key exists: change it in the UI).
 tfc_var() {  # tfc_var KEY VALUE [env|terraform]
@@ -222,7 +230,10 @@ terraform -chdir=infra/gcp plan                     # 122 to add (step 4)
   `--force` would disable the dependants as well, so it is never used here. The project is new,
   so most defaults will be "still on" at first. Run 2a's loop again from day 4. What stays on
   after that is a dependency or in use. Terraform owns the same keep list
-  (`google_project_service`, `disable_on_destroy = false`).
+  (`google_project_service`, `disable_on_destroy = false`). Once the edge is built (step 16),
+  `compute.googleapis.com` and `certificatemanager.googleapis.com` join it (18): the `grep … ||
+  KEEP+=` line above adds them while the committed gate isn't `off`. Back at `edge = "off"` they
+  leave Terraform's list but stay on.
 - **Audience.** The provider has no `--allowed-audiences`. That gives GCP's default audience,
   the provider's full name. HCP Terraform sends it when only `TFC_GCP_WORKLOAD_PROVIDER_NAME`
   is set.
@@ -1034,7 +1045,7 @@ for r in roles/monitoring.uptimeCheckConfigEditor roles/monitoring.dashboardEdit
   gcloud projects add-iam-policy-binding "$P" --member="serviceAccount:$APPLY_SA" --role="$r" --condition=None
 done
 gcloud projects get-iam-policy "$P" --flatten='bindings[].members' --filter="bindings.members:$APPLY_SA" \
-  --format='value(bindings.role)'                   # the sixteen roles of step 2d, never roles/owner
+  --format='value(bindings.role)'                   # sixteen of step 2d's (nineteen once 16.1 ran), never roles/owner
 for sa in $(gcloud iam service-accounts list --project="$P" --format='value(email)'); do
   echo "$sa $(gcloud iam service-accounts keys list --iam-account="$sa" --managed-by=user --format='value(name)' | wc -l)"
 done                                                # every account 0, grafana-reader included
@@ -1693,6 +1704,390 @@ reads the live page.
 
 **Stop if** `/privacy` doesn't show C2's version.
 
+### 16. The edge *(D242)*
+
+A global external Application Load Balancer with Cloud Armor in front of api and ingest
+(`infra/gcp/edge.tf`). The gate `edge` in `infra/gcp/gates.auto.tfvars` moves one phase per PR of
+one line, and back the same way. Never set it as a workspace variable.
+
+| Phase | The PR | What the apply does | One step back (16.8) |
+| --- | --- | --- | --- |
+| `off` | the D242 PR itself | nothing (16.0) | — |
+| `built` | `edge = "built"` | the load balancer, Cloud Armor, the certificates, the sink's exclusions, the metrics and tiles; nothing points at it | `off` |
+| `live` | `edge = "live"` | `api.` and `ingest.` become A records at its address | `built` |
+| (deploy PR) | ingress and `XFF_TRUSTED_HOPS=2` in `deploy/run`, within the hour after `live` | no Terraform | revert it |
+| `locked` | `edge = "locked"`, after 7 clean days | the two domain mappings destroyed | `live` (costly) |
+
+`make cloudrun-check` (CI's `manifests` job, which a change of `gates.auto.tfvars` selects)
+enforces the order (D242): the load balancer's ingress only while `edge` is `live` or `locked` and
+only with `XFF_TRUSTED_HOPS` above 1, and `locked` only with that ingress on both. A step out of
+order is a red PR, not a broken production. But two PRs green on their own can be wrong together
+(a `live` → `built` PR opened before the deploy PR merged, say), and no apply runs the check: before
+every plan below, right after `git pull`, run `make cloudrun-check`. **Stop if** it is red.
+From `built` on the stop line is **€45**, the budget's 90 % mail (the user's decision, D242;
+**The €20 stop line** → With the edge).
+The address is never written into any file; below it is `<ip>`, and in a shell `$IP`.
+
+Run from the repository root on an up-to-date main, in bash or zsh (zsh: `setopt
+interactivecomments` first), logged in to gcloud as the project owner and to `ryft-lab`.
+
+**16.0 Once, after the D242 PR's merge.** The two record sets of `api.` and `ingest.` are now
+`google_dns_record_set.host` (moved from `.mapping`):
+
+```bash
+git switch main && git pull
+terraform -chdir=infra/gcp plan -out=edge-off.tfplan   # Plan: 0 to add, 0 to change, 0 to destroy; the 2 "has moved to" lines
+terraform -chdir=infra/gcp apply edge-off.tfplan
+rm infra/gcp/edge-off.tfplan
+terraform -chdir=infra/gcp plan                        # No changes
+```
+
+The two moves: `google_dns_record_set.mapping["api"]` → `.host["api"]`, the same for `ingest`.
+**Stop if** anything is added, changed or destroyed, or anything else moves.
+
+**16.1 The roles, once** (before the `built` PR's plan). The apply account gets three predefined
+roles, the narrowest that cover the load balancer, the policy and the certificates; the plan
+account's `roles/viewer` should cover every read:
+
+```bash
+P=ryftlab-prod; APPLY_SA=hcp-terraform-apply@$P.iam.gserviceaccount.com
+EDGE_ROLES=(roles/compute.loadBalancerAdmin roles/compute.securityAdmin roles/certificatemanager.editor)
+for r in "${EDGE_ROLES[@]}"; do
+  gcloud projects add-iam-policy-binding "$P" --member="serviceAccount:$APPLY_SA" --role="$r" --condition=None
+done
+gcloud projects get-iam-policy "$P" --flatten='bindings[].members' --filter="bindings.members:$APPLY_SA" \
+  --format='value(bindings.role)'                   # the nineteen roles of step 2d, never roles/owner
+
+# What the apply calls, as far as known here: every line "ok".
+NEED=(compute.globalAddresses.create compute.globalAddresses.use
+  compute.regionNetworkEndpointGroups.create compute.regionNetworkEndpointGroups.use
+  compute.backendServices.create compute.backendServices.use compute.backendServices.setSecurityPolicy
+  compute.securityPolicies.create compute.securityPolicies.use compute.urlMaps.create compute.urlMaps.use
+  compute.sslPolicies.create compute.sslPolicies.use compute.targetHttpsProxies.create compute.targetHttpsProxies.use
+  compute.targetHttpProxies.create compute.targetHttpProxies.use compute.globalForwardingRules.create
+  compute.globalOperations.get compute.regionOperations.get
+  certificatemanager.dnsauthorizations.create certificatemanager.dnsauthorizations.use
+  certificatemanager.certs.create certificatemanager.certs.use certificatemanager.certmaps.create
+  certificatemanager.certmaps.use certificatemanager.certmapentries.create certificatemanager.operations.get)
+HAVE=$(for r in "${EDGE_ROLES[@]}"; do gcloud iam roles describe "$r" --format='value(includedPermissions)' | tr ';' '\n'; done)
+for p in "${NEED[@]}"; do grep -qx "$p" <<<"$HAVE" && echo "ok $p" || echo "MISSING $p"; done
+
+# The plan account's reads: every line "ok".
+VIEW=$(gcloud iam roles describe roles/viewer --format='value(includedPermissions)' | tr ';' '\n')
+for p in compute.globalAddresses.get compute.regionNetworkEndpointGroups.get compute.backendServices.get \
+         compute.securityPolicies.get compute.urlMaps.get compute.sslPolicies.get compute.targetHttpsProxies.get \
+         compute.targetHttpProxies.get compute.globalForwardingRules.get certificatemanager.dnsauthorizations.get \
+         certificatemanager.certs.get certificatemanager.certmaps.get certificatemanager.certmapentries.get; do
+  grep -qx "$p" <<<"$VIEW" && echo "ok $p" || echo "MISSING $p"
+done
+unset HAVE VIEW
+```
+
+Not verified here: that these permission names are exactly Google's, and that the provider needs no
+other (`roles/certificatemanager.editor` holding `certmaps.use` and `dnsauthorizations.create` is
+from search results). The apply's first 403 would name what is missing.
+**Stop if** a line says `MISSING`: look the name up in the three roles (`gcloud iam roles describe
+<role>`); if none holds it, don't add a broader role or `roles/editor`, report it.
+
+**16.2 `built`.** A PR with `edge = "built"` in `infra/gcp/gates.auto.tfvars`, one line, CI green
+(`make cloudrun-check` passes: the ingress is still `all`). Merging it runs `deploy.yml`, which
+redeploys from unchanged code. Then:
+
+```bash
+git switch main && git pull
+terraform -chdir=infra/gcp plan -out=edge-built.tfplan
+```
+
+```text
+# Step 16.2's plan (edge = built): 26 to add, 2 to change, 0 to destroy.
+#   2 APIs on the keep list (certificatemanager, compute)                                    =  2
+#   + 1 global address (IPv4) + 2 serverless NEGs + 2 backend services                        =  5  (7)
+#   + 1 Cloud Armor policy (8 rules) + 1 SSL policy + 1 URL map + 1 HTTPS proxy               =  4 (11)
+#   + 2 DNS authorizations + their 2 CNAME record sets + 2 certificates + 1 map + 2 entries   =  9 (20)
+#   + 1 forwarding rule (443) + 1 URL map (http) + 1 HTTP proxy + 1 forwarding rule (80)      =  4 (24)
+#   + 2 log-based metrics (ryft_edge_denials, ryft_edge_preview_matches)                      =  2 (26)  to add
+#   ~ the sink ryft-logs: + 2 exclusions (lb-requests-unflagged, run-requests)                =  1
+#   ~ the dashboard RYFT · Overview: + 4 tiles                                                 =  1  (2)  to change
+```
+
+In the plan, by eye: the policy's rate rule (`rate_based_ban`, priority 2000, `preview = false`,
+`enforce_on_key = "IP"`, 300 per 10 s, `deny(429)`, ban 6000 per 300 s for 600 s); six WAF rules,
+`preview = true`; `log_level = "NORMAL"`. No change to `api.` and `ingest.`'s records, the mappings,
+the invokers, the uptime checks, the alert policies, the secrets, Pub/Sub, WIF, the deployer or the
+bucket. Outputs: `edge_ip` comes (known after apply).
+**Stop if** the counts differ; anything is destroyed; anything else changes; or a 403 (16.1).
+
+```bash
+terraform -chdir=infra/gcp apply edge-built.tfplan
+rm infra/gcp/edge-built.tfplan
+terraform -chdir=infra/gcp plan                     # No changes
+```
+
+**Stop if** the second plan isn't "No changes" (a resource that differs at every plan is a bug of
+the D242 PR: report it, change nothing by hand).
+
+**16.3 Compute Engine's side effects, right after the apply.** Enabling the Compute Engine API on a
+project without an organisation makes its default service account with **Editor**, and usually the
+network `default` with four firewall rules (D242). Nothing uses either:
+
+```bash
+P=ryftlab-prod; PN=$(gcloud projects describe "$P" --format='value(projectNumber)')
+CSA="$PN-compute@developer.gserviceaccount.com"
+gcloud iam service-accounts list --project="$P" --filter="email=$CSA" --format='value(email,disabled)'     # it, False
+gcloud projects get-iam-policy "$P" --flatten='bindings[].members' --filter="bindings.members:serviceAccount:$CSA" \
+  --format='value(bindings.role)'                                                                            # roles/editor
+gcloud projects remove-iam-policy-binding "$P" --member="serviceAccount:$CSA" --role=roles/editor --condition=None
+gcloud iam service-accounts disable "$CSA" --project="$P"
+gcloud compute firewall-rules list --project="$P" --filter='network~/networks/default$' --format='value(name)'
+for f in $(gcloud compute firewall-rules list --project="$P" --filter='network~/networks/default$' --format='value(name)'); do
+  gcloud compute firewall-rules delete "$f" --project="$P" --quiet
+done
+gcloud compute networks delete default --project="$P" --quiet   # "not found" is fine: there was none
+gcloud compute networks list --project="$P"                     # Listed 0 items.
+gcloud iam service-accounts list --project="$P" --filter="email=$CSA" --format='value(email,disabled)'     # it, True
+gcloud projects get-iam-policy "$P" --format='table(bindings.role,bindings.members)'   # step 1's view
+```
+
+Step 1's view now names the default account in no binding. New service agents of the two APIs
+(`service-<number>@compute-system.iam.gserviceaccount.com` with `roles/compute.serviceAgent`, and
+possibly one of Certificate Manager's) are Google's: leave them.
+**Stop if** the Editor binding can't be removed; any other new member appears; or `networks list`
+still lists a network (find what made it before deleting anything else).
+
+**16.4 `built`'s checks** (nothing points at the load balancer yet, so `--resolve` sends each
+request to it by hand). First the certificates:
+
+```bash
+for h in api ingest; do
+  gcloud certificate-manager certificates describe "ryft-edge-$h" --project=ryftlab-prod --format='value(managed.state)'
+done                                                # ACTIVE, ACTIVE (PROVISIONING until then)
+```
+
+**Stop if** either isn't `ACTIVE` 24 hours after the apply (`--format=yaml(managed)` names the
+issue; the authorization's CNAME `_acme-challenge.<host>` is in the zone, `dig +short CNAME
+_acme-challenge.api.ryftlab.de @1.1.1.1`). Then, once both are ACTIVE:
+
+```bash
+IP=$(terraform -chdir=infra/gcp output -raw edge_ip)
+for h in api ingest; do
+  curl -sS -o /dev/null -w "%{http_code} $h\n" --resolve "$h.ryftlab.de:443:$IP" "https://$h.ryftlab.de/health/ready"   # 200
+  curl -sS -o /dev/null -w "%{http_code} %{redirect_url}\n" --resolve "$h.ryftlab.de:80:$IP" "http://$h.ryftlab.de/health/ready"
+                                                    # 301 https://<host>/health/ready
+  curl -sS -o /dev/null --tlsv1.2 --tls-max 1.2 -w "%{http_code} TLS 1.2 $h\n" --resolve "$h.ryftlab.de:443:$IP" "https://$h.ryftlab.de/health/ready"   # 200
+  curl -sS -o /dev/null --tlsv1.0 --tls-max 1.1 --resolve "$h.ryftlab.de:443:$IP" "https://$h.ryftlab.de/health/ready" \
+    && echo "TLS 1.1 ACCEPTED $h" || echo "TLS 1.1 refused $h"                                                       # refused
+done
+curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' --resolve "api.ryftlab.de:443:$IP" \
+  -H 'Host: unknown.example' "https://api.ryftlab.de/anything"          # 301 https://ryftlab.de/ (no backend)
+```
+
+The last one sends api's name for TLS and another host to the URL map. Which certificate a
+handshake without a known name gets isn't verified, and doesn't matter: no backend answers it.
+
+Then two of step 9's tests through the load balancer:
+
+```bash
+# 1. The body limit: 33 MiB must get OUR JSON 413; 31 MiB must not get Google's (HTML) 413. Step 9's TOKEN
+#    (the smoke user's, read the same way; it never reaches argv).
+for mib in 33 31; do
+  f=$(mktemp); { printf '{"pad":"'; head -c $((mib << 20)) /dev/zero | tr '\0' a; printf '"}'; } > "$f"
+  printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -H @- -H 'Content-Type: application/json' \
+    --resolve "ingest.ryftlab.de:443:$IP" --data-binary @"$f" -w "\n%{http_code} %{content_type} ${mib} MiB\n" \
+    https://ingest.ryftlab.de/v1/sync | tail -c 300
+  rm -f "$f"
+done                                                # 33: "request body over 33554432 bytes", 413 application/json
+                                                    # 31: our JSON answer (not a 413, not text/html)
+unset TOKEN
+
+# 2. Three forged X-Forwarded-For entries, through the load balancer, hops still 1 (step 9's loop and query).
+for i in 1 2 3; do
+  for h in api ingest; do
+    curl -sS -o /dev/null -w "%{http_code} $h\n" --resolve "$h.ryftlab.de:443:$IP" \
+      -H 'X-Forwarded-For: 203.0.113.7, 203.0.113.8, 203.0.113.9' "https://$h.ryftlab.de/health/ready"
+  done
+  [ "$i" = 3 ] || sleep 61
+done
+gcloud logging read 'resource.type="cloud_run_revision" AND jsonPayload.message="client address" AND jsonPayload.xff_entries>=3' \
+  --project=ryftlab-prod --freshness=10m --limit=10 \
+  --format='value(resource.labels.service_name,jsonPayload.picked,jsonPayload.xff_index,jsonPayload.xff_entries)'
+```
+
+- **1. Pass:** 33 MiB is ours (JSON, the message above); 31 MiB is anything of ours (a JSON error is
+  fine), never Google's HTML 413. A Google 413 means the hop to Cloud Run is HTTP/1 with its 32 MiB
+  cap: **stop** before `live` (a contract change, as step 9's stop rule).
+- **2. Pass:** on both services `picked` `xff`, `xff_index` `4`, `xff_entries` `5`: the load balancer
+  appends exactly `<client>,<lb-ip>`, and with hops 1 the key is its own address. That is the shape
+  `XFF_TRUSTED_HOPS=2` (the deploy PR) expects. **Stop** on any other shape (report the three
+  numbers; no address is in the line).
+
+Then Cloud Armor and the logs (each `gcloud logging read` prints the priority and outcome only,
+never `httpRequest`):
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' --resolve "api.ryftlab.de:443:$IP" \
+  "https://api.ryftlab.de/health/ready?q=1%27%20OR%20%271%27=%271"      # 200: the WAF is in preview
+curl -sS -o /dev/null -w '%{http_code}\n' --resolve "api.ryftlab.de:443:$IP" "https://api.ryftlab.de/health/ready"   # 200
+sleep 180
+L=(--project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=10m)
+gcloud logging read 'resource.type="http_load_balancer" AND jsonPayload.previewSecurityPolicy.outcome="DENY"' "${L[@]}" --limit=10 \
+  --format='value(timestamp,jsonPayload.previewSecurityPolicy.priority,jsonPayload.previewSecurityPolicy.outcome)'
+                                                    # one line: 1000 (sqli) DENY
+gcloud logging read 'resource.type="http_load_balancer" AND NOT jsonPayload.previewSecurityPolicy.outcome="DENY" AND NOT jsonPayload.enforcedSecurityPolicy.outcome="DENY"' \
+  "${L[@]}" --limit=100 --format='value(timestamp)' | wc -l             # 0: the plain request is not kept
+gcloud logging read 'logName="projects/ryftlab-prod/logs/run.googleapis.com%2Frequests" AND resource.labels.service_name=("api" OR "ingest") AND httpRequest.status<500' \
+  "${L[@]}" --limit=100 --format='value(timestamp)' | wc -l             # 0: api's and ingest's request log lands only for a 5xx
+
+# The one enforced rule: 400 requests in a few seconds, past its 300 per 10 s (far below the ban's 6,000 per 300 s).
+seq 400 | xargs -P 40 -I{} curl -s -o /dev/null -w '%{http_code}\n' --resolve "api.ryftlab.de:443:$IP" \
+  "https://api.ryftlab.de/v1/me" | sort | uniq -c                       # 401s, then 429s (the service's and Cloud Armor's)
+sleep 180
+gcloud logging read 'resource.type="http_load_balancer" AND jsonPayload.enforcedSecurityPolicy.priority=2000 AND jsonPayload.enforcedSecurityPolicy.outcome="DENY"' \
+  "${L[@]}" --limit=1000 --format='value(timestamp)' | wc -l             # more than 0: Cloud Armor's own 429s
+unset L
+```
+
+The kept entries (the preview match, Cloud Armor's 429s) hold your address, the URL and your user
+agent for 14 days: that is what D242 keeps, and only for flagged or denied requests (and, in Cloud
+Run's request log, for a 5xx of api or ingest). Cloud Armor
+counts approximately, so its 429s are roughly the requests past 300, not exactly 100.
+**Stop if** the probe isn't 200 (a WAF rule isn't in preview: check the plan's `preview`); no
+preview line appears after 10 minutes; either `wc -l` of the plain request or of Cloud Run's request
+log isn't 0 (an exclusion isn't working: every request's IP is being kept; go back to `off`, 16.8,
+and report it); or the burst's count is 0 (the rate rule doesn't act).
+
+**16.5 `live`.** Only after every 16.4 check passed. A PR with `edge = "live"`, one line, CI green.
+Have the deploy PR (16.6) open before you merge this one: it follows within the hour, but not
+before 10 minutes after the apply (twice the TTL), so no resolver still hands out the CNAME to the
+mappings, which the new ingress refuses. Its CI goes
+green only once `live` is on main (merge main into it then): `make cloudrun-check` refuses the load
+balancer's ingress while `edge` is `built`.
+
+```bash
+git switch main && git pull
+terraform -chdir=infra/gcp plan -out=edge-live.tfplan
+```
+
+```text
+# Step 16.5's plan (edge = live): 0 to add, 2 to change, 0 to destroy.
+#   ~ google_dns_record_set.host["api"]     type "CNAME" -> "A", rrdatas ["ghs.googlehosted.com."] -> ["<ip>"]
+#   ~ google_dns_record_set.host["ingest"]  the same                                                  = 2 to change
+```
+
+`type` isn't ForceNew in the provider: it writes the change as one Cloud DNS change that deletes the
+CNAME and adds the A, with no moment in between. No change to the mappings or anything else.
+**Stop if** the plan shows the two as `-/+` (2 to add, 2 to destroy): a delete, then a create, leaves
+a gap that resolvers cache as "no such name" for up to the zone's negative TTL. Report it; don't
+apply. **Stop** too if anything else changes, or the A's address isn't `terraform -chdir=infra/gcp
+output -raw edge_ip`.
+
+```bash
+terraform -chdir=infra/gcp apply edge-live.tfplan
+rm infra/gcp/edge-live.tfplan
+IP=$(terraform -chdir=infra/gcp output -raw edge_ip)
+for h in api ingest; do
+  [ "$(dig +short A "$h.ryftlab.de" @1.1.1.1)" = "$IP" ] && echo "$h: the edge" || echo "$h: NOT YET"
+done                                                                    # both "the edge" within 5 minutes (TTL 300)
+dig +short CNAME api.ryftlab.de @1.1.1.1                                # nothing
+```
+
+Then the uptime checks `ryft-api-ready` and `ryft-ingest-ready` green (Monitoring → Uptime checks,
+within 10 minutes), `make smoke-prod`, and the app (sign in, a sync). From now on, until the deploy
+PR, every request through the load balancer shares one per-address bucket per instance (D242):
+**merge the deploy PR** as soon as these pass and 10 minutes have gone by since the apply.
+**Stop if** a check is red after 15 minutes or the smoke fails: go back to `built` (16.8), which
+points DNS at the mappings again with their certificates still valid.
+
+**16.6 The deploy PR, 10 minutes to an hour after `live`'s apply.** In `deploy/run/api.yaml` and `ingest.yaml`
+`run.googleapis.com/ingress: internal-and-cloud-load-balancing`, and in `deploy/run/config.env`
+`XFF_TRUSTED_HOPS=2`, in one PR (`make cloudrun-check` allows them only while `edge` is `live` or
+`locked`). Its merge deploys them. Then:
+
+```bash
+PN=$(gcloud projects describe ryftlab-prod --format='value(projectNumber)')
+for s in api ingest; do
+  curl -sS -o /dev/null -w "%{http_code} $s run.app\n" "https://$s-$PN.europe-west1.run.app/health/ready"   # not 200: Google refuses it
+  curl -sS -o /dev/null -w "%{http_code} $s.ryftlab.de\n" "https://$s.ryftlab.de/health/ready"            # 200, through the edge
+done
+gcloud logging read 'resource.type="cloud_run_revision" AND jsonPayload.message="tick" AND (resource.labels.service_name="api" OR resource.labels.service_name="ingest")' \
+  --project=ryftlab-prod --freshness=20m --limit=10 --format='value(timestamp,resource.labels.service_name,jsonPayload.result)'
+                                                    # the next tick (every 15 minutes): api ok, ingest ok
+```
+
+Then step 9's forged-entry loop and query again, without `--resolve` (DNS points at the edge now):
+`picked` `xff`, `xff_index` `3`, `xff_entries` `5` on both, the client's own address is the key.
+The run's smoke must have passed (`gh run view <run id> -R timkrebs/ryft-platform`). The tick is a
+Pub/Sub push to `run.app`; Pub/Sub in the same project counts as internal for this ingress
+*(search: docs.cloud.google.com/run/docs/securing/ingress)*, which the tick line proves.
+**Stop if** `run.app` still answers 200 (the ingress didn't deploy); no `tick` line with `result`
+ok from api or ingest within 20 minutes (Pub/Sub's push is refused: revert the deploy PR at once,
+then report); `xff_index` isn't 3; or the smoke failed. The way back is reverting this PR, which
+sets both lines back together (16.8).
+
+**16.7 `locked`, after 7 clean days.** Clean: no stop above, no rollback, the uptime checks green,
+no 5xx alert, the dashboard's Cloud Armor tiles without denials of real users (429s at priority
+2000 for the app's own traffic), no tester locked out. A PR with `edge = "locked"`, one line
+(`make cloudrun-check` refuses it unless api and ingest both have the load balancer's ingress).
+
+```bash
+git switch main && git pull
+terraform -chdir=infra/gcp plan -out=edge-locked.tfplan
+```
+
+```text
+# Step 16.7's plan (edge = locked): 0 to add, 0 to change, 2 to destroy.
+#   - google_cloud_run_domain_mapping.host["api"], ["ingest"]                                 = 2 to destroy
+```
+
+**Stop if** anything else is destroyed or changes (the A records stay as they are).
+
+```bash
+terraform -chdir=infra/gcp apply edge-locked.tfplan
+rm infra/gcp/edge-locked.tfplan
+terraform -chdir=infra/gcp plan                     # No changes, and no domain_mappings_ready warning
+```
+
+Then the uptime checks green and `make smoke-prod`.
+
+**16.8 The way back, one step at a time** (each a PR of one line, its plan, the apply):
+- **`locked` → `live`:** 2 to add (the mappings), 0 to change, 0 to destroy. Their certificates
+  can't issue while DNS points at the load balancer, so `domain_mappings_ready` warns. Going on to
+  `built` points DNS at ghs again, and only then are the certificates issued (15 minutes to 24
+  hours): `api.` and `ingest.` fail TLS for that long. This is the one costly step, which is why
+  `locked` waits 7 clean days. Take it only if the edge itself is the problem.
+- **The deploy PR, reverted** (before `live` → `built`, which `make cloudrun-check` refuses while
+  the ingress is the load balancer's; and only after `locked` → `live`, since at `locked` the revert is
+  red): ingress `all` and `XFF_TRUSTED_HOPS=1` again. No Terraform. `locked` → `live` costs nothing
+  until you go on to `built`.
+- **`live` → `built`:** 0 to add, 2 to change (A back to CNAME, `ghs.googlehosted.com.`), 0 to
+  destroy (a `-/+` is a stop, as in 16.5). Clients follow within 5 minutes. Clean only while the
+  mappings' certificates still hold: in `live` they can't renew.
+- **`built` → `off`:** 0 to add, 2 to change (the sink loses its exclusions, the dashboard its
+  tiles), 26 to destroy (16.2's 26; the two APIs only leave the state and stay on). Nothing stateful:
+  the address is released, and a later `built` gets a new one. Cloud Run's request log is kept again
+  in full. 2a's `grep … || KEEP+=` line follows the committed gate by itself.
+
+**Enforcing a WAF rule** (one set at a time, from `live` on, in priority order: 1000 first). After 7
+days of real traffic with no preview match at its priority **on a request the backend answered
+below 400**. Scanners probe a public host every day, and their probes get 401 (no token) or 404, so
+"no match at all" would never come. The app's real requests carry a token and succeed: a match
+among those is a false positive that enforcing would turn into a `403` for a tester. The count
+prints no entry:
+
+```bash
+gcloud logging read 'resource.type="http_load_balancer" AND jsonPayload.previewSecurityPolicy.priority=1000 AND httpRequest.status<400' \
+  --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=7d --limit=100000 \
+  --format='value(timestamp)' | wc -l                # 0
+```
+
+The dashboard's "Cloud Armor: denials and preview matches" tile counts all of them, scanners
+included, so it is no substitute for this count. If the count isn't 0, the rule stays in preview for
+another 7 days.
+
+A PR sets that set's line in `local.edge_waf_preview` (`infra/gcp/edge.tf`) to `false`, and its pin in
+`tests/edge.tftest.hcl` (`the_policy`) with it. Its plan: 0 to add, 1 to change (the policy, in
+place: that rule's `preview` true → false), 0 to destroy. The way back is the same line back to
+`true`. From then on a match is a `403` and a `ryft_edge_denials` point at that priority.
+
 ### Deploy, roll back, rotate
 
 `deploy.yml` owns the revisions. It runs on every push to main and by hand (`workflow_dispatch`,
@@ -2215,7 +2610,9 @@ beyond the tokens (that's the user's call, in its own PR). To roll back, revert 
 ### The €20 stop line
 
 The budget "RYFT 50 EUR" emails, but it caps nothing (design §7). Max-instances is the hard cap.
-At €20 actual spend in a month (Billing → Reports, project `ryftlab-prod`):
+At €20 actual spend in a month (Billing → Reports, project `ryftlab-prod`), and **from
+`edge = "built"` on at €45**, the budget's own 90 % mail (the user's decision, D242; **With the
+edge**, below):
 
 ```bash
 for svc in api ingest; do
@@ -2283,8 +2680,19 @@ a failed step: `invite email purge failed` or `reconcile deletions`. Don't resum
 job on its own: the pause follows `public_invokers`, so the next apply pauses it again. The tick
 resumes with the undo above.
 
-An email of its own at €20 is optional. It is one more rule on the same budget:
-`gcloud billing budgets update "$BUDGET" --add-threshold-rule=percent=0.40` (step 3's `$BUDGET`).
+The €20 line has no email of its own: you read it off Billing → Reports. The budget's rules stay
+step 3's `0.1, 0.5, 0.9, 1.0`. If a `0.4` rule was added earlier (an older version of this page
+offered one), remove it: Billing → Budgets & alerts → "RYFT 50 EUR" → Edit → Actions, delete the
+40 % row, Save. Then step 3's `describe` must show `0.1, 0.5, 0.9, 1.0` again.
+
+**With the edge** (step 16, from `edge = "built"` on). The load balancer and Cloud Armor cost about
+€28 a month on their own, whatever the traffic (D242 → Cost, accepted by the user on 2026-11-19), so
+the edge alone would cross €20. **From `built` on the line is €45** (the user's decision, D242): that
+is the budget's existing 90 % mail, so no new rule. Back at `off` the line is €20 again. The
+commands above still close api and ingest: the load balancer calls Cloud Run without a token, as
+`allUsers`, so through it too everyone gets 403. But the load balancer keeps billing under the stop
+line. Cutting its cost is the edge's way back, one PR a step: `locked` → `live` (only if it is
+`locked`; 16.8's costly step), the deploy PR reverted, `live` → `built`, `built` → `off` (16.8).
 
 ### Dead letters and the outbox
 
@@ -2412,7 +2820,7 @@ query returns nothing, or 30 minutes after its data stops.
 | Policy | Fires when | First look |
 | --- | --- | --- |
 | RYFT · Uptime check failing (critical) | a check fails from 2 of its 3 locations for 10 minutes | the check's page (which location, which status or TLS error). `ryft-site-*`: Firebase Hosting and the `site` job of `deploy.yml` (Deploy, roll back, rotate → The site). `ryft-api-ready`, `ryft-ingest-ready`: the service's revisions and its log; `/health/ready` is the database behind it, so Supabase's status next |
-| RYFT · 5xx over 2 % (api, ingest) (critical) | 5xx above 2 % of a service's requests over 10 minutes, at least 3, held 10 minutes | Logs Explorer: `resource.type="cloud_run_revision" resource.labels.service_name="<service>" httpRequest.status>=500`, then the service's ERROR lines (the dashboard's logs panel). A deploy just before: roll back (Deploy, roll back, rotate) |
+| RYFT · 5xx over 2 % (api, ingest) (critical) | 5xx above 2 % of a service's requests over 10 minutes, at least 3, held 10 minutes | Logs Explorer: `resource.type="cloud_run_revision" resource.labels.service_name="<service>" httpRequest.status>=500` (Cloud Run's request log; from `edge = "built"` on it keeps api's and ingest's 5xx only, which is all this needs, D242), then the service's ERROR lines (the dashboard's logs panel). A deploy just before: roll back (Deploy, roll back, rotate) |
 | RYFT · Tick missing (critical; only while the tick runs) | a service without a tick of `result` ok for 45 minutes (three ticks), held 5 | Logs Explorer `jsonPayload.message="tick"` for the service: `result` error and its `err` name the step (the outbox sweep, the purges, the reconcile, a database that is down). No line at all: the Scheduler job `ryft-tick` (`gcloud scheduler jobs describe ryft-tick --location=europe-west1 --project=ryftlab-prod`), then the subscription `tick-<service>`. A `LOG_LEVEL` above `info` silences the line, and this policy with it |
 | RYFT · Dead letters held (warning) | a hold subscription (`dlq-*-hold`) holds a letter, held 5 minutes | `scripts/dlq.sh --project ryftlab-prod list`, the cause in the consumer's log by `messageId` (**Dead letters and the outbox**) |
 | RYFT · Event backlog over 15 minutes (warning) | an event subscription's oldest unacked event is over 15 minutes old, held 5 | the consumer's request log (429, 5xx) and its max instances; it dead-letters after 20 attempts, and then the policy above fires |
@@ -2567,7 +2975,7 @@ the gate let through carries `gate`. Its fields: `time`, `severity`, `message`, 
 `path`, `status`, `bytes`, `dur_ms`, `code` (a refused request's), `gate`, `request_id`,
 `client_request_id` (when the client sent one), `user_id`, `route` and `logging.googleapis.com/trace`.
 It holds no IP (D222). Cloud Run's own request log (`run.googleapis.com/requests`) does, in
-`httpRequest.remoteIp`, so both queries read only the services' stdout. The print leaves out
+`httpRequest.remoteIp` (from `edge = "built"` on, for api and ingest only a 5xx is kept, D242), so both queries read only the services' stdout. The print leaves out
 `user_id`, `request_id`, `client_request_id`, `path` (dates and resource ids), the trace, `status`,
 `bytes` and `dur_ms`. `route` is the pattern with its method (`GET /v1/days/{day}`).
 
@@ -2703,9 +3111,12 @@ done                                                          # 1, then 1
 for H in api.ryftlab.de ingest.ryftlab.de; do
   curl -4 -s -o /dev/null -w "%{http_code} warm-up $H\n" "https://$H/v1/me"   # wakes an instance (scale to zero)
   sleep 3                                                     # the bucket is full again after 2.5 s
+  t0=$(date +%s)
   seq 300 | xargs -P 20 -I{} curl -4 -s -o /dev/null \
     -w '%{http_code} retry-after=%header{retry-after} x-retry-in=%header{x-retry-in} bytes=%{size_download} %{content_type}\n' \
     "https://$H/v1/me" > "burst-$H.txt"
+  t=$(( $(date +%s) - t0 )); [ "$t" -gt 0 ] || t=1
+  echo "$H: 300 in about $t s ($(( 300 / t )) a second): about $(( 50 + 20 * t )) 401s for each instance that served it"
   cut -d' ' -f1,2 "burst-$H.txt" | sort | uniq -c             # the summary
   grep -m 2 '^429' "burst-$H.txt"                             # two refusals in full
   sleep 3; curl -4 -s -o /dev/null -w "%{http_code} after 3 s $H\n" "https://$H/v1/me"
@@ -2717,17 +3128,21 @@ What it should show, per host (the counts vary from run to run):
 
 ```text
 401 warm-up api.ryftlab.de
-  62 401 retry-after=
- 238 429 retry-after=1
+api.ryftlab.de: 300 in about 9 s (33 a second): about 230 401s for each instance that served it
+ 224 401 retry-after=
+  76 429 retry-after=1
 429 retry-after=1 x-retry-in=41.3ms bytes=17 text/plain; charset=utf-8
 429 retry-after=1 x-retry-in=12.9ms bytes=17 text/plain; charset=utf-8
 401 after 3 s api.ryftlab.de
 ```
 
 - The `401`s are the first 50 (the burst) plus about 20 for every second the burst took, for each
-  instance that served it. With api's concurrency of 40, one instance usually takes all of it, so
-  expect roughly 50 to 80 on api. Ingest's concurrency of 4 can start its second instance, so up to
-  about 160 there. Every other line is a `429`.
+  instance that served it: the printed `50 + 20 × t`. So the split depends on how fast your
+  connection sends the 300, not on a fixed range. The counts above are from the run of 2026-11-19 at
+  about 33 a second (api 224 and 76, ingest 176 and 124). With api's concurrency of 40 one instance
+  usually takes all of it, so api's `401`s are about the printed number or fewer. Ingest's
+  concurrency of 4 can start its second instance, so up to twice that there (never more than 300).
+  Every other line is a `429`.
 - Every `429` has `retry-after=1`, an `x-retry-in` under `50ms`, `bytes=17` (`Too Many Requests`) and
   `text/plain`. The `401`s are the ordinary answer to a request without a token (JSON).
 - `after 3 s` is `401` again: the limit has let go.
@@ -2736,13 +3151,15 @@ What it should show, per host (the counts vary from run to run):
 # 2b. Forged entries don't buy a bucket. The same burst, on api only, with two X-Forwarded-For lines of
 #     your own: a fixed one and a different IPv6 /64 per request. Google appends your real address; if a
 #     forged entry were the key, every request would have a fresh bucket and nothing would be refused.
-H=api.ryftlab.de; sleep 3
+H=api.ryftlab.de; sleep 3; t0=$(date +%s)
 seq 300 | xargs -P 20 -I{} curl -4 -s -o /dev/null \
   -H 'X-Forwarded-For: 192.0.2.1' -H 'X-Forwarded-For: 2001:db8:{}::1' \
   -w '%{http_code} retry-after=%header{retry-after}\n' "https://$H/v1/me" | sort | uniq -c
+t=$(( $(date +%s) - t0 )); [ "$t" -gt 0 ] || t=1; echo "about $t s: about $(( 50 + 20 * t )) 401s"
 ```
 
-The same split as step 2 (roughly 50 to 80 `401`s, the rest `429 retry-after=1`).
+About the same split as step 2's api line at the same pace (`401`s about `50 + 20 × t` for the
+seconds this burst took, the rest `429 retry-after=1`).
 
 ```bash
 # 3. No line of either service holds your address (D222). Cloud Run's own request log
@@ -2774,7 +3191,8 @@ refusals, each with `method`, `path`, `status` 429, `code`, `request_id` and no 
 
 **Stop if:**
 - **No `429` at all.** The limit isn't running: check step 1 and that the revision is the merge's.
-  Or the burst was too slow (fewer than ~100 requests a second): run it again from a wired connection.
+  Or the burst was too slow: when the printed `50 + 20 × t` is 300 or more (about 24 a second or
+  less, for each instance), nothing is refused. Run it again from a wired connection.
 - **2b refuses nothing, or far less than step 2.** A forged entry became the key: anyone can dodge
   this limit and `/v1/admin`'s (which read the header the same way before) by sending a new address
   each time. Report it with the two splits (no address needed): a PR that reads the header the way
