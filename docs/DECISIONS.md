@@ -5877,9 +5877,10 @@ _Grafana half superseded by D236._
 - **Context:** since D241 the server admits any confirmed Supabase account, and nothing tells the TestFlight app
   from a script with a valid session. The user decided on 2026-11-19: App Attest, yes; the contract first and docs
   only, so the app can start; the server in a brief of its own, shipped in mode `off`. The head architect's draft
-  is the base; every change to it is listed below with its reason. No external page was read in this run: there
-  was no web search tool, and `curl` needs approval. Apple's behaviour here is Apple's documentation as known
-  (*unverified*, listed below); the server PR checks it against a real device's attestation before `warn`.
+  is the base; every change to it is listed below with its reason. The contract's author read no external page:
+  there was no web search tool, and `curl` needs approval. Apple's behaviour was written from Apple's documentation
+  as known. The lead then confirmed part of it through search snippets on 2026-11-19 (*(search)*, listed below); the
+  rest stays *unverified*, and the server PR checks it against a real device's attestation before `warn`.
 - **Decision (the contract):** `API.md` → Conventions → App Attest, the Errors paragraph, the Swift mirror and the
   changelog of 2026-11-19:
   - `POST /v1/app-attest/challenge` (no body) → `200 {challenge, expires_at}`. Opaque, single use, for the account,
@@ -5935,6 +5936,16 @@ _Grafana half superseded by D236._
     `production,development`), api.
   - The code's defaults (local compose): `off`, no exempt user, `production,development`. The routes answer `501`
     without a ring.
+  - **No `warn` or `on` without the ring** (a requirement of the server PR). Without it every token would fail
+    and the routes would answer `501`, so the app would send no header. Under `on` that refuses every app
+    request, a lockout of everyone but the exempt routes and users. So:
+    - api and ingest refuse to start when `APP_ATTEST` is not `off` and `APP_ATTEST_TOKEN_KEYS` is missing,
+      empty or malformed (not 1 to 3 lines `<kid>:<32 bytes in base64>`, or a `kid` twice);
+    - `scripts/check_cloudrun.py` refuses the same in CI: `APP_ATTEST` other than `off` while the rendered api or
+      ingest has no `APP_ATTEST_TOKEN_KEYS` pinned to a version.
+    - **What the app sees meanwhile:** nothing new. A revision that refuses to start never takes traffic; Cloud Run
+      keeps serving the previous one, and `deploy.yml` goes red at the rollout. Under `off` without a ring, the
+      routes answer `501` and the app sends no header, which `off` doesn't read.
   - **Order** `off` → `warn` → `on`. The rollback is the line back.
 - **Exempt** (as written in `API.md`):
   - the health paths (`/health/live`, `/health/ready`, `/healthz`, `/readyz`) and `/metrics`: no bearer;
@@ -5949,6 +5960,9 @@ _Grafana half superseded by D236._
     not depend on Apple's service, the device, or the server's token path. A bug in the token path under `on` must
     never trap someone who wants out. They only remove, and they still need a valid session. A stolen session can
     already change the account's email at Supabase, so the exemption adds little to it;
+  - `DELETE /v1/devices/{id}/push` (the route in `cmd/api/main.go`; the lead's review): sign-out's
+    unregistering only removes a push token. A device that has no token at sign-out would otherwise keep
+    getting the account's pushes;
   - `POST /v1/feedback`: the report path has to work exactly when attestation fails. It is capped at 10 a day per
     account;
   - the accounts in `APP_ATTEST_EXEMPT_USERS`.
@@ -5972,7 +5986,7 @@ _Grafana half superseded by D236._
   5. The token answer gains `ttl_sec` (3600): the app counts the hour on its own clock, as with `GET /v1/config`'s
      `ttl_sec`, instead of comparing `expires_at` with a device clock that may be off.
   6. The exemptions above: all of `/v1/admin/*` and not only the key; the three data-subject routes;
-     `POST /v1/feedback`.
+     `DELETE /v1/devices/{id}/push`; `POST /v1/feedback`.
   7. The three routes are outside the beta gate. Under `BETA_GATE=on`, `POST /v1/me/invite` needs a token and a
      token needs the routes, so a gated route would be a deadlock. The `invite_required` row's route list gains
      them in the server PR.
@@ -5986,10 +6000,23 @@ _Grafana half superseded by D236._
       deletion: data minimisation. The app's `app_attest_key_unknown` path covers it, and a TestFlight build expires
       in 90 days anyway.
   11. Development attestations are a config list, `APP_ATTEST_ENVIRONMENTS`, `production` on GCP. The app sets the
-      entitlement to `production` in every build that talks to production, so a debug build from Xcode attests too
-      *(unverified)*.
+      entitlement to `production` in every build that talks to production, so a debug build from Xcode attests in
+      production too *(search, the lead, 2026-11-19)*. TestFlight, App Store and Enterprise builds use production
+      whatever the entitlement says.
   12. Until the privacy text names App Attest, the routes answer `501` (no ring). So nothing is stored before the
       text is in force, and the app, which calls the challenge route first, never attests at Apple before then.
+- **Changed in the lead's review (2026-11-19):**
+  - **Refused writes are kept.** `app_attest_required` never drops a queued write and never commits a HealthKit
+    anchor: the app holds them as for a gate, renews once and sends again (`API.md` → Errors → App Attest, and the
+    app's rules). Today's app drops a queued Train write on a `403` with a code it doesn't know
+    (`../app/Ryft/Train/TrainSyncService.swift`, `isRetryable`). Under `on`, an old build loses its unsent
+    `PUT /v1/sessions/{id}` and `POST /v1/sessions/{id}/complete`, so the stop rule for `on` counts `missing` lines
+    from app builds (below).
+  - **No `warn` or `on` without the ring:** a start refusal and a `check_cloudrun.py` rule (Modes above).
+  - **One renewal per account and key at a time.** Requests refused meanwhile wait for it, so assertion counters
+    don't collide and re-attestations don't use up `POST /v1/app-attest/keys`' 10 a day.
+  - `DELETE /v1/devices/{id}/push` is exempt (above).
+  - The signature check and the extension's structure are written out in `API.md` (the token and keys routes).
 - **The checkers (this PR is docs only):**
   - `TestAPIDocExamples` (`backend/internal/model/apidoc_examples_test.go`) needs a `model` type for every fenced
     `json` block. Its mechanism for a documented type the code lacks (`docExampleAllowList` with `missingType`) is an
@@ -6032,17 +6059,30 @@ _Grafana half superseded by D236._
 - **Stop rules** (proposed; the server PR writes them into OPERATIONS → GCP):
   - `off` → `warn`: the text is in force, the ring is set, the attesting build is on TestFlight, and the operator's
     own device shows accepted tokens (its lines carry no `app_attest`).
-  - `warn` → `on`: 7 days of warn lines with nothing but known non-app clients (the simulator), every tester on the
-    attesting build (TestFlight's list), and `make smoke-prod` green.
-- **Unverified (Apple, as known; no page was read):**
-  - the attestation's seven steps, the OID, the nonce, the AAGUIDs `appattestdevelop` and `appattest` + seven `0x00`;
-  - counter 0 at attestation and a rising counter on assertions;
-  - that the assertion's signature is ECDSA P-256 in DER over `nonce`, verified with SHA-256 (the server PR pins it
-    with a real assertion);
+  - `warn` → `on`:
+    - **zero `missing` warn lines from app builds for 7 days in a row**. A request from an app build carries
+      `X-RYFT-Device-ID`: every build sends it on every request (`APIClient.swift`), and scripts don't. So the warn
+      line records whether that header was present, as a boolean, never its value (the server PR). A request without
+      a token from an app build is a write that an old build would lose under `on`;
+    - nothing else but known non-app clients (the simulator);
+    - every tester on the attesting build (TestFlight's list);
+    - `make smoke-prod` green.
+- **Confirmed by search snippets (the lead, 2026-11-19, *(search)*: Apple's "Validating apps that connect to your
+  server" and "Preparing to use the App Attest service", and reference implementations):**
+  - the nonce = SHA-256(`authData` ‖ SHA-256(challenge)) in the OID `1.2.840.113635.100.8.2`;
+  - counter 0 at attestation;
+  - the AAGUIDs `appattestdevelop` and `appattest` + seven `0x00`;
+  - an assertion's counter must exceed the stored one;
+  - TestFlight, App Store and Enterprise builds always use production, whatever the entitlement says; the
+    entitlement `production` makes a development build use production too;
+  - development keys and receipts don't work in production, nor the reverse.
+- **Unverified (Apple, as known; no page was read by the author):**
+  - the rest of the attestation's seven steps (the chain, the key id against the certificate's key and the
+    credential id, the RP ID hash), and the extension's structure `SEQUENCE { [1] { OCTET STRING } }`;
+  - that the assertion's signature is ECDSA P-256 in DER over the message `nonce` with SHA-256, i.e.
+    `ecdsa.VerifyASN1(pub, sha256(nonce), sig)` (the server PR pins it with a real assertion);
   - that "SHA-256 of the public key" means the 65-byte uncompressed point;
   - that `generateKey`'s id is standard base64 with padding;
-  - that TestFlight and App Store builds always attest in production, that Xcode builds attest in development unless
-    the entitlement says `production`, and that a development-signed build may set it;
   - `DCError.invalidKey` after a reinstall or a restore onto another device; `serverUnavailable` → the same key
     later; any other error → a new key; whether an attested key can be attested again;
   - that `generateAssertion` needs no network, and works in the background (HealthKit's background delivery);
@@ -6057,7 +6097,10 @@ _Grafana half superseded by D236._
       assertion) and the token functions with a calibration test of the format;
     - a migration of `app_attest_keys` and `app_attest_challenges` (only the challenge's SHA-256 stored), grants, RLS,
       the deletion and the merge;
-    - the middleware in api and ingest, with tests for each exempt route and for the order (`401` before `403`);
+    - the middleware in api and ingest, with tests for each exempt route and for the order (`401` before `403`).
+      `POST /v1/train/import` sits outside the `/v1/` chain (`importRoute`, `cmd/api/main.go`), as `DELETE /v1/me`
+      does, so the server PR wires the check into it itself, with a test that it answers `app_attest_required`;
+    - the start refusal without a ring and its `check_cloudrun.py` rule;
     - the `model.Code*` constants, Errors' rows, the mirror's cases and the model types;
     - `deploy/run/config.env`, `scripts/cloudrun_render.py` and `scripts/check_cloudrun.py` (the keys, the pin, the
       order rule), and the secret's container in `infra/gcp` (the user's Terraform);

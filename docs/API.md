@@ -112,10 +112,15 @@ not keeps working. `GET /v1/me/sync` → `gate` says the same.
 and send the request again once), and on `/v1/app-attest/*` only `app_attest_challenge_invalid`
 (`422`), `app_attest_invalid` (`422`) and `app_attest_key_unknown` (`404`). No route answers them
 yet; they join the two tables here, the `invite_required` row's list of routes and the mirror's
-`APIErrorCode` in the server's PR, together with the constants the tests compare them with. A
-build that does not know `app_attest_required` decodes it as no `code`, which reads as the `403`
-of a built-in: it never signs out on it. `app_attest_required` is not a gate in the sense above:
-it never appears in `X-RYFT-Gate` or `GET /v1/me/sync` → `gate`.
+`APIErrorCode` in the server's PR, together with the constants the tests compare them with.
+**`app_attest_required` never drops a queued write and never commits a HealthKit anchor:** the
+`403` row's "drop the edit" is for a `403` without a `code` only. The app holds a refused Train write
+or sync page as it does for a gate, renews the token once, and sends it again. A build that does not
+know `app_attest_required` decodes it as no `code`, which reads as the `403` of a built-in: it never
+signs out on it, but **today's builds drop a queued Train write** (`PUT /v1/sessions/{id}`,
+`POST /v1/sessions/{id}/complete`) on such a `403`, so under `on` an old build loses its unsent
+sessions (Conventions → App Attest → Old builds). `app_attest_required` is not a gate in the sense
+above: it never appears in `X-RYFT-Gate` or `GET /v1/me/sync` → `gate`.
 
 | Status | `code` | When | Do |
 | --- | --- | --- | --- |
@@ -198,7 +203,8 @@ app attests a key once per account and install, then trades a signed assertion f
 
 1. After sign-in, when `DCAppAttestService.shared.isSupported` is true and this account has no key on
    this install: `POST /v1/app-attest/challenge`. A `404` or `501` means App Attest is not live: send
-   no `X-RYFT-App-Token` and try again at the next launch. Nothing else is called before that answer.
+   no `X-RYFT-App-Token` and try again at the next launch. No `generateKey()` and no `attestKey` before a
+   `200` from this route.
 2. `generateKey()` gives the `key_id`. `attestKey(key_id, clientDataHash:)` with the challenge (rules
    below), then `POST /v1/app-attest/keys`. Keep the `key_id` with the account it was made for.
 3. Right after step 2, when the token has less than 5 minutes left, and after a
@@ -245,8 +251,10 @@ gates, the routing and the body.
 - every `/v1/admin/*` route and method, with either bearer, preflights included: the site's
   `https://ryftlab.de/admin` page calls them from a browser, and the operator's scripts with the key;
 - `POST /v1/app-attest/challenge`, `POST /v1/app-attest/keys`, `POST /v1/app-attest/token`;
-- `DELETE /v1/me` and `POST /v1/me/apple-authorization` (erasure, and its Apple half), and
-  `DELETE /v1/me/consent` (withdrawal): they work from any signed-in client;
+- `DELETE /v1/me` and `POST /v1/me/apple-authorization` (erasure, and its Apple half),
+  `DELETE /v1/me/consent` (withdrawal) and `DELETE /v1/devices/{id}/push` (sign-out's unregistering,
+  so a device without a token stops getting pushes): they only remove, and work from any signed-in
+  client;
 - `POST /v1/feedback`, so a tester can still report that the app cannot verify itself;
 - the accounts listed in `APP_ATTEST_EXEMPT_USERS` (the smoke user of `make smoke-prod` and
   `deploy.yml`), on every route.
@@ -261,9 +269,16 @@ Everything else on api and ingest needs the token under `on`: `POST /v1/sync`, `
   this install) and send the request again, once. Refused again: stop, and show the problem with its
   `request_id`; no loop. When `isSupported` is false, don't try: say that this device cannot verify the
   app.
-- **One App Attest call at a time per key.** The server accepts an assertion only when its counter is
-  above the last one it accepted for the key, so two token requests in flight for one key can refuse one
-  of them (`app_attest_invalid`).
+- **Never lose a write on it.** A queued Train write (`PUT /v1/sessions/{id}`,
+  `POST /v1/sessions/{id}/complete`, plans, journal) or a sync page refused with `app_attest_required`
+  stays queued, as for `invite_required` or `consent_required`: no "drop the edit", and no HealthKit
+  anchor is committed for a refused page. It is sent again once a token is had, and kept for later if
+  the renewal fails.
+- **One renewal per account and key at a time.** While a token is being renewed (or a key attested),
+  every request refused with `app_attest_required` waits for that renewal and is then sent again with
+  its token; none starts a renewal of its own. The server accepts an assertion only when its counter is
+  above the last one it accepted for the key, so two renewals in flight can refuse one of them
+  (`app_attest_invalid`), and a re-attestation each would use up `POST /v1/app-attest/keys`' budget.
 - **One key per account on each install.** Keep the `key_id` across launches (the Keychain is fine). After
   a sign-in as another account, make that account its own key.
 - **`DCError` from the framework** *(Apple's guidance as known, unverified, D245)*: `invalidKey` from
@@ -273,14 +288,19 @@ Everything else on api and ingest needs the token under `on`: `POST /v1/sync`, `
   `generateAssertion` needs no network.
 - **No App Attest** (the Simulator, `isSupported` false): no key, no header. Under `warn` the server only
   logs it; under `on` every route the check covers answers `403 app_attest_required`.
-- **Environment.** TestFlight and App Store builds attest in Apple's **production** environment; a build
-  run from Xcode attests in **development** unless its entitlement
-  `com.apple.developer.devicecheck.appattest-environment` is `production` *(unverified)*. The production
-  servers accept production attestations only, so every build that talks to `https://api.ryftlab.de`
-  sets the entitlement to `production`.
+- **Environment** *(Apple's documentation through search snippets, D245)*. TestFlight, App Store and
+  Enterprise builds always attest in Apple's **production** environment, whatever the entitlement says; a
+  build run from Xcode attests in **development** unless its entitlement
+  `com.apple.developer.devicecheck.appattest-environment` is `production`, which makes it use production
+  too. The production servers accept production attestations only, so every build that talks to
+  `https://api.ryftlab.de` sets the entitlement to `production`. A key from one environment does not
+  work in the other: after a change of the entitlement, make a new key.
 - **Old builds** send no header. Under `off` and `warn` nothing changes for them. Under `on` every route
   the check covers answers them `403` with a `code` they do not know, which they read as no `code` (the
-  "built-in" `403`) and never as a sign-out; `on` comes only once every tester runs a build that attests.
+  "built-in" `403`) and never as a sign-out. They then **drop every queued Train write** they send
+  (`PUT /v1/sessions/{id}`, `POST /v1/sessions/{id}/complete`): those sessions are lost, not deferred.
+  So `on` comes only once the `warn` lines show no request without a token from an app build for days
+  (D245's stop rule), not merely once every tester could have updated.
 
 #### `POST /v1/app-attest/challenge` — a one-time challenge
 
@@ -331,8 +351,8 @@ apps that connect to your server"; any failure is `422 app_attest_invalid`):
 1. `attestation` is a CBOR map with `fmt` `"apple-appattest"`, `attStmt` (`x5c`, `receipt`) and `authData`;
 2. `x5c` (the credential certificate, then the intermediate) chains to Apple's App Attestation Root CA,
    which the server holds: it calls nobody;
-3. the credential certificate's extension `1.2.840.113635.100.8.2` holds `nonce` = SHA-256(`authData` ‖
-   `clientDataHash`);
+3. the credential certificate's extension `1.2.840.113635.100.8.2` is a DER `SEQUENCE { [1] { OCTET STRING
+   nonce } }`, and that octet string equals `nonce` = SHA-256(`authData` ‖ `clientDataHash`);
 4. SHA-256 of that certificate's public key (the uncompressed P-256 point) is `key_id` decoded, and so is
    the credential id in `authData`;
 5. the RP ID hash in `authData` is SHA-256 of the App ID `M77SKHKG63.dev.timkrebs.ryft`;
@@ -373,8 +393,9 @@ order (any failure after step 1 is `422 app_attest_invalid`):
 1. `key_id` is one of the account's keys (else `404 app_attest_key_unknown`), and the challenge is valid
    (else `422 app_attest_challenge_invalid`);
 2. `assertion` is a CBOR map with `signature` and `authenticatorData`;
-3. `signature` (ECDSA P-256, DER) verifies with the key's stored public key over `nonce` =
-   SHA-256(`authenticatorData` ‖ `clientDataHash`);
+3. `signature` (ECDSA P-256, ASN.1 DER) verifies with the key's stored public key as a signature of the
+   message `nonce` = SHA-256(`authenticatorData` ‖ `clientDataHash`) under ECDSA with SHA-256: the digest
+   checked is SHA-256(`nonce`), in Go `ecdsa.VerifyASN1(pub, sha256(nonce), signature)`;
 4. the RP ID hash in `authenticatorData` is SHA-256 of the App ID;
 5. the counter in `authenticatorData` is above the last one accepted for the key (the first assertion's:
    above 0); the server keeps the new one.
@@ -389,7 +410,8 @@ order (any failure after step 1 is `422 app_attest_invalid`):
 
 They are api routes behind the bearer, outside the beta gate (they never answer `invite_required`) and
 outside the consent gate. The Conventions apply (64 KiB bodies, unknown fields `400`, `X-Request-ID`, the
-per-address limit); instead of the per-user budget each has its own (`429` row).
+per-address limit and the per-user limit of every `/v1/*` route); on top of those, each has its own
+budget per account (`429` row).
 
 | Status | `code` | When | App should |
 | --- | --- | --- | --- |
@@ -3401,7 +3423,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
-| 2026-11-19 | **App Attest: the contract, not served yet** (D245; platform PR `docs: the App Attest contract`; the user's decision of 2026-11-19, no `API_REQUESTS.md` entry). Additive; docs only, so the app can build it before the server has it. **New:** Conventions → [App Attest](#app-attest): `POST /v1/app-attest/challenge` (`200 {challenge, expires_at}`: opaque, single use, 5 minutes, for the account), `POST /v1/app-attest/keys` (`{key_id, attestation, challenge}` → `201 {key_id}`; Apple's attestation checks, production attestations only on the production servers), `POST /v1/app-attest/token` (`{key_id, challenge, assertion}` → `200 {token, expires_at, ttl_sec}`, one hour; the assertion's counter must rise); the request header `X-RYFT-App-Token` on every request to both hosts; the byte-exact rules (`clientDataHash` = SHA-256 of the challenge string's UTF-8 bytes for both steps; `key_id` and the CBOR blobs in standard base64). **Codes** (Errors → App Attest; not in the `code` table until the server sends them): `app_attest_required` (`403` on every route the check covers: get a new token, send again once), `app_attest_challenge_invalid` (`422`), `app_attest_invalid` (`422`), `app_attest_key_unknown` (`404`, `POST /v1/app-attest/token` only). **Exempt:** the health paths, `POST /internal/tick`, all of `/v1/admin/*`, the three App Attest routes, `DELETE /v1/me`, `POST /v1/me/apple-authorization`, `DELETE /v1/me/consent`, `POST /v1/feedback`, and the accounts in `APP_ATTEST_EXEMPT_USERS` (the smoke user). **Behaviour:** none yet. Today `POST /v1/app-attest/challenge` is `404` and the header is ignored; the server's PR ships in mode `off` (served, header not read), then `warn` (served, logged), then `on` (`403 app_attest_required`), each a one-line PR; until the privacy text names App Attest the routes answer `501`. **Old builds:** nothing changes under `off` and `warn`; under `on` they get a `403` with a `code` they don't know (read as no `code`, never a sign-out), so `on` waits until every tester runs an attesting build. **The app:** attest once per account and install after sign-in (only after `POST /v1/app-attest/challenge` answered `200`; `404` or `501`: no header, try at the next launch), get a token, send it on every request, renew it with 5 minutes left by `ttl_sec`, on `app_attest_required` get a new one once, on `app_attest_key_unknown` attest again, one App Attest call at a time per key, no header without App Attest; set the App Attest entitlement to `production`. **Swift:** `AppAttestChallenge`, `AppAttestKeyPost`, `AppAttestKey`, `AppAttestTokenPost`, `AppAttestToken`; the four `APIErrorCode` cases join the mirror with the server's PR (the app may add them now). The examples are `http` blocks until the server has the model types (D245). |
+| 2026-11-19 | **App Attest: the contract, not served yet** (D245; platform PR `docs: the App Attest contract`; the user's decision of 2026-11-19, no `API_REQUESTS.md` entry). Additive; docs only, so the app can build it before the server has it. **New:** Conventions → [App Attest](#app-attest): `POST /v1/app-attest/challenge` (`200 {challenge, expires_at}`: opaque, single use, 5 minutes, for the account), `POST /v1/app-attest/keys` (`{key_id, attestation, challenge}` → `201 {key_id}`; Apple's attestation checks, production attestations only on the production servers), `POST /v1/app-attest/token` (`{key_id, challenge, assertion}` → `200 {token, expires_at, ttl_sec}`, one hour; the assertion's counter must rise); the request header `X-RYFT-App-Token` on every request to both hosts; the byte-exact rules (`clientDataHash` = SHA-256 of the challenge string's UTF-8 bytes for both steps; `key_id` and the CBOR blobs in standard base64). **Codes** (Errors → App Attest; not in the `code` table until the server sends them): `app_attest_required` (`403` on every route the check covers: get a new token, send again once), `app_attest_challenge_invalid` (`422`), `app_attest_invalid` (`422`), `app_attest_key_unknown` (`404`, `POST /v1/app-attest/token` only). **Exempt:** the health paths, `POST /internal/tick`, all of `/v1/admin/*`, the three App Attest routes, `DELETE /v1/me`, `POST /v1/me/apple-authorization`, `DELETE /v1/me/consent`, `DELETE /v1/devices/{id}/push`, `POST /v1/feedback`, and the accounts in `APP_ATTEST_EXEMPT_USERS` (the smoke user). **Behaviour:** none yet. Today `POST /v1/app-attest/challenge` is `404` and the header is ignored; the server's PR ships in mode `off` (served, header not read), then `warn` (served, logged), then `on` (`403 app_attest_required`), each a one-line PR; until the privacy text names App Attest the routes answer `501`. **Old builds:** nothing changes under `off` and `warn`; under `on` they get a `403` with a `code` they don't know (read as no `code`, never a sign-out) and drop their queued Train writes (`PUT /v1/sessions/{id}`, `POST /v1/sessions/{id}/complete`), so `on` waits until the `warn` lines show no request without a token from an app build for 7 days. **The app:** attest once per account and install after sign-in (only after `POST /v1/app-attest/challenge` answered `200`; `404` or `501`: no header, try at the next launch), get a token, send it on every request, renew it with 5 minutes left by `ttl_sec`, on `app_attest_required` get a new one once and keep the refused write queued (never drop it, never commit its HealthKit anchor), on `app_attest_key_unknown` attest again, one renewal per account and key at a time (refused requests wait for it), no header without App Attest; set the App Attest entitlement to `production`. **Swift:** `AppAttestChallenge`, `AppAttestKeyPost`, `AppAttestKey`, `AppAttestTokenPost`, `AppAttestToken`; the four `APIErrorCode` cases join the mirror with the server's PR (the app may add them now). The examples are `http` blocks until the server has the model types (D245). |
 | 2026-11-18 | **The per-address limit is enforced by api and ingest on GCP** (D53, D240; platform PR `backend: the per-IP limit in api and ingest`). Documentation of behaviour that held on EKS and is true again on Cloud Run; the values and the answer are unchanged. Each client address (an IPv6 address by its /64) gets 20 requests a second, bursts of 50, counted per instance, before any token is checked, on every route of `https://api.ryftlab.de` and `https://ingest.ryftlab.de` except the health paths (`/health/live`, `/health/ready`). Over it: `429` with the plain-text body `Too Many Requests` (`text/plain; charset=utf-8`; no JSON and no `request_id` in the body, `X-Request-ID` and the response headers as on every answer, no CORS headers), `Retry-After` (the delay rounded up, at least 1: usually 1) and `X-Retry-In` (the delay as a Go duration, e.g. `37.5ms`; informative). The limit ran in Traefik at the edge and now runs in the services, so Conventions → Rate limits names it, and Errors → `429` and Admin routes → CORS no longer say "the edge"; a preflight counts like any request. **Fields:** none added, renamed or removed. **The app:** nothing; it already handles a non-JSON `429` with `Retry-After`. **Swift:** none. |
 | 2026-11-16 | **Product analytics: `GET /v1/config` → `analytics` and the flag `analytics.enabled`** (D231; platform PR `config: analytics`). Additive. **Fields:** `RemoteConfig.analytics`, always present: `{"host": "https://eu.i.posthog.com", "project_key": "phc_…"}` (PostHog EU Cloud), or `null` while the server has no project key (until the operator stores it, and in local compose). **Flag:** `analytics.enabled`, shipped enabled at 0 %: on only for allow-listed testers, like `train.import`. The two are independent; nothing else changes. **The app:** decode `analytics` as optional; send events only while `flags["analytics.enabled"]` is `true`, `analytics` is not `null` and the user opted in (off by default); take the host and the key from the newest config, never from the build, and never log the key; when any of the three stops holding, stop sending and drop the queue. The event list, the pseudonymous identifier and the opt-in are the app's analytics plan (decisions 4–6). **Swift:** `AnalyticsConfig`, `RemoteConfig.analytics`. |
 | 2026-11-16 | **Docs only: the privacy policy is published in English only** (web D18; platform PR `web: english only`). `GET /v1/config` → `privacy_policy_url` is unchanged (`https://ryftlab.de/privacy`); its note said "in German and English" and now says English. The site's German pages are gone; `/de`, `/de/privacy`, `/de/terms` and `/de/impressum`, which older app builds link, answer `301` to the English page. **Fields:** none added, renamed or removed; `privacy_policy_version` is unchanged (`2026-10-26`). **The app:** nothing required; a build that links `/de/…` lands on the English page. **Swift:** none. |
