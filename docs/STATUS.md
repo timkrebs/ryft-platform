@@ -94,6 +94,9 @@ first. Otherwise the `live` push also runs the web jobs, since `ci.yml` still di
 green commit. Nothing to run otherwise. OPERATIONS → GCP → Deploy, roll back, rotate → The site →
 **What CI checks on main**.
 
+**Seen working (2026-11-19):** #216's push, the first non-web push after the merge, skipped `web-checks`
+and `web-e2e`.
+
 ## `BETA_GATE` off: no invite codes (2026-11-18; #212, merged 2026-11-19)
 
 Your decision (D241, amends D238): the beta has no invite codes. `deploy/run/config.env` sets
@@ -119,7 +122,25 @@ done                                                    # api off, ingest off
 
 Rollback: a PR of the same line back to `warn`.
 
-## The edge: a load balancer with Cloud Armor for api and ingest (2026-11-18, D242; decided 2026-11-19)
+## The edge: a load balancer with Cloud Armor for api and ingest (2026-11-18, D242; `live` 2026-11-19)
+
+**At `live`, with the deploy PR merged (2026-11-19).** Your runs (OPERATIONS → GCP → 16):
+- **`built` (#214):** applied. 16.3 done: the default compute account's Editor removed and the account
+  disabled, its four firewall rules and the network `default` deleted. 16.4 passed: both certificates
+  ACTIVE; through `--resolve` `200`, the `301` redirect, TLS 1.2 `200`, TLS 1.1 refused; 33 MiB our JSON
+  `413`, 31 MiB our JSON; XFF `4 5` on both; the WAF probe flagged in preview (`1000 DENY`), both
+  exclusions held (0 and 0); 89 of Cloud Armor's own 429s in the burst.
+- **`live` (#216):** applied in place (0/2/0, CNAME → A). `api.` and `ingest.` resolve to the edge, the
+  uptime checks were green, `make smoke-prod` passed and the app works.
+- **The deploy PR (#217, merged 13:01Z, within the window):** api and ingest have ingress
+  `internal-and-cloud-load-balancing` and `XFF_TRUSTED_HOPS=2`. `run.app` refuses direct calls, XFF
+  without `--resolve` is `3 5` on both, and the 13:15Z tick was ok on api and ingest.
+
+**Needs you, next** (each in OPERATIONS → GCP → 16, with its expected counts and stop rule):
+1. **16.7 `locked`** on or after **2026-11-26**, if the 7 days are clean (0/0/2, the mappings).
+2. Then **each WAF rule enforced** after 7 days in preview, one at a time in priority order (1000
+   first), once **Enforcing a WAF rule**'s read 1 lists no real-traffic match at its priority (a line in
+   `edge.tf` and its test pin, 0/1/0). The read covers all six rules at once.
 
 **Built in #213 (merged 2026-11-19) with `edge = "off"`, so its merge planned
 nothing new** (0 to add, 0 to change, 0 to destroy, and two moves of `api.`'s and `ingest.`'s record
@@ -153,23 +174,6 @@ log of api and ingest is excluded below 5xx** (with `built`); **about €28 a mo
 rules, $5 the policy, $8 its 8 rules (preview rules are billed too), under $1 requests and data (D242 →
 Cost; prices from search results).
 
-**Done:** #212 (`BETA_GATE` off), #213 (the edge, gate `off`) and #214 (gate `built`) are merged. The
-applies below are yours, and this file doesn't record them: skip any step you've already run.
-
-**Needs you, in order** (each in OPERATIONS → GCP → 16, with its expected counts and stop rule):
-1. **16.0:** #213's plan (0/0/0 and the two moves), applied once, before `built`'s.
-2. **16.1:** the three roles for `hcp-terraform-apply` and the permission checks.
-3. **16.2–16.4 `built`:** #214 is merged. Plan (26 to add, 2 to change, 0 to destroy) and apply. **Right
-   after**, 16.3: the Compute Engine default account's Editor removed, the account disabled, the
-   network `default` and its firewall rules deleted; then the checks (certificates ACTIVE, the
-   `--resolve` requests, 33/31 MiB, the XFF shape `xff_index 4` of 5, the WAF probe, nothing else kept).
-4. **16.5 `live`** (0/2/0; a `-/+` is a stop), then **16.6 the deploy PR**, 10 minutes to an hour
-   after the apply: ingress `internal-and-cloud-load-balancing` and `XFF_TRUSTED_HOPS=2` (until it is
-   deployed, every request through the edge shares one bucket per instance).
-5. **16.7 `locked`** after 7 clean days (0/0/2, the mappings).
-6. WAF rules enforced one by one, each after 7 days without a preview match on a request the backend
-   answered below 400 (scanners' 401s and 404s don't count; a line in `edge.tf` and its test pin, 0/1/0).
-
 **Privacy:** from `built` on, the privacy text (C2, not this PR) must name (D242 → Privacy): the load
 balancer's and Cloud Armor's logs, only for denied or flagged requests; Cloud Run's request log, only
 for 5xx; the IP, the URL and the user agent; 14 days. Design §8's "every API request's IP in Google's
@@ -186,16 +190,16 @@ change):
 - `429` `Too Many Requests` with `Retry-After` and `X-Retry-In`;
 - exempt: the health paths, the tick, and `ADMIN_API_KEY` on `/v1/admin/*`.
 The client is the `XFF_TRUSTED_HOPS`-th `X-Forwarded-For` entry from the right, not counting Google's front-end
-hops. It is 1 today and a new required key of `deploy/run/config.env`. Keys are HMACs, with at most 65,536 per
-instance. `/v1/admin`'s limit shares the same client function and capped limiter. No address appears in logs or
+hops. It has been 2 since the edge's deploy PR (#217, 2026-11-19; 1 before) and is a required key of
+`deploy/run/config.env`. Keys are HMACs, with at most 65,536 per instance. `/v1/admin`'s limit shares the same client function and capped limiter. No address appears in logs or
 labels (D222).
 
 Done on 2026-11-19 (OPERATIONS → GCP → **The per-IP limit**): hops 1 on both; api 224 `401` and 76 `429`
 (`retry-after=1`, 17 bytes, `text/plain`), ingest 176 and 124; `401` again after 3 s; forged
 `X-Forwarded-For` lines 231 and 69, the same split; 145 `ip_limit` access lines on api, 124 on ingest;
 the address and its /24 in the services' logs 0 and 0. #213 (merged) made the runbook's expected split follow the
-burst's pace (`50 + 20 × t`, printed by the commands) instead of a fixed range. After `live`, the
-edge's deploy PR (runbook 16.6) sets `XFF_TRUSTED_HOPS=2` together with ingress
+burst's pace (`50 + 20 × t`, printed by the commands) instead of a fixed range. The edge's deploy
+PR (#217, runbook 16.6, merged 2026-11-19) set `XFF_TRUSTED_HOPS=2` together with ingress
 `internal-and-cloud-load-balancing`.
 
 ## Beta readiness, the platform's must-haves (2026-11-18)
