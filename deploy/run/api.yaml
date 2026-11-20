@@ -56,6 +56,12 @@ spec:
             - { name: PRIVACY_POLICY_URL, value: "https://ryftlab.de/privacy" }
             - { name: BETA_GATE, value: "${BETA_GATE}" }
             - { name: XFF_TRUSTED_HOPS, value: "${XFF_TRUSTED_HOPS}" }
+            # App Attest (D245, D247): the mode and the exempt accounts from config.env. The ring's row comes
+            # with the warn flip, in ingest.yaml too, at the version Secret Manager gave it (by number):
+            #   { name: APP_ATTEST_TOKEN_KEYS, valueFrom: { secretKeyRef: { name: app-attest-token-key, key: "<n>" } } }
+            # Without it the three routes answer 501, and warn or on refuse to start (check_cloudrun.py refuses them).
+            - { name: APP_ATTEST, value: "${APP_ATTEST}" }
+            - { name: APP_ATTEST_EXEMPT_USERS, value: "${APP_ATTEST_EXEMPT_USERS}" }
             - { name: ADMIN_WEB_ORIGINS, value: "https://ryftlab.de" }
             - { name: ADMIN_API_KEY, valueFrom: { secretKeyRef: { name: admin-api-key, key: "1" } } }
             - { name: APPLE_TEAM_ID, value: M77SKHKG63 }

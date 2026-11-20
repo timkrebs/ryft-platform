@@ -12,7 +12,7 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 | `project.tf` | the API keep list (`google_project_service`, `disable_on_destroy = false`; 16, and Compute Engine and Certificate Manager from `edge = "built"` on), Data Access audit logs (`DATA_READ`) for Secret Manager, STS and IAM credentials (every secret read and token mint), the Pub/Sub and Cloud Scheduler service agents |
 | `iam.tf` | the accounts `ryft-<api,ingest,scoring,notify,migrate>`, `ryft-push`, `ryft-deployer` (no key, ever; `grafana-reader` went with Grafana Cloud, D236); the deployer's rights (**The deployer**, below); Pub/Sub's token creator on `ryft-push` |
 | `wif.tf` | the GitHub pool `github` and provider `github-actions` (condition by repository and owner ID, `deploy.yml` on `main`, environment `deploy` or `site`, a GitHub-hosted runner); one principal set per environment, `ryft-deployer` bound to `deploy`'s alone (D233), `site`'s for `site-deployer` in ryftlab-site (by hand, step 10a) |
-| `secrets.tf` | the 11 secret containers in use (ticket B's 10 and `posthog-project-key`, D231), `prevent_destroy`, 30-day delayed destruction, accessors on each secret; `retired`: `otlp-token` and its accessor without `prevent_destroy`, on their way out (OPERATIONS → GCP 11.6). **No values**: they never pass through state |
+| `secrets.tf` | the 12 secret containers in use (ticket B's 10, `posthog-project-key`, D231, and App Attest's token ring `app-attest-token-key`, api and ingest, D247), `prevent_destroy`, 30-day delayed destruction, accessors on each secret; `retired`: `otlp-token` and its accessor without `prevent_destroy`, on their way out (OPERATIONS → GCP 11.6). **No values**: they never pass through state |
 | `pubsub.tf`, `pubsub.auto.tfvars.json` | topics (messages stored in `europe-west1` only; `enforce_in_transit` stays off, so the Scheduler's publish and an operator's `gcloud pubsub` through the global endpoint still work), push and hold subscriptions, publisher bindings per topic, the agents' bindings. The JSON is written by `go run ./cmd/pubsub-topology` (PR A); do not edit it by hand once that exists |
 | `scheduler.tf` | the job `ryft-tick` (every 15 minutes) |
 | `registry.tf` | Artifact Registry `ryft`: the 5 newest versions of each image kept, every other version deleted after 30 days (tagged or not); scanning off |
@@ -99,10 +99,10 @@ else.
 The arithmetic of each count is in the runbook (steps 4, 9, 11, 14a.9 and the stop line).
 
 1. **Apply 1** (`serve = false`, runbook step 4): everything except the invokers, the deployer's
-   bindings on the services and the mappings. On a rebuild today 123 to add, 0 to change, 0 to
+   bindings on the services and the mappings. On a rebuild today 125 to add, 0 to change, 0 to
    destroy: the 118 applied (116 before `posthog-project-key`, D231), less `grafana-reader` and its
-   binding, plus D236's 6 (2 log-based metrics, the site's 3 uptime checks, the dashboard) and
-   D244's `ryft_notices`.
+   binding, plus D236's 6 (2 log-based metrics, the site's 3 uptime checks, the dashboard),
+   D244's `ryft_notices` and D247's `app-attest-token-key` with its accessor (2).
 2. **Apply 2** (`serve = true`, step 9, after CI's first deploy at step 8): 15 to add (4 invoker
    bindings, 4 + 1 deployer bindings on the services and the job, 2 mappings, 2 CNAMEs, api's and
    ingest's uptime checks), 1 to change (the tick resumes), 1 to destroy (the deployer's project-wide

@@ -13,9 +13,12 @@ package store
 //	7419006  relayLock        the outbox relay, per publisher (internal/events/outbox; every
 //	                        drain of a Flush or a Sweep, so one publisher's rows go out in
 //	                        id order across instances, D101, D219)
+//	7419007  lockAttest       a user's App Attest writes (CreateAttestChallenge, PutAttestKey),
+//	                        so the caps of 5 challenges and 10 keys hold across api instances
 const (
 	lockUser        = `SELECT pg_advisory_xact_lock(7419002, hashtext($1::text))`
 	lockSession     = `SELECT pg_advisory_xact_lock(7419003, hashtext($1::text || ':' || $2::text))`
 	lockEnrollments = `SELECT pg_advisory_xact_lock(7419004, hashtext($1::text))`
 	lockApply       = `SELECT pg_advisory_xact_lock(7419005, hashtext($1::text))`
+	lockAttest      = `SELECT pg_advisory_xact_lock(7419007, hashtext($1::text))`
 )

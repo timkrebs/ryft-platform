@@ -22,6 +22,10 @@ host=aws-0-eu-central-1.pooler.supabase.com
 policy=2026-10-26
 gate=warn
 hops=1
+attest=warn
+# uid <n>: a lower-case UUID built from <n> (test accounts, no secrets).
+uid() { printf '%08x-0000-4000-8000-%012x' "$1" "$1"; }
+exempt="$(uid 1),$(uid 2)"
 dg() { local s; printf -v s '%64s' ''; printf 'sha256:%s' "${s// /$1}"; }  # 64 times one hex digit
 D=(--digest "api=$(dg a)" --digest "ingest=$(dg b)" --digest "scoring=$(dg c)" --digest "notify=$(dg d)" --digest "migrate=$(dg e)")
 cfg=$tmp/config.env
@@ -29,7 +33,7 @@ tpl=$tmp/tpl
 out=$tmp/out
 fresh() {
   printf '%s\n' "# a fake, of the right shape" "PRIVACY_POLICY_VERSION=$policy" LOG_LEVEL=info "BETA_GATE=$gate" "XFF_TRUSTED_HOPS=$hops" \
-    "GCP_PROJECT_NUMBER=$pn" "PUSH_SA_ID=$said" "SUPABASE_PROJECT_REF=$ref" "SUPABASE_POOLER_HOST=$host" "APPLE_KEY_ID=$akey" \
+    "APP_ATTEST=$attest" "APP_ATTEST_EXEMPT_USERS=$exempt" "GCP_PROJECT_NUMBER=$pn" "PUSH_SA_ID=$said" "SUPABASE_PROJECT_REF=$ref" "SUPABASE_POOLER_HOST=$host" "APPLE_KEY_ID=$akey" \
     "APNS_KEY_ID=$nkey" > "$cfg"
   rm -rf "$tpl" "$out"
   mkdir "$tpl"
@@ -89,19 +93,25 @@ for s in api ingest; do
   has "$s.yaml" "name: SUPABASE_PROJECT_REF, value: \"$ref\" }"
   has "$s.yaml" "name: BETA_GATE, value: \"$gate\" }"
   has "$s.yaml" "name: XFF_TRUSTED_HOPS, value: \"$hops\" }"
+  has "$s.yaml" "name: APP_ATTEST, value: \"$attest\" }"
+  has "$s.yaml" "name: APP_ATTEST_EXEMPT_USERS, value: \"$exempt\" }"
+  # The ring's pin comes with the warn flip PR (D247), never from the renderer: no placeholder makes it.
+  if grep -q '^ *- { name: APP_ATTEST_TOKEN_KEYS,.*\${' "$tpl/$s.yaml"; then fail "$s.yaml: the ring's pin from a placeholder"; fi
 done
 # The beta gate only where it is read (D238): scoring reads the consent mode alone, notify and migrate neither.
 for f in scoring notify migrate; do
   if grep -q 'BETA_GATE' "$out/$f.yaml"; then fail "$f.yaml has BETA_GATE: only api and ingest run the beta gate"; fi
   # The hop count likewise (D240): only the two public services run the edge limit.
   if grep -q 'XFF_TRUSTED_HOPS' "$out/$f.yaml"; then fail "$f.yaml has XFF_TRUSTED_HOPS: only api and ingest run the edge limit"; fi
+  # App Attest likewise (D245): only the app's requests to api and ingest carry a token.
+  if grep -q 'APP_ATTEST' "$out/$f.yaml"; then fail "$f.yaml has APP_ATTEST: only api and ingest check App Attest"; fi
 done
 has api.yaml "name: APPLE_KEY_ID, value: \"$akey\" }"
 has notify.yaml "name: APNS_KEY_ID, value: \"$nkey\" }"
 
 # No environment variable reaches the output: the same render with the placeholders' names set.
 IMAGE=x DATABASE_URL=y PUSH_AUDIENCE=z LOG_LEVEL=debug PRIVACY_POLICY_VERSION=1999-01-01 BETA_GATE=off XFF_TRUSTED_HOPS=7 \
-  render "${R[@]}" --out "$tmp/again" "${D[@]}" >/dev/null 2>&1 || fail "the second render failed"
+  APP_ATTEST=on APP_ATTEST_EXEMPT_USERS="$(uid 9)" render "${R[@]}" --out "$tmp/again" "${D[@]}" >/dev/null 2>&1 || fail "the second render failed"
 diff -r "$out" "$tmp/again" >/dev/null || fail "the environment changed the output: $(diff -r "$out" "$tmp/again")"
 
 # The OTLP pair went with Grafana Cloud (D236): its keys are unknown in config.env, its placeholders
@@ -170,6 +180,53 @@ setcfg XFF_TRUSTED_HOPS -
 bad "no hop count" "XFF_TRUSTED_HOPS is missing" "${R[@]}" --out "$out" "${D[@]}"
 setcfg XFF_TRUSTED_HOPS -
 bad "no hop count, linted" "XFF_TRUSTED_HOPS is missing" "${R[@]}" --lint
+# APP_ATTEST (D245, D247): off, warn or on as committed, like the beta gate.
+for m in off on; do
+  setcfg APP_ATTEST "$m"
+  o=$(render "${R[@]}" --out "$out" "${D[@]}" 2>&1) || fail "APP_ATTEST=$m does not render: $o"
+  has api.yaml "name: APP_ATTEST, value: \"$m\" }"
+  has ingest.yaml "name: APP_ATTEST, value: \"$m\" }"
+  rm -rf "$out"
+  fresh
+done
+for m in enforce On WARN 1 ' off'; do
+  setcfg APP_ATTEST "$m"
+  bad "an App Attest mode of '$m'" "APP_ATTEST='$m' does not have the shape off, warn or on" "${R[@]}" --out "$out" "${D[@]}"
+done
+setcfg APP_ATTEST ''
+bad "an empty App Attest mode" "APP_ATTEST is empty" "${R[@]}" --out "$out" "${D[@]}"
+setcfg APP_ATTEST FILL_ME_IN
+bad "App Attest's mode left FILL_ME_IN" "APP_ATTEST is still FILL_ME_IN" "${R[@]}" --out "$out" "${D[@]}"
+setcfg APP_ATTEST -
+bad "no App Attest mode" "APP_ATTEST is missing" "${R[@]}" --out "$out" "${D[@]}"
+setcfg APP_ATTEST -
+bad "no App Attest mode, linted" "APP_ATTEST is missing" "${R[@]}" --lint
+# APP_ATTEST_EXEMPT_USERS: the line is required, its value empty or 1 to 5 lower-case UUIDs, each once.
+setcfg APP_ATTEST_EXEMPT_USERS ''
+o=$(render "${R[@]}" --out "$out" "${D[@]}" 2>&1) || fail "an empty exempt list does not render: $o"
+has api.yaml 'name: APP_ATTEST_EXEMPT_USERS, value: "" }'
+has ingest.yaml 'name: APP_ATTEST_EXEMPT_USERS, value: "" }'
+rm -rf "$out"; fresh
+five="$(uid 1),$(uid 2),$(uid 3),$(uid 4),$(uid 5)"
+setcfg APP_ATTEST_EXEMPT_USERS "$five"
+o=$(render "${R[@]}" --out "$out" "${D[@]}" 2>&1) || fail "five exempt accounts do not render: $o"
+has ingest.yaml "name: APP_ATTEST_EXEMPT_USERS, value: \"$five\" }"
+rm -rf "$out"; fresh
+upper=$(uid 10 | tr a-f A-F)
+for v in "$five,$(uid 6)" "$upper" "$(uid 1)," ",$(uid 1)" "$(uid 1), $(uid 2)" "$(uid 1);$(uid 2)" "{$(uid 1)}" \
+    "$(uid 1 | tr -d -)" "${five:0:35}" all; do
+  setcfg APP_ATTEST_EXEMPT_USERS "$v"
+  bad "an exempt list '$v'" "APP_ATTEST_EXEMPT_USERS='$v' does not have the shape empty, or 1 to 5 lower-case UUIDs" \
+    "${R[@]}" --out "$out" "${D[@]}"
+done
+setcfg APP_ATTEST_EXEMPT_USERS "$(uid 3),$(uid 4),$(uid 3)"
+bad "an exempt account twice" "APP_ATTEST_EXEMPT_USERS names an account twice" "${R[@]}" --out "$out" "${D[@]}"
+setcfg APP_ATTEST_EXEMPT_USERS "$(uid 3),$(uid 3)"
+bad "an exempt account twice, linted" "APP_ATTEST_EXEMPT_USERS names an account twice" "${R[@]}" --lint
+setcfg APP_ATTEST_EXEMPT_USERS FILL_ME_IN
+bad "the exempt list left FILL_ME_IN" "APP_ATTEST_EXEMPT_USERS is FILL_ME_IN: leave it empty or set it" "${R[@]}" --lint
+setcfg APP_ATTEST_EXEMPT_USERS -
+bad "no exempt line" "APP_ATTEST_EXEMPT_USERS is missing" "${R[@]}" --out "$out" "${D[@]}"
 setcfg PRIVACY_POLICY_VERSION 2026-02-30
 bad "no calendar date" "PRIVACY_POLICY_VERSION=2026-02-30 is not a calendar date" "${R[@]}" --out "$out" "${D[@]}"
 setcfg GCP_PROJECT_NUMBER "0$pn"
@@ -214,4 +271,4 @@ usage "${R[@]}" --lint "${D[@]}"
 usage "${R[@]}" --out "$out" "${D[@]}" --force
 [ ! -e "$out" ] || fail "a usage error wrote $out"
 
-echo "✓ cloudrun_render_test: the derived values render by digest, BETA_GATE and XFF_TRUSTED_HOPS only into api and ingest, the environment changes nothing, FILL_ME_IN passes --lint and fails a render, and every wrong shape, key, digest, placeholder and \$ fails closed"
+echo "✓ cloudrun_render_test: the derived values render by digest, BETA_GATE, XFF_TRUSTED_HOPS, APP_ATTEST and APP_ATTEST_EXEMPT_USERS only into api and ingest, the environment changes nothing, FILL_ME_IN passes --lint and fails a render, and every wrong shape, key, digest, placeholder and \$ fails closed"

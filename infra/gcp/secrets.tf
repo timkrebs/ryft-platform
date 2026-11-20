@@ -19,6 +19,10 @@ locals {
     # PostHog's project API key, served to the app by GET /v1/config (D231). Its pin in deploy/run/api.yaml
     # comes after the first version: a revision that reads a missing version does not start.
     "posthog-project-key" = ["ryft-api"]
+    # App Attest's token ring (D245, D247), read as APP_ATTEST_TOKEN_KEYS: 1 to 3 lines
+    # `<kid>:<base64 of 32 bytes>`; the first signs (api), every line verifies (api and ingest). The value
+    # never passes through Terraform (OPERATIONS -> GCP -> App Attest); deploy/run pins it from the warn flip on.
+    "app-attest-token-key" = ["ryft-api", "ryft-ingest"]
   }
 
   # Retired secrets, on their way out (docs/OPERATIONS.md -> GCP, step 11.6). prevent_destroy on

@@ -1,0 +1,18 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "challenge": {
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "challenge",
+    "expires_at"
+  ],
+  "title": "AppAttestChallenge",
+  "type": "object"
+}

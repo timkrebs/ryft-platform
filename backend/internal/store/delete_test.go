@@ -83,6 +83,7 @@ func owned(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) int {
 		(SELECT count(*) FROM sessions WHERE user_id=$1) + (SELECT count(*) FROM session_exercises WHERE user_id=$1) +
 		(SELECT count(*) FROM session_sets WHERE user_id=$1) + (SELECT count(*) FROM personal_records WHERE user_id=$1) +
 		(SELECT count(*) FROM beta_invite_uses WHERE user_id=$1) +
+		(SELECT count(*) FROM app_attest_keys WHERE user_id=$1) + (SELECT count(*) FROM app_attest_challenges WHERE user_id=$1) +
 		(SELECT count(*) FROM plans WHERE user_id=$1) + (SELECT count(*) FROM exercises WHERE user_id=$1)`, id).Scan(&n)
 	if err != nil {
 		t.Fatal(err)
@@ -140,6 +141,7 @@ func seedUser(t *testing.T, st *Store, pool *pgxpool.Pool, id uuid.UUID) {
 	if _, err := pool.Exec(ctx, `INSERT INTO beta_invite_uses (code, user_id) VALUES ($1, $2)`, NormalizeInvite(inv.Code), id); err != nil {
 		t.Fatal(err)
 	}
+	seedAttest(t, st, id) // an attested key and an open challenge (0037)
 	seedImport(t, pool, id)
 }
 
@@ -184,12 +186,18 @@ func TestDeleteUserErasesEverythingAndStaysDeleted(t *testing.T) {
 	seedUser(t, st, pool, a)
 	seedUser(t, st, pool, b)
 	before := owned(t, pool, b)
+	if n := attestRows(t, pool, a); n != 2 {
+		t.Fatalf("seeded App Attest rows: %d, want a key and a challenge", n)
+	}
 
 	if err := st.DeleteUser(ctx, a); err != nil {
 		t.Fatal(err)
 	}
 	if n := owned(t, pool, a); n != 0 {
 		t.Fatalf("%d rows of the deleted user left", n)
+	}
+	if n := attestRows(t, pool, b); n != 2 {
+		t.Fatalf("the other user's App Attest rows: %d, want 2", n)
 	}
 	if n := owned(t, pool, b); n != before {
 		t.Fatalf("the other user lost rows: %d → %d", before, n)

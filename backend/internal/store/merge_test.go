@@ -113,6 +113,19 @@ func TestMergeUsers(t *testing.T) {
 	if err := st.SetBetaAccess(ctx, to, false); err != nil {
 		t.Fatal(err)
 	}
+	// App Attest: one install's key under both accounts (the same key id), and an open challenge of from's.
+	// from's are deleted, never moved; to's key stays as it was.
+	seedAttest(t, st, from)
+	sharedKey := attestKeyID("merge-shared")
+	for _, user := range []uuid.UUID{from, to} {
+		if err := st.PutAttestKey(ctx, AppAttestKey{UserID: user, KeyID: sharedKey, PublicKey: attestPublicKey("merge-shared"),
+			Environment: "production", AttestedAt: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ok, err := st.AdvanceAttestCounter(ctx, to, sharedKey, 3, now); err != nil || !ok {
+		t.Fatalf("to's counter: %v %v", ok, err)
+	}
 
 	byTable := func(r MergeResult) map[string][2]int64 {
 		m := map[string][2]int64{}
@@ -123,7 +136,7 @@ func TestMergeUsers(t *testing.T) {
 	}
 	want := map[string][2]int64{"samples": {1, 1}, "sleep_segments": {1, 0}, "workouts": {1, 1}, "devices": {1, 1},
 		"push_tokens": {1, 0}, "exercises": {1, 1}, "sessions": {1, 1}, "behaviors": {0, 1}, "journal_days": {1, 1},
-		"feedback": {1, 0}, "user_sources": {1, 0}}
+		"feedback": {1, 0}, "user_sources": {1, 0}, "app_attest_keys": {0, 2}, "app_attest_challenges": {0, 1}}
 	check := func(step string, r MergeResult) {
 		t.Helper()
 		got := byTable(r)
@@ -151,6 +164,9 @@ func TestMergeUsers(t *testing.T) {
 	}
 	if count(`SELECT count(*) FROM samples WHERE user_id = $1`, to) != 1 || count(`SELECT count(*) FROM feedback WHERE user_id = $1`, to) != 0 {
 		t.Fatal("a dry run changes nothing")
+	}
+	if n := attestRows(t, pool, from); n != 3 {
+		t.Fatalf("a dry run keeps from's App Attest rows: %d, want 3", n)
 	}
 
 	res, err := st.MergeUsers(ctx, from, to, false)
@@ -189,6 +205,16 @@ func TestMergeUsers(t *testing.T) {
 		if got := count(c.q, c.args...); got != c.want {
 			t.Errorf("%s: %d, want %d", c.q, got, c.want)
 		}
+	}
+	// from's App Attest rows are gone, none moved to to; to's key keeps its counter.
+	if n := attestRows(t, pool, from); n != 0 {
+		t.Errorf("from's App Attest rows after the merge: %d, want 0", n)
+	}
+	if n := attestRows(t, pool, to); n != 1 {
+		t.Errorf("to's App Attest rows after the merge: %d, want its own key only", n)
+	}
+	if k, err := st.AttestKey(ctx, to, sharedKey); err != nil || k.Counter != 3 {
+		t.Errorf("to's key after the merge: %+v %v", k, err)
 	}
 	// to's own session keeps exactly its one exercise (from's same-id session is dropped).
 	if n := count(`SELECT count(*) FROM session_exercises WHERE user_id = $1 AND exercise_id = $2`, to, exToPress); n != 2 {

@@ -107,8 +107,11 @@ smoke-prod:
 # deploy/run, what deploy.yml applies to Cloud Run (CI's manifests job): config.env lints, every template
 # renders with fake values, and the result holds the limits, ingress, accounts, h2c port, probes, env,
 # secret pins and accessors of the design and ticket-b.md (scripts/check_cloudrun.py). Needs yq (mikefarah v4).
+# CLOUDRUN_BASE=<path>: the PR base's config.env (CI's manifests job writes it to .ci/), for App Attest's
+# order off -> warn -> on (D245); without it that rule is skipped.
+CLOUDRUN_BASE ?=
 cloudrun-check:
-	python3 -I scripts/check_cloudrun.py
+	python3 -I scripts/check_cloudrun.py $(if $(CLOUDRUN_BASE),--base-config "$(CLOUDRUN_BASE)")
 
 # After smoke, on macOS: decode every endpoint with the Swift mirror in docs/API.md
 # and with the app's current models (../app). See scripts/check_swift.sh.

@@ -54,8 +54,18 @@ run "no_key_and_no_secret_value_in_state" {
   }
 
   assert {
-    condition     = length(regexall("(?m)^\\s*(resource|data)\\s+\"google_secret_manager_(regional_)?secret_version", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
-    error_message = "no google_secret_manager_(regional_)secret_version* resource or data block (_access included): values never pass through state"
+    condition     = length(regexall("(?m)^\\s*(resource|data|ephemeral)\\s+\"google_secret_manager_(regional_)?secret_version", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
+    error_message = "no google_secret_manager_(regional_)secret_version* resource, data or ephemeral block (_access included): values never pass through Terraform"
+  }
+
+  # App Attest's token ring (D247) is a container like the others: the guard above covers it, and no
+  # argument anywhere carries a secret's payload.
+  assert {
+    condition = (
+      contains(keys(google_secret_manager_secret.this), "app-attest-token-key") &&
+      length(regexall("(?m)^\\s*secret_data(_wo)?\\s*=", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
+    )
+    error_message = "app-attest-token-key is a container only: its value is added with gcloud (OPERATIONS -> GCP -> App Attest), never as secret_data"
   }
 }
 

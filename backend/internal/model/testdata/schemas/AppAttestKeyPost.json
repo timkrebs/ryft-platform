@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "attestation": {
+      "type": "string"
+    },
+    "challenge": {
+      "type": "string"
+    },
+    "key_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "attestation",
+    "challenge",
+    "key_id"
+  ],
+  "title": "AppAttestKeyPost",
+  "type": "object"
+}

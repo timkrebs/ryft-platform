@@ -1,0 +1,22 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "expires_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "token": {
+      "type": "string"
+    },
+    "ttl_sec": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "expires_at",
+    "token",
+    "ttl_sec"
+  ],
+  "title": "AppAttestToken",
+  "type": "object"
+}

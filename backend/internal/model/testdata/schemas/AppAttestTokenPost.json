@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "assertion": {
+      "type": "string"
+    },
+    "challenge": {
+      "type": "string"
+    },
+    "key_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "assertion",
+    "challenge",
+    "key_id"
+  ],
+  "title": "AppAttestTokenPost",
+  "type": "object"
+}
