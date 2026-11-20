@@ -174,6 +174,14 @@ var (
 		Name: "ryft_gate_refusals_total",
 		Help: "Requests a gate would refuse: invite_required (beta gate) or consent_required (a sync or a training import without consent; in scoring a day); mode on = refused with 403, warn = served with X-RYFT-Gate.",
 	}, []string{"code", "mode", "service"})
+	// AppAttestRefusals counts the requests without a valid app token under APP_ATTEST warn
+	// (served) and on (refused): one per warn line "app attest" (D245, D247). Never the build,
+	// the route or an account as a label.
+	AppAttestRefusals = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_app_attest_refusals_total",
+		Help: "Requests without a valid app token (X-RYFT-App-Token) under APP_ATTEST warn (served) or on (403 app_attest_required), " +
+			"by reason (missing, invalid, expired, other_account) and service (api, ingest).",
+	}, []string{"reason", "service"})
 	Consents = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_consents_total",
 		Help: "Consent changes: granted, revoked, stale (POST with an outdated policy version).",

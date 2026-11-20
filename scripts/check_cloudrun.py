@@ -195,6 +195,17 @@ def check_app_attest(mode, pins, base):
                 fail(f"{s}.yaml", f"APP_ATTEST={mode} without {RING_ENV} pinned ({RING}, by version number): {s} "
                      f"refuses to start in warn or on without the ring (D245), so the deploy goes red; pin it in "
                      f"{' and '.join(f'{x}.yaml' for x in RING_SERVICES)} in the same PR")
+    # One version in both: api signs with the version's first line, ingest verifies with its own lines, so a
+    # pin ahead in api would make every sync's token unknown to ingest (D245's rotation moves both pins).
+    ring = {s: pins[s][RING_ENV][1] for s in RING_SERVICES if s in pins and RING_ENV in pins[s]}
+    if len(set(ring.values())) > 1:
+        fail("api.yaml / ingest.yaml", f"{RING} is pinned at {ring.get('api')} in api.yaml and at {ring.get('ingest')} "
+             "in ingest.yaml: pin the same version in both, in one commit (a rotation adds the new key as a line of "
+             "a new version, D245)")
+    elif len(ring) == 1:
+        (only,) = ring
+        fail(f"{only}.yaml", f"{RING_ENV} is pinned in {only}.yaml only: pin it in api.yaml and ingest.yaml together "
+             "(api signs, ingest verifies, D245)")
     if base is not None and mode == "on" and base not in ("warn", "on"):
         fail("config.env", f"APP_ATTEST=on with the base at {base!r}: off -> warn -> on, never straight to on "
              "(D238/D245); this PR sets warn, and on follows after warn's stop rule (docs/OPERATIONS.md -> GCP -> "

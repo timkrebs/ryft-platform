@@ -6,7 +6,7 @@ import "time"
 
 // HeaderAppToken carries the app token of POST /v1/app-attest/token on every request to
 // api and ingest. Opaque to the app; at most 512 ASCII characters.
-const HeaderAppToken = "X-RYFT-App-Token"
+const HeaderAppToken = "X-RYFT-App-Token" //nolint:gosec // a header's name, not a credential
 
 // HeaderAppBuild is the app's CFBundleVersion (AA1): optional, digits and dots, at most 24
 // characters. A missing or malformed value is ignored, never refused; the server writes it

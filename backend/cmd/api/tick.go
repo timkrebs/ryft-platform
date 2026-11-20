@@ -21,6 +21,7 @@ type tickSteps struct {
 	reconcile func(context.Context)       // accounts.reconcile: it logs its own errors
 	settings  func(context.Context)       // confirmGuard.Refresh: it logs and counts its own errors
 	purge     func(context.Context) error // purgeInviteEmails
+	attest    func(context.Context) error // purgeAppAttest
 }
 
 // ticks are the steps in order, under the names the tick logs.
@@ -39,5 +40,6 @@ func (s tickSteps) ticks() []eventbus.Tick {
 		}},
 		{Name: "invite settings", Run: func(ctx context.Context) error { s.settings(ctx); return nil }},
 		{Name: "invite email purge", Run: s.purge},
+		{Name: "app attest purge", Run: s.attest},
 	}
 }

@@ -20,7 +20,7 @@ import (
 // tickSteps is every tick step's name: app's two and the services' own (D219). A step's
 // name is written in code, never derived from a request.
 var tickSteps = logcheck.Enum("db ping", "outbox sweep",
-	"scoring pass", "stale check", "account reconcile", "invite settings", "invite email purge", "finally")
+	"scoring pass", "stale check", "account reconcile", "invite settings", "invite email purge", "app attest purge", "finally")
 
 // lifecycleLogKeys is every line the lifecycle logs besides the services' own, with
 // the keys it may carry and the kind of each value (D114, D117). A task's name, a

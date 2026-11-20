@@ -5991,7 +5991,7 @@ _Grafana half superseded by D236._
     When an alert fires; Beta → Admin sign-in; Data protection (logs).
   - The user's apply is 14a.9.
 
-## D245 — App Attest: the contract first, `403 app_attest_required`, an HMAC app token checked without a database read (**the user's decision**, 2026-11-19; amends D241)
+## D245 — App Attest: the contract first, `403 app_attest_required`, an HMAC app token checked without a database read (**the user's decision**, 2026-11-19; amends D241; amended by D247)
 
 - **Context:** since D241 the server admits any confirmed Supabase account, and nothing tells the TestFlight app
   from a script with a valid session. The user decided on 2026-11-19: App Attest, yes; the contract first and docs
@@ -6280,3 +6280,88 @@ _Grafana half superseded by D236._
   repository that still holds the EKS rules invites an agent or a person to follow them.
 - **Consequences:** D227's last step is the user's deletion of `tim-krebs-org`. `CLAUDE.md` loses the EKS, Argo CD
   and Vault rules. Nothing in AWS is RYFT's; the three keys finish their waiting periods by themselves.
+
+## D247 — App Attest, the server: shipped in `off`, `501` until the ring is pinned, the challenges in Postgres, no new module (2026-11-20; amends D245; the user's AA1–AA4 decisions)
+
+- **Context:** D245 is the contract; the head architect's brief of 2026-11-19 asked for the server in one PR, in mode
+  `off`, with the app's four requests decided (AA1 yes, AA2 only if cheap, AA3 yes, AA4 yes). The app client is built
+  (app repo `feat/app-attest`, ADR 0023): `clientDataHash` = SHA-256 of the challenge's UTF-8 bytes, production
+  attestations in every build, one key per account and install, the token renewed with under `min(300, ttl_sec / 2)`
+  s left, a probe at most every 6 h after a `404` without a code or a `501`. The plan, the interfaces and the reviews
+  are in `docs/work/2026-11-20-app-attest-server/` (`plan.md`, `edge.md`).
+- **Decision:**
+  1. **`off`'s routes:** served when the token ring is configured, `501` without it. The `off` deploy pins no secret
+     version, so production answers `501` and the app waits (D245's "nothing stored before the privacy text"). The
+     `warn` PR pins the ring in api and ingest, so the routes start serving and tokens flow in the same deploy;
+     `warn` refuses nothing, so the ramp costs nothing. An operator may pin the ring under `off` first (both
+     services, one version) to see tokens before `warn`.
+  2. **The ring** is the secret **`app-attest-token-key`** (the brief's name; D245 wrote `app-attest-token-keys`), read
+     as `APP_ATTEST_TOKEN_KEYS`, D245's value format (1–3 lines `<kid>:<base64 of 32 bytes>`, the first signs, all
+     verify) and rotation. Accessors api and ingest (`infra/gcp/secrets.tf`); no value in Terraform.
+     `check_cloudrun.py` refuses `warn`/`on` without the pin in both, a pin in one service only, and two versions.
+  3. **Production attestations only.** The AAGUID must be `appattest` + seven `0x00`; `APP_ATTEST_ENVIRONMENTS` is
+     dropped from D245 (every build's entitlement is `production`). Development attestations are
+     `422 app_attest_invalid`.
+  4. **The App ID** is `APPLE_TEAM_ID` + `.` + `APPLE_CLIENT_ID`, the values Sign in with Apple already has on api
+     (`M77SKHKG63.dev.timkrebs.ryft`); no `APP_ATTEST_APP_ID` key. api refuses to start with a ring and either empty.
+  5. **The challenge store** is Postgres: `app_attest_challenges` keeps only SHA-256 of the challenge, single use by
+     `DELETE … RETURNING`, 5 minutes, at most 5 open per account. Cloud Run runs up to three api instances, so memory
+     was no option. A call gets past the `429` and the JSON decoding before it uses a challenge up (API.md says so).
+  6. **The keys** are `app_attest_keys` (migration 0037; `ryft_api` only, RLS as 0033): key id, public key, counter,
+     environment, attested and last used. The caps (5 challenges, 10 keys) hold across instances under an advisory
+     lock (class 7419007); the counter is a compare-and-set; the api tick purges expired challenges and keys unused for
+     90 days. **Deletion:** `DELETE /v1/me` deletes both tables in its transaction, and their foreign keys cascade from
+     `users` as well; the merge deletes the merged account's rows (device credentials of the old account, not moved).
+  7. **The token** is D245's `v1.<kid>.<body>.<mac>` HMAC-SHA256, checked in api and ingest without a database read.
+     `Check` verifies the version, kid, MAC (`hmac.Equal`), expiry, issue time ≤ 60 s ahead and the account; the key
+     hash in the body is carried, not checked (API.md says so). **`ttl_sec` 3600, pinned ≥ 600 by a test (AA3).**
+  8. **Modes:** `APP_ATTEST=off|warn|on` and `APP_ATTEST_EXEMPT_USERS` are required keys of `deploy/run/config.env`
+     (`off`, empty). api and ingest refuse to start in `warn`/`on` without a valid ring; `check_cloudrun.py` refuses
+     `off` → `on` against the PR's base (CI passes the base's `config.env` on pull requests, `make cloudrun-check
+     CLOUDRUN_BASE=…`), the rule D245's item 8 asked for. Order in the chain: bearer → per-user limit → user → App
+     Attest → beta gate → routes.
+  9. **The `warn` line** (under `warn` and `on`, one per request without a valid token): `message` `app attest`,
+     `code`, `reason` (`missing|invalid|expired|other_account`), `mode`, `service`, `route_group` (7 fixed values),
+     `method`, `app_build`, `app_device` (a bool) and `request_id`. It is written without the request's log fields, so
+     it carries **no `user_id`**, email, address, key id, token or device id (a test). The `request_id` joins it to the
+     request's access line, which carries `user_id` as every access line does, so C2 must not call these lines
+     anonymous. Counter `ryft_app_attest_refusals_total{reason,service}` (the brief's labels; D245 had `mode` too).
+  10. **AA1:** `X-RYFT-App-Build`, optional, `^[0-9]+(\.[0-9]+){0,3}$`, at most 24 characters, otherwise ignored, never
+      refused; a field of the warn line, never a label. The stop rule's query is OPERATIONS → GCP → 17.4.
+  11. **AA2:** `GET /v1/config` gains `app_attest` (`off|warn|on`). It is cheap: the handler has the mode. No new
+      route. The mirror's field is optional, so a config from a server before D247 (a rollback) still decodes.
+  12. **AA4:** every refusal of the three routes has a fixed `error` text; neither the answers nor the logs carry the
+      challenge, key id, attestation, assertion or token (tests in `internal/appattest` and `cmd/api`).
+  13. **No new Go module.** A strict minimal CBOR decoder (definite lengths, depth 8, 32 KiB, no tags or floats,
+      preallocation capped at 16, fuzzed) is about 200 lines; `fxamacker/cbor` would be the obvious module and was not
+      worth a dependency for two fixed shapes. X.509, ASN.1, ECDSA and HMAC are the stdlib's. `internal/config`
+      imports `internal/appattest` (to parse the ring at start), an exception to its leaf rule in `arch_test.go`:
+      `appattest` is pure and imports nothing of ours.
+  14. **Apple's root** (`backend/internal/appattest/apple_root.pem`) was written from the lead's memory: WebFetch and
+      `curl` were refused in the run. Its self-signature, subject and validity verify, so no byte is wrong, but a
+      self-signed look-alike would pass the same test. The SHA-256 `1cb9823b…c932` is pinned; the user compares it
+      with Apple's download before `warn` (OPERATIONS → GCP → 17.3, precondition 4).
+- **The edge** (`edge.md`): of the six preview sets, `sqli` (942100, libinjection: base64's `+`, `/`, `=` and a
+  base64url challenge's `--`) can match the two body routes, certainly for a challenge that starts with digits then
+  `--`; `xss` (941100) plausibly, rarely; `lfi`, `rce`, `scannerdetection` and `protocolattack` no. Exclusion needed:
+  yes, for `sqli` and `xss` on `^/v1/app-attest/(keys|token)$`, by scoping those rules' expressions, a prepared
+  0/1/0 change applied before the `sqli` enforcement PR (OPERATIONS → GCP → 17.6). Not in this PR. The preview logs
+  could not be read (the command needed approval). An attestation passes the API's 64 KiB and the edge (no body
+  limit; Cloud Armor inspects the first 8 KB, *unverified*).
+- **Rejected:** a challenge in memory (three instances); development attestations behind a key (no build needs them);
+  a token from `POST /v1/app-attest/keys` (D245); `mode` as a metric label (the brief's bounded pair); a new route for
+  AA2; a hex challenge to dodge libinjection (the exclusion covers the device's blobs too, which a server choice can't).
+- **Unverified:** a real device's attestation and assertion (the tests use generated vectors from a test CA with real
+  P-256 signatures); the root against Apple's file; Cloud Armor's behaviour on base64 JSON values.
+- **Privacy (for C2):** per account and app install: the key id, the public key, a counter, the environment
+  (`production`), when the key was attested and last used; open challenges as SHA-256 for 5 minutes; no receipt,
+  device model, address or token. The purpose: refusing requests that don't come from the genuine app on a genuine
+  Apple device. Apple's role: the device talks to Apple for the attestation under Apple's terms; RYFT's servers never
+  call Apple, so no new processor on the server side. Deleted with the account (`DELETE /v1/me`), when the key is
+  replaced or evicted (10 per account), or 90 days after its last use. The warn lines (above) are logs under the
+  existing retention. The text and `PRIVACY_POLICY_VERSION` change together, before the ring's first version.
+- **Consequences:** `internal/appattest` (+ `appattesttest`), migration 0037, `internal/store/appattest.go`,
+  `internal/config/appattest.go`, `internal/gate/appattest.go`, `cmd/api/appattest.go`, the wiring in api and ingest,
+  `deploy/run` (two keys, `off`), the scripts' rules, `infra/gcp/secrets.tf`, API.md (changelog 2026-11-20),
+  OBSERVABILITY, OPERATIONS → GCP → 17, STATUS. The user's steps: 17.1 (apply 2/0/0) → C2 → 17.2 → 17.3 (`warn`) →
+  17.4 (7 days) → 17.6 (the edge, before `sqli` is enforced) → 17.5 (`on`).

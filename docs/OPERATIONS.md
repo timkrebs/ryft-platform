@@ -2240,12 +2240,14 @@ start (Secret Manager's list prices, *unverified*). With 2 or 3 versions enabled
 $0.18. Disable the old version once the rotation is done.
 
 **17.2 The ring's first version** (only once C2's privacy text names App Attest and is in force: D245 →
-Privacy). The value is made and piped in one go: `openssl` writes it into `printf`, a shell builtin, so
-it never reaches argv, the screen or the history. The guard adds it only if the secret exists and has no
-version yet:
+Privacy). The value is made and piped in one go: `openssl rand -base64 32` writes the key straight into
+the pipe, so it is never a shell word, never in argv, on the screen or in the history; only the `kid` (no
+secret) is expanded. Run it with tracing off (`set +x`; zsh: `unsetopt xtrace`). The guard adds it only if
+the secret exists and has no version yet:
 
 ```bash
-if gcloud secrets describe app-attest-token-key --project ryftlab-prod >/dev/null 2>&1 && [ -z "$(gcloud secrets versions list app-attest-token-key --project ryftlab-prod --format='value(name)' --limit=1)" ]; then printf '%s:%s\n' "$(openssl rand -hex 4)" "$(openssl rand -base64 32)" | gcloud secrets versions add app-attest-token-key --project ryftlab-prod --data-file=- && echo "OK: version added"; else echo "STOP: the secret is missing or already has a version"; fi
+set +x
+if gcloud secrets describe app-attest-token-key --project ryftlab-prod >/dev/null 2>&1 && [ -z "$(gcloud secrets versions list app-attest-token-key --project ryftlab-prod --format='value(name)' --limit=1)" ]; then { printf '%s:' "$(openssl rand -hex 4)"; openssl rand -base64 32; } | gcloud secrets versions add app-attest-token-key --project ryftlab-prod --data-file=- && echo "OK: version added"; else echo "STOP: the secret is missing or already has a version"; fi
                                                     # Created version [1] of the secret [app-attest-token-key].
                                                     # OK: version added
 ```
@@ -2270,8 +2272,8 @@ Each `access` is a Data Access audit entry (Secret Manager's `DATA_READ`, `proje
 pipe (the guard refuses because a version exists), and use its number. Nothing pins the ring yet, so
 nothing reads it, and the routes still answer `501`.
 
-**17.3 The `warn` flip: a deploy PR.** *(The exact diff comes from the server PR's deploy owner;
-until then, this is its shape.)* It changes:
+**17.3 The `warn` flip: a deploy PR.** It changes exactly three files (`make cloudrun-check` refuses
+`warn` unless both services pin the ring, at the same version):
 - `deploy/run/config.env`: `APP_ATTEST=off` becomes `APP_ATTEST=warn`, and `APP_ATTEST_EXEMPT_USERS=` gets
   the smoke user's id (the beta gate's step 3 shell: `as_smoke "$API/v1/me" | jq -r .id`; a test
   account's id names nobody and is no secret, D245);
@@ -2290,7 +2292,7 @@ Preconditions (D245's stop rules for `off` → `warn`). Flip only when all of th
 
    ```bash
    curl -s https://www.apple.com/certificateauthority/Apple_App_Attestation_Root_CA.pem | openssl x509 -noout -fingerprint -sha256
-                                                    # sha256 Fingerprint=<FINGERPRINT>
+                                                    # sha256 Fingerprint=1C:B9:82:3B:A2:8B:A6:AD:2D:33:A0:06:94:1D:E2:AE:4F:51:3E:F1:D4:E8:31:B9:F7:E0:FA:7B:62:42:C9:32
    openssl x509 -in backend/internal/appattest/apple_root.pem -noout -fingerprint -sha256   # the same line
    grep -o 'appleRootSHA256 = "[0-9a-f]*"' backend/internal/appattest/root_test.go         # the same, lower case, no colons
    ```
@@ -2335,7 +2337,7 @@ S='resource.type="cloud_run_revision" AND (resource.labels.service_name="api" OR
 gcloud logging read "$S AND jsonPayload.message=\"http\" AND jsonPayload.route:\"/v1/app-attest/\"" "${L[@]}" \
   --format='value(jsonPayload.route,jsonPayload.status)' | sort | uniq -c
                                                      # POST /v1/app-attest/keys 201 (once per install), …/token 200
-gcloud logging read "$S AND jsonPayload.message=\"app attest\"" "${L[@]}" \
+gcloud logging read "$S AND jsonPayload.message=\"app attest\" AND jsonPayload.code=\"app_attest_required\"" "${L[@]}" \
   --format='value(jsonPayload.app_build,jsonPayload.reason)' | sort | uniq -c
                                                      # no line with your build's number
 unset L S

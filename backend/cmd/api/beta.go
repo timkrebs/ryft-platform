@@ -21,11 +21,12 @@ import (
 )
 
 // gateOpen are the routes an account without beta access may use: enough to
-// redeem a code, consent, read what it is, report a problem (API.md → Errors).
-// DELETE /v1/me has its own mux and is never gated.
+// redeem a code, consent, read what it is, report a problem, and get an app
+// token (API.md → Errors). DELETE /v1/me has its own mux and is never gated.
 var gateOpen = map[string]bool{
 	"GET /v1/me": true, "GET /v1/me/sync": true, "GET /v1/config": true, "GET /v1/model": true, "POST /v1/me/invite": true,
 	"POST /v1/me/consent": true, "DELETE /v1/me/consent": true, "POST /v1/feedback": true,
+	"POST /v1/app-attest/challenge": true, "POST /v1/app-attest/keys": true, "POST /v1/app-attest/token": true,
 }
 
 // betaGate acts on accounts without beta access outside the open routes: on

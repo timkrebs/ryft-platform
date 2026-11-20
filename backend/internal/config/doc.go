@@ -1,8 +1,9 @@
 // Package config owns the services' environment configuration: what each variable means, its default and which combinations are refused.
 //
-// It is a leaf: it imports nothing internal, so every package may import it.
-// Configuration is environment only (no flags, no files), and a service reads it
-// once at start-up.
+// It is a leaf but for internal/appattest, itself a leaf, whose ParseRing reads
+// APP_ATTEST_TOKEN_KEYS (so a malformed ring stops the start), and every package
+// may import it. Configuration is environment only (no flags, no files), and a
+// service reads it once at start-up.
 //
 // Invariants:
 //   - A bad or half-set configuration fails the start instead of running
@@ -18,6 +19,9 @@
 //   - The gate defaults are what production runs unless the config says
 //     otherwise: consent on, the invite gate off (D87). api and ingest refuse to
 //     start without PRIVACY_POLICY_VERSION (D78).
+//   - App Attest (D245, D247): APP_ATTEST warn or on without a token ring, or a
+//     malformed ring in any mode, stops api and ingest; a ring without
+//     APPLE_TEAM_ID and APPLE_CLIENT_ID stops the api. No error holds a key.
 //
 // It is not yet the only reader of the environment: cmd/migrate reads its own
 // variables, httpx.Logger reads LOG_LEVEL, K_SERVICE, CLOUD_RUN_JOB and

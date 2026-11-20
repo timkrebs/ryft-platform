@@ -78,6 +78,29 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## App Attest, the server, in mode `off` (2026-11-20, D247; PR "api: App Attest, the server (mode off)")
+
+**Done (in the PR, not merged):** the three routes `POST /v1/app-attest/{challenge,keys,token}` (Apple's root pinned,
+production attestations only, challenges and keys in Postgres, migration 0037), the HMAC token checked by api and ingest
+without a database read, `APP_ATTEST=off` and `APP_ATTEST_EXEMPT_USERS=` in `deploy/run/config.env`, the start refusal
+and `check_cloudrun.py`'s rules for `warn`/`on`, the warn line and `ryft_app_attest_refusals_total`, `GET /v1/config` →
+`app_attest` (AA2), `X-RYFT-App-Build` (AA1), `ttl_sec` ≥ 600 (AA3), fixed error texts (AA4), and the secret container
+`app-attest-token-key` in `infra/gcp` (no version).
+
+**On merge:** `deploy.yml` runs migration 0037 and rolls api and ingest with two new env rows. Nothing is checked
+(`off`), and without the ring the three routes answer `501`, so the app attests nothing yet.
+
+**Your steps** (OPERATIONS → GCP → 17): 17.1 `terraform -chdir=infra/gcp plan` → **2 to add, 0 to change, 0 to
+destroy** → apply; C2's privacy text naming App Attest (D247 → Privacy) in force; 17.2 the ring's first version (the
+guarded pipe, no value printed); 17.3 the `warn` PR (after comparing Apple's root fingerprint with the pinned
+`1cb9823b…c932`); 17.4 the 7-day check; 17.6 the edge exclusion for `sqli`/`xss` (0/1/0) before `sqli` is enforced;
+17.5 the `on` PR.
+
+**Open / unverified:** a real device's attestation (generated vectors only), the root against Apple's download,
+Cloud Armor on base64 bodies (`docs/work/2026-11-20-app-attest-server/edge.md`), a concurrency test for the caps, and
+two accepted races (an 11th attestation in a day under concurrent calls; a key evicted mid-token answers `422`, not
+`404`; the app does the same for both).
+
 ## D3: the EKS era removed, AWS empty (2026-11-19, D246)
 
 **The retirement is done, by hand.** You deleted the old HCP org with every state, then RYFT's AWS rest by ID:

@@ -245,8 +245,8 @@ one learns `on` from the `403 app_attest_required`, not from the config. The con
 hosts (`https://api.ryftlab.de`, `https://ingest.ryftlab.de`); the exempt routes below ignore it. It is
 opaque, at most 512 ASCII characters: never parse, log or show it. Keep it in memory or in the Keychain
 (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`), with the account it belongs to. It is bound to the
-account (the bearer's `sub`) and to the key: after a change of account, use that account's own key and
-token. A new token does not revoke an earlier one; each runs until its `expires_at`. The server checks a
+account (the bearer's `sub`), and names the key it was issued for (checked on every request is the account
+only): after a change of account, use that account's own key and token. A new token does not revoke an earlier one; each runs until its `expires_at`. The server checks a
 token without a database read, so a key deleted on the server keeps its tokens working until they expire
 (at most an hour).
 
@@ -346,7 +346,7 @@ Response `200 AppAttestChallenge`:
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `challenge` | string | Opaque, ASCII, single use, for this account only. One call of `POST /v1/app-attest/keys` or `POST /v1/app-attest/token` uses it up, whatever that call answers: fetch a new one for every attempt. |
+| `challenge` | string | Opaque, ASCII, single use, for this account only. A call of `POST /v1/app-attest/keys` or `POST /v1/app-attest/token` that gets past the `429` and the JSON decoding (a body that isn't JSON or has an unknown field is a `400` that leaves it unused) uses it up, whatever it answers then, the `400` of a malformed `key_id` or blob included: fetch a new one for every attempt. |
 | `expires_at` | timestamp | 5 minutes after it was made. Use the challenge at once; don't compare `expires_at` with the device's clock. |
 
 At most 5 open challenges per account: a sixth cancels the oldest.
@@ -3107,7 +3107,7 @@ struct RemoteConfig: Codable {   // GET /v1/config
     let privacyPolicyVersion: String
     let privacyPolicyUrl: String
     let analytics: AnalyticsConfig?   // null without a project key on the server; send only with flags["analytics.enabled"] and the opt-in
-    let appAttest: String   // "off" | "warn" | "on" (closed; D247); a 501/404 from POST /v1/app-attest/challenge stays authoritative
+    let appAttest: String?  // "off" | "warn" | "on" (closed; D247); absent from a server before D247 (a rollback), so optional; a 501/404 from POST /v1/app-attest/challenge stays authoritative
 }
 
 struct AnalyticsConfig: Codable {   // RemoteConfig.analytics (PostHog EU Cloud)

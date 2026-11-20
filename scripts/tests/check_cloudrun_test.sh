@@ -398,10 +398,15 @@ baseline config.env '^APP_ATTEST_EXEMPT_USERS=' "APP_ATTEST_EXEMPT_USERS=$(uid 1
 bad "an upper-case exempt id" "does not have the shape empty, or 1 to 5 lower-case UUIDs"
 baseline config.env '^APP_ATTEST_EXEMPT_USERS=' "APP_ATTEST_EXEMPT_USERS=$(uid 2),$(uid 2)"
 bad "an exempt account twice" "APP_ATTEST_EXEMPT_USERS names an account twice"
-# The ring under off: allowed, absent or pinned (an operator may pin it before warn, plan decision 1).
+# The ring under off: allowed, absent or pinned in both (an operator may pin it before warn, plan
+# decision 1), but never in one service only, and at one version in both (api signs, ingest verifies).
 ok "off without the ring"
+ring api.yaml; ring ingest.yaml
+ok "off with the ring pinned in api and ingest"
 ring api.yaml
-ok "off with the ring pinned in api only"
+bad "off with the ring pinned in api only" "APP_ATTEST_TOKEN_KEYS is pinned in api.yaml only"
+mode warn; ring api.yaml app-attest-token-key 2; ring ingest.yaml app-attest-token-key 1
+bad "the ring at two versions" "app-attest-token-key is pinned at 2 in api.yaml and at 1 in ingest.yaml"
 # warn and on without the ring in both: the services would refuse to start (D245).
 mode warn
 bad "warn without the ring" "api.yaml: APP_ATTEST=warn without APP_ATTEST_TOKEN_KEYS pinned"

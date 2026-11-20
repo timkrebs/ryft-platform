@@ -12,6 +12,8 @@ import (
 const (
 	maxCBORDepth = 8
 	maxCBORSize  = 32 << 10
+	// maxCBORPrealloc caps the capacity reserved for an array or a map up front; longer ones grow.
+	maxCBORPrealloc = 16
 )
 
 // errCBOR is the decoder's only error; the verifier turns it into step "cbor".
@@ -145,7 +147,9 @@ func (d *cborDecoder) value(depth int) (cborValue, error) {
 		if depth >= maxCBORDepth || arg > d.left() {
 			return cborValue{}, errCBOR
 		}
-		items := make([]cborValue, 0, int(arg))
+		// The capacity is capped: a nest of declared-large arrays that fails at the bottom must not
+		// allocate megabytes on the way down. Real input holds a few items per container.
+		items := make([]cborValue, 0, min(int(arg), maxCBORPrealloc))
 		for range arg {
 			it, err := d.value(depth + 1)
 			if err != nil {
@@ -158,8 +162,8 @@ func (d *cborDecoder) value(depth int) (cborValue, error) {
 		if depth >= maxCBORDepth || arg > d.left()/2 {
 			return cborValue{}, errCBOR
 		}
-		pairs := make([]cborPair, 0, int(arg))
-		seen := make(map[string]struct{}, int(arg))
+		pairs := make([]cborPair, 0, min(int(arg), maxCBORPrealloc))
+		seen := make(map[string]struct{}, min(int(arg), maxCBORPrealloc))
 		for range arg {
 			k, err := d.value(depth + 1)
 			if err != nil {

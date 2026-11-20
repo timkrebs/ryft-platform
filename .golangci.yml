@@ -48,6 +48,11 @@ linters:
           deny:
             - pkg: github.com/timkrebs/ryft/internal/testsupport
               desc: test helpers; tests only
+        appattesttest-tests-only:  # D247
+          files: ["!$test"]
+          deny:
+            - pkg: github.com/timkrebs/ryft/internal/appattest/appattesttest
+              desc: App Attest test vectors (generated roots); tests only
     gosec:
       excludes:
         - G115 # int conversions: values here are bounded scores and minutes

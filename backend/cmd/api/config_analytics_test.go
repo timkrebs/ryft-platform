@@ -84,6 +84,9 @@ func TestRemoteConfigAnalytics(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
 				t.Fatal(err)
 			}
+			if a, present := raw["app_attest"]; !present || string(a) != `"off"` || cfg.AppAttest != model.AppAttestOff {
+				t.Errorf("app_attest = %s, want \"off\" (AA2: always present; the handler has no mode set)", a)
+			}
 			if on, ok := cfg.Flags["analytics.enabled"]; !ok || on {
 				t.Errorf("analytics.enabled = %v (present %v): it ships dark, off for an account not on the allow-list", on, ok)
 			}

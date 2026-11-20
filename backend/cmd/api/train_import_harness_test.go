@@ -133,7 +133,7 @@ func newBench(t *testing.T, beta config.Beta) *bench {
 	o.OnAuth = auth.LoadUser(ensureUser(b.st))
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", auth.Middleware(o, betaGate(beta.Gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))
-	mux.Handle("POST /v1/train/import", importRoute(o, beta.Gate, h.trainImport))
+	mux.Handle("POST /v1/train/import", importRoute(o, beta.Gate, nil, h.trainImport))
 	b.srv = httpx.Instrument(log, nil, httpx.Recover(httpx.SecurityHeaders(mux)))
 	return b
 }

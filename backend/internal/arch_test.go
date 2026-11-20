@@ -118,10 +118,17 @@ var denyRules = []denyRule{
 	{
 		ID: "R9", Why: "leaf packages import nothing of ours, so cycles stay impossible (each one's doc.go)",
 		From: []string{
-			"internal/config", "internal/logx", "internal/logx/logcheck", "internal/metrics", "internal/retry",
-			"internal/ratelimit", "internal/sealed", "internal/testsupport",
+			"internal/logx", "internal/logx/logcheck", "internal/metrics", "internal/retry",
+			"internal/ratelimit", "internal/sealed", "internal/testsupport", "internal/appattest",
+			"internal/appattest/appattesttest",
 		},
 		Deny: internalAll,
+	},
+	{
+		// appattest is a leaf itself (the rule above), so config stays one step from the bottom.
+		ID: "R9", Why: "config is a leaf but for the leaf appattest, whose ParseRing reads APP_ATTEST_TOKEN_KEYS at start-up (D247; internal/config/doc.go)",
+		From: []string{"internal/config"}, Deny: internalAll,
+		Except: []string{"internal/appattest"},
 	},
 }
 
