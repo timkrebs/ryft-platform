@@ -364,8 +364,9 @@ APP_FLAGS = {"train.enabled", "sleep.planner", "today.redesign", "coach.enabled"
              "analytics.enabled"}
 cfg = get("/v1/config")
 # The messages name the keys, never the values: analytics.project_key is a credential of its own (D231).
-check(set(cfg) == {"flags", "evaluated_at", "ttl_sec", "privacy_policy_version", "privacy_policy_url", "analytics"}
-      and cfg["ttl_sec"] == 21600, f"/v1/config shape: {sorted(cfg)}")
+check(set(cfg) == {"flags", "evaluated_at", "ttl_sec", "privacy_policy_version", "privacy_policy_url", "analytics",
+                   "app_attest"}
+      and cfg["ttl_sec"] == 21600 and cfg["app_attest"] == "off", f"/v1/config shape: {sorted(cfg)}")
 an = cfg["analytics"]
 got = sorted(an) if isinstance(an, dict) else type(an).__name__
 check(an is None or (isinstance(an, dict) and set(an) == {"host", "project_key"} and an["host"].startswith("https://")

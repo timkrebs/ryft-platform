@@ -56,7 +56,9 @@ func AppBuild(r *http.Request) string {
 // user_id): it names no account, token, key id or device, only the request_id, added by hand.
 func AppAttest(o AppAttestOptions, next http.Handler) http.Handler {
 	mode := o.Config.Mode
-	if mode == config.ModeOff {
+	// The zero Config (a mux built without LoadAppAttest, as in tests) is off too: LoadAppAttest only
+	// ever yields off, warn or on.
+	if mode != config.ModeWarn && mode != config.ModeOn {
 		return next
 	}
 	now := o.Now
