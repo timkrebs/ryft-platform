@@ -1,6 +1,6 @@
 # Dependency updates, weekly. Titles read "deps: bump …" (the pr-title rule). The site's
-# npm and Docker base images live in web/; the services' Go modules and base images in
-# backend/.
+# npm packages live in web/ (Firebase Hosting serves the export: no image, since web/Dockerfile
+# went with D3, D246); the services' Go modules and base images in backend/.
 version: 2
 updates:
   # The services' Go modules (backend/go.mod), since D229: pgx 5.7.5 went unwatched until the
@@ -23,9 +23,9 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
-    # Version policy (D108): Node moves as one unit (Docker build stage tag and
-    # digest, .nvmrc, engines, @types/node), by hand, and only onto an LTS line (Node 26 from
-    # 2026-10-28). So no Node-major PRs for @types/node or the node image; these rules stay.
+    # Version policy (D108): Node moves as one unit (.nvmrc, engines, @types/node), by hand,
+    # and only onto an LTS line (Node 26 from 2026-10-28). So no Node-major PRs for
+    # @types/node; these rules stay.
     # TypeScript 7 waits for typescript-eslint, whose peer range stops below 6.1.
     # Cooldown: new releases wait 7 days. Security updates are not delayed by cooldown
     # (GitHub's dependabot.yml reference: cooldown applies to version updates only).
@@ -34,20 +34,6 @@ updates:
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
       - dependency-name: typescript
-        update-types: ['version-update:semver-major']
-  - package-ecosystem: docker
-    directory: /web
-    schedule: { interval: weekly, day: monday }
-    commit-message: { prefix: deps }
-    # nginx stays on its stable (even) branch: patches arrive, a new branch (1.32 and so on)
-    # is a hand PR. Docker tags are only compared within the same suffix, so patches arrive
-    # only while it stays "-alpine3.24"; a new Alpine base is a hand PR too.
-    # Node: see the npm block (major bumps by hand; 24.x patches still flow).
-    cooldown: { default-days: 7 }
-    ignore:
-      - dependency-name: nginxinc/nginx-unprivileged
-        update-types: ['version-update:semver-minor', 'version-update:semver-major']
-      - dependency-name: node
         update-types: ['version-update:semver-major']
   - package-ecosystem: docker
     directory: /backend

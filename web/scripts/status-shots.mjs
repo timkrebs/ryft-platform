@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Screenshots for docs/STATUS.md from the running image (npm run image && npm run serve):
+// Screenshots for docs/STATUS.md from the running Hosting emulator (npm run build && npm run hosting):
 // every page's first screen in dark and light, the home page on a phone, and the app-vs-web comparisons (the app's capture next to the site in
 // the same appearance). JPEG to keep the repository small. BASE_URL overrides :8080.
 import { mkdirSync, rmSync } from 'node:fs';

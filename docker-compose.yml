@@ -84,7 +84,7 @@ services:
 
   # Applies the migrations as the owner (ryft) and sets the services' role
   # passwords, then exits; the services start after it and connect as their own
-  # least-privilege roles, as on Kubernetes (docs/ARCHITECTURE.md).
+  # least-privilege roles, as on Cloud Run (docs/ARCHITECTURE.md).
   migrate:
     build: { context: ./backend, args: { SERVICE: migrate } }
     environment:

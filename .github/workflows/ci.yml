@@ -56,11 +56,9 @@ jobs:
       run_smoke: ${{ github.event_name != 'pull_request' || steps.filter.outputs.smoke == 'true' }}
       run_manifests: ${{ github.event_name != 'pull_request' || steps.filter.outputs.manifests == 'true' }}
       run_terraform: ${{ github.event_name != 'pull_request' || steps.filter.outputs.terraform == 'true' }}
-      run_argocd_luatest: ${{ github.event_name != 'pull_request' || steps.filter.outputs.argocd_luatest == 'true' }}
       # A pull request: the filter. A push or a manual run: true unless since-green proved the web
       # paths unchanged since main's last green commit (a manual run has no since-green, so true).
       run_web: ${{ github.event_name == 'pull_request' && steps.filter.outputs.web == 'true' || github.event_name != 'pull_request' && steps.since-green.outputs.skip != 'true' }}
-      run_monitoring: ${{ github.event_name != 'pull_request' || steps.filter.outputs.monitoring == 'true' }}
       run_golden: ${{ github.event_name != 'pull_request' || steps.filter.outputs.golden == 'true' }}
       run_topology: ${{ github.event_name != 'pull_request' || steps.filter.outputs.topology == 'true' }}
     steps:
@@ -73,9 +71,9 @@ jobs:
               - 'backend/**'
               - '.golangci.yml'
               - 'docs/API.md'
-              # internal/config tests parse the committed config.env of the services (ADMIN_WEB_ORIGINS):
-              # a config-only change must run them.
-              - 'deploy/k8s/base/*/config.env'
+              # internal/config's tests parse the committed api template (ADMIN_WEB_ORIGINS in
+              # deploy/run/api.yaml): a template-only change must run them.
+              - 'deploy/run/**'
               - 'scripts/coverage.sh'
               # internal/events/pubsub's tests compare the topology with the generated files and with
               # Terraform's constants (pubsub.tf).
@@ -108,39 +106,23 @@ jobs:
               - '.github/workflows/ci.yml'
             manifests:
               - 'deploy/**'
-              - 'infra/vault/**'
-              # rendered by scripts/tests/vault_extras_chart_test.sh (the Terraform tests mock Helm)
-              - 'infra/aws/kubernetes/charts/vault-extras/**'
-              - 'infra/aws/kubernetes/charts/cluster-issuers/**'
               - 'scripts/**'
               - 'Makefile'
               - '.github/**'
               - '.gitattributes'
               - '**/.gitattributes'
               - '.gitmodules'
+              # the policy check reads compose's PRIVACY_POLICY_VERSION (web/scripts/lib/policy.mjs)
               - 'docker-compose.yml'
-              # make k8s-validate runs the topology's drift check (make topology-check)
-              - 'backend/internal/events/*.go'
-              - 'backend/internal/events/pubsub/**'
-              - 'backend/cmd/pubsub-topology/**'
-              - 'infra/gcp/pubsub.auto.tfvars.json'
               # make cloudrun-check reads the gate edge (D242): a PR moving it must pass with deploy/run
               - 'infra/gcp/gates.auto.tfvars'
+              # the Go that installs actionlint
               - 'backend/go.mod'
               - 'web/content/legal/**'
               - 'web/scripts/check-policy-version.mjs'
               - 'web/scripts/lib/policy.mjs'
-            # Argo CD's health checks harness: its script source, itself, and the recipe.
-            argocd_luatest:
-              - 'infra/aws/kubernetes/argocd.tf'
-              - 'infra/aws/kubernetes/argocd-luatest/**'
-              - 'Makefile'
-              - '.github/workflows/ci.yml'
             terraform:
               - 'infra/**'
-              - 'scripts/tests/argocd_release_guard_test.sh'
-              # infra/aws/kubernetes' test compares its Vault address with these generated files
-              - 'deploy/k8s/overlays/vault-namespaces/**'
               - '.github/workflows/ci.yml'
             # since-green below matches the same paths on a push to main: change them together.
             web:
@@ -151,19 +133,6 @@ jobs:
               - '.githooks/**'
               - 'scripts/check_bytes.sh'
               - 'scripts/lib/charpolicy.py'
-            # The EKS cluster's alert rules, until D3 (RYFT on Cloud Run alerts from Cloud
-            # Monitoring, infra/gcp, D236).
-            monitoring:
-              - 'deploy/grafana/**'
-              # the committed actions of the admission bindings (a step-change PR edits only the values)
-              - 'infra/aws/kubernetes/admission-values.yaml'
-              - 'infra/aws/kubernetes/charts/admission-policy/values.yaml'
-              - 'scripts/admission_intended.sh'
-              - 'scripts/tests/admission_intended_test.sh'
-              - 'scripts/check_rule_groups.sh'
-              - 'scripts/tests/check_rule_groups_test.sh'
-              - 'Makefile'
-              - '.github/workflows/ci.yml'
             # The scoring golden files and their PR guard (D149).
             golden:
               - 'backend/internal/scoring/testdata/golden/**'
@@ -495,8 +464,7 @@ jobs:
   # The Pub/Sub topology's drift check: infra/gcp/pubsub.auto.tfvars.json (Terraform creates the topics and
   # subscriptions from it) and deploy/pubsub-emulator/init.sh (compose's) must be byte for byte what
   # backend/internal/events/pubsub/topology.go generates (`make topology-check`; `go run ./cmd/pubsub-topology`
-  # in backend/ rewrites both). Its own job, so a stale file names itself; `ci-ok` needs it. `make k8s-validate`
-  # (the `manifests` job) runs it too.
+  # in backend/ rewrites both). Its own job, so a stale file names itself; `ci-ok` needs it.
   topology:
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_topology == 'true'
@@ -542,49 +510,39 @@ jobs:
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_manifests == 'true'
     runs-on: ubuntu-latest
     steps:
-      # The whole history: the holds check reads the base branch, deploy_targets.sh the pins.
+      # The whole history: the policy and privacy-version checks read the base branch.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      # From here on every step that renders (kubectl kustomize in make, check_registry,
-      # check_policy_in_force, the script tests) may only use git over file://: a remote base that
-      # slipped through fails the build. Not job-wide: the checkout above fetches over https.
+      # From here on no step may use git over anything but file:// (the checks read this clone's
+      # history only). Not job-wide: the checkout above fetches over https.
       - name: Git over file:// only, after the checkout
         run: echo "GIT_ALLOW_PROTOCOL=file" >> "$GITHUB_ENV"
-      # First: the bytes of every tracked file (not only YAML: kustomize also reads `Kustomization`
-      # and any extension named in resources/patches). A hidden line break (U+2028, U+2029, U+0085, a
-      # lone CR), a bidi control or another invisible character in a comment is a line break to the
-      # parsers and invisible to every line-based check after this one. Also refuses the file names
-      # Kustomization, kustomization.yml, .gitattributes and .gitmodules.
+      # First: the bytes of every tracked file (not only YAML). A hidden line break (U+2028, U+2029,
+      # U+0085, a lone CR), a bidi control or another invisible character in a comment is a line break
+      # to the parsers and invisible to every line-based check after this one. Also refuses the file
+      # names Kustomization, kustomization.yml, .gitattributes and .gitmodules.
       - name: Files have no hidden line breaks, controls, invisible characters, symlinks, BOM or banned names
         run: ./scripts/check_bytes.sh
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: backend/go.mod
           cache: false
-      # Node built-ins only (no npm ci): the policy check reads the site's legal pages and
-      # this repository's config.env files.
+      # Node built-ins only (no npm ci): the policy check reads the site's legal pages,
+      # deploy/run/config.env and docker-compose.yml.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: web/.nvmrc
-      - run: go install github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0
       # actionlint needs a newer Go than go.mod's; the toolchain download is verified by the Go
       # checksum database. Only this step may switch toolchains.
       - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
         env:
           GOTOOLCHAIN: auto
-      # yq (mikefarah) pinned, not the runner image's: the workflow, kustomization and Argo CD checks
-      # parse with it. The release binary checked against a sha256 (scripts/install_yq.sh holds both
-      # the version and the checksum; `smoke` installs it the same way for the script tests).
+      # yq (mikefarah) pinned, not the runner image's: the workflow check and check_cloudrun.py parse
+      # with it. The release binary checked against a sha256 (scripts/install_yq.sh holds both the
+      # version and the checksum; `smoke` installs it the same way for the script tests).
       - run: ./scripts/install_yq.sh
-      - run: make k8s-validate
-      # The Vault add-on's local charts as Helm renders them (vault-extras' policies, PDB and Role, the ryft-vault
-      # issuer), with yq and kubeconform: what tests/addons.tftest.hcl cannot see behind the mocked Helm provider.
-      # Helm pinned and checked against a sha256 (scripts/install_helm.sh); the script fails here
-      # (GITHUB_JOB=manifests) instead of skipping.
-      - run: ./scripts/install_helm.sh
-      - run: bash scripts/tests/vault_extras_chart_test.sh
       # The workflows themselves.
       - run: actionlint
       # What actionlint cannot know, read from the parsed YAML (the pinned yq is first on PATH; the
@@ -607,7 +565,7 @@ jobs:
       # services'), only the accessors' secrets, and none of P5's names (scripts/check_cloudrun.py).
       - run: make cloudrun-check
       # The privacy policy version in deploy/run/config.env (its home on Cloud Run) has its page on
-      # the site (English only, D230), the k8s copies equal it, and the site has no page the
+      # the site (English only, D230), compose's copy equals it, and the site has no page the
       # platform does not name (D107): consent is recorded against that version.
       - run: node web/scripts/check-policy-version.mjs --strict
       # Main's commit message names no denylisted brand: web-checks' `npm run brand` read it on every
@@ -619,32 +577,19 @@ jobs:
         run: |
           git log -1 --format=%B > "$RUNNER_TEMP/message"
           node web/scripts/check-brand.mjs --message "$RUNNER_TEMP/message"
-      # deploy/run/config.env's version is a published text (its English page, in the list), the
-      # k8s copies (deploy/k8s/base/{api,ingest}/config.env) equal it, and on a pull request a draft
-      # text is not put into force there. Also EKS's version in force (the overlay's literals): api and
-      # ingest agree and the pinned web commit serves it at /privacy (the newest English page). That pin
-      # no longer moves (promote is gone, C1), so a new privacy version needs C2, which drops this half.
+      # deploy/run/config.env's version is a real date, listed, with its English page, and on a pull
+      # request a draft text is not put into force there and a published one is not set back to a
+      # draft in place (scripts/check_policy_in_force.sh).
       - name: The privacy policy in force has its page
         env:
           BASE_REF: ${{ github.base_ref }}
         run: ./scripts/check_policy_in_force.sh ${BASE_REF:+"origin/$BASE_REF"}
-      # The overlay's holds parse (a typo fails closed), the active ones go to the run summary,
-      # and a PR may not move the pin of a group that is held on its base branch.
-      - name: Holds in the EKS overlay
-        env:
-          BASE_REF: ${{ github.base_ref }}
-          HEAD_REF: ${{ github.head_ref }}
-        run: ./scripts/deploy_targets.sh --check ${BASE_REF:+"origin/$BASE_REF"}
       # Consent was recorded against every version in the list: it only grows.
       - name: The privacy versions list is append-only
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
         run: ./scripts/check_privacy_versions.sh "origin/$BASE_REF"
-      # Every image the overlay pins exists on ghcr.io (a hand-made pin with a typo: 101bc7 for
-      # 1015bc7 stopped the migrate job on 2026-10-21). Nothing pushes there any more (C1); D3
-      # removes the overlay and this check.
-      - run: ./scripts/check_registry.sh
 
   smoke:
     needs: [changes]
@@ -654,7 +599,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # make test-scripts renders overlays: git over file:// only from here on (see manifests).
+      # make test-scripts builds throwaway repositories: git over file:// only from here on (see manifests).
       - name: Git over file:// only, after the checkout
         run: echo "GIT_ALLOW_PROTOCOL=file" >> "$GITHUB_ENV"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -668,20 +613,21 @@ jobs:
           node-version-file: web/.nvmrc
       - run: make up CONTAINER=docker
       - run: make smoke
-      # Argo CD's PostSync smoke, the Go one in the migrate image.
+      # The Go smoke (internal/smoke), the one in the migrate image.
       - run: make smoke-hook CONTAINER=docker
-      # The script tests parse with yq (check_kustomize_refs, check_workflows): the pinned one, as in `manifests`.
+      # The script tests parse with yq (check_workflows, check_cloudrun): the pinned one, as in `manifests`.
       - run: ./scripts/install_yq.sh
-      # trace.sh, promote.sh, deploy_targets.sh, check_pr.sh and friends against fakes.
+      # dlq.sh, check_pr.sh, check_cloudrun.py and friends against fakes.
       - run: make test-scripts
       - if: failure()
         run: docker compose logs --no-color
       - if: always()
         run: make down CONTAINER=docker
 
-  # Every Terraform root, offline: no HCP Terraform token, no cloud credentials. State
-  # lives in HCP Terraform and plans/applies run on the operator's machine
-  # (docs/OPERATIONS.md -> Terraform state); CI only proves the code is sound.
+  # The Terraform root (infra/gcp; the AWS and Vault roots went with D3, D246), offline: no HCP
+  # Terraform token, no cloud credentials. State lives in HCP Terraform (org ryft-lab, workspace
+  # ryft-gcp) and the operator starts plans and applies (docs/OPERATIONS.md -> GCP); CI only proves
+  # the code is sound.
   terraform:
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.run_terraform == 'true'
@@ -689,7 +635,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        root: [infra/aws, infra/aws/dns, infra/aws/kubernetes, infra/vault, infra/gcp]
+        root: [infra/gcp]
     defaults:
       run:
         working-directory: ${{ matrix.root }}
@@ -724,46 +670,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
       - run: tflint --format compact
       - run: terraform test
-      # The release's lifecycle conditions (a set or a second values document must be refused): edits a copy.
-      - if: matrix.root == 'infra/aws/kubernetes'
-        run: bash "$GITHUB_WORKSPACE/scripts/tests/argocd_release_guard_test.sh"
-
-  # Argo CD's custom health checks (infra/aws/kubernetes/argocd.tf, D121) in a Lua VM with
-  # exactly Argo CD's libraries (no string library), against table-driven objects. Reads
-  # argocd.tf only: no provider, no state, no credentials.
-  argocd-luatest:
-    needs: [changes]
-    if: github.event_name != 'pull_request' || needs.changes.outputs.run_argocd_luatest == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # Go modules come from the module proxy; nothing may fetch a repository over anything but file://.
-      - name: Git over file:// only, after the checkout
-        run: echo "GIT_ALLOW_PROTOCOL=file" >> "$GITHUB_ENV"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: infra/aws/kubernetes/argocd-luatest/go.mod
-          cache: false
-      - run: make argocd-luatest
-
-  # The EKS cluster's alert rules as code (promtool check and unit tests, mimirtool check), until
-  # D3. The synthetic checks went with Grafana Cloud (D236): Cloud Monitoring's uptime checks are
-  # infra/gcp's, tested by its terraform job.
-  monitoring:
-    needs: [changes]
-    if: github.event_name != 'pull_request' || needs.changes.outputs.run_monitoring == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: make alerts-check CONTAINER=docker
-      - run: bash scripts/tests/admission_intended_test.sh
-      - run: bash scripts/tests/check_rule_groups_test.sh
 
   # ryftlab.de (web/): every check of the site. The platform is this checkout; the app
   # repository is checked out next to it (it is public) for the drift checks (tokens, Swift
@@ -943,7 +849,7 @@ jobs:
     # always(), not !cancelled(): a cancelled run must still report (red), because a skipped
     # required check counts as passing for branch protection.
     if: always()
-    needs: [changes, bytes, test, pooler, lint, vulns, topology, smoke, manifests, terraform, argocd-luatest, monitoring, web-checks, web-e2e, secrets, golden-guard]
+    needs: [changes, bytes, test, pooler, lint, vulns, topology, smoke, manifests, terraform, web-checks, web-e2e, secrets, golden-guard]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

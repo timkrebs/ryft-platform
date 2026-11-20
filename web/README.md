@@ -20,7 +20,7 @@ make hooks         # once per clone: the brand guard on staged web/ files and on
 ```
 
 Then, from `web/` (or with the `make web-*` targets from the root: `web-test`, `web-build`,
-`web-e2e`, `web-hosting`, `web-image`, `web-serve`, `web-tokens`):
+`web-e2e`, `web-hosting`, `web-tokens`):
 
 ```bash
 npm run fonts      # Satoshi (Light, Regular, Medium, Bold) from Fontshare into src/fonts/, verified by SHA-256 (git-ignored)
@@ -53,10 +53,8 @@ they do). The site goes live through CI only (`deploy.yml`, the `site` job, once
 variable `SITE_DEPLOY` is `on`); never `firebase deploy` by hand. `check:hosting` takes
 `--base` (required), `--www <origin>`, `--policy-version YYYY-MM-DD`, `--apple-cdn` and
 `--emulator` (the emulator's answers; production's are the default, D21), and runs from the
-repository root too (`node web/scripts/check-hosting.mjs`, Node built-ins only).
-
-The nginx image stays until the platform's PR D3 removes it (design §10), and is no longer what ships: `npm run image` (docker or podman →
-`ryft-web:local`), `npm run serve` (http://localhost:8080), `npm run serve:stop`.
+repository root too (`node web/scripts/check-hosting.mjs`, Node built-ins only). There is no
+container image: Hosting serves `out/` itself (D25).
 
 Build-time settings (public, baked into the HTML; both may be empty):
 
@@ -65,9 +63,8 @@ Build-time settings (public, baked into the HTML; both may be empty):
 | `NEXT_PUBLIC_TESTFLIGHT_URL` | The "Open in TestFlight" buttons (/beta, the app-link fallback). Hidden while unset. |
 | `NEXT_PUBLIC_SUPPORT_EMAIL` | The invite and contact `mailto:` links. A `TODO(user)` marker while unset. |
 
-Pass them to `npm run build` from the environment (`npm run image` and `docker build
---build-arg` for the nginx image). In CI they come from the repository variables `TESTFLIGHT_URL`
-and `SUPPORT_EMAIL`.
+Pass them to `npm run build` from the environment. In CI they come from the repository variables
+`TESTFLIGHT_URL` and `SUPPORT_EMAIL`.
 
 ## Checks
 
@@ -81,7 +78,7 @@ npm run typecheck && npm run lint && npm test && npm run build
 | `npm run brand` | The denylisted brand in every file tracked under `web/`, `out/` and the last commit message (the git hooks in `../.githooks` run it on staged `web/` files and every commit message) |
 | `npm run tokens:check` | `src/styles/tokens.*` against `../../app/Ryft` (CI: the app at the commit in `.app-ref`, platform D234) |
 | `npm run licenses:check` | `config/app-packages.json` against the app's `Package.resolved` |
-| `npm run check:policy` | The privacy version against `PRIVACY_POLICY_VERSION` in `../deploy/run/config.env` and its k8s copies (the published version; exact line `PRIVACY_POLICY_VERSION=YYYY-MM-DD`): the page exists, it is the newest, api and ingest agree (warns; `-- --strict` fails, and runs from the repository root as `node web/scripts/check-policy-version.mjs --strict`, Node built-ins only) |
+| `npm run check:policy` | The privacy version against `PRIVACY_POLICY_VERSION` in `../deploy/run/config.env` (the published version; exact line `PRIVACY_POLICY_VERSION=YYYY-MM-DD`): the page exists, it is the newest, every listed version keeps its page, and `../docker-compose.yml` (the local stack) agrees (warns; `-- --strict` fails, and runs from the repository root as `node web/scripts/check-policy-version.mjs --strict`, Node built-ins only) |
 | `npm test` | Vitest: brand matcher, contrast, mark, messages, legal ports, AASA, the app icon (`config/app-icon.json` against the app's `AppIcon.appiconset`), science version, CSP, `firebase.json`'s rules, the built site |
 | `npm run e2e:hosting` | The Hosting emulator: Playwright (every page, axe, routes, headers), `check:hosting`, links, Lighthouse |
 
@@ -109,10 +106,9 @@ draft until you publish it: a banner, `noindex`, `TODO(user)` markers.
 3. A new privacy text is a new file, `privacy/<version>.mdx`, named
    `YYYY-MM-DD.mdx` (the old one stays: `/privacy/<old-version>` is what earlier consents
    point at), the version is appended to `content/legal/privacy-versions.json`, and
-   `PRIVACY_POLICY_VERSION` in `deploy/run/config.env` (with its copies in
-   `deploy/k8s/base/{api,ingest}/config.env` until D3) and `docker-compose.yml` changes to the
+   `PRIVACY_POLICY_VERSION` in `deploy/run/config.env` and `docker-compose.yml` changes to the
    same date in the same PR. So a policy PR is: the page, `privacy-versions.json`,
-   `deploy/run/config.env`, the k8s copies and `docker-compose.yml`. Only on the user's
+   `deploy/run/config.env` and `docker-compose.yml`. Only on the user's
    decision: the app asks every user to consent again. `check:policy --strict` fails otherwise.
 4. Open a PR (`legal: publish privacy 2026-11-01`). The merge puts the version into force:
    `deploy.yml` deploys the services with it and the site with the page, and the `site` job's
@@ -132,7 +128,6 @@ src/styles/           tokens.css (generated), globals.css
 content/              science and legal texts (MDX)
 messages/             UI strings (en.json)
 public/               AASA, icons, the OG image, screenshots
-nginx/                the image's server config and headers until PR D3 (csp.conf is generated)
 scripts/              tokens, fonts, screenshots, licences, postbuild, CSP, firebase.json, Hosting checks, brand guard
 scripts/lib/hosting.mjs  firebase.json's rules (redirects, rewrites, headers)
 .firebase-tools-version  the pinned firebase-tools

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The production smoke after a deploy (docs/OPERATIONS.md → Deploy and roll back):
+# The production smoke after a deploy (docs/OPERATIONS.md → GCP → Deploy, roll back, rotate):
 # the edge answers for api and ingest, the dedicated smoke user signs in, reads
 # /v1/me, sends one tiny sync and reads the day back once scoring has scored it
 # with the current model. Changes nothing but that user's step count for today.
@@ -7,8 +7,8 @@
 #   SUPABASE_URL=https://<ref>.supabase.co SUPABASE_ANON_KEY=... \
 #   SMOKE_EMAIL=smoke@ryftlab.de SMOKE_PASSWORD=... make smoke-prod
 # With ADMIN_API_KEY, a smoke user without beta access gets a one-use invite code
-# (once; it keeps the access), so the smoke also passes with BETA_GATE on. Against
-# production the key is found like the other operator scripts do (scripts/lib/admin.sh).
+# (once; it keeps the access), so the smoke also passes with BETA_GATE on. The key comes
+# from the environment only (scripts/lib/admin.sh says how to read production's).
 #
 # It then reports what the gates do (on, warn or off): it withdraws the smoke user's
 # consent for one sync and, with ADMIN_API_KEY, its beta access for one read, and
@@ -22,12 +22,9 @@ if [ -z "${SMOKE_TOKEN:-}" ]; then   # SMOKE_TOKEN: a bearer instead of the sign
   : "${SMOKE_EMAIL:?set SMOKE_EMAIL (the dedicated smoke user)}" "${SMOKE_PASSWORD:?set SMOKE_PASSWORD}"
 fi
 fail() { echo "✗ smoke-prod: $*" >&2; exit 1; }
-# Only for production: infra/vault's key is never sent to another URL.
-if [ -z "${ADMIN_API_KEY:-}" ] && [ "$API" = https://api.ryftlab.de ]; then
-  . "$(dirname "$0")/lib/admin.sh"
-  if ryft_admin_key 2>/dev/null; then echo "admin key: found by scripts/lib/admin.sh"
-  else echo "! no admin key found (scripts/lib/admin.sh): the beta gate is not probed"; fi
-fi
+# The admin key's other sources (the Vault root's Terraform output, the in-cluster Vault) went with
+# D3 (D246): only the environment is left, so there is nothing to look up.
+[ -n "${ADMIN_API_KEY:-}" ] || echo "! no ADMIN_API_KEY in the environment (scripts/lib/admin.sh): the beta gate is not probed"
 json() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
 
 code=$(curl -s -o /dev/null -w '%{http_code}' "$API/v1/me")
@@ -52,7 +49,7 @@ if [ "$(echo "$me" | json 'd["beta_access"]')" != True ]; then
     call -X POST "$API/v1/me/invite" -d "{\"code\": \"$code\"}" || fail "redeem the invite code"
     echo "→ smoke user: beta access with a one-use invite code"
   elif [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$API/v1/days")" = 403 ]; then
-    fail "BETA_GATE is on and the smoke user has no access: run again with ADMIN_API_KEY (terraform -chdir=infra/vault output -raw admin_api_key)"
+    fail "BETA_GATE is on and the smoke user has no access: run again with ADMIN_API_KEY (the Secret Manager secret admin-api-key: scripts/lib/admin.sh)"
   else
     echo "! the smoke user has no beta access: fine while BETA_GATE is off; run once with ADMIN_API_KEY before turning it on"
   fi
@@ -84,7 +81,7 @@ for _ in $(seq 1 60); do
   fi
   sleep 1
 done
-[ -n "$scored" ] || fail "$today was not rescored within 60 s of the sync (scoring, RabbitMQ: docs/OPERATIONS.md → RabbitMQ)"
+[ -n "$scored" ] || fail "$today was not rescored within 60 s of the sync (scoring, Pub/Sub: docs/OPERATIONS.md → Dead letters and the outbox)"
 
 # ---- the gates: on (403 with the code), warn (served, X-RYFT-Gate), off ------------
 tmp=$(mktemp -d)

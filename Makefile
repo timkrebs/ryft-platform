@@ -1,5 +1,3 @@
-REGISTRY ?= ghcr.io/timkrebs/ryft
-TAG      ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 SERVICES := ingest scoring api notify migrate
 # The golangci-lint that CI's `lint` job pins (.github/workflows/ci.yml); `make lint` warns when yours differs.
 GOLANGCI_LINT_VERSION := v2.15.0
@@ -8,23 +6,15 @@ GOLANGCI_LINT_VERSION := v2.15.0
 CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 COMPOSE   ?= $(CONTAINER) compose
 
-.PHONY: k8s-context k8s-context-local test check-api-doc test-scripts build images push up down logs smoke smoke-hook smoke-supabase smoke-prod pooler-check session-state-check cloudrun-check alerts-check alerts-retire-eks check-swift k8s-apply-eks k8s-check-auth k8s-check-images k8s-check-registry k8s-rabbitmq k8s-apply-local k8s-delete-local k8s-validate argocd-luatest monitoring-apply tf-migrate-hcp web-install web-test web-build web-e2e web-hosting web-image web-serve web-serve-stop web-tokens hooks coverage load lint pkgmap-check topology-check
+.PHONY: test check-api-doc test-scripts build up down logs smoke smoke-hook smoke-supabase smoke-prod pooler-check session-state-check cloudrun-check check-swift web-install web-test web-build web-e2e web-hosting web-tokens hooks coverage load lint pkgmap-check topology-check
 
 test:
 	cd backend && go vet ./... && go test ./...
 
+# The binaries, for a look on this machine. The images are deploy.yml's (built from backend/Dockerfile
+# on the runner, scanned, pushed to Artifact Registry); compose builds its own (`make up`).
 build:
 	cd backend && for s in $(SERVICES); do CGO_ENABLED=0 go build -o bin/$$s ./cmd/$$s; done
-
-images:
-	for s in $(SERVICES); do \
-	  $(CONTAINER) build -t $(REGISTRY)/$$s:$(TAG) -t $(REGISTRY)/$$s:latest --build-arg SERVICE=$$s backend; \
-	done
-
-# Only the commit tag: nothing deploys :latest (Argo CD pins a SHA, D96); the local
-# :latest from `make images` is for the self-hosted overlay you build yourself.
-push: images
-	for s in $(SERVICES); do $(CONTAINER) push $(REGISTRY)/$$s:$(TAG); done
 
 # Local dev via docker compose: Postgres, the Pub/Sub emulator with the generated topology
 # (deploy/pubsub-emulator/init.sh), a tick every TICK_EVERY seconds (default 60) and the services.
@@ -88,8 +78,8 @@ pooler-check:
 session-state-check:
 	bash scripts/check_session_state.sh
 
-# Argo CD's PostSync smoke (internal/smoke, `/app smoke` in the migrate image) against the
-# compose stack, as CI runs it after `make smoke`.
+# The Go smoke (internal/smoke, `/app smoke` in the migrate image) against the compose stack, as
+# CI's smoke job runs it after `make smoke`.
 smoke-hook:
 	$(COMPOSE) run --rm --no-deps \
 	  -e SMOKE_API_URL=http://api:8080 -e SMOKE_INGEST_URL=http://ingest:8080 \
@@ -97,9 +87,9 @@ smoke-hook:
 	  -e SMOKE_TOKEN=$${API_KEY:-dev-api-key-change-me}:$$(python3 -c 'import uuid; print(uuid.uuid4())') \
 	  migrate smoke
 
-# The operator scripts (scripts/tests): a fake kubectl, and the compose api when it is up. Every test
-# runs, also after one has failed; the target fails at the end and names each failed test, so one CI
-# round shows all of them.
+# The operator scripts (scripts/tests): fakes of gcloud, gh and kubectl, and the compose api when it
+# is up. Every test runs, also after one has failed; the target fails at the end and names each
+# failed test, so one CI round shows all of them.
 test-scripts:
 	@failed=; n=0; for t in scripts/tests/*_test.sh; do n=$$((n + 1)); bash "$$t" || failed="$$failed $$t"; done; \
 	if [ -n "$$failed" ]; then \
@@ -109,7 +99,7 @@ test-scripts:
 	fi; \
 	echo "✓ test-scripts: all $$n passed"
 
-# After a production deploy (docs/OPERATIONS.md → Deploy and roll back): the edge, the
+# After a production deploy (docs/OPERATIONS.md → GCP → Deploy, roll back, rotate): the edge, the
 # dedicated smoke user's sign-in, /v1/me, one tiny sync, the day read back.
 smoke-prod:
 	./scripts/smoke_prod.sh
@@ -124,164 +114,6 @@ cloudrun-check:
 # and with the app's current models (../app). See scripts/check_swift.sh.
 check-swift:
 	./scripts/check_swift.sh
-
-# The cluster every target below talks to is named: KUBE_CONTEXT=<context>. Every kubectl
-# and helm call goes through $(KUBECTL), $(KUBECTL_LOCAL) or $(HELM), which run the guard
-# right before it (scripts/lib/kube.mk); the local targets refuse a context that looks like EKS (a heuristic, scripts/lib/kube.sh).
-include scripts/lib/kube.mk
-
-# One namespace per service (docs/ARCHITECTURE.md → Namespaces).
-NAMESPACES := migrate ingest scoring api notify smoke
-LOCAL_SECRETS := deploy/k8s/overlays/local-postgres/secrets
-
-# BREAK-GLASS ONLY. Argo CD deploys ryft-prod-euc1 from git (docs/OPERATIONS.md →
-# Deploy, D95): a merged pin rolls out by itself, and self-heal reverts within minutes
-# whatever is applied here that git does not hold. Use this when Argo CD itself is
-# down, after pausing its auto-sync (OPERATIONS.md → Pause). Order as before Argo:
-# the Vault Secrets Operator objects first, so each namespace has its Secret before
-# the pods start; then RabbitMQ (k8s-rabbitmq) and the migrate Job (label
-# ryft.dev/stage=first), and the services only once migrate has set their role
-# passwords; the PostSync smoke Job (label ryft.dev/hook) is left out. The finished
-# migrate Job is deleted first because a Job's pod template cannot change.
-k8s-apply-eks: k8s-context k8s-check-images k8s-check-registry k8s-check-auth
-	@echo "! break-glass: Argo CD reverts anything here that git does not hold; pause its auto-sync first (docs/OPERATIONS.md → Deploy)."
-	for s in $(NAMESPACES); do $(KUBECTL) apply -k deploy/k8s/overlays/vault-namespaces/$$s || exit 1; done
-	for s in $(NAMESPACES); do $(KUBECTL) -n ryft-$$s wait --for=create secret/ryft-secrets --timeout=120s || exit 1; done
-	$(KUBECTL) apply -k deploy/k8s/overlays/vault-namespaces/rabbitmq
-	for u in ingest scoring api notify; do $(KUBECTL) -n ryft-rabbitmq wait --for=create secret/amqp-user-$$u --timeout=120s || exit 1; done
-	@$(MAKE) --no-print-directory k8s-rabbitmq RABBITMQ=deploy/rabbitmq
-	$(KUBECTL) -n ryft-migrate delete job migrate --ignore-not-found
-	$(KUBECTL) apply -k deploy/k8s/overlays/eks -l ryft.dev/stage=first
-	$(KUBECTL) -n ryft-migrate wait --for=condition=complete job/migrate --timeout=10m
-	$(KUBECTL) apply -k deploy/k8s/overlays/eks -l 'ryft.dev/hook!=postsync'
-	for s in ingest api scoring notify; do $(KUBECTL) -n ryft-$$s rollout status deploy/$$s --timeout=10m; done
-
-# Grafana Cloud collector (docs/OBSERVABILITY.md → Grafana Cloud), after infra/vault:
-# its Fleet Management token is synced from Vault into namespace monitoring first.
-K8S_MONITORING_VERSION := 4.5.3
-monitoring-apply: k8s-context k8s-check-auth
-	$(KUBECTL) apply -k deploy/k8s/overlays/vault-namespaces/monitoring
-	$(KUBECTL) -n monitoring wait --for=create secret/ryft-secrets --timeout=120s
-	helm repo add grafana https://grafana.github.io/helm-charts >/dev/null 2>&1 || true
-	helm repo update grafana >/dev/null
-	$(HELM) upgrade --install grafana-cloud grafana/k8s-monitoring --version $(K8S_MONITORING_VERSION) \
-	  --namespace monitoring --values deploy/monitoring/k8s-monitoring.yaml --wait --timeout 10m
-
-# Move every Terraform root's state into its HCP Terraform workspace, once
-# (docs/OPERATIONS.md → Terraform state). Needs `terraform login` and the four
-# workspaces, each with execution mode Local and Terraform 1.16.7. The source is
-# each root's last full local state: terraform.tfstate, or terraform.tfstate.backup
-# where the S3 attempt left terraform.tfstate empty. It is copied to
-# ~/.ryft-tfstate-rescue/<time>/ first. A workspace that already holds state is left
-# alone. Terraform refuses -reconfigure with a cloud block, so the root's backend cache
-# (.terraform/terraform.tfstate: the S3 settings, no resources) is moved next to the
-# copy instead: init then starts fresh and offers no migration from S3. After the
-# push the workspace must hold as many resources as the local state.
-# D56: state lives in HCP Terraform, one workspace per root, runs stay local.
-TF_ORG   := tim-krebs-org
-TF_ROOTS := infra/aws:ryft-prod-euc1-platform infra/aws/dns:ryft-prod-euc1-dns \
-            infra/aws/kubernetes:ryft-prod-euc1-kubernetes infra/vault:ryft-prod-euc1-vault
-tf-migrate-hcp:
-	@set -e; \
-	token=$$(jq -r '.credentials["app.terraform.io"].token // empty' $$HOME/.terraform.d/credentials.tfrc.json 2>/dev/null); \
-	[ -n "$$token" ] || { echo "✗ not logged in to HCP Terraform: terraform login"; exit 1; }; \
-	rescue=$$HOME/.ryft-tfstate-rescue/$$(date +%Y%m%dT%H%M%S); mkdir -p "$$rescue"; chmod 700 "$$rescue"; \
-	for pair in $(TF_ROOTS); do \
-	  r=$${pair%%:*}; ws=$${pair#*:}; \
-	  attrs=$$(curl -fsS -H "Authorization: Bearer $$token" \
-	    https://app.terraform.io/api/v2/organizations/$(TF_ORG)/workspaces/$$ws) || { echo "✗ workspace $$ws not found in $(TF_ORG)"; exit 1; }; \
-	  mode=$$(echo "$$attrs" | jq -r '.data.attributes["execution-mode"]'); \
-	  [ "$$mode" = local ] || { echo "✗ $$ws: execution mode is $$mode; set it to Local (Settings → General)"; exit 1; }; \
-	  if [ -n "$$(echo "$$attrs" | jq -r '.data.relationships["current-state-version"].data.id // empty')" ]; then \
-	    echo "• $$ws already holds a state: left as it is"; continue; fi; \
-	  src=$$r/terraform.tfstate; [ -s $$src ] || src=$$r/terraform.tfstate.backup; \
-	  [ -s $$src ] || { echo "✗ $$r: no local state to move"; exit 1; }; \
-	  cp $$src "$$rescue/$$ws.tfstate"; \
-	  want=$$(jq '[.resources[]?.instances[]?] | length' $$src); \
-	  cache=$$r/.terraform/terraform.tfstate; \
-	  if [ -f $$cache ] && [ "$$(jq -r '.backend.type // empty' $$cache)" != cloud ]; then \
-	    mv $$cache "$$rescue/$$ws.backend-cache.json"; fi; \
-	  (cd $$r && terraform init -input=false >/dev/null); \
-	  (cd $$r && terraform state push "$$rescue/$$ws.tfstate"); \
-	  got=$$(cd $$r && terraform state list | wc -l | tr -d ' '); \
-	  [ "$$got" -ge "$$want" ] || { echo "✗ $$ws: $$got resources after the push, $$want expected"; exit 1; }; \
-	  echo "✓ $$r → $$ws: $$got resources"; \
-	done; \
-	echo "✓ every state is in HCP Terraform; copies in $$rescue (they hold secrets: delete them once every root plans cleanly)"
-
-# Self-hosted (in-cluster Postgres, API key): generates the per-namespace secrets once.
-# Self-hosted: cert-manager must be installed. The internal CA (the same chart template
-# as on EKS), the RabbitMQ operators, then everything else with one broker node.
-k8s-apply-local: k8s-context-local
-	./scripts/local-secrets.sh 2>/dev/null || [ -d $(LOCAL_SECRETS) ]
-	helm template ryft-issuers infra/aws/kubernetes/charts/cluster-issuers --namespace cert-manager \
-	  --show-only templates/internal-ca.yaml | { $(KUBECTL_LOCAL) apply -f -; }
-	$(KUBECTL_LOCAL) -n cert-manager wait --for=condition=Ready certificate/ryft-internal-ca --timeout=2m
-	$(KUBECTL_LOCAL) -n ryft-migrate delete job migrate --ignore-not-found
-	@$(MAKE) --no-print-directory k8s-rabbitmq RABBITMQ=deploy/k8s/overlays/local-postgres
-
-# The RabbitMQ operators (their CRDs and webhooks first), then $(RABBITMQ_DIR) (the broker,
-# its topology; for local-postgres everything), then wait for the broker. Server-side
-# apply (the CRDs are too large for the last-applied annotation), taking over fields
-# Argo CD owns: this is break-glass or a cluster without Argo CD.
-# RABBITMQ is exactly one of two values: deploy/rabbitmq is the EKS broker (the EKS guard);
-# deploy/k8s/overlays/local-postgres uses the local guard. A trailing / is allowed. Anything
-# else, or more than one word, stops before the first cluster call.
-override RABBITMQ_DIR = $(RABBITMQ:%/=%)
-override RABBITMQ_EKS = $(filter deploy/rabbitmq,$(RABBITMQ_DIR))
-override RABBITMQ_CHECK = $(if $(RABBITMQ),,$(error RABBITMQ is not set: deploy/rabbitmq (EKS) or deploy/k8s/overlays/local-postgres))$(if $(filter 1,$(words $(RABBITMQ))),,$(error RABBITMQ must be one word: deploy/rabbitmq (EKS) or deploy/k8s/overlays/local-postgres))$(if $(filter deploy/rabbitmq deploy/k8s/overlays/local-postgres,$(RABBITMQ_DIR)),,$(error RABBITMQ must be deploy/rabbitmq (EKS) or deploy/k8s/overlays/local-postgres, not $(RABBITMQ)))
-override RABBITMQ_KUBECTL = $(RABBITMQ_CHECK)$(if $(RABBITMQ_EKS),$(KUBECTL),$(KUBECTL_LOCAL))
-k8s-rabbitmq: $(if $(RABBITMQ_EKS),k8s-context,k8s-context-local)
-	printf '%s\n' 'apiVersion: v1' 'kind: Namespace' 'metadata:' '  name: ryft-rabbitmq' '  labels:' '    app.kubernetes.io/part-of: ryft' '    pod-security.kubernetes.io/enforce: restricted' '    pod-security.kubernetes.io/warn: restricted' '    pod-security.kubernetes.io/audit: restricted' | { $(RABBITMQ_KUBECTL) apply -f -; }
-	$(RABBITMQ_KUBECTL) apply --server-side --force-conflicts -k deploy/rabbitmq/operators
-	for d in rabbitmq-cluster-operator messaging-topology-operator; do $(RABBITMQ_KUBECTL) -n rabbitmq-system rollout status deploy/$$d --timeout=5m || exit 1; done
-	$(RABBITMQ_KUBECTL) apply --server-side --force-conflicts -k $(RABBITMQ_DIR)
-	$(RABBITMQ_KUBECTL) -n ryft-rabbitmq wait --for=condition=AllReplicasReady rabbitmqcluster/rabbitmq --timeout=15m
-
-# On EKS this would delete the service namespaces and the broker's volumes: the local guard
-# refuses a context that looks like EKS (a heuristic), in the same shell line as the call.
-k8s-delete-local: k8s-context-local
-	$(KUBECTL_LOCAL) delete -k deploy/k8s/overlays/local-postgres
-
-# Render every overlay offline and validate it (no cluster needed): each service's
-# namespace, EKS, local-postgres (with throwaway secrets if none exist), the
-# Vault Secrets Operator manifests infra/vault generated (if any) and the golden
-# copies its tests pin, the RabbitMQ manifests and Argo CD's. CustomResourceDefinitions
-# are skipped (kubeconform has no schema for them): the only ones are the vendored
-# operators', which SHA256SUMS pins.
-KUBECONFORM_CRDS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
-# The EKS cluster's alert rules (deploy/grafana/alerts, D85), EKS leftovers until D3: promtool checks
-# the rules and runs their unit tests, mimirtool checks them as Grafana Cloud's ruler would. Containers,
-# so neither tool has to be installed. RYFT on Cloud Run alerts from Cloud Monitoring (infra/gcp/alerts.tf,
-# D236): ryft.yaml, the Cloud Run rules alerts-apply loaded, went with Grafana Cloud, and so did
-# alerts-apply; nothing here loads a rule any more.
-# Pinned by digest (the index, all platforms); the tags are prom/prometheus:v3.5.0 and
-# grafana/mimirtool:2.16.0.
-# scripts/check_rule_groups.sh holds every group to Grafana Cloud's 20 rules (neither tool knows it).
-# eks-admission.yaml and admission-intended.yaml are the EKS cluster's admission rules, checked here
-# (with their tests) until the EKS removal (D3) and never loaded; alerts-retire-eks deletes their live
-# copies and the old Vault group once EKS is gone (docs/OBSERVABILITY.md → Alerts → EKS leftovers).
-# mimirtool checks each file in a run of its own: eks-admission.yaml keeps the live namespace ryft, and
-# one mimirtool run refuses a namespace twice.
-PROMTOOL_IMAGE := docker.io/prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
-MIMIRTOOL_IMAGE := docker.io/grafana/mimirtool@sha256:f172fbe57ff63694a9b284f745e271deeb8eb782b97a3e3de9abaf07d45d276c
-ALERT_FILES := eks-admission admission-intended
-# The groups loaded on EKS that nothing loads any more, as namespace/group: ryft-admission and
-# ryft-vault were in the old rules file (namespace ryft); ryft-admission-intended is
-# admission-intended.yaml's (namespace ryft-admission). scripts/tests/alerts_retire_test.sh holds this
-# list to the files.
-EKS_RULE_GROUPS := ryft/ryft-admission ryft/ryft-vault ryft-admission/ryft-admission-intended
-alerts-check:
-	@set -e; d=$$(mktemp -d); trap 'rm -rf "$$d"' EXIT; chmod 755 "$$d"; \
-	scripts/admission_intended.sh --check; \
-	scripts/check_rule_groups.sh $(foreach f,$(ALERT_FILES),deploy/grafana/alerts/$(f).yaml); \
-	for f in $(ALERT_FILES); do sed '/^namespace:/d' "deploy/grafana/alerts/$$f.yaml" > "$$d/$$f.rules.yaml"; done; \
-	cp deploy/grafana/alerts/eks-admission.test.yaml "$$d/"; chmod a+r "$$d"/*; \
-	$(CONTAINER) run --rm -v "$$d":/rules:ro --entrypoint promtool $(PROMTOOL_IMAGE) check rules $(foreach f,$(ALERT_FILES),/rules/$(f).rules.yaml); \
-	$(CONTAINER) run --rm -v "$$d":/rules:ro -w /rules --entrypoint promtool $(PROMTOOL_IMAGE) test rules /rules/eks-admission.test.yaml; \
-	for f in $(ALERT_FILES); do \
-	  $(CONTAINER) run --rm -v $(CURDIR)/deploy/grafana/alerts:/alerts:ro $(MIMIRTOOL_IMAGE) rules check /alerts/$$f.yaml || exit 1; \
-	done
 
 # Per-package Go coverage and the internal/ total, as CI prints them (scripts/coverage.sh). The
 # profile and the numbers go to $(COVERDIR), a temp dir by default; tests that need Postgres or the
@@ -334,80 +166,12 @@ golden-update:
 	@: "$${RYFT_TEST_POSTGRES_URL:?a throwaway Postgres server, e.g. postgres://postgres:<password>@localhost:5432/postgres}"
 	cd backend && RYFT_GOLDEN_UPDATE=$(or $(GOLDEN_MODE),1) go test ./internal/scoring/ -run '^TestGoldenScores$$' -count=1 -v
 
-# Once nothing serves from EKS (at the latest with D3), while the Grafana Cloud stack still exists:
-# delete the EKS_RULE_GROUPS above, which are live as last loaded. Not needed if the stack itself goes
-# first (runbook GCP step 11.7: its rules go with it). Each group is tried: one that is already gone
-# is reported and the others are still deleted; the exit is 1 then, so look at Alerting → Alert rules.
-alerts-retire-eks:
-	@: "$${GRAFANA_PROM_URL:?e.g. https://prometheus-prod-<NN>-<region>.grafana.net}" \
-	   "$${GRAFANA_PROM_USER:?the Prometheus instance id of the Grafana stack, a number}" \
-	   "$${GRAFANA_RULES_TOKEN:?an access policy token with rules:read and rules:write}"
-	@rc=0; for g in $(EKS_RULE_GROUPS); do \
-	  echo "deleting rule group $${g#*/} in namespace $${g%%/*}"; \
-	  MIMIR_API_KEY="$$GRAFANA_RULES_TOKEN" $(CONTAINER) run --rm \
-	    -e MIMIR_ADDRESS="$$GRAFANA_PROM_URL" -e MIMIR_TENANT_ID="$$GRAFANA_PROM_USER" -e MIMIR_API_KEY \
-	    $(MIMIRTOOL_IMAGE) rules delete "$${g%%/*}" "$${g#*/}" \
-	    || { echo "  $$g was not deleted (already gone, or the token): see Alerting → Alert rules" >&2; rc=1; }; \
-	done; exit $$rc
-
-k8s-validate:
-	@set -e; export GIT_ALLOW_PROTOCOL=file; out=$$(mktemp); gen=; \
-	if [ ! -d $(LOCAL_SECRETS) ]; then ./scripts/local-secrets.sh >/dev/null; gen=1; fi; \
-	trap 'rm -f "$$out"; [ -z "$$gen" ] || rm -rf $(LOCAL_SECRETS)' EXIT; \
-	for o in $(addprefix services/,$(NAMESPACES)) services/web overlays/eks overlays/local-postgres; do \
-	  kubectl kustomize deploy/k8s/$$o >> "$$out"; echo --- >> "$$out"; done; \
-	(cd deploy/rabbitmq/operators && shasum -a 256 -c --quiet SHA256SUMS) || { echo "✗ a vendored operator manifest changed (deploy/rabbitmq/operators/SHA256SUMS)"; exit 1; }; \
-	for o in operators .; do kubectl kustomize deploy/rabbitmq/$$o >> "$$out"; echo --- >> "$$out"; done; \
-	for d in deploy/k8s/overlays/vault-namespaces/*/; do [ ! -d "$$d" ] || { kubectl kustomize "$$d" >> "$$out"; echo --- >> "$$out"; }; done; \
-	for f in infra/vault/tests/golden/*/*.yaml deploy/argocd/*.yaml deploy/argocd/apps/*.yaml deploy/k8s/overlays/eks/web.yaml; do [ ! -f "$$f" ] || { cat "$$f" >> "$$out"; echo --- >> "$$out"; }; done; \
-	kubeconform -strict -summary -skip CustomResourceDefinition -schema-location default -schema-location '$(KUBECONFORM_CRDS)' - < "$$out"
-	@$(MAKE) --no-print-directory k8s-check-images
-	@./scripts/check_argocd.sh
-	@./scripts/check_operators_scope.sh
-	@./scripts/check_kustomize_refs.sh
-	@bash scripts/tests/config_rolls_test.sh
-	@$(MAKE) --no-print-directory topology-check
-
 # The Pub/Sub topology's generated files, infra/gcp/pubsub.auto.tfvars.json (Terraform's input) and
 # deploy/pubsub-emulator/init.sh (compose's emulator), are what backend/internal/events/pubsub/topology.go
 # writes; exit 1 names each one that drifted (`go run ./cmd/pubsub-topology` in backend/ rewrites both).
-# CI's `topology` job, and part of k8s-validate. deploy/rabbitmq's checks above stay until D3.
+# CI's `topology` job.
 topology-check:
 	cd backend && go run ./cmd/pubsub-topology -check
-
-# Argo CD's custom health checks (infra/aws/kubernetes/argocd.tf, D121) evaluated in a Lua VM with
-# exactly Argo CD v3.5.6's libraries (no string library) against table-driven objects. Offline:
-# reads argocd.tf only, no Terraform provider, no cluster. CI job argocd-luatest.
-argocd-luatest:
-	cd infra/aws/kubernetes/argocd-luatest && go vet ./... && go run .
-
-# kubectl gets its EKS token from `aws eks get-token`, so expired AWS credentials
-# make every call fail with "the server has asked for the client to provide
-# credentials" (2026-10-20). Say so before applying anything.
-k8s-check-auth: k8s-context
-	@$(KUBE_GUARD) || exit 1; \
-	if ! { $(KUBECTL) auth whoami; } >/dev/null 2>&1; then \
-	  echo "✗ kubectl's login to $$KUBE_CONTEXT is missing or expired."; \
-	  aws sts get-caller-identity --query Arn --output text 2>&1 | sed '/^$$/d; s/^/  aws sts: /' | head -2; \
-	  echo "  Refresh your AWS credentials, check with 'aws sts get-caller-identity', then run this again."; \
-	  exit 1; fi
-	@echo "$(KUBE_REQUIRED)✓ kubectl's login to $$KUBE_CONTEXT works, as $$(aws sts get-caller-identity --query Arn --output text 2>/dev/null)"
-
-# Every image the EKS overlay deploys must be a well-formed reference with a pinned
-# tag or digest: no whitespace (a stray space in newTag left the migrate Job's pod in
-# InvalidImageName until its deadline, 2026-10-19), no :latest, no missing tag.
-IMAGE_REF := ^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)*(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}|@sha256:[a-f0-9]{64})$$
-# Every pinned ghcr.io image exists (network; not part of k8s-validate, which CI runs).
-k8s-check-registry:
-	./scripts/check_registry.sh
-
-k8s-check-images:
-	@set -e; rendered=$$(GIT_ALLOW_PROTOCOL=file kubectl kustomize deploy/k8s/overlays/eks); \
-	imgs=$$(printf '%s\n' "$$rendered" | sed -nE 's/^ *(- )?image: *//p' | tr -d "\"'" | sort -u); \
-	[ -n "$$imgs" ] || { echo "✗ the render of overlays/eks holds no image: the render failed or the overlay is empty"; exit 1; }; \
-	bad=$$(printf '%s\n' "$$imgs" | grep -Ev '$(IMAGE_REF)' || true; printf '%s\n' "$$imgs" | grep -E ':latest$$' || true); \
-	if [ -n "$$bad" ]; then echo "✗ malformed or unpinned images in overlays/eks (check newTag):"; printf '%s\n' "$$bad" | sed 's/^/  [/; s/$$/]/'; exit 1; fi; \
-	echo "✓ $$(printf '%s\n' "$$imgs" | wc -l | tr -d ' ') images in overlays/eks, all pinned and well-formed"
 
 # --- web/ (ryftlab.de, D107): one place for the site's checks; `make hooks` once per clone ---
 # The drift checks and some tests read the app from ../app (RYFT_APP_DIR overrides it: absolute,
@@ -424,16 +188,6 @@ web-test:
 # The static export in web/out (postbuild: CSP hashes, brand check of the output).
 web-build:
 	cd web && npm run build
-
-# The nginx image (docker or podman), kept until D3: the site is on Firebase Hosting (web D19).
-web-image:
-	cd web && npm run image
-
-web-serve: web-image
-	cd web && npm run serve
-
-web-serve-stop:
-	cd web && npm run serve:stop
 
 # The Firebase Hosting emulator (firebase-tools pinned in web/.firebase-tools-version, no login, no
 # Podman or Docker) on the build, and against it Playwright (routes, headers, axe), check-hosting.mjs,

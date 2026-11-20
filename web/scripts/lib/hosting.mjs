@@ -1,6 +1,6 @@
 // firebase.json for Firebase Hosting (web D19): what scripts/firebase-json.mjs writes after the
-// build, from the export's script hashes and the policies of ./csp.mjs (the nginx snippets' source
-// until PR D3), so the CSP stays one source. Pure and dependency-free: tests/hosting.test.ts calls it
+// build, from the export's script hashes and the policies of ./csp.mjs, so the CSP stays one
+// source. Pure and dependency-free: tests/hosting.test.ts calls it
 // with fixture hashes, and scripts/check-hosting.mjs reads the header values from here.
 //
 // Hosting has no locations. Every `headers` rule whose pattern matches the REQUEST PATH applies, on
@@ -38,7 +38,7 @@ const PERMISSIONS = [
   'browsing-topics',
 ];
 
-/** The headers every response carries, whichever policy it has (nginx/headers-common.conf until PR D3). */
+/** The headers every response carries, whichever policy it has (tests/hosting.test.ts pins them). */
 export const SHARED_HEADERS = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'no-referrer' },
@@ -97,8 +97,9 @@ export function firebaseJson({ hashes, adminHashes, config }) {
     hosting: {
       public: 'out',
       cleanUrls: true,
-      // Only the precompressed copies (nginx's gzip_static; Hosting compresses on its own). Never
-      // "**/.*", firebase init's default: it would drop .well-known/ and the AASA with it.
+      // Only precompressed copies: the build makes none (Hosting compresses on its own, web D19),
+      // and a stray *.gz is never uploaded. Never "**/.*", firebase init's default: it would drop
+      // .well-known/ and the AASA with it.
       ignore: ['**/*.gz'],
       // Before any file is looked up. 1: #156's trailing slash, the only one (trailingSlash is
       // unset, so Hosting redirects no other). 2: bare /de as an exact rule, so it never depends

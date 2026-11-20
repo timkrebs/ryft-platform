@@ -310,7 +310,7 @@ func LoadAuth() (Auth, error) {
 // apiKeyEnv are apikey mode's variables: local development only.
 var apiKeyEnv = []string{"ALLOW_INSECURE_APIKEY_AUTH", "API_KEY", "USER_ID"}
 
-// refuseAPIKeyOnCloudRun is admission policy P5 in the code (D222): with K_SERVICE or
+// refuseAPIKeyOnCloudRun keeps the EKS-era admission policy P5 in the code (D222): with K_SERVICE or
 // CLOUD_RUN_JOB set, AUTH_MODE=apikey and apikey mode's variables are refused, so a
 // misconfigured revision cannot start with a shared key. scripts/check_cloudrun.py
 // rejects the same names in deploy/run. The error names the variable, never its value.
@@ -378,8 +378,8 @@ func LoadBeta() (Beta, error) {
 	if b.Consent, err = parseMode("CONSENT_ENFORCE", string(ModeOn)); err != nil {
 		return b, err
 	}
-	// Kustomize env files keep quotes and inline comments in the value: they fail
-	// here instead of becoming the version users consent to.
+	// An env file keeps quotes and inline comments in the value (deploy/run/config.env
+	// forbids both): they fail here instead of becoming the version users consent to.
 	if v := b.PrivacyPolicyVersion; v != "" {
 		if _, err := time.Parse(time.DateOnly, v); err != nil {
 			return b, fmt.Errorf("PRIVACY_POLICY_VERSION must be a date (YYYY-MM-DD), got %q", v)
@@ -394,7 +394,7 @@ func LoadBeta() (Beta, error) {
 func (b Beta) RequirePolicy() error {
 	if b.PrivacyPolicyVersion == "" {
 		return errors.New("PRIVACY_POLICY_VERSION is required: api and ingest record and enforce consent against it (D78); " +
-			"set the published version (deploy/k8s/base/<service>/config.env, docker-compose.yml)")
+			"set the published version (deploy/run/config.env, docker-compose.yml)")
 	}
 	return nil
 }
@@ -412,8 +412,9 @@ const DefaultPublicWebURL = "https://ryftlab.de"
 // maxWebOrigins bounds ADMIN_WEB_ORIGINS: the page and a development origin or two.
 const maxWebOrigins = 5
 
-// LoadAdmin reads ADMIN_API_KEY, the bearer of the operator's /v1/admin routes (api only; infra/vault
-// generates it). Empty disables them; a short key is refused rather than guessable.
+// LoadAdmin reads ADMIN_API_KEY, the bearer of the operator's /v1/admin routes (api only; the Secret
+// Manager secret admin-api-key, pinned in deploy/run/api.yaml). Empty disables them; a short key is
+// refused rather than guessable.
 //
 // ADMIN_WEB_ORIGINS is a comma-separated list of the exact origins whose pages may read the admin
 // routes' answers (CORS); unset or empty means none. An entry that is not a bare origin stops the
@@ -527,14 +528,14 @@ func LoadAPNs() (a APNs, ok bool, err error) {
 // developer-account values and the key that encrypts stored refresh tokens.
 type Apple struct {
 	TeamID, KeyID, ClientID, PrivateKey string
-	DataKey                             string // DATA_ENCRYPTION_KEY, base64 32 bytes (infra/vault generates it)
+	DataKey                             string // DATA_ENCRYPTION_KEY, base64 32 bytes (the Secret Manager secret data-key)
 }
 
 // LoadApple reads APPLE_TEAM_ID, APPLE_KEY_ID, APPLE_CLIENT_ID, APPLE_KEY_P8 and
 // DATA_ENCRYPTION_KEY. The four APPLE_* decide: all set enables revocation, none
 // disables it (ok false), some is an error, so a half-configured deployment does not
-// start. DATA_ENCRYPTION_KEY is required only when revocation is enabled: infra/vault
-// generates it for the api whether or not the Apple keys exist yet.
+// start. DATA_ENCRYPTION_KEY is required only when revocation is enabled: deploy/run/api.yaml
+// pins the Secret Manager secret data-key for the api whether or not the Apple keys exist yet.
 func LoadApple() (Apple, bool, error) {
 	a := Apple{
 		TeamID: strings.TrimSpace(os.Getenv("APPLE_TEAM_ID")), KeyID: strings.TrimSpace(os.Getenv("APPLE_KEY_ID")),

@@ -13,8 +13,8 @@
 #      external reusable workflow could name the environment, or run with our secrets;
 #   4. no `secrets: inherit`, and `secrets` is only ever read as `secrets.<NAME>`: not
 #      `secrets[format(...)]`, not `toJSON(secrets)`, not the bare context;
-#   5. none of the test hooks of the scripts (CHECK_REGISTRY, CHECK_REGISTRY_OFFLINE, CHECK_RENDER,
-#      RENDER_CMD, PIN_QUIET, RYFT_HOOKS_NODE_DIRS) is named anywhere, and NOW or TODAY is no
+#   5. no test hook of the scripts (RYFT_HOOKS_NODE_DIRS, the hooks' Node lookup; the registry, render
+#      and pin hooks went with their scripts in D3, D246) is named anywhere, and NOW or TODAY is no
 #      environment variable and no assignment in a script: a workflow must not switch a check off;
 #   6. the golangci-lint version of ci.yml's lint job equals GOLANGCI_LINT_VERSION in the Makefile;
 #   7. deploy.yml (Cloud Run, ticket B2) runs only on a push to main or by hand; every job's `if`
@@ -96,7 +96,7 @@ if not isinstance(wf, dict):
     fail("not a mapping")
     wf = {}
 
-HOOKS = ["CHECK_REGISTRY_OFFLINE", "CHECK_REGISTRY", "CHECK_RENDER", "RENDER_CMD", "PIN_QUIET", "RYFT_HOOKS_NODE_DIRS"]
+HOOKS = ["RYFT_HOOKS_NODE_DIRS"]
 word = lambda names: re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(names) + r")(?![A-Za-z0-9_])")
 HOOK_RE = word(HOOKS)
 TIME_KEY = re.compile(r"^(NOW|TODAY)$")

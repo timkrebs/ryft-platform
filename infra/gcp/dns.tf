@@ -1,7 +1,7 @@
-# The public zone ryftlab.de on Cloud DNS. It replaces infra/aws/dns's Route 53 zone (D214): the same
-# records with the same values and TTLs, plus CAA's pki.goog and Search Console's verification string.
-# GoDaddy stays the registrar; its name servers switch once to the four below (runbook step 6, after
-# scripts/dns_compare.sh). DNSSEC stays off: there is no DS at the parent, and none may appear.
+# The public zone ryftlab.de on Cloud DNS. It replaced the Route 53 zone (D214; deleted 2026-11-19,
+# D246): the same records with the same values and TTLs, plus CAA's pki.goog and Search Console's
+# verification string. GoDaddy stays the registrar; its name servers switched once to the four below
+# (runbook step 6). DNSSEC stays off: there is no DS at the parent, and none may appear.
 #
 # Long-lived on purpose: a new zone gets new name servers and needs another change at GoDaddy.
 #
@@ -24,7 +24,7 @@ resource "google_dns_managed_zone" "ryftlab_de" {
   }
 }
 
-# Mail for the domain (D214): Microsoft 365 through GoDaddy, the values of infra/aws/dns/mail.tf exactly.
+# Mail for the domain (D214): Microsoft 365 through GoDaddy, exactly the values the Route 53 zone held.
 # Public values, so code, not variables. A change at the provider is a change here.
 locals {
   mail_mx = ["0 ryftlab-de.mail.protection.outlook.com."]
@@ -47,7 +47,7 @@ locals {
   # Label below the domain => target.
   mail_cnames = {
     "autodiscover" = "autodiscover.outlook.com."
-    # selector1 did not resolve on 2026-11-14 (infra/aws/dns/mail.tf). Once it does, one line here.
+    # selector1 did not resolve on 2026-11-14 (nor in Route 53's zone). Once it does, one line here.
     "selector2._domainkey" = "selector2-ryftlab-de._domainkey.netorgft21311797.d-v1.dkim.mail.microsoft."
     "email"                = "email.secureserver.net."
     "lyncdiscover"         = "webdir.online.lync.com."

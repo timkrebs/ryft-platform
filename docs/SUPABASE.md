@@ -8,8 +8,8 @@ either.
 
 ## Project checklist (once, by hand)
 
-1. **Project** in region *Central EU (Frankfurt)* (`eu-central-1`), the same as the EKS
-   cluster. Note the **project ref** (Project Settings → General; the `<ref>` in
+1. **Project** in region *Central EU (Frankfurt)* (`eu-central-1`, D49; the services run on
+   Cloud Run in europe-west1, D217). Note the **project ref** (Project Settings → General; the `<ref>` in
    `https://<ref>.supabase.co`).
 2. **Asymmetric JWT signing keys** (Project Settings → JWT Keys): the project must sign
    access tokens with ES256 or RS256 keys published at
@@ -42,9 +42,10 @@ either.
    - **Sign in with Apple token revocation** (Apple Developer → Certificates,
      Identifiers & Profiles → Keys → +): create a key with *Sign in with Apple* enabled
      for the primary App ID `dev.timkrebs.ryft`, and download `AuthKey_<key id>.p8`
-     (only possible once). The key ID, team ID `M77SKHKG63`, client ID
-     `dev.timkrebs.ryft` and the `.p8` contents go into
-     `service_secrets.api.APPLE_*` in `infra/vault/terraform.tfvars`. The same key may
+     (only possible once). The key ID goes into `APPLE_KEY_ID` in `deploy/run/config.env`
+     (team ID `M77SKHKG63` and client ID `dev.timkrebs.ryft` are fixed in
+     `deploy/run/api.yaml`), and the `.p8` contents into the Secret Manager secret
+     `apple-key-p8` (`OPERATIONS.md` → GCP → 5). The same key may
      also sign the Supabase provider's web secret.
 
    - **Manual identity linking** (Authentication → Settings → *Allow manual linking*):
@@ -80,21 +81,21 @@ either.
    Migration 0007 also revokes every table privilege from
    `anon`, `authenticated` and `service_role` and enables RLS, but nothing should be
    exposed in the first place.
-5. **Session pooler** (Connect → Session pooler, port **5432**): copy the host
-   (`aws-<n>-eu-central-1.pooler.supabase.com`; the `aws-<n>` index differs per project)
-   into `database.host`, and the database password into `database_owner_password`, in
-   `infra/vault/terraform.tfvars`. Terraform builds every connection string from them.
-   The owner URL goes only to the migrate namespace; each service gets
-   `postgresql://ryft_<service>.<ref>:<generated>@<host>:5432/postgres?sslmode=require`.
-   Session mode, not transaction mode (6543): migrations take advisory locks and pgx
-   uses prepared statements. The direct host `db.<ref>.supabase.co` is IPv6-only unless
-   you buy the IPv4 add-on; EKS pods use IPv4, so use the pooler.
+5. **Pooler** (Connect → Transaction pooler, port **6543**, for the services; Session pooler,
+   port **5432**, for migrate; D221): both are on one host,
+   `aws-<n>-eu-central-1.pooler.supabase.com` (the `aws-<n>` index differs per project). The host
+   goes into `SUPABASE_POOLER_HOST` in `deploy/run/config.env`, by a PR (`OPERATIONS.md` → GCP → 7,
+   7a), and the database password into the Secret Manager secret `db-password-owner`
+   (`OPERATIONS.md` → GCP → 5). `scripts/cloudrun_render.py` builds every connection string from
+   the ref and the host, with no password in the URL (Connections, below). The owner's goes only
+   to the migrate job; each service connects as `ryft_<service>.<ref>` on 6543. The direct host
+   `db.<ref>.supabase.co` is IPv6-only unless you buy the IPv4 add-on, so use the pooler.
 6. **Secret key** for account deletion (Project Settings → API Keys → secret key
-   `sb_secret_…`, or the legacy `service_role` JWT) into
-   `service_secrets.api.SUPABASE_SERVICE_ROLE_KEY` in the same tfvars. Only the api
-   namespace receives it.
-7. **Project ref** into `supabase_project_ref` (tfvars). ingest and api read it from
-   their Vault namespace; it is also the suffix of every pooler user name.
+   `sb_secret_…`, or the legacy `service_role` JWT) into the Secret Manager secret
+   `supabase-secret-key` (`OPERATIONS.md` → GCP → 5). Only the api's service account can
+   read it (`infra/gcp/secrets.tf`).
+7. **Project ref** into `SUPABASE_PROJECT_REF` in `deploy/run/config.env` (the PR of step 5).
+   ingest and api get it as plain env from their templates; it is also the suffix of every pooler user name.
 8. **Smoke-test user**: Authentication → Users → Add user (email + password, auto-confirm).
    `make smoke-supabase` signs in with it (`SUPABASE_URL`, `SUPABASE_ANON_KEY`,
    `SMOKE_EMAIL`, `SMOKE_PASSWORD`) and writes synthetic days into it — keep it separate
@@ -143,10 +144,10 @@ result="skipped"}` counts it. Failed calls are retried every 15 minutes from
 `deleted_users.auth_deleted_at IS NULL`.
 
 What stays: the tombstone (the user ID and when it was deleted, so that the user's
-still-valid tokens cannot recreate the account), the platform's own nightly dumps
-(14 days) and Supabase's backups (daily, or PITR, per the plan's retention). Data in
+still-valid tokens cannot recreate the account) and Supabase's backups (daily, or PITR, per
+the plan's retention). Data in
 backups ages out; it is not edited. A restore therefore brings deleted accounts back
-unless the tombstones are put back after it (`OPERATIONS.md` → Restore).
+unless the tombstones are put back after it (`OPERATIONS.md` → Backups).
 
 **Apple token revocation.** Apple asks apps that use Sign in with Apple to revoke the
 user's tokens when the account is deleted. Supabase's native sign-in keeps no Apple
@@ -158,15 +159,15 @@ token, and the `.p8` key must not ship in the app, so the api does it:
    `client_id` is the bundle ID, and the client secret is an ES256 JWT signed with the
    `.p8`.
 3. It stores the refresh token encrypted in `apple_tokens` (AES-256-GCM with
-   `DATA_ENCRYPTION_KEY` from the api's Vault namespace; the user ID is bound into the
-   ciphertext).
+   `DATA_ENCRYPTION_KEY` from the Secret Manager secret `data-key`, which only the api
+   reads; the user ID is bound into the ciphertext).
 4. `DELETE /v1/me` moves the encrypted token to the tombstone, revokes it at
    `https://appleid.apple.com/auth/revoke`, and only then deletes the Supabase user.
    Failed revocations are retried by the reconciler every 15 minutes, as failed
    Supabase deletions are (`ryft_account_deletions_total{step="apple"}`).
 
 Without the `APPLE_*` values the endpoint answers `501` and deletion skips this step;
-`terraform plan` in `infra/vault` warns about it.
+on Cloud Run `scripts/check_cloudrun.py` requires them in `deploy/run/api.yaml`.
 
 ## Signing-key rotation
 
@@ -177,8 +178,8 @@ when a token arrives with a key ID they have not seen. So:
 - **Rotating** (create a standby key, wait ≥ 20 minutes, rotate): nothing to do; new tokens
   verify after at most one refresh.
 - **Revoking** a key: tokens signed with it stop working after the next refresh, within
-  10 minutes. To cut that short, restart the api and ingest pods
-  (`kubectl -n ryft-api rollout restart deploy/api; kubectl -n ryft-ingest rollout restart deploy/ingest`).
+  10 minutes. On Cloud Run there is no restart outside a deploy (CI owns the revisions,
+  D223), so the 10 minutes are the bound; a new instance fetches the keys as it starts.
 - If the JWKS is unreachable, requests get `503` (not `401`), so the app keeps its
   session and retries. `/readyz` turns unready while no keys are loaded.
 
@@ -210,8 +211,8 @@ Migration `0007_supabase_auth.sql`, Supabase part (skipped on plain Postgres):
   knows it, or services starting before migrate has set it, trips that. Deploy and
   rotate in the order `OPERATIONS.md` gives. The services back off on their own.
 
-**Restoring a database migrated on plain Postgres into Supabase** (e.g. moving off the
-`local-postgres` overlay): migration 0007 is recorded as applied but its Supabase block
+**Restoring a database migrated on plain Postgres into Supabase** (e.g. a dump of the
+compose stack's Postgres): migration 0007 is recorded as applied but its Supabase block
 never ran there. After the restore, run the `DO $$ … $$` block at the end of
 `0007_supabase_auth.sql` once in the SQL editor. A `pg_dump` carries no role and no role
 setting, so if the service roles were created anew for the restore, also run
@@ -269,21 +270,18 @@ migrate:  postgresql://postgres.<ref>@<pooler host>:5432/postgres?sslmode=verify
   reports the owner's `extra_float_digits 0` and passes. After step 8's migrate, step 9's login as
   `ryft_api` checks the role's setting and an exact float8 (`ryft_api|t|0.30000000000000004`).
 
-On EKS (until D3) each pod used session mode (5432) with `sslmode=require`, which encrypts but
-doesn't verify the server certificate.
-
 ## Postgres version
 
-The repo targets **Postgres 17**: `docker-compose.yml`, the `local-postgres` overlay
-(`postgres:17-alpine`) and the integration tests (`RYFT_TEST_POSTGRES_URL`, throwaway
-`postgres:17-alpine`) all use it. There is no `supabase/config.toml` in this repo (no
+The repo targets **Postgres 17**: `docker-compose.yml` (`postgres:17-alpine`) and the
+integration tests (`RYFT_TEST_POSTGRES_URL`, throwaway `postgres:17-alpine`) both use it.
+There is no `supabase/config.toml` in this repo (no
 `major_version` to read), so the production version is **not confirmed by the repo**:
 the hosted project's version is set by Supabase. Confirm it once with
 `select version();` in the SQL editor and correct this section if it differs.
 
 ## Local development
 
-Compose and `deploy/k8s/overlays/local-postgres` run plain Postgres with
+Compose runs plain Postgres with
 `AUTH_MODE=apikey` and `ALLOW_INSECURE_APIKEY_AUTH=true`: the bearer is `API_KEY`, or
 `API_KEY:<uuid>` to act as another user. The services refuse to start in that mode
 without the flag. Never expose it.
@@ -291,19 +289,19 @@ without the flag. Never expose it.
 ## Moving the project to Frankfurt
 
 Decided (D49): the first project was created in eu-west-1 (Ireland), while the cluster
-runs in eu-central-1. It is recreated in Frankfurt before anyone else is invited, while
+ran in eu-central-1. It is recreated in Frankfurt before anyone else is invited, while
 it holds only test data. A project cannot change region, so this means a new project:
 
 1. **New project** in *Central EU (Frankfurt)*. Work through the checklist above:
    JWT keys, Apple provider, email settings, Data API off, a new smoke-test user. Note
    the new project ref, pooler host (`aws-<n>-eu-central-1.pooler.supabase.com`),
    database password and secret key.
-2. **Vault:** in `infra/vault/terraform.tfvars`, set `supabase_project_ref`,
-   `database.host`, `database_owner_password` and
-   `service_secrets.api.SUPABASE_SERVICE_ROLE_KEY` to the new values. Then
-   `terraform plan`: expect updated `kv/config` secrets in every namespace, since the
-   pooler user names carry the project ref. Apply.
-3. **Deploy:** `make k8s-apply-eks KUBE_CONTEXT=<context>`. The operator syncs the new Secrets, the migrate job
+2. **Config and secrets:** a PR sets `SUPABASE_PROJECT_REF` and `SUPABASE_POOLER_HOST` in
+   `deploy/run/config.env` to the new values. The new database password and secret key go into
+   Secret Manager as new versions of `db-password-owner` and `supabase-secret-key`
+   (`OPERATIONS.md` → GCP → 5), and the same PR moves their pins in `deploy/run`. Every
+   service's connection string changes, since the pooler user names carry the project ref.
+3. **Deploy:** the merge's `deploy.yml` runs the migrate job, which
    builds the empty schema in the new project and sets the role passwords, and the
    services start against it.
 4. **App:** switch the Supabase URL and publishable key in the Release config. Accounts

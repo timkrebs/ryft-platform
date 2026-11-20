@@ -460,15 +460,16 @@ jobs:
   call:
     uses: ./.github/workflows/pr.yml"
 
-# --- the test hooks of the scripts
-for hook in CHECK_REGISTRY CHECK_REGISTRY_OFFLINE CHECK_RENDER RENDER_CMD PIN_QUIET RYFT_HOOKS_NODE_DIRS; do
+# --- the test hooks of the scripts (one left since D3, D246; the loop takes the next one)
+# shellcheck disable=SC2043
+for hook in RYFT_HOOKS_NODE_DIRS; do
   bad "$hook in a step env" "$hook" "name: x
 on: push
 jobs:
   a:
     runs-on: x
     steps:
-      - run: ./scripts/check_registry.sh
+      - run: ./scripts/check_bytes.sh
         env:
           $hook: /bin/true"
   bad "$hook at workflow level" "$hook" "name: x
@@ -484,7 +485,7 @@ jobs:
     runs-on: x
     steps:
       - run: |
-          $hook=1 ./scripts/check_registry.sh"
+          $hook=1 ./scripts/check_bytes.sh"
 done
 bad "TODAY as an environment variable" 'NOW or TODAY' "name: x
 on: push
@@ -501,14 +502,14 @@ jobs:
   a:
     runs-on: x
     steps:
-      - run: NOW=1 ./scripts/deploy_watch.sh"
+      - run: NOW=1 ./scripts/golden_guard.sh"
 good "a variable that only contains a hook's letters" "name: x
 on: push
 jobs:
   a:
     runs-on: x
     env:
-      MY_CHECK_REGISTRY_URL: x
+      MY_RYFT_HOOKS_NODE_DIRS_URL: x
       TODAYS_DATE: y
     steps:
       - run: true"

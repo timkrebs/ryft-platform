@@ -10,8 +10,8 @@
 #   scripts/user.sh <id> --resync-hint               # the app runs a full re-sync next time (GET /v1/me/sync)
 #   scripts/user.sh <id> --json                      # the raw answer
 #
-# The admin key: ADMIN_API_KEY, else infra/vault's terraform output, else Vault
-# (scripts/lib/admin.sh). Every call is audited.
+# The admin key: ADMIN_API_KEY from the environment (scripts/lib/admin.sh says how to read
+# production's). Every call is audited.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib/admin.sh"

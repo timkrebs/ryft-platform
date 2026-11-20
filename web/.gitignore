@@ -11,10 +11,8 @@ src/fonts/*.woff2
 src/fonts/FFL.txt
 .cache/
 
-# generated at build time (firebase.json carries the build's script hashes, like the nginx snippets)
+# generated at build time (firebase.json carries the build's script hashes)
 src/generated/
-nginx/csp.conf
-nginx/csp-admin.conf
 firebase.json
 
 # firebase-tools: the deploy's cache and the emulators' logs

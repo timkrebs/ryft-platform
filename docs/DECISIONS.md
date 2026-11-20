@@ -6226,3 +6226,57 @@ _Grafana half superseded by D236._
     - `OBSERVABILITY.md`, `OPERATIONS.md` and `STATUS.md`.
   - **D241's** "access on the server is to come with App Attest, which is still to be decided" is decided here.
     Until `on`, D241's risk stands.
+
+## D246 — The AWS rest retired by hand; D3 removes the EKS era's code (**the user's retirement**, 2026-11-19; amends D227, closes the design's D2 as obsolete)
+
+- **Context:** D227's order ended with Terraform: step 12 (E) destroys the Route 53 zone, step 13 (D1, D2) the
+  Vault keys, the snapshot bucket and the budget, and step 14 the four old workspaces in `tim-krebs-org`. On
+  2026-11-19 the user deleted that org, and every old state with it, so none of those plans can run. The user then
+  deleted RYFT's AWS rest by hand, by ID, after a read-only inventory of account `173003892479` (eu-central-1 and
+  the global services).
+- **Decision (the retirement, done):**
+  - deleted: the Route 53 zone `ryftlab.de` (`Z0847310CSDZ20OKMOUQ`, 12 record sets); the bucket
+    `ryft-prod-euc1-vault-snapshots-173003892479` (it was empty); the budget `ryft-prod-euc1-monthly`; the aliases of
+    the two Vault keys;
+  - the KMS keys `2960364e…` (vault-unseal) and `90b5cce6…` (vault-snapshots): `NoDeletionOrDisable` removed from
+    their policies, PendingDeletion until 2026-11-26; the EKS key `fb345db3…` was already PendingDeletion, until
+    2026-12-14;
+  - the user's re-check found no RYFT resource left: no EKS, VPC, NAT, EIP, instance, log group, IAM role or policy,
+    OIDC provider, SES or ECR. The tag index still lists two pod-identity associations whose clusters don't exist;
+  - the data key: its old-state copy went with the org. Secret Manager's pinned `data-key` version and the user's
+    1Password item from step 0 remain; step 5 compared the two. Step 14.1's comparison with the state can't run
+    any more, and nothing replaces it;
+  - D2 (#223, `infra/aws: empty the root`) is obsolete and closed: there is no state left to empty.
+  - OPERATIONS → GCP 12–14 is a done-note with these IDs. 14.3, the GitHub secrets and variables no workflow reads,
+    is the one step left.
+- **Decision (D3, this PR):** the code and manifests of the decisions D227 supersedes are deleted: `infra/aws` (with
+  `dns`, `kubernetes`, the modules, the admission charts, `admission-e2e`, `argocd-luatest`), `infra/vault`,
+  `deploy/k8s`, `deploy/argocd`, `deploy/rabbitmq`, `deploy/monitoring`, `deploy/grafana`, the kubectl, EKS, Vault,
+  admission, chart, registry, promote and hold scripts with their tests (`trace.sh` too: it read only a cluster's pod
+  logs; OPERATIONS has its `gcloud logging read` query), `recover_data_key.sh`, `dns_compare.sh`, CI's `monitoring`
+  and `argocd-luatest` jobs and the four EKS-era terraform roots, `make k8s-*`, `tf-migrate-hcp`,
+  `monitoring-apply`, `alerts-*`, `images`/`push` (GHCR), `web-image`/`web-serve`, the nginx web image (web D25),
+  `docs/REBUILD.md`, the EKS-era runbooks and the EKS halves of ARCHITECTURE and OBSERVABILITY. Kept: `infra/gcp`,
+  `deploy/run`, `deploy/pubsub-emulator`, `web/` (Firebase Hosting), `backend/`, compose (Postgres and the Pub/Sub
+  emulator; it used no RabbitMQ since A1).
+- **Kept on purpose, with their reason:**
+  - `.gitleaks.toml`'s allowlists for removed paths: the `secrets` job scans the whole history (`--log-opts=HEAD`)
+    with main's config, and old commits still hold those files;
+  - generic `.gitignore` rules (`secrets.yaml`, `secrets/`, `terraform.tfvars`, `*.tfstate*`, `.terraform/`): a clone
+    keeps its git-ignored files in the removed folders, and with their own `.gitignore` gone they must stay out of
+    `git add -A`;
+  - `scripts/rescore_all.sh` and `scripts/lib/kube.sh`: the compose mode (`RESCORE_LOCAL=1`) serves local work; its
+    cluster mode has no cluster;
+  - `infra/gcp/outputs.tf`'s `godaddy_instructions` still names `scripts/dns_compare.sh`: a new text shows as a change
+    to outputs in the next plan, and the runbook's checks after each apply expect "No changes". It moves with the
+    next `infra/gcp` change that is applied anyway;
+  - the DECISIONS entries before this one and `docs/work/**`: history, as written.
+- **Open (removed without a GCP successor):** a bulk rescore on Cloud Run (`scoring rescore`; until then
+  `POST /v1/recompute` per account, OPERATIONS → Rescoring), `scoring learn-baselines` for everyone and
+  `ingest fold-workouts` as Cloud Run jobs, an alert on a service that exits or panics, runbooks for Cloud Run scaling
+  and for adding a service. `seed_demo.sh` takes the App Review account's password from `DEMO_PASSWORD` (it was in
+  Vault).
+- **Why:** nothing serves from the removed code, and no state is left that its Terraform could plan against. A
+  repository that still holds the EKS rules invites an agent or a person to follow them.
+- **Consequences:** D227's last step is the user's deletion of `tim-krebs-org`. `CLAUDE.md` loses the EKS, Argo CD
+  and Vault rules. Nothing in AWS is RYFT's; the three keys finish their waiting periods by themselves.

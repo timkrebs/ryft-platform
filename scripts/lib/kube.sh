@@ -1,9 +1,9 @@
 # shellcheck shell=sh
-# The cluster an operator script or a Makefile target talks to is named, never kubectl's
-# current context: on 2026-10-23 a usage check of scripts/dlq.sh read the production
-# broker's Secrets because the current context happened to be ryft-prod-euc1. Sourced by
-# dlq.sh, rescore_all.sh, trace.sh and the Makefile's cluster targets; POSIX sh (the
-# Makefile's /bin/sh, macOS's bash 3.2). It reads only the local kubeconfig.
+# The cluster an operator script talks to is named, never kubectl's current context: on
+# 2026-10-23 a usage check of scripts/dlq.sh read the production broker's Secrets because the
+# current context happened to be ryft-prod-euc1. Sourced by rescore_all.sh, the one script
+# still on kubectl (for a cluster you name; its compose mode RESCORE_LOCAL=1 needs no cluster, and
+# its Cloud Run successor is open: D246); POSIX sh (macOS's bash 3.2). It reads only the local kubeconfig.
 #
 #   KUBE_CONTEXT=<name>            the context, exactly as `kubectl config get-contexts -o name` lists it
 #

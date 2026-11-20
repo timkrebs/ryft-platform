@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -97,8 +98,8 @@ func TestLoadAppleIsAllOrNothing(t *testing.T) {
 	if _, ok, err := LoadApple(); ok || err != nil {
 		t.Fatalf("none set: disabled, no error (ok=%v err=%v)", ok, err)
 	}
-	// infra/vault always generates the data key; without the Apple keys the api
-	// must still start, with revocation off.
+	// deploy/run/api.yaml always pins the data key (Secret Manager's data-key); without
+	// the Apple keys the api must still start, with revocation off.
 	t.Setenv("DATA_ENCRYPTION_KEY", "x")
 	if _, ok, err := LoadApple(); ok || err != nil {
 		t.Fatalf("only the data key: disabled, no error (ok=%v err=%v)", ok, err)
@@ -228,28 +229,36 @@ func TestLoadAdminPublicWebURL(t *testing.T) {
 	}
 }
 
-// The committed config line is parsed by the loader, so a value that would stop the api at start-up
-// cannot merge, and production's value never allows a plain-http origin.
+// The committed env entry is parsed by the loader, so a value that would stop the api at start-up
+// cannot merge, and production's value never allows a plain-http origin. The template is YAML; without
+// a YAML parser the entry must be the one flow-style line below, and any other shape fails the test.
 func TestCommittedAdminWebOrigins(t *testing.T) {
-	raw, err := os.ReadFile("../../../deploy/k8s/base/api/config.env")
+	const file = "deploy/run/api.yaml"
+	raw, err := os.ReadFile("../../../" + file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var lines []string
+	entry := regexp.MustCompile(`^- \{ name: ADMIN_WEB_ORIGINS, value: "([^"\\$]*)" \}$`)
+	var values []string
 	for _, l := range strings.Split(string(raw), "\n") {
-		if strings.HasPrefix(l, "ADMIN_WEB_ORIGINS=") {
-			lines = append(lines, l)
+		l = strings.TrimSpace(l)
+		if !strings.Contains(l, "ADMIN_WEB_ORIGINS") || strings.HasPrefix(l, "#") {
+			continue
 		}
-		if strings.Contains(l, "ADMIN_WEB_ORIGINS") && !strings.HasPrefix(l, "#") && !strings.HasPrefix(l, "ADMIN_WEB_ORIGINS=") {
-			t.Errorf("not a bare KEY=value line (kustomize keeps whatever else is on it): %q", l)
+		m := entry.FindStringSubmatch(l)
+		if m == nil {
+			t.Errorf(`%s: not the shape this test reads, - { name: ADMIN_WEB_ORIGINS, value: "..." } `+
+				"(no placeholder, escape, secret or comment on the line): %q", file, l)
+			continue
 		}
+		values = append(values, m[1])
 	}
-	if len(lines) != 1 {
-		t.Fatalf("want exactly one ADMIN_WEB_ORIGINS line in deploy/k8s/base/api/config.env, have %d", len(lines))
+	if len(values) != 1 {
+		t.Fatalf("want exactly one ADMIN_WEB_ORIGINS env entry in %s, have %d", file, len(values))
 	}
 	t.Setenv("ADMIN_API_KEY", "")
 	t.Setenv("PUBLIC_WEB_URL", "")
-	t.Setenv("ADMIN_WEB_ORIGINS", strings.TrimPrefix(lines[0], "ADMIN_WEB_ORIGINS="))
+	t.Setenv("ADMIN_WEB_ORIGINS", values[0])
 	a, err := LoadAdmin()
 	if err != nil {
 		t.Fatalf("the committed value stops the api at start-up: %v", err)
@@ -288,8 +297,8 @@ func TestLoadBetaModes(t *testing.T) {
 }
 
 // F1: no default version. Unset, empty or blank is "" without an error (scoring's
-// path); otherwise the trimmed value must be a YYYY-MM-DD date. Kustomize env files
-// keep quotes and inline comments in the value, so those are refused, not stripped.
+// path); otherwise the trimmed value must be a YYYY-MM-DD date. An env file keeps
+// quotes and inline comments in the value, so those are refused, not stripped.
 func TestLoadBetaPolicyVersion(t *testing.T) {
 	const unset = "<unset>" // a marker, never set in the environment
 	for _, c := range []struct {
@@ -336,7 +345,7 @@ func TestLoadBetaPolicyVersion(t *testing.T) {
 // api and ingest refuse to start without a version, in every auth mode (F1).
 func TestRequirePolicy(t *testing.T) {
 	const want = "PRIVACY_POLICY_VERSION is required: api and ingest record and enforce consent against it (D78); " +
-		"set the published version (deploy/k8s/base/<service>/config.env, docker-compose.yml)"
+		"set the published version (deploy/run/config.env, docker-compose.yml)"
 	if err := (Beta{}).RequirePolicy(); err == nil || err.Error() != want {
 		t.Fatalf("empty: got %v, want %s", err, want)
 	}

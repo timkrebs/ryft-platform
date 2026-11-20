@@ -165,8 +165,8 @@ func Run(ctx context.Context, c Config) (Result, error) {
 	}
 }
 
-// ready waits up to ReadyWait for url to answer 200 (Argo runs PostSync once the
-// application is healthy, so this is normally the first try).
+// ready waits up to ReadyWait for url to answer 200 (CI starts it once `make smoke`
+// has passed against the same stack, so this is normally the first try).
 func ready(ctx context.Context, c Config, url string) error {
 	deadline := time.Now().Add(c.ReadyWait)
 	for {

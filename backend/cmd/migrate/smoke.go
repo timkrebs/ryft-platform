@@ -15,7 +15,7 @@ import (
 
 // smokeMain runs internal/smoke from the environment:
 //
-//	SMOKE_API_URL, SMOKE_INGEST_URL  the services (in the cluster: their Service DNS names)
+//	SMOKE_API_URL, SMOKE_INGEST_URL  the services (in compose: their service names)
 //	SMOKE_HEALTH_URLS                comma-separated readiness URLs, each must answer 200
 //	SMOKE_TOKEN                      a bearer instead of the sign-in (the local stack)
 //	SUPABASE_URL or SUPABASE_PROJECT_REF, SUPABASE_ANON_KEY, SMOKE_EMAIL, SMOKE_PASSWORD

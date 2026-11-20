@@ -50,7 +50,7 @@ ok()  { check "$@" || fail "should pass: $1 ($(cat "$tmp/out"))"; }
 bad() { check "$@" && fail "should fail: $1"; true; }
 
 # The title: any lower-case area, path segments, a scope; "what changed" of at least three characters.
-for t in "web: fix the footer" "deploy: images abc1234" "infra/aws/kubernetes: tune the alb" "infra/vault: rotate" \
+for t in "web: fix the footer" "deploy: images abc1234" "infra/gcp/tests: tune the dns check" "infra/gcp: rotate" \
          "events: retry tiers" "scoring: a threshold" "ops: runbook" "ci(deps): bump actions" "docs: web lives in plattform/web"; do ok "$t"; done
 ok 'Revert "web: fix the footer"'; bad 'Revert "Fix stuff"'; bad 'Revert "web: fix" and more'
 bad "$(printf 'web: fine\nsecond line')"; bad "$(printf 'web: fine\rmore')"

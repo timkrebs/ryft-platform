@@ -1,5 +1,6 @@
-// The two origins the admin page talks to, from config/admin.json. scripts/csp.mjs reads
-// the same file for the page's connect-src, so the code and the policy cannot drift. All
+// The two origins the admin page talks to, from config/admin.json. scripts/firebase-json.mjs
+// reads the same file for the page's connect-src (adminPolicy in scripts/lib/csp.mjs), so the
+// code and the policy cannot drift. All
 // three values are public by design (the project ref is in every token's `iss` and in the
 // app binary; the publishable key is meant for clients).
 import raw from '../../config/admin.json';
