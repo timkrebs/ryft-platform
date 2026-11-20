@@ -78,6 +78,18 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## C2: the privacy version 2026-11-20 for the lawyer (2026-11-20, D248; PR "legal: privacy policy 2026-11-20 for review (C2)")
+
+**Done (in the PR, not to be merged before the lawyer's OK):** the new text and the German package in
+`docs/work/2026-11-20-privacy-c2/`: `privacy-2026-11-20.mdx` (draft, 20 `TODO(user)`), `anwalt.md` (overview,
+processors, the proposed bases, retention, 17 questions), `policy-de.md`, `diff.md`, `facts.md`, `app-texts.md`.
+LEGAL_CHECKLIST → C2. Nothing in `web/content` or `PRIVACY_POLICY_VERSION` changes, so the merge changes nothing
+live.
+
+**Open, yours:** hand `anwalt.md` (with the three texts) to the lawyer; the console checks in `anwalt.md` → 6; after
+the answers, the publish PR (D248 → Consequences). Until it is in force: no tester on `analytics.enabled`'s allow-list,
+and App Attest stays `off` (OPERATIONS → GCP → 17.2 waits for it).
+
 ## App Attest, the server, in mode `off` (2026-11-20, D247; PR "api: App Attest, the server (mode off)")
 
 **Done (in the PR, not merged):** the three routes `POST /v1/app-attest/{challenge,keys,token}` (Apple's root pinned,

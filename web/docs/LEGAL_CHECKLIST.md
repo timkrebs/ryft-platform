@@ -6,7 +6,7 @@ answer is a fact about the RYFT system, that fact and where it was checked. Lega
 reviewer's. The drafts change only with your answers, in both languages at once: those of
 2026-10-21 are in ryft-web PR #10 (section 0a); everything else is open.
 
-As of 2026-10-21; checked against `ryft-platform` `003a1a9`, `ryft-app` `1eb5192` and the
+As of 2026-10-21, with section C2 as of 2026-11-20; checked against `ryft-platform` `003a1a9`, `ryft-app` `1eb5192` and the
 web image built from this repository.
 
 **Since 2026-11-19 (platform D246, web D25)** the cluster on AWS, Vault, its monitoring and
@@ -14,7 +14,39 @@ RabbitMQ, and the web image are gone: the services run on Cloud Run (platform D2
 on Firebase Hosting (web D19, platform D233). The facts below stay as checked on 2026-10-21;
 where they cite those parts, the source is `ryft-platform` `003a1a9` (git history), not this
 tree. S3, S4, S5 (logs, dead letters), S6 and the recipients in section 3 describe that setup:
-**they need checking against the current one before publishing.**
+**they need checking against the current one before publishing.** Section C2 below does that.
+
+## C2. The privacy version 2026-11-20, for review (2026-11-20)
+
+The draft and the lawyer's package are in `plattform/docs/work/2026-11-20-privacy-c2/` (`privacy-2026-11-20.mdx`,
+`anwalt.md` with the 17 questions, `policy-de.md`, `diff.md`, `facts.md` with a source per fact, `app-texts.md`).
+**The text stays there until the review:** the site serves the newest file in `content/legal/en/privacy/` at
+`/privacy`, and `npm run check:policy` requires the newest page and the last entry of `privacy-versions.json`
+to equal `PRIVACY_POLICY_VERSION`. So an unpublished version can't be held in `content/`. Publishing means
+moving the file here, filling the 20 `TODO(user)` markers, setting `status: published` and `effective`, and
+adding `2026-11-20` to `privacy-versions.json` and `PRIVACY_POLICY_VERSION`, all in one PR. Every user then
+consents again.
+
+The S-items against the setup of 2026-11-20 (platform `main` `1832748`):
+
+| Item | Now | Needs you |
+| --- | --- | --- |
+| S1 Supabase | Frankfurt, unchanged (`deploy/run/config.env`) | the old Ireland project deleted; no restore-drill copy left (D239) |
+| S2 Sign-in emails | Supabase SMTP through Microsoft 365 as `no-reply@ryftlab.de` (D239); a copy in Sent Items | which route is live (OPERATIONS → GCP → 14a); Sent Items retention set to 7 days |
+| S3 Hosting | AWS is gone (D246). Google Cloud, europe-west1: Cloud Run, Pub/Sub, Scheduler, Secret Manager, Logging, Monitoring, Cloud DNS, a global load balancer with Cloud Armor (`edge = live`) | Google's Cloud Data Processing Addendum accepted |
+| S4 Monitoring | Grafana Cloud is gone (D236). Cloud Monitoring: counters without user data; the 6 alert policies notify the operator by email and the Google Cloud app, without a log line's fields (D244) | step 11.7 (Grafana's leftovers deleted) |
+| S5 Retention | logs 14 days in `ryft-logs` (europe-west1); Pub/Sub 7 days, dead letters 14 days; sent outbox rows deleted after 7 days (this answers S5's open question); backups 7 days | `_Default` log bucket disabled; PITR off |
+| S6 The site | Firebase Hosting; no access log of ours; no cookies; no browser storage (the theme choice went with web D20, so the TDDDG sentence goes) | Hosting's Cloud Logging integration is off |
+| S7 Apple Health writes | live in the app: the type, start and end, no energy (the text in force says "energy, if known") | – |
+| S8 Age | 16 in the app and the platform (`MinAge = 16`), as in the text in force | – |
+| S9 Feedback | the app has Profile → About → Report a problem, with diagnostics on by default | the support page's route |
+| New: Google's IP logs | IP, URL and user agent of denied or flagged requests and of 5xx, 14 days (D242) | – |
+| New: App Attest | ships off (D247); the text must be in force before `warn` | – |
+| New: PostHog | the api serves the target (D231), the flag is at 0 %, the app has no analytics code yet | the event list, the identifier, GeoIP, session replay, retention, the DPA |
+| New: Microsoft for `support@` | Microsoft 365 through GoDaddy (D214), not Google Workspace | the tenant's data location; the DPA through GoDaddy |
+
+The privacy section of the published text (2026-10-26) also names the controller's name and postal address.
+Section 0 now says neither goes into the texts, so the new version uses a marker (U1).
 
 Files: `content/legal/{en,de}/privacy/2026-10-20.mdx`, `…/terms/2026-10-20.mdx`,
 `…/support.mdx`, `…/impressum.mdx`. Line numbers are the same in English and German unless
