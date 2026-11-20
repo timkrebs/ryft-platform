@@ -191,6 +191,10 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 			`DELETE FROM workouts WHERE user_id=$1`,
 			`DELETE FROM daily_scores WHERE user_id=$1`,
 			`DELETE FROM devices WHERE user_id=$1`,
+			// The id leaves every flag's allow-list (operator configuration that names the account); the
+			// WHERE leaves a repeated deletion with nothing to update. 0038 cleans the lists of earlier deletions.
+			// Last but one: the rows are shared by every account, so their locks are held only briefly.
+			`UPDATE feature_flags SET allow_user_ids = array_remove(allow_user_ids, $1), updated_at = clock_timestamp() WHERE $1 = ANY(allow_user_ids)`,
 			`DELETE FROM users WHERE id=$1`,
 		} {
 			if _, err := tx.Exec(ctx, q, id); err != nil {

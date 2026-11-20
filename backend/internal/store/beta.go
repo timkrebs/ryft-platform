@@ -321,17 +321,19 @@ func (s *Store) RevokeInvite(ctx context.Context, code string) error {
 	return err
 }
 
-// PurgeInviteEmails clears the email and the note of every bound code that has not been redeemable for longer
-// than age (revoked, expired, or used up that long ago): the address of someone who only asked for an invite
-// (and a note that may name them) is not kept for good. Idempotent. A used-up code whose account is gone has
-// no use time left, so its creation time stands in. Clearing is safe: a code that cannot be redeemed cannot
-// be widened by losing its binding. It also sets revoked_at on a code that is not used up, so a purged code
-// stays dead even if someone later edits expires_at in SQL (a used-up code stays used up by itself and keeps
-// its status). The note of an unbound code is the operator's label for a group and is not touched.
+// PurgeInviteEmails clears the emails and notes of codes that have not been redeemable for longer than age
+// (revoked, expired, or used up that long ago): the address of someone who only asked for an invite (and a
+// note that may name them) is not kept for good. A bound code loses its email and its note; an unbound code
+// with a note loses the note (it may name someone too). Idempotent: a cleared code no longer matches. A
+// used-up code whose account is gone has no use time left, so its creation time stands in. Clearing is safe:
+// a code that cannot be redeemed cannot be widened by losing its binding. It also sets revoked_at on a bound
+// code that is not used up, so a purged code stays dead even if someone later edits expires_at in SQL (a
+// used-up code stays used up by itself and keeps its status). An unbound code keeps revoked_at as it is, so
+// an expired one still reads expired, not revoked; an open one keeps its note.
 func (s *Store) PurgeInviteEmails(ctx context.Context, age time.Duration) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `UPDATE beta_invite_codes c SET email = NULL, note = '',
-		  revoked_at = CASE WHEN c.uses >= c.max_uses THEN c.revoked_at ELSE COALESCE(c.revoked_at, now()) END
-		WHERE c.email IS NOT NULL AND (
+		  revoked_at = CASE WHEN c.email IS NULL OR c.uses >= c.max_uses THEN c.revoked_at ELSE COALESCE(c.revoked_at, now()) END
+		WHERE (c.email IS NOT NULL OR c.note <> '') AND (
 		  c.revoked_at < now() - $1::interval
 		  OR c.expires_at < now() - $1::interval
 		  OR (c.uses >= c.max_uses AND COALESCE((SELECT max(i.at) FROM beta_invite_uses i WHERE i.code = c.code), c.created_at)

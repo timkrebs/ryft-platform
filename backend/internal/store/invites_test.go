@@ -648,7 +648,7 @@ func TestInvitesListWithUses(t *testing.T) {
 }
 
 // The email of a prospective tester is not kept for good: 30 days after the code stopped being redeemable it
-// is cleared, and not before; open codes and unbound codes are never touched.
+// is cleared, and not before; open codes and an unbound code without a note are never touched.
 func TestPurgeInviteEmails(t *testing.T) {
 	h := newInviteHarness(t)
 	ctx := context.Background()
@@ -844,9 +844,9 @@ func TestRedeemRollsBackWhenTheAccessUpdateFails(t *testing.T) {
 	}
 }
 
-// The purge also clears the note of a bound code (it may name the person) and sets revoked_at on a code that is
-// not used up, so a purged code stays dead if expires_at is edited later; a used-up code keeps its status; the
-// note of an unbound code is the operator's label and stays.
+// The purge also clears the note of a bound code (it may name the person) and sets revoked_at on a bound code
+// that is not used up, so a purged code stays dead if expires_at is edited later; a used-up code keeps its
+// status; a dead unbound code loses its note too, and keeps revoked_at as it was (it still reads expired).
 func TestPurgeInviteEmailsClearsNoteAndKeepsTheCodeDead(t *testing.T) {
 	h := newInviteHarness(t)
 	ctx := context.Background()
@@ -863,8 +863,8 @@ func TestPurgeInviteEmailsClearsNoteAndKeepsTheCodeDead(t *testing.T) {
 	if _, err := h.pool.Exec(ctx, `UPDATE beta_invite_uses SET at = $2 WHERE code = $1`, NormalizeInvite(used), old); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := h.st.PurgeInviteEmails(ctx, 30*24*time.Hour); err != nil || n != 2 {
-		t.Fatalf("purge: %d %v", n, err)
+	if n, err := h.st.PurgeInviteEmails(ctx, 30*24*time.Hour); err != nil || n != 3 {
+		t.Fatalf("purge: %d %v, want the two bound codes and the unbound one", n, err)
 	}
 	row := func(code string) (email *string, note string, revoked *time.Time) {
 		t.Helper()
@@ -879,8 +879,8 @@ func TestPurgeInviteEmailsClearsNoteAndKeepsTheCodeDead(t *testing.T) {
 	if e, n, r := row(used); e != nil || n != "" || r != nil {
 		t.Errorf("used-up bound code keeps its status: email %v note %q revoked %v", e, n, r)
 	}
-	if _, n, r := row(unbound); n != "wave 2" || r != nil {
-		t.Errorf("an unbound code is untouched: %q %v", n, r)
+	if e, n, r := row(unbound); e != nil || n != "" || r != nil {
+		t.Errorf("an expired unbound code loses its note and is not revoked: email %v note %q revoked %v", e, n, r)
 	}
 	// Someone edits expires_at in SQL: the purged code stays dead.
 	if _, err := h.pool.Exec(ctx, `UPDATE beta_invite_codes SET expires_at = now() + interval '30 days' WHERE code = $1`, NormalizeInvite(expired)); err != nil {
@@ -987,6 +987,79 @@ func TestPurgeInviteEmailsBoundaryIsThirtyDays(t *testing.T) {
 			}
 			if has(outside) {
 				t.Error("30 days 1 hour: the address is cleared")
+			}
+		})
+	}
+}
+
+// The note of an unbound code may name someone too, so it goes 30 days after the code stopped being
+// redeemable, whichever way it stopped (revoked, expired, used up, with the same use-time rule as a bound
+// code), and nothing else of the code changes: no revoked_at, so the status stays. 29 days after, and on an
+// open code, the note stays; a second pass clears nothing.
+func TestPurgeInviteEmailsClearsTheNoteOfADeadUnboundCode(t *testing.T) {
+	const age = 30 * 24 * time.Hour
+	day := 24 * time.Hour
+	ctx := context.Background()
+	for _, c := range []struct {
+		name string
+		stop func(h inviteHarness, code string, at time.Time)
+	}{
+		{"revoked", func(h inviteHarness, code string, at time.Time) {
+			if _, err := h.pool.Exec(ctx, `UPDATE beta_invite_codes SET revoked_at = $2 WHERE code = $1`, NormalizeInvite(code), at); err != nil {
+				h.t.Fatal(err)
+			}
+		}},
+		{"expired", func(h inviteHarness, code string, at time.Time) {
+			if _, err := h.pool.Exec(ctx, `UPDATE beta_invite_codes SET expires_at = $2 WHERE code = $1`, NormalizeInvite(code), at); err != nil {
+				h.t.Fatal(err)
+			}
+		}},
+		{"used up", func(h inviteHarness, code string, at time.Time) {
+			if used, err := h.redeem(h.user(), code, ""); err != nil || !used {
+				h.t.Fatalf("redeem: %v %v", used, err)
+			}
+			if _, err := h.pool.Exec(ctx, `UPDATE beta_invite_uses SET at = $2 WHERE code = $1`, NormalizeInvite(code), at); err != nil {
+				h.t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newInviteHarness(t)
+			// Unbound (no email), single use but the open one.
+			old := h.code(NewInvite{Note: "Anna's group"})
+			recent := h.code(NewInvite{Note: "Ben's group"})
+			open := h.code(NewInvite{Note: "wave 3", MaxUses: 5})
+			c.stop(h, old, time.Now().Add(-31*day))
+			c.stop(h, recent, time.Now().Add(-29*day))
+			// What the status is read from (cmd/api inviteStatus), and the binding.
+			state := func(code string) (note, status string) {
+				t.Helper()
+				if err := h.pool.QueryRow(ctx, `SELECT note, concat_ws('|', revoked_at, expires_at, uses, max_uses, coalesce(email, '-'))
+					FROM beta_invite_codes WHERE code = $1`, NormalizeInvite(code)).Scan(&note, &status); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			before := map[string]string{}
+			for _, code := range []string{old, recent, open} {
+				_, before[code] = state(code)
+			}
+
+			n, err := h.st.PurgeInviteEmails(ctx, age)
+			if err != nil || n != 1 {
+				t.Fatalf("purge: %d %v, want exactly the code dead 31 days", n, err)
+			}
+			for code, want := range map[string]string{old: "", recent: "Ben's group", open: "wave 3"} {
+				note, status := state(code)
+				if note != want {
+					t.Errorf("%s: note %q, want %q", code, note, want)
+				}
+				if status != before[code] {
+					t.Errorf("%s: status columns %s, were %s", code, status, before[code])
+				}
+			}
+			if n, err := h.st.PurgeInviteEmails(ctx, age); err != nil || n != 0 {
+				t.Errorf("a second pass clears nothing: %d %v", n, err)
 			}
 		})
 	}

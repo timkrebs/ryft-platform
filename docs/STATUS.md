@@ -78,6 +78,20 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Deletion gaps from C2: allow-lists and invite notes (2026-11-20, D249; PR "store: deletion removes allow-list entries; invite notes expire")
+
+**Done (in the PR, not merged):** `DeleteUser` removes the account id from every flag's `allow_user_ids` in its
+transaction; migration 0038 removes the ids of earlier deletions (those with a `deleted_users` tombstone; safe to run
+again); the purge clears the note of an unbound invite code 30 days after the code stopped being redeemable, as it did
+for bound codes. Tests in `internal/store`, `internal/db` and `cmd/api` (Postgres ones run in CI).
+
+**On merge:** `deploy.yml`'s migrate job runs 0038 (data only, a few dozen rows), then the services roll as on every
+merge; the next tick's purge
+clears the notes of unbound codes dead for 30 days. Nothing for the user to run.
+
+**Open:** `PUT /v1/admin/flags/{key}` still accepts a deleted account's id (D249 → Left open). C2 (#228) takes the two
+policy sentences from this PR's description.
+
 ## App Attest, the server, in mode `off` (2026-11-20, D247; PR "api: App Attest, the server (mode off)")
 
 **Done (in the PR, not merged):** the three routes `POST /v1/app-attest/{challenge,keys,token}` (Apple's root pinned,

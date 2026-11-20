@@ -307,6 +307,61 @@ func TestEnsureUserWaitsForADeletionInProgress(t *testing.T) {
 	}
 }
 
+// DeleteUser takes the id out of every flag's allow-list and leaves the other accounts' ids (in their
+// order) and a list without it alone; a second deletion is a no-op that touches no flag.
+func TestDeleteUserRemovesTheIDFromEveryAllowList(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+	a, b := uuid.New(), uuid.New()
+	seedUser(t, st, pool, a)
+	seedUser(t, st, pool, b)
+	for key, ids := range map[string][]uuid.UUID{"test.alpha": {a, b}, "test.beta": {b, a, b}, "test.gamma": {b}} {
+		if _, _, err := st.PutFlag(ctx, model.FeatureFlag{Key: key, Enabled: true, AllowUserIDs: ids}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flags := func() map[string]model.FeatureFlag {
+		t.Helper()
+		list, err := st.Flags(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := map[string]model.FeatureFlag{}
+		for _, f := range list {
+			m[f.Key] = f
+		}
+		return m
+	}
+	before := flags()
+
+	if err := st.DeleteUser(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	after := flags()
+	for key, want := range map[string]string{"test.alpha": fmt.Sprint([]uuid.UUID{b}), "test.beta": fmt.Sprint([]uuid.UUID{b, b}),
+		"test.gamma": fmt.Sprint([]uuid.UUID{b})} {
+		if got := fmt.Sprint(after[key].AllowUserIDs); got != want {
+			t.Errorf("%s: allow-list %s, want %s", key, got, want)
+		}
+	}
+	if !after["test.gamma"].UpdatedAt.Equal(before["test.gamma"].UpdatedAt) {
+		t.Error("a list without the id must not be updated")
+	}
+	if after["test.alpha"].UpdatedAt.Equal(before["test.alpha"].UpdatedAt) {
+		t.Error("a changed list moves updated_at")
+	}
+
+	if err := st.DeleteUser(ctx, a); err != nil {
+		t.Fatalf("deleting again must be a no-op: %v", err)
+	}
+	for key, f := range flags() {
+		if fmt.Sprint(f.AllowUserIDs) != fmt.Sprint(after[key].AllowUserIDs) || !f.UpdatedAt.Equal(after[key].UpdatedAt) {
+			t.Errorf("%s changed on a second deletion: %v %v, was %v %v", key, f.AllowUserIDs, f.UpdatedAt,
+				after[key].AllowUserIDs, after[key].UpdatedAt)
+		}
+	}
+}
+
 func TestAppleTokenMovesToTheTombstoneUntilRevoked(t *testing.T) {
 	st, pool := testStore(t)
 	ctx := context.Background()
