@@ -840,30 +840,42 @@ func TestInviteEndToEnd(t *testing.T) {
 	}
 }
 
-// One purge pass (the tick's step) clears a stale bound email and keeps an open code's; a second pass
-// changes nothing (idempotent: whichever instance gets the tick runs it).
+// One purge pass (the tick's step) clears a stale bound email and the note of a stale unbound code, and keeps
+// an open code's email and note; a second pass changes nothing (idempotent: whichever instance gets the tick
+// runs it).
 func TestPurgeInviteEmailsPass(t *testing.T) {
 	r := newRedeemer(t)
 	ctx := context.Background()
 	stale := r.bound("old@example.com")
 	fresh := r.bound("new@example.com")
+	staleGroup := r.code(store.NewInvite{Note: "wave 1"})
+	openGroup := r.code(store.NewInvite{Note: "wave 2", MaxUses: 3})
 	pool := r.pool
 	if _, err := pool.Exec(ctx, `UPDATE beta_invite_codes SET revoked_at = now() - interval '31 days', expires_at = now() - interval '31 days'
 		WHERE code = $1`, store.NormalizeInvite(stale)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE beta_invite_codes SET expires_at = now() - interval '31 days' WHERE code = $1`,
+		store.NormalizeInvite(staleGroup)); err != nil {
 		t.Fatal(err)
 	}
 	for pass := range 2 {
 		if err := purgeInviteEmails(ctx, r.st, quietHandler().log); err != nil {
 			t.Fatalf("pass %d: %v", pass+1, err)
 		}
-		var n int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM beta_invite_codes WHERE email IS NOT NULL`).Scan(&n); err != nil || n != 1 {
-			t.Fatalf("pass %d: %d codes keep an email, want 1 (%v)", pass+1, n, err)
+		var n, notes int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE email IS NOT NULL), count(*) FILTER (WHERE note <> '')
+			FROM beta_invite_codes`).Scan(&n, &notes); err != nil || n != 1 || notes != 1 {
+			t.Fatalf("pass %d: %d codes keep an email and %d a note, want 1 and 1 (%v)", pass+1, n, notes, err)
 		}
 	}
 	var kept *string
 	if err := pool.QueryRow(ctx, `SELECT email FROM beta_invite_codes WHERE code = $1`, store.NormalizeInvite(fresh)).Scan(&kept); err != nil || kept == nil {
 		t.Fatalf("an open code keeps its email: %v %v", kept, err)
+	}
+	var note string
+	if err := pool.QueryRow(ctx, `SELECT note FROM beta_invite_codes WHERE code = $1`, store.NormalizeInvite(openGroup)).Scan(&note); err != nil || note != "wave 2" {
+		t.Fatalf("an open unbound code keeps its note: %q %v", note, err)
 	}
 }
 

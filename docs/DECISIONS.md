@@ -3380,6 +3380,8 @@ Engine, and fails with the changed fields grouped by field.
   is the operator's label for a group and is not touched; there is no hard delete of a code, so a note that names a
   person on an unbound code stays until the operator edits it in SQL (`UPDATE beta_invite_codes SET note = ''
   WHERE code = '…'`) - do not put names in the note of an unbound code.
+- **Amended by D249 (2026-11-20):** the note of an unbound code is cleared too, 30 days after that code stopped being
+  redeemable; an open unbound code keeps its note.
 - **Observable:** `ryft_invite_email_purge_total{result}` (`ok`, `error`; created at 0) and the warning
   `InviteEmailPurgeFailing` (three failed passes in three hours); the log line `invite emails purged` when a pass
   cleared something.
@@ -5458,8 +5460,8 @@ _Grafana half superseded by D236._
     probe's, every code handed out used, no account without access that should keep it, the testers' build the
     one that took the operator's code (or newer), and `make smoke-prod` green with the key (`gates: invite warn`).
     Then the flip is a PR of one line, and its rollback is the same line back to `warn`.
-  - Codes are unbound, single use, expire in 14 days, and their notes name nobody (an unbound code's note is
-    never cleared). No bound code before the privacy text names the stored address (U3).
+  - Codes are unbound, single use, expire in 14 days, and their notes name nobody (an unbound code's note was
+    never cleared; since D249 it is, 30 days after the code stopped being redeemable). No bound code before the privacy text names the stored address (U3).
   - **`CONSENT_ENFORCE` is unchanged:** not in `config.env`, so the default `on` holds in every step. A sync
     without consent to the current policy is refused throughout, and nothing is scored without one.
 - **Amends D87:** D87's runbook made "both `on`" the step before the first external invite, because `warn`
@@ -6365,3 +6367,36 @@ _Grafana half superseded by D236._
   `deploy/run` (two keys, `off`), the scripts' rules, `infra/gcp/secrets.tf`, API.md (changelog 2026-11-20),
   OBSERVABILITY, OPERATIONS → GCP → 17, STATUS. The user's steps: 17.1 (apply 2/0/0) → C2 → 17.2 → 17.3 (`warn`) →
   17.4 (7 days) → 17.6 (the edge, before `sqli` is enforced) → 17.5 (`on`).
+
+## D249 — Account deletion clears the flags' allow-lists; an unbound invite note expires 30 days after its code (2026-11-20; amends D69, D161)
+
+_Numbered after D248, which PR #228 (C2, draft) holds._
+
+- **Context:** the C2 draft (D248) found two gaps: `DeleteUser` left the account id in `feature_flags.allow_user_ids`,
+  and the note of an invite code without an email was never deleted (D161 left it to the operator).
+- **Decision 1, allow-lists:** `DeleteUser` removes the id from every flag's `allow_user_ids` in its transaction
+  (`array_remove`, only on lists that hold it, so a repeated deletion updates nothing). Migration 0038 removes from
+  every list the ids that have a tombstone in `deleted_users`, keeping the order of the rest; a second run updates no
+  row. **Not** "every id without a `users` row": an operator may allow-list a tester's Supabase id before that user's
+  first API call creates the row, and that entry must stay. An id that is in neither table is left alone.
+- **Decision 2, invite notes:** the hourly purge (`PurgeInviteEmails`, D161) also sets `note = ''` on an unbound code
+  that has not been redeemable for **30 days** (revoked, expired or used up that long ago; a used-up code whose
+  accounts are gone uses its creation time): the same period and the same clock as a bound code. For an unbound code
+  it leaves `revoked_at` alone, so an expired code still reads `expired`. An open unbound code keeps its note: the
+  note lives as long as the code can be used, then 30 days. Same job, same metric
+  (`ryft_invite_email_purge_total`), same alert.
+- **Rejected:** a separate job or period for unbound notes (one rule is easier to state in the policy); a hard delete
+  of dead codes (the admin list and the audit name them); removing ids without a `users` row (above).
+- **Left open:** `PUT /v1/admin/flags/{key}` still accepts a deleted account's id (an operator pasting an old list
+  puts it back, and a PUT racing a deletion can too), and nothing removes it again. An account merge moves beta
+  access to the target but not the source's allow-list entries, so deleting the source drops them (as before this
+  PR; the operator adds the target's id). Both small (testers, the operator's hand), not fixed here.
+- **Order:** the allow-list update runs last but one in `DeleteUser` (before `DELETE FROM users`), so the shared flag
+  rows are locked only briefly, not behind the large deletes, and 0038's 5 s `lock_timeout` doesn't meet a long
+  deletion.
+- **Privacy (for C2):** the two sentences the policy can say are in this PR's description; the C2 work folder is
+  not touched here.
+- **Consequences:** `internal/store/store.go` (`DeleteUser`), `internal/store/beta.go` (`PurgeInviteEmails`),
+  migration 0038, tests in `internal/store` (`delete_test.go`, `invites_test.go`), `internal/db`
+  (`migrate_flags_test.go`) and `cmd/api` (`invites_test.go`); API.md (changelog 2026-11-20, admin only),
+  ARCHITECTURE, OBSERVABILITY, OPERATIONS → Beta, STATUS.

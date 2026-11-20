@@ -179,7 +179,7 @@ func (h *handler) verifiedEmail(ctx context.Context, id uuid.UUID) (string, erro
 	return h.emails.VerifiedEmail(ctx, id)
 }
 
-// purgeInviteEmailsAfter is how long after a code can no longer be redeemed its bound email is kept
+// purgeInviteEmailsAfter is how long after a code can no longer be redeemed its bound email and its note are kept
 // (D161; docs/API.md → Invites for a person; the privacy text names it once U3 is decided).
 const purgeInviteEmailsAfter = 30 * 24 * time.Hour
 
@@ -190,8 +190,8 @@ func purgeSeries() {
 	metrics.InviteEmailPurges.WithLabelValues("error")
 }
 
-// purgeInviteEmails is one pass of the job that clears the emails of codes that have not been redeemable for
-// 30 days: the tick's "invite email purge" step (D219). Idempotent, so whichever instance gets the tick runs
+// purgeInviteEmails is one pass of the job that clears the emails and notes of codes that have not been
+// redeemable for 30 days: the tick's "invite email purge" step (D219). Idempotent, so whichever instance gets the tick runs
 // it; a failed pass is counted, logged under the line the runbook names and returned for the tick, and the
 // next tick tries again. A pass that clears nothing is normal and silent.
 func purgeInviteEmails(ctx context.Context, st *store.Store, log *slog.Logger) error {

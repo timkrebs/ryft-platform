@@ -3835,7 +3835,7 @@ when you do not have it. Everyone else gets the same `422 "invalid or used code"
 whose account lookup fails at Supabase gets `503` and sends again (a log line `invite email lookup failed`; unbound
 codes never depend on it). The address and the note are cleared 30 days after the code stopped being redeemable (D161;
 the api's tick does it, and a failure shows as its `result` error, **GCP → When an alert fires** → Tick missing); a person's name does not belong in the note of an
-unbound code, which is never cleared and has no hard delete (SQL: `UPDATE beta_invite_codes SET note = '' WHERE
+unbound code either: that note is cleared only 30 days after the code stopped being redeemable, never while it is open, and the code has no hard delete (SQL: `UPDATE beta_invite_codes SET note = '' WHERE
 code = 'RYFT…'`).
 
 **Before the first bound code (security-critical, two checks).**
