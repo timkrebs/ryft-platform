@@ -6379,7 +6379,7 @@ _Numbered after D248, which PR #228 (C2, draft) holds._
   every list the ids that have a tombstone in `deleted_users`, keeping the order of the rest; a second run updates no
   row. **Not** "every id without a `users` row": an operator may allow-list a tester's Supabase id before that user's
   first API call creates the row, and that entry must stay. An id that is in neither table is left alone.
-- **Decision 2, invite notes:** the hourly purge (`PurgeInviteEmails`, D161) also sets `note = ''` on an unbound code
+- **Decision 2, invite notes:** the purge (`PurgeInviteEmails`, D161, a step of the api's tick) also sets `note = ''` on an unbound code
   that has not been redeemable for **30 days** (revoked, expired or used up that long ago; a used-up code whose
   accounts are gone uses its creation time): the same period and the same clock as a bound code. For an unbound code
   it leaves `revoked_at` alone, so an expired code still reads `expired`. An open unbound code keeps its note: the
