@@ -53,12 +53,17 @@ func importRules() store.ImportRules {
 }
 
 // importRoute is POST /v1/train/import's chain: its own mux, so that its budget replaces
-// readTimeout, behind the same authentication and invite gate as every other route; the
-// rate limit takes one token from the import's own class (ratelimit, S2).
-func importRoute(o auth.Options, mode config.Mode, fn http.HandlerFunc) http.Handler {
+// readTimeout, behind the same authentication, app token check (attest; nil: none) and invite
+// gate as every other route; the rate limit takes one token from the import's own class
+// (ratelimit, S2).
+func importRoute(o auth.Options, mode config.Mode, attest func(http.Handler) http.Handler, fn http.HandlerFunc) http.Handler {
 	imp := http.NewServeMux()
 	imp.HandleFunc("POST /v1/train/import", fn)
-	return auth.Middleware(o, betaGate(mode, httpx.Timeout(importTimeout, httpx.WithRoutes(imp))))
+	inner := betaGate(mode, httpx.Timeout(importTimeout, httpx.WithRoutes(imp)))
+	if attest != nil {
+		inner = attest(inner)
+	}
+	return auth.Middleware(o, inner)
 }
 
 // importRun is one request's items as they are processed, by their index in the request.

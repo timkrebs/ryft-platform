@@ -46,7 +46,8 @@ func (s *Store) ScoredDays(ctx context.Context, id uuid.UUID) (int, error) {
 
 // MergeUsers moves everything of from to to, in one transaction (D90): raw data,
 // devices and push tokens, Train, the journal, sources, feedback, the codes it redeemed; a consent and
-// beta access only when to has none. Where both have the same row (a sample, a
+// beta access only when to has none. from's App Attest keys and challenges are deleted, not moved
+// (device credentials of the old account). Where both have the same row (a sample, a
 // device id, a session id, a journal day), to's is kept and from's dropped.
 // Scores are not moved: the caller rescores to. from itself is left for the
 // account deletion path. With dryRun nothing is kept, and the counts are exact.
@@ -239,6 +240,16 @@ func (m merger) run(res *MergeResult) error {
 	if err := add(m.move("beta_invite_uses", `NOT EXISTS (SELECT 1 FROM beta_invite_uses t WHERE t.user_id = $2 AND t.code = s.code)`,
 		"same code: to's kept")); err != nil {
 		return err
+	}
+	// App Attest (0037, D245): from's keys and open challenges are device credentials of the old
+	// account, deleted, never moved. A token minted for from names from and is refused for to; the app
+	// attests again under to.
+	for _, table := range []string{"app_attest_keys", "app_attest_challenges"} {
+		n, err := m.exec(`DELETE FROM `+table+` WHERE user_id = $1`, m.from)
+		if err != nil {
+			return fmt.Errorf("%s: %w", table, err)
+		}
+		res.Tables = append(res.Tables, MergeTable{Table: table, Dropped: n, Rule: "from's device credentials: deleted, never moved"})
 	}
 	// A consent and beta access only when to has none: the same person gave them.
 	var toConsent, fromConsent bool

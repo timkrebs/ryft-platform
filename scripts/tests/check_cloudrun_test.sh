@@ -36,13 +36,25 @@ g=$tmp/gates.auto.tfvars  # a copy of infra/gcp's gates: api's and ingest's ingr
 # fresh: new copies in one starting shape, whatever phase of runbook GCP 16 is committed: edge off, ingress
 # all on api and ingest, one hop. So a PR that moves the gate or makes the deploy PR keeps this test green;
 # the committed tree itself is checked as it is (below, before the first fresh).
+# App Attest likewise starts at off, no exempt account and no ring pinned, whether the warn flip (D247) is
+# committed or not; base is the PR base's config.env the next check reads (none: the order rule is skipped).
 fresh() {
   rm -rf "$d"; cp -R "$HERE/deploy/run" "$d"; cp "$HERE/infra/gcp/gates.auto.tfvars" "$g"
   edge_is off
   baseline config.env '^XFF_TRUSTED_HOPS=' 'XFF_TRUSTED_HOPS=1'
   baseline api.yaml '^ *run[.]googleapis[.]com/ingress:' '    run.googleapis.com/ingress: all'
   baseline ingest.yaml '^ *run[.]googleapis[.]com/ingress:' '    run.googleapis.com/ingress: all'
+  baseline config.env '^APP_ATTEST=' 'APP_ATTEST=off'
+  baseline config.env '^APP_ATTEST_EXEMPT_USERS=' 'APP_ATTEST_EXEMPT_USERS='
+  for f in api.yaml ingest.yaml; do
+    if grep -qF -- "$RINGROW" "$d/$f"; then drop "$f" "$RINGROW"; fi
+  done
+  base=
 }
+# The ring's env row (D245): the marker starts with the list item, so the templates' comment that shows
+# the row is not it.
+RINGROW='- { name: APP_ATTEST_TOKEN_KEYS,'
+base=
 # baseline <file> <regex> <line>: the copy's one line matching <regex> becomes <line>.
 baseline() {
   awk -v re="$2" -v to="$3" '$0 ~ re { $0 = to; n++ } { print } END { exit n == 1 ? 0 : 3 }' "$d/$1" > "$d/$1.new" ||
@@ -97,9 +109,10 @@ pinkey() {
 pin_of() { sed -nE "s/.*name: $2, key: \"([0-9]+)\".*/\1/p" "$d/$1"; }
 # bad <what> <text> [<not>]: the check fails on the copy (exit 1), names <text> (and not <not>); then a
 # fresh copy.
+copy() { if [ -n "$base" ]; then check --dir "$d" --gates "$g" --base-config "$base"; else check --dir "$d" --gates "$g"; fi; }
 bad() {
   local rc=0 out
-  out=$(check --dir "$d" --gates "$g" 2>&1) || rc=$?
+  out=$(copy 2>&1) || rc=$?
   [ "$rc" = 1 ] || fail "$1: want exit 1, got $rc: $out"
   case $out in *"$2"*) ;; *) fail "$1: the findings do not say '$2': $out" ;; esac
   if [ -n "${3:-}" ]; then
@@ -109,7 +122,7 @@ bad() {
 }
 ok() {
   local rc=0 out
-  out=$(check --dir "$d" --gates "$g" 2>&1) || rc=$?
+  out=$(copy 2>&1) || rc=$?
   [ "$rc" = 0 ] || fail "$1: want exit 0, got $rc: $out"
   fresh
 }
@@ -124,7 +137,7 @@ printf -v s '%20s' ''; ref=${s// /q}
 printf -v s '%10s' ''; akey=${s// /A}; nkey=${s// /N}
 {
   printf '%s\n' "PRIVACY_POLICY_VERSION=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' "$HERE/deploy/run/config.env")" LOG_LEVEL=info \
-    BETA_GATE=on XFF_TRUSTED_HOPS=1
+    BETA_GATE=on XFF_TRUSTED_HOPS=1 APP_ATTEST=off "APP_ATTEST_EXEMPT_USERS=$(printf '%08x-0000-4000-8000-%012x' 7 7)"
   printf 'GCP_PROJECT_NUMBER=7%011d\nPUSH_SA_ID=1%020d\n' 0 0
   printf '%s\n' "SUPABASE_PROJECT_REF=$ref" SUPABASE_POOLER_HOST=aws-0-eu-central-1.pooler.supabase.com \
     "APPLE_KEY_ID=$akey" "APNS_KEY_ID=$nkey"
@@ -343,6 +356,112 @@ add api.yaml 'name: PUSH_SA_ID,' '- { name: POSTHOG_PROJECT_KEY, value: "phc_inl
 bad "the PostHog key as a plain value" "POSTHOG_PROJECT_KEY is not in ticket-b.md's env table for api"
 add ingest.yaml 'name: PUSH_SA_ID,' '- { name: POSTHOG_PROJECT_KEY, valueFrom: { secretKeyRef: { name: posthog-project-key, key: "1" } } }'
 bad "ingest with the PostHog key" "ingest reads posthog-project-key, which only api can access"
+
+# App Attest (D245, D247): the mode and the exempt accounts from config.env in api and ingest only, never
+# written into a template; the ring (APP_ATTEST_TOKEN_KEYS from app-attest-token-key) may be pinned under
+# off, must be pinned in both under warn and on, only api and ingest read it; and against the PR's base
+# never off -> on. Every case starts from fresh's off without a ring, so they hold after the flips too.
+uid() { printf '%08x-0000-4000-8000-%012x' "$1" "$1"; }  # a test account's id, built here
+mode() { baseline config.env '^APP_ATTEST=' "APP_ATTEST=$1"; }
+# ring <file> [<secret> [<version>]]: the ring's row in <file> (after PUSH_SA_ID).
+ring() {
+  add "$1" 'name: PUSH_SA_ID,' "- { name: APP_ATTEST_TOKEN_KEYS, valueFrom: { secretKeyRef: { name: ${2:-app-attest-token-key}, key: \"${3:-1}\" } } }"
+}
+# base_is <mode|->: the base's config.env (as CI writes it from git show) with APP_ATTEST=<mode>, or without
+# the line (every base before this PR).
+base_is() {
+  base=$tmp/base.env
+  grep -v '^APP_ATTEST=' "$HERE/deploy/run/config.env" > "$base" || true
+  if [ "$1" != - ]; then printf 'APP_ATTEST=%s\n' "$1" >> "$base"; fi
+}
+drop api.yaml 'name: APP_ATTEST,'
+bad "api without App Attest's mode" "api.yaml env: APP_ATTEST is missing"
+drop ingest.yaml 'name: APP_ATTEST_EXEMPT_USERS,'
+bad "ingest without the exempt accounts" "ingest.yaml env: APP_ATTEST_EXEMPT_USERS is missing"
+edit api.yaml 'name: APP_ATTEST,' '${APP_ATTEST}' warn
+bad "a mode written into the template" "APP_ATTEST='warn', want 'off'"
+edit ingest.yaml 'name: APP_ATTEST_EXEMPT_USERS,' '${APP_ATTEST_EXEMPT_USERS}' "$(uid 1)"
+bad "an exempt account written into the template" "APP_ATTEST_EXEMPT_USERS='$(uid 1)', want ''"
+add scoring.yaml 'name: LOG_LEVEL,' '- { name: APP_ATTEST, value: "${APP_ATTEST}" }'
+bad "scoring with App Attest's mode" "APP_ATTEST is not in ticket-b.md's env table for scoring"
+add notify.yaml 'name: LOG_LEVEL,' '- { name: APP_ATTEST_EXEMPT_USERS, value: "${APP_ATTEST_EXEMPT_USERS}" }'
+bad "notify with the exempt accounts" "APP_ATTEST_EXEMPT_USERS is not in ticket-b.md's env table for notify"
+mode Warn
+bad "a mode in another case" "APP_ATTEST='Warn' does not have the shape off, warn or on"
+drop config.env 'APP_ATTEST='
+bad "config.env without App Attest's mode" "APP_ATTEST is missing"
+drop config.env 'APP_ATTEST_EXEMPT_USERS='
+bad "config.env without the exempt line" "APP_ATTEST_EXEMPT_USERS is missing"
+baseline config.env '^APP_ATTEST_EXEMPT_USERS=' "APP_ATTEST_EXEMPT_USERS=$(uid 1),$(uid 2),$(uid 3),$(uid 4),$(uid 5),$(uid 6)"
+bad "six exempt accounts" "does not have the shape empty, or 1 to 5 lower-case UUIDs"
+baseline config.env '^APP_ATTEST_EXEMPT_USERS=' "APP_ATTEST_EXEMPT_USERS=$(uid 10 | tr a-f A-F)"
+bad "an upper-case exempt id" "does not have the shape empty, or 1 to 5 lower-case UUIDs"
+baseline config.env '^APP_ATTEST_EXEMPT_USERS=' "APP_ATTEST_EXEMPT_USERS=$(uid 2),$(uid 2)"
+bad "an exempt account twice" "APP_ATTEST_EXEMPT_USERS names an account twice"
+# The ring under off: allowed, absent or pinned in both (an operator may pin it before warn, plan
+# decision 1), but never in one service only, and at one version in both (api signs, ingest verifies).
+ok "off without the ring"
+ring api.yaml; ring ingest.yaml
+ok "off with the ring pinned in api and ingest"
+ring api.yaml
+bad "off with the ring pinned in api only" "APP_ATTEST_TOKEN_KEYS is pinned in api.yaml only"
+mode warn; ring api.yaml app-attest-token-key 2; ring ingest.yaml app-attest-token-key 1
+bad "the ring at two versions" "app-attest-token-key is pinned at 2 in api.yaml and at 1 in ingest.yaml"
+# warn and on without the ring in both: the services would refuse to start (D245).
+mode warn
+bad "warn without the ring" "api.yaml: APP_ATTEST=warn without APP_ATTEST_TOKEN_KEYS pinned"
+mode warn; ring api.yaml
+bad "warn with the ring in api only" "ingest.yaml: APP_ATTEST=warn without APP_ATTEST_TOKEN_KEYS pinned" "api.yaml: APP_ATTEST=warn"
+mode on; ring ingest.yaml
+bad "on with the ring in ingest only" "api.yaml: APP_ATTEST=on without APP_ATTEST_TOKEN_KEYS pinned" "ingest.yaml: APP_ATTEST=on"
+mode warn; ring api.yaml; ring ingest.yaml
+ok "warn with the ring in api and ingest"
+mode warn; ring api.yaml; ring ingest.yaml
+baseline config.env '^APP_ATTEST_EXEMPT_USERS=' "APP_ATTEST_EXEMPT_USERS=$(uid 1),$(uid 2)"
+ok "warn with the ring and two exempt accounts"
+mode on; ring api.yaml; ring ingest.yaml
+out=$(copy 2>&1) || fail "on with the ring in both and no base: $out"
+case $out in *"the APP_ATTEST order against a base (off -> warn -> on, D245) is skipped"*) ;; *) fail "no base, no note: $out" ;; esac
+fresh
+# The ring: by number, from its secret, only in api and ingest, never a plain value.
+mode warn; ring api.yaml app-attest-token-key latest; ring ingest.yaml
+bad "the ring at latest" "pins app-attest-token-key at 'latest'"
+ring ingest.yaml data-key
+bad "the ring from another secret" "APP_ATTEST_TOKEN_KEYS reads secret data-key, want app-attest-token-key"
+ring scoring.yaml
+bad "scoring with the ring" "scoring reads app-attest-token-key, which only api, ingest can access"
+ring notify.yaml
+bad "notify with the ring" "notify reads app-attest-token-key, which only api, ingest can access"
+add api.yaml 'name: PUSH_SA_ID,' '- { name: APP_ATTEST_TOKEN_KEYS, value: "inline" }'
+bad "the ring as a plain value" "APP_ATTEST_TOKEN_KEYS is not in ticket-b.md's env table for api"
+# The order against the base (D238's, a rule since D245): off -> warn -> on, the way back is free.
+mode on; ring api.yaml; ring ingest.yaml; base_is off
+bad "off -> on" "config.env: APP_ATTEST=on with the base at 'off': off -> warn -> on"
+mode on; ring api.yaml; ring ingest.yaml; base_is -
+bad "a base without the line (off) -> on" "APP_ATTEST=on with the base at 'off'"
+mode on; base_is off
+bad "off -> on without the ring" "off -> warn -> on"
+mode warn; ring api.yaml; ring ingest.yaml; base_is off
+out=$(copy 2>&1) || fail "off -> warn: $out"
+case $out in *"APP_ATTEST's order against the base hold"*) ;; *) fail "off -> warn: the summary does not name the order: $out" ;; esac
+case $out in *"is skipped"*) fail "off -> warn with a base: the note says skipped: $out" ;; esac
+fresh
+mode warn; ring api.yaml; ring ingest.yaml; base_is -
+ok "a base without the line -> warn"
+mode on; ring api.yaml; ring ingest.yaml; base_is warn
+ok "warn -> on"
+mode on; ring api.yaml; ring ingest.yaml; base_is on
+ok "on stays on"
+mode warn; ring api.yaml; ring ingest.yaml; base_is on
+ok "on -> warn (the rollback)"
+base_is on
+ok "on -> off"
+base_is off
+ok "off stays off"
+base=$tmp/nope.env
+bad "a base that cannot be read" "cannot read it"
+base_is warn; printf 'APP_ATTEST=on\n' >> "$base"
+bad "a base with the mode twice" "APP_ATTEST is set more than once there"
 # design §4: migrate's pin of a role equals the service's own.
 pinkey migrate.yaml db-password-api "key: \"$(( $(pin_of api.yaml db-password-api) + 1 ))\""
 bad "migrate's pin ahead of api's" "db-password-api is pinned at"
@@ -403,4 +522,4 @@ bad "a placeholder outside the list" "placeholder(s) outside the fixed list: HOM
 add migrate.yaml 'name: LOG_LEVEL,' '- { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }'
 bad "migrate with an audience" "migrate is no push target"
 
-echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env (BETA_GATE and XFF_TRUSTED_HOPS from config.env in api and ingest only, two hops only behind the load balancer), the load balancer's ingress only at edge live or locked and with more than one hop, locked only behind it, P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"
+echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env (BETA_GATE, XFF_TRUSTED_HOPS, APP_ATTEST and APP_ATTEST_EXEMPT_USERS from config.env in api and ingest only, two hops only behind the load balancer), App Attest's ring pinned in api and ingest under warn and on and readable by them only, off -> on against a base refused (off -> warn, warn -> on and back pass), the load balancer's ingress only at edge live or locked and with more than one hop, locked only behind it, P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"

@@ -40,6 +40,14 @@ POLICY=$(curl -fsS "$API_URL/v1/config" -H "Authorization: Bearer $API_KEY" | py
 curl -fsS -o /dev/null -X POST "$API_URL/v1/me/consent" -H "Authorization: Bearer $API_KEY" \
   -H 'Content-Type: application/json' -d "{\"policy_version\":\"$POLICY\",\"app_version\":\"smoke\"}"
 
+# Compose sets no APP_ATTEST_TOKEN_KEYS: the App Attest routes answer 501 (D247). Local only, the
+# deployed api has a ring once the warn PR pins it.
+if [ "$AUTH_MODE" = apikey ]; then
+  echo "→ POST /v1/app-attest/challenge answers 501 (compose has no token key)"
+  CODE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$API_URL/v1/app-attest/challenge" -H "Authorization: Bearer $API_KEY")
+  [ "$CODE" = 501 ] || { echo "✗ POST /v1/app-attest/challenge: $CODE, want 501"; exit 1; }
+fi
+
 echo "→ generating $DAYS synthetic days"
 python3 "$HERE/synth.py" "$DAYS" --nap "$NAP" > /tmp/ryft-synth.json
 

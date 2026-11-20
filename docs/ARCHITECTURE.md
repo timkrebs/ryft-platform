@@ -190,25 +190,27 @@ import rules between packages are `backend/internal/arch_test.go`.
 
 | Package | Owns | Depends on | Tested by |
 | --- | --- | --- | --- |
-| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, ratelimit, scoring, sealed, store, train | 36 files (Postgres) |
-| `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | app, auth, config, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 8 files (Postgres) |
+| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, appattest, apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, ratelimit, scoring, sealed, store, train | 38 files (Postgres) |
+| `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | app, auth, config, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 9 files (Postgres) |
 | `cmd/migrate` | migrate applies the migrations as the schema owner, loads the built-in exercises and plans, and sets the service roles' passwords where they changed. | db, httpx, smoke | none |
 | `cmd/notify` | notify wires internal/notify to its push routes and the 15-minute tick. | apns, app, config, eventbus, events, logx, notify, store | 1 file |
 | `cmd/pubsub-topology` | pubsub-topology writes the Pub/Sub topology (internal/events/pubsub) as Terraform's variables and as the emulator's init script. | events/pubsub | 1 file |
 | `cmd/scoring` | scoring scores the pushed ingest events and runs the 15-minute tick that keeps today and yesterday fresh. | app, config, db, eventbus, events, httpx, logx, metrics, model, scoring, store | 3 files (Postgres) |
 | `internal/apns` | sends one APNs request per device token with token-based authentication: an ES256 JWT from the team's .p8 key over HTTP/2 (net/http negotiates it). | apple | 1 file |
 | `internal/app` | owns a service's lifecycle: it opens the pool and the transport, serves the push, tick and health routes, pushes the metrics, and stops in reverse. | auth, config, db, eventbus, events, events/outbox, httpx, metrics, ratelimit | 7 files |
+| `internal/appattest` | verifies Apple App Attest attestations and assertions and mints and checks the HMAC app tokens. | none | 6 files |
+| `internal/appattest/appattesttest` | builds App Attest test vectors: a generated CA chain, attestations and assertions in CBOR, signed with real P-256 keys. | none | via cmd/api, cmd/ingest, appattest, config, gate |
 | `internal/apple` | talks to Sign in with Apple's REST API: it exchanges the authorization code for a refresh token and revokes that token on deletion. | logx | 2 files |
 | `internal/auth` | owns bearer checks (Supabase JWT or a dev key on /v1, Google OIDC on pushes and ticks), the per-user limit hook and the Supabase admin client. | config, httpx, logx, metrics, model | 6 files |
 | `internal/behavior` | owns the journal's arithmetic: the fixed ids of the built-in behaviors, what an entry may hold, and how a behavior changes the morning after. | model, train | 1 file |
-| `internal/config` | owns the services' environment configuration: what each variable means, its default and which combinations are refused. | none | 3 files |
-| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 16 files (Postgres) |
+| `internal/config` | owns the services' environment configuration: what each variable means, its default and which combinations are refused. | appattest | 4 files |
+| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 17 files (Postgres) |
 | `internal/eventbus` | owns building a service's Pub/Sub transport from its configuration: the Bus, the push verifier, the push and tick handlers and the wait sender. | auth, config, events, events/pubsub | 1 file |
 | `internal/events` | owns the five trigger events the services exchange, their encoding, and what a handler's error means. | logx, metrics, model | 1 file |
 | `internal/events/outbox` | owns the outbox table's rows and the relay that moves them to the broker, so an event is never lost between a database write and a publish. | events, httpx, metrics | 1 file (Postgres) |
 | `internal/events/pubsub` | owns events.Bus on Pub/Sub over REST, the push and tick handlers, and the topology that Terraform's and the emulator's files are written from. | auth, config, events, httpx, metrics | 5 files (Pub/Sub emulator) |
 | `internal/flags` | evaluates remote-config feature flags for one user (GET /v1/config): flags and a user id in, booleans out. | model | 1 file |
-| `internal/gate` | owns the decision and the answer of the beta invite gate and the consent gate, for a user the caller has already loaded. | config, httpx, metrics, model | 2 files |
+| `internal/gate` | owns the decision and the answer of the beta invite gate, the consent gate and the App Attest token check, for a caller already authenticated. | appattest, auth, config, httpx, metrics, model | 3 files |
 | `internal/httpx` | owns the HTTP plumbing every service shares: error shape, JSON I/O with size and NUL rules, the middleware chain, the server, health, the logger. | logx, metrics | 8 files |
 | `internal/insights` | turns recent scored days into the short cards on the Insights screen, one rule at a time. | model | 1 file |
 | `internal/logx` | owns the services' JSON logging: one logger per service, with the request's identity added to every line. | none | 2 files |
@@ -222,7 +224,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/scoring/workoutdup` | owns the two rules that make one activity one workout: the same-source fold and the cross-source duplicate mark. | model | 1 file |
 | `internal/sealed` | encrypts the few secrets the platform stores (Apple refresh tokens) with AES-256-GCM. | none | 1 file |
 | `internal/smoke` | owns the Go end-to-end smoke against a running stack. | model | 1 file |
-| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, events, events/outbox, logx, metrics, model, scoring/workoutdup, train | 23 files (Postgres) |
+| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, events, events/outbox, logx, metrics, model, scoring/workoutdup, train | 24 files (Postgres) |
 | `internal/testsupport` | holds the helpers the Postgres-backed tests of several packages share. | none | via cmd/api, cmd/ingest, db, events/outbox, store |
 | `internal/train` | holds the pure rules of the Train feature that are not scoring. | model | 2 files |
 
@@ -253,6 +255,7 @@ whose tests import it. `make smoke` and the golden fixtures are not attributed t
 - **Journal** (0016, D74–D77): `behaviors` (built-ins with `user_id NULL` and fixed ids from the seeds, custom rows per user), `user_behaviors(user_id, behavior_id)` (the user's choice over `default_on`), `journal_days(user_id, day)` (a saved day) and `journal_entries(user_id, day, behavior_id)` with `value_bool` and `value_num`. The impact on the morning after is computed on request (`internal/behavior`), not stored.
 - `feature_flags(key)` — remote config (0014): `enabled`, `rollout_pct`, `allow_user_ids`.
 - `push_tokens(user_id, device_id)` — the app's APNs token per install (unique), `env`, `locale` (0015); `notifications_sent(user_id, day, category)` — what notify sent, claimed before sending. `users.notify_categories` (off switches), `quiet_from` / `quiet_to`.
+- **App Attest** (0037, D245, D247): `app_attest_keys(user_id, key_id)` — per account and app install the attested key: `key_id` (32 bytes), `public_key` (65-byte uncompressed P-256), `environment` (`production` only), `counter` (the last assertion's, a uint32), `attested_at`, `last_used_at`; at most 10 per account (the eleventh evicts the least recently used), deleted 90 days after the last use. `app_attest_challenges(user_id, hash)` — the open challenges as SHA-256 of the challenge, never in clear, 5 minutes, at most 5 per account, single use (`DELETE … RETURNING`). Only `ryft_api` sees them. Both go with the account (`DELETE /v1/me`, and the foreign keys cascade); a merge deletes the merged account's, never moves them; the app's export does not include them (device credentials, like push tokens). No token is stored.
 - **Train** (migrations 0011–0012, D58–D63): `exercises` and `plans` (built-ins with `user_id NULL` from the seeds, custom rows per user), `plan_days`, `plan_exercises`, `plan_enrollments` (one active per user), `sessions` → `session_exercises` → `session_sets` keyed by `(user_id, id)` with client-generated ids, `personal_records(user_id, exercise_id, kind)`. `workouts.muscular_load` / `session_id` say which workout carries a session's load.
 
 **Database roles** (migration 0009; `internal/db/roles_test.go` pins the matrix):
@@ -261,7 +264,7 @@ whose tests import it. `make smoke` and the golden fixtures are not attributed t
 | --- | --- |
 | `ryft_ingest` | read/insert/update `users`, `devices`, `samples`, `sleep_segments`, `workouts`; read `deleted_users.id` only |
 | `ryft_scoring` | read the raw tables, exercises and sessions; insert/update `daily_scores`; update only `strain`, `trimp`, `zone_minutes`, `muscular_load`, `session_id` of `workouts`, and create and delete only its own (`ryft-session`); update only the load columns of `sessions` |
-| `ryft_api` | read everything; insert/update/delete `users`; delete the user's rows (account deletion); insert/update `deleted_users`; all of `apple_tokens`, which no other role can read; all of the Train tables, the journal tables, `feature_flags` and `push_tokens`; read and delete `notifications_sent` |
+| `ryft_api` | read everything; insert/update/delete `users`; delete the user's rows (account deletion); insert/update `deleted_users`; all of `apple_tokens`, which no other role can read; all of the Train tables, the journal tables, `feature_flags` and `push_tokens`; read and delete `notifications_sent`; all of `app_attest_keys` and read/insert/delete `app_attest_challenges`, which no other role can read (0037) |
 | `ryft_notify` | read a user's `id`, `tz` and notification settings only; read and delete `push_tokens`; all of `notifications_sent`; read `devices.last_sync_at`, `samples` (user, type, start), the morning's score columns, a session's title, status and load, `personal_records` and exercise names (migration 0015) |
 
 None of them may create, alter or drop anything, or truncate. Every new table must grant

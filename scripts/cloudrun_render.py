@@ -18,7 +18,7 @@ change what is deployed. Derived values:
   IMAGE          europe-west1-docker.pkg.dev/ryftlab-prod/ryft/<svc>@sha256:<digest>
 Fails closed: a FILL_ME_IN left in config.env (the config PR before the first deploy), a value of the
 wrong shape, a missing, unknown or repeated key (OTLP_ENDPOINT and OTLP_USER among the unknown since
-D236). --lint checks the same but lets FILL_ME_IN pass (and names what is left), so CI catches a typo
+D236), an account twice in APP_ATTEST_EXEMPT_USERS (the one key whose value may be empty). --lint checks the same but lets FILL_ME_IN pass (and names what is left), so CI catches a typo
 in a config PR before the deploy does.
 Exit 0 rendered (or linted), 1 a finding, 2 usage.
 """
@@ -37,6 +37,7 @@ REGION = "europe-west1"
 REGISTRY = f"{REGION}-docker.pkg.dev/{PROJECT}/ryft"
 CA = "/etc/ryft/supabase-ca.crt"
 PLACEHOLDER = "FILL_ME_IN"
+UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 
 # config.env: key -> (required, full-match regex, what it is). Order is the file's.
 KEYS = {
@@ -45,6 +46,13 @@ KEYS = {
     # The beta gate (D87, D238), api and ingest only: lower case, as committed; unset is no option here,
     # so the mode in force is always the one in git, never the code's default.
     "BETA_GATE": (True, r"off|warn|on", "off, warn or on"),
+    # App Attest (D245, D247), api and ingest only, as committed like the beta gate. The exempt accounts'
+    # line is required like every key's, its value may be empty (required False: no FILL_ME_IN either);
+    # an id twice is refused below. check_cloudrun.py holds the rules between keys and files (the ring's
+    # pin under warn and on, off -> on against the base).
+    "APP_ATTEST": (True, r"off|warn|on", "off, warn or on"),
+    "APP_ATTEST_EXEMPT_USERS": (False, rf"{UUID}(?:,{UUID}){{0,4}}",
+                                "empty, or 1 to 5 lower-case UUIDs, comma-separated, no spaces"),
     # The X-Forwarded-For entries our proxies append (D53, D240), api and ingest only: the edge limit's
     # client is that many entries from the right. Required, so the count in force is the one in git.
     "XFF_TRUSTED_HOPS": (True, r"[1-8]", "1 to 8, the proxies in front of api and ingest"),
@@ -58,7 +66,8 @@ KEYS = {
 }
 # The template placeholders, the only names ever substituted.
 VARS = ("IMAGE", "DATABASE_URL", "PUSH_AUDIENCE", "PRIVACY_POLICY_VERSION", "LOG_LEVEL", "SUPABASE_PROJECT_REF",
-        "PUSH_SA_ID", "APPLE_KEY_ID", "APNS_KEY_ID", "BETA_GATE", "XFF_TRUSTED_HOPS")
+        "PUSH_SA_ID", "APPLE_KEY_ID", "APNS_KEY_ID", "BETA_GATE", "XFF_TRUSTED_HOPS", "APP_ATTEST",
+        "APP_ATTEST_EXEMPT_USERS")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=(.*)")
 PLACE = re.compile(r"\$\{([A-Za-z0-9_]*)\}")
@@ -114,6 +123,8 @@ def read_config(path, lint):
             errs.append(f"{path}: {k} is empty: {what}")
         elif not re.fullmatch(rx, v):
             errs.append(f"{path}: {k}={v!r} does not have the shape {what}")
+        elif k == "APP_ATTEST_EXEMPT_USERS" and len(set(v.split(","))) != v.count(",") + 1:
+            errs.append(f"{path}: APP_ATTEST_EXEMPT_USERS names an account twice: each id once")
         elif k == "PRIVACY_POLICY_VERSION":
             try:
                 datetime.date.fromisoformat(v)

@@ -92,7 +92,7 @@ func TestImportRouteBudgetAndGates(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 		rec := httptest.NewRecorder()
-		importRoute(o, mode, probe).ServeHTTP(rec, req)
+		importRoute(o, mode, nil, probe).ServeHTTP(rec, req)
 		return rec.Code
 	}
 	start := time.Now()

@@ -2,6 +2,7 @@
 """What deploy/run must hold before deploy.yml may apply it (CI's manifests job, make cloudrun-check).
 
   python3 -I scripts/check_cloudrun.py [--dir deploy/run] [--gates infra/gcp/gates.auto.tfvars]
+      [--base-config <the PR base's config.env>]     (make cloudrun-check CLOUDRUN_BASE=<path>; CI on a PR)
 
 It lints the committed config.env (FILL_ME_IN may be left; a wrong shape fails), then renders every
 template with fake values of the right shape and fake digests (scripts/cloudrun_render.py, the
@@ -23,9 +24,14 @@ renderer deploy.yml uses), parses the result with yq (mikefarah v4) and asserts,
     (D240: behind the load balancer; with ingress all a client reaches run.app and writes that entry),
     and that ingress only with a count other than 1 (D242: at 1 the edge limit would key every request
     on the load balancer's own address, one bucket for every client);
+  - App Attest (D245, D247): APP_ATTEST other than off only while api and ingest both pin
+    APP_ATTEST_TOKEN_KEYS (the ring, app-attest-token-key) by version, since both refuse to start in warn
+    or on without it; and, given --base-config, never on while the base is off (or has no APP_ATTEST
+    line, the services' default off): off -> warn -> on (D238's order, checked since D245). Without
+    --base-config the order rule is skipped with a note (a push to main, a local run);
   - the env exactly as ticket-b.md's tables (names and the values the renderer builds; api may add the
-    pin of posthog-project-key, D231; api and ingest carry BETA_GATE, D238, and XFF_TRUSTED_HOPS, D240,
-    from config.env), every
+    pin of posthog-project-key, D231; api and ingest may add the ring's pin and carry BETA_GATE, D238,
+    XFF_TRUSTED_HOPS, D240, APP_ATTEST and APP_ATTEST_EXEMPT_USERS, D245, from config.env), every
     secret pinned by a version number (never latest), each secret only in the services of the accessor
     table, and migrate's DB_PASSWORD_<SVC> pin equal to PGPASSWORD's in <svc>.yaml (design §4);
   - P5 (design §5.1): none of AUTH_MODE=apikey, ALLOW_INSECURE_APIKEY_AUTH, API_KEY, USER_ID,
@@ -63,11 +69,13 @@ MIGRATE = dict(timeout=600, memory="512Mi")
 SHARED = {"GCP_PROJECT": PROJECT, "PUBSUB_ENDPOINT": "https://europe-west1-pubsub.googleapis.com",
           "PUSH_AUDIENCE": None, "PUSH_SA_EMAIL": f"ryft-push@{PROJECT}.iam.gserviceaccount.com",
           "PUSH_SA_ID": None, "LOG_LEVEL": None, "DATABASE_URL": None}
-# BETA_GATE (D238) and XFF_TRUSTED_HOPS (D240) are the rows ticket-b.md's tables lack, both from
-# config.env, both in the two public services only: the beta gate's mode (scoring reads only the consent
-# mode) and the proxies the edge limit trusts (scoring and notify are internal and run no edge limit).
+# BETA_GATE (D238), XFF_TRUSTED_HOPS (D240) and App Attest's pair (D245, D247) are the rows ticket-b.md's
+# tables lack, all from config.env, all in the two public services only: the beta gate's mode (scoring
+# reads only the consent mode), the proxies the edge limit trusts (scoring and notify are internal and run
+# no edge limit), and App Attest's mode and exempt accounts (only the app's requests carry a token).
 PUBLIC = {"AUTH_MODE": "supabase", "SUPABASE_PROJECT_REF": None, "PRIVACY_POLICY_VERSION": None,
-          "PRIVACY_POLICY_URL": "https://ryftlab.de/privacy", "BETA_GATE": None, "XFF_TRUSTED_HOPS": None}
+          "PRIVACY_POLICY_URL": "https://ryftlab.de/privacy", "BETA_GATE": None, "XFF_TRUSTED_HOPS": None,
+          "APP_ATTEST": None, "APP_ATTEST_EXEMPT_USERS": None}
 # The only ingress under which a hop count other than 1 may run: then Cloud Run takes requests from the
 # load balancer alone, which appends the entry a second hop trusts.
 LB_INGRESS = "internal-and-cloud-load-balancing"
@@ -98,13 +106,18 @@ SECRET_ENV = {
 # Secret env a file may hold or leave out (env name -> secret), checked like the rest when present.
 # POSTHOG_PROJECT_KEY (D231): without it api serves analytics null. Its pin comes once the secret has a
 # version, because a revision that reads a missing version does not start and the deploy goes red.
-OPTIONAL_SECRET_ENV = {"api": {"POSTHOG_PROJECT_KEY": "posthog-project-key"}}
+# APP_ATTEST_TOKEN_KEYS (D245, D247), the token ring: api signs and verifies, ingest verifies. Optional
+# under APP_ATTEST=off (without it the routes answer 501), required under warn and on (check_app_attest).
+RING_ENV, RING = "APP_ATTEST_TOKEN_KEYS", "app-attest-token-key"
+RING_SERVICES = ("api", "ingest")
+OPTIONAL_SECRET_ENV = {"api": {"POSTHOG_PROJECT_KEY": "posthog-project-key", RING_ENV: RING},
+                       "ingest": {RING_ENV: RING}}
 # The only service accounts that can access each secret (ticket-b.md, the accessor table; infra/gcp/secrets.tf).
 # otlp-token stays until its own removal PR (docs/OPERATIONS.md → GCP, step 11.6): unread, still bound.
 ACCESSORS = {**{f"db-password-{s}": {s, "migrate"} for s in SERVICES}, "db-password-owner": {"migrate"},
              "supabase-secret-key": {"api"}, "admin-api-key": {"api"}, "apple-key-p8": {"api"},
              "apns-key-p8": {"notify"}, "data-key": {"api"}, "otlp-token": set(SERVICES),
-             "posthog-project-key": {"api"}}
+             "posthog-project-key": {"api"}, RING: set(RING_SERVICES)}
 P5 = ("ALLOW_INSECURE_APIKEY_AUTH", "API_KEY", "USER_ID", "ALLOW_INSECURE_PUSH", "PORT")
 P5_RE = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(P5) + r")(?![A-Za-z0-9_])")
 VERSION = re.compile(r"[1-9][0-9]*")
@@ -149,7 +162,54 @@ def fakes(committed):
     # The committed hop count likewise: check_service compares it with the ingress.
     m = re.search(r"^XFF_TRUSTED_HOPS=(.*)$", committed, re.M)
     v["XFF_TRUSTED_HOPS"] = m.group(1) if m else "1"
+    # App Attest's mode and exempt accounts likewise: check_app_attest reads the mode, and a test
+    # account's id is no secret (D245).
+    m = re.search(r"^APP_ATTEST=(.*)$", committed, re.M)
+    v["APP_ATTEST"] = m.group(1) if m else "off"
+    m = re.search(r"^APP_ATTEST_EXEMPT_USERS=(.*)$", committed, re.M)
+    v["APP_ATTEST_EXEMPT_USERS"] = m.group(1) if m else ""
     return v
+
+
+def base_mode(path):
+    """APP_ATTEST in the PR base's config.env: off when the line is absent (the services' default, and
+    every base before D247); None after a finding (the order cannot be judged, so the check fails)."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as e:
+        fail(f"--base-config {path}", f"cannot read it ({e.strerror}): the APP_ATTEST order (D245) is judged against it")
+        return None
+    modes = re.findall(r"^APP_ATTEST=(.*?)\r?$", text, re.M)
+    if len(modes) > 1:
+        fail(f"--base-config {path}", "APP_ATTEST is set more than once there: the order (D245) cannot be judged")
+        return None
+    return modes[0] if modes else "off"
+
+
+def check_app_attest(mode, pins, base):
+    """D245, D247: warn and on only with the ring pinned in api and ingest (they refuse to start without
+    it), and never off -> on against the PR's base (D238's order, a rule since D245)."""
+    if mode != "off":
+        for s in RING_SERVICES:
+            if s in pins and RING_ENV not in pins[s]:
+                fail(f"{s}.yaml", f"APP_ATTEST={mode} without {RING_ENV} pinned ({RING}, by version number): {s} "
+                     f"refuses to start in warn or on without the ring (D245), so the deploy goes red; pin it in "
+                     f"{' and '.join(f'{x}.yaml' for x in RING_SERVICES)} in the same PR")
+    # One version in both: api signs with the version's first line, ingest verifies with its own lines, so a
+    # pin ahead in api would make every sync's token unknown to ingest (D245's rotation moves both pins).
+    ring = {s: pins[s][RING_ENV][1] for s in RING_SERVICES if s in pins and RING_ENV in pins[s]}
+    if len(set(ring.values())) > 1:
+        fail("api.yaml / ingest.yaml", f"{RING} is pinned at {ring.get('api')} in api.yaml and at {ring.get('ingest')} "
+             "in ingest.yaml: pin the same version in both, in one commit (a rotation adds the new key as a line of "
+             "a new version, D245)")
+    elif len(ring) == 1:
+        (only,) = ring
+        fail(f"{only}.yaml", f"{RING_ENV} is pinned in {only}.yaml only: pin it in api.yaml and ingest.yaml together "
+             "(api signs, ingest verifies, D245)")
+    if base is not None and mode == "on" and base not in ("warn", "on"):
+        fail("config.env", f"APP_ATTEST=on with the base at {base!r}: off -> warn -> on, never straight to on "
+             "(D238/D245); this PR sets warn, and on follows after warn's stop rule (docs/OPERATIONS.md -> GCP -> "
+             "App Attest)")
 
 
 def edge_phase(path):
@@ -459,6 +519,8 @@ def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--dir", default=str(ROOT / "deploy/run"))
     p.add_argument("--gates", default=str(GATES), help="infra/gcp's gates (the gate edge, D242)")
+    p.add_argument("--base-config", help="the PR base's deploy/run/config.env (CI: git show origin/<base>:...), "
+                   "for the APP_ATTEST order (D245); without it that rule is skipped")
     a = p.parse_args(argv)
     d = Path(a.dir)
     yq = shutil.which("yq")
@@ -474,6 +536,7 @@ def main(argv):
     for f in sorted(want - have):
         fail(f"{d}/{f}", "missing")
     edge = edge_phase(Path(a.gates))
+    base = base_mode(a.base_config) if a.base_config else None
     if errs:
         return report()
     # P5 in config.env, by name (the renderer refuses unknown keys too, with a less specific message).
@@ -519,17 +582,23 @@ def main(argv):
         if mine and theirs and mine[1] != theirs[1]:
             fail(f"{s}.yaml / migrate.yaml", f"db-password-{s} is pinned at {mine[1]} in {s}.yaml and at {theirs[1]} in "
                  f"migrate.yaml: move both in one commit (scripts/rotate_db_password.sh {s} <version>)")
-    return report()
+    check_app_attest(cfg["APP_ATTEST"], pins, base)
+    if not a.base_config:
+        print("check_cloudrun: no --base-config, so the APP_ATTEST order against a base (off -> warn -> on, D245) "
+              "is skipped (CI passes the base on a pull request)")
+    return report(bool(a.base_config))
 
 
-def report():
+def report(based=False):
     gha = os.environ.get("GITHUB_ACTIONS") == "true"
     for e in errs:
         print(f"{'::error title=deploy/run::' if gha else '✗ '}{e}", file=sys.stderr)
     if errs:
         return 1
+    order = ", APP_ATTEST's order against the base" if based else ""
     print("check_cloudrun: api, ingest, scoring, notify and migrate render; limits, ingress (against the gate edge), "
-          "accounts, h2c, probes, env, secret pins (by number, migrate = the services), accessors and P5 hold")
+          "accounts, h2c, probes, env, secret pins (by number, migrate = the services), accessors, P5 and App "
+          f"Attest's ring under warn and on{order} hold")
     return 0
 
 

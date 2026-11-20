@@ -75,9 +75,9 @@ run "secret_accessors_exactly" {
     condition = toset(keys(google_secret_manager_secret.this)) == toset([
       "db-password-api", "db-password-ingest", "db-password-scoring", "db-password-notify", "db-password-owner",
       "supabase-secret-key", "admin-api-key", "apple-key-p8", "apns-key-p8", "data-key",
-      "posthog-project-key",
+      "posthog-project-key", "app-attest-token-key",
     ])
-    error_message = "the 10 secret containers of ticket B still in use and posthog-project-key (D231); otlp-token is retired (step 11.6)"
+    error_message = "the 10 secret containers of ticket B still in use, posthog-project-key (D231) and app-attest-token-key (D247); otlp-token is retired (step 11.6)"
   }
 
   assert {
@@ -115,6 +115,21 @@ run "secret_accessors_exactly" {
   assert {
     condition     = google_secret_manager_secret_iam_binding.accessor["apns-key-p8"].members == toset(["serviceAccount:ryft-notify@ryftlab-prod.iam.gserviceaccount.com"])
     error_message = "the APNs key: notify only"
+  }
+
+  # App Attest's token ring (D245, D247): api signs and verifies, ingest verifies. Nobody else, migrate
+  # included; a container with prevent_destroy (`this`, not `retired`), so its versions survive a refactor.
+  assert {
+    condition = (
+      google_secret_manager_secret_iam_binding.accessor["app-attest-token-key"].members == toset([
+        "serviceAccount:ryft-api@ryftlab-prod.iam.gserviceaccount.com",
+        "serviceAccount:ryft-ingest@ryftlab-prod.iam.gserviceaccount.com",
+      ]) &&
+      google_secret_manager_secret_iam_binding.accessor["app-attest-token-key"].role == "roles/secretmanager.secretAccessor" &&
+      google_secret_manager_secret.this["app-attest-token-key"].secret_id == "app-attest-token-key" &&
+      !contains(keys(google_secret_manager_secret.retired), "app-attest-token-key")
+    )
+    error_message = "the App Attest token ring: api and ingest only, bound on the secret, in the containers that keep prevent_destroy"
   }
 
   # Retired (step 11.6, PR 1): the same container and binding as before the move, so the apply changes

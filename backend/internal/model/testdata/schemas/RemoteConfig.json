@@ -5,6 +5,9 @@
       "$ref": "AnalyticsConfig",
       "nullable": true
     },
+    "app_attest": {
+      "type": "string"
+    },
     "evaluated_at": {
       "format": "date-time",
       "type": "string"
@@ -28,6 +31,7 @@
   },
   "required": [
     "analytics",
+    "app_attest",
     "evaluated_at",
     "flags",
     "privacy_policy_url",

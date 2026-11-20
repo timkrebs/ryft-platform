@@ -57,7 +57,18 @@ type RemoteConfig struct {
 	// independent of the flag analytics.enabled: the app combines the two with the user's
 	// opt-in (D231).
 	Analytics *AnalyticsConfig `json:"analytics"`
+	// AppAttest is the server's App Attest mode (APP_ATTEST, D247; AA2), always present: one
+	// of AppAttestOff, AppAttestWarn, AppAttestOn. A 501 or 404 from POST
+	// /v1/app-attest/challenge stays authoritative over it.
+	AppAttest string `json:"app_attest"`
 }
+
+// The values of RemoteConfig.AppAttest, a closed enum.
+const (
+	AppAttestOff  = "off"
+	AppAttestWarn = "warn"
+	AppAttestOn   = "on"
+)
 
 // AnalyticsConfig is where the app sends its product analytics (PostHog EU Cloud, D231):
 // the ingestion origin and the project's public API key. Both repositories are public, so

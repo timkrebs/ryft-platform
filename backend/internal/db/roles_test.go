@@ -48,7 +48,8 @@ var crud = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
 // journalTables are migration 0016's, betaTables 0017's onwards.
 var (
 	journalTables = []string{"behaviors", "user_behaviors", "journal_days", "journal_entries"}
-	betaTables    = []string{"consents", "beta_invite_codes", "user_sources", "feedback", "admin_audit", "score_queue", "outbox", "admin_accounts", "beta_invite_uses"}
+	betaTables    = []string{"consents", "beta_invite_codes", "user_sources", "feedback", "admin_audit", "score_queue", "outbox", "admin_accounts", "beta_invite_uses",
+		"app_attest_keys", "app_attest_challenges"}
 )
 
 // trainTables are migration 0011's.
@@ -86,7 +87,9 @@ var grants = map[string]map[string][]string{
 		"admin_audit": {"SELECT", "INSERT"}, "score_queue": {"SELECT", "DELETE"}, "outbox": {"SELECT", "INSERT", "DELETE"},
 		"admin_accounts":   {"SELECT"}, // 0032: the owner writes it (the SQL editor), the api only reads
 		"beta_invite_uses": crud,       // 0033: UPDATE because a merge moves rows
-		"exercises":        crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
+		// 0037: the api alone; a key's counter and last use are updated, a challenge never is.
+		"app_attest_keys": crud, "app_attest_challenges": {"SELECT", "INSERT", "DELETE"},
+		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
 }

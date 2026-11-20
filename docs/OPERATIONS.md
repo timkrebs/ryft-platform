@@ -41,6 +41,7 @@ on Pub/Sub and Cloud Run.
 | 12–14 | The retirement: Route 53, AWS and the old workspaces | done by hand on 2026-11-19 (D246); 14.3, the GitHub secrets, after D3 |
 | 15 | Testers | step 10 done, C2 in force |
 | 16 | The edge (D242): built, live, the deploy PR, locked | step 9 done, the PR "infra: the edge" merged, 16.1's roles; each phase after the one before it (`locked` after 7 clean days) |
+| 17 | App Attest (D245, D247): the ring's container, its first version, `warn`, then `on`; the edge's path skip | the server PR merged; 17.2 once C2 names App Attest; `on` after 7 clean days of `warn`; 17.6 before 1000 or 1001 is enforced |
 
 Each step ends with its stop rule. A stop means: do nothing further, find the cause, then start
 that step again.
@@ -166,7 +167,7 @@ tfc_var github_repository_owner_id "$OWNER_ID" terraform
 
 # 2f. Connect and plan once (speculative: it proves the plan SA's sign-in).
 terraform -chdir=infra/gcp init                     # connects to ryft-gcp, which 2b made
-terraform -chdir=infra/gcp plan                     # 123 to add (step 4)
+terraform -chdir=infra/gcp plan                     # 125 to add (step 4)
 ```
 
 - **APIs.** Without `--force`, `gcloud services disable` refuses a service that was used in
@@ -227,18 +228,18 @@ rm infra/gcp/apply-1.tfplan
 ```
 
 ```text
-# Apply 1: 123 to add, 0 to change, 0 to destroy (on a rebuild today; the first apply 1 was 118, with
-# grafana-reader and its monitoring.viewer and without D236's 6 and D244's 1).
+# Apply 1: 125 to add, 0 to change, 0 to destroy (on a rebuild today; the first apply 1 was 118, with
+# grafana-reader and its monitoring.viewer and without D236's 6, D244's 1 and D247's 2).
 #   16 APIs + 3 audit configs (Secret Manager, STS, IAM) + 2 service agents                  = 21
 #    7 accounts + 1 token creator + 1 run.developer + 5 actAs                                = 14  (35)
 #    1 GitHub pool + 1 provider + 1 workloadIdentityUser                                     =  3  (38)
-#   12 secrets + 12 accessor bindings                                                        = 24  (62)
-#    9 topics + 9 publisher bindings + 10 push subs + 6 dead-letter source bindings + 2 hold = 36  (98)
-#    1 Scheduler job + 1 Artifact Registry + 1 registry writer                               =  3 (101)
-#    1 zone + 12 record sets (CAA, MX, apex TXT, DMARC, 6 CNAME, 2 SRV)                      = 13 (114)
-#    1 log bucket + 1 sink                                                                   =  2 (116)
-#    2 log-based metrics + 3 uptime checks (the site's) + 1 dashboard (D236)                 =  6 (122)
-#    1 log-based metric (ryft_notices, D244)                                                 =  1 (123)
+#   13 secrets + 13 accessor bindings (app-attest-token-key's among them, D247)              = 26  (64)
+#    9 topics + 9 publisher bindings + 10 push subs + 6 dead-letter source bindings + 2 hold = 36 (100)
+#    1 Scheduler job + 1 Artifact Registry + 1 registry writer                               =  3 (103)
+#    1 zone + 12 record sets (CAA, MX, apex TXT, DMARC, 6 CNAME, 2 SRV)                      = 13 (116)
+#    1 log bucket + 1 sink                                                                   =  2 (118)
+#    2 log-based metrics + 3 uptime checks (the site's) + 1 dashboard (D236)                 =  6 (124)
+#    1 log-based metric (ryft_notices, D244)                                                 =  1 (125)
 ```
 
 The site's uptime checks fail until step 10 serves it. Nothing pages: no alert policy exists before
@@ -268,11 +269,11 @@ Pub/Sub's service agent can take a minute to exist. If the apply fails on
 `service-<number>@gcp-sa-pubsub.iam.gserviceaccount.com`, wait, then plan and apply again. The
 new plan holds only what is left.
 
-**Stop if** the plan has any change or destroy, or the add count isn't 123.
+**Stop if** the plan has any change or destroy, or the add count isn't 125.
 
 ### 5. Secret values
 
-The 12 containers exist since step 4. Each value goes in through stdin or a file, never on argv
+The 13 containers exist since step 4. Each value goes in through stdin or a file, never on argv
 and never on screen. Each `add` prints `Created version [N] of the secret [<id>]`. Every `N` must
 be `1`, because `deploy/run` pins version 1. If one isn't, a PR moves that secret's pin in
 `deploy/run` before step 8. For a `db-password-*` secret, that means `migrate.yaml` and the
@@ -312,6 +313,8 @@ the pin in `deploy/run` (step 5's first paragraph). Then disable the wrong versi
   Settings. Nothing else uses it.
 - `otlp-token` gets no value any more: no revision pins it since D236 (it held one on
   ryftlab-prod, which every revision before D236 reads; step 11.6 removes it).
+- `app-attest-token-key` (D247) gets no value here: its first version is step 17.2, only once C2's
+  privacy text names App Attest. Until then no revision pins it.
 
 The data key, design §5.3 steps 3–5. Use the version `add` prints. If it isn't `1`, the pin
 in `deploy/run/api.yaml` moves too.
@@ -330,7 +333,7 @@ APFS: FileVault protects the freed blocks (D211).
 ```bash
 for s in $(gcloud secrets list --project=ryftlab-prod --format='value(name.basename())'); do
   echo "$s $(gcloud secrets versions list "$s" --project=ryftlab-prod --format='value(name.basename(),state)' | tr '\n' ' ')"
-done                                                # 12 lines, each one version: 1 ENABLED (on a rebuild since D236, otlp-token's line has none)
+done                                                # 13 lines, each one version: 1 ENABLED (on a rebuild since D236, otlp-token's line has none; app-attest-token-key's has none until step 17.2)
 ```
 
 **Stop if** the data key's fingerprint differs or its length isn't 32. Then use D211's fallback:
@@ -2177,6 +2180,279 @@ A PR sets that set's line in `local.edge_waf_preview` (`infra/gcp/edge.tf`) to `
 `tests/edge.tftest.hcl` (`the_policy`) with it. Its plan: 0 to add, 1 to change (the policy, in
 place: that rule's `preview` true → false), 0 to destroy. The way back is the same line back to
 `true`. From then on a match is a `403` and a `ryft_edge_denials` point at that priority.
+
+**Before 1000 (`sqli`) or 1001 (`xss`) is enforced:** App Attest's two body routes skip both sets by
+path first, in a PR of its own (17.6). Their base64 bodies can read as SQL or as an event handler to
+libinjection, and a `403` there means no app token.
+
+### 17. App Attest *(D245, D247)*
+
+The server checks an app token (`X-RYFT-App-Token`) on api and ingest. The modes are `APP_ATTEST=off`, then
+`warn`, then `on` in `deploy/run/config.env`, one PR each. The token ring is the Secret Manager secret
+`app-attest-token-key`, rendered as `APP_ATTEST_TOKEN_KEYS` into both services at a pinned version. It holds
+1 to 3 lines `<kid>:<base64 of 32 bytes>`: the first line signs (api), and every line verifies (api and
+ingest). The server PR ships `off` with no pin. So production answers `501` on the three routes, and the
+app sends no header.
+
+| Step | Can run | Changes |
+| --- | --- | --- |
+| 17.1 | the server PR merged | the ring's container and accessor (Terraform) |
+| 17.2 | 17.1, and C2's privacy text naming App Attest in force | the ring's first version (gcloud), pinned nowhere yet |
+| 17.3 | 17.2, the attesting build on TestFlight, Apple's root checked | `warn` and the ring's pin (a deploy PR) |
+| 17.4 | 7 days after 17.3's deploy | nothing (the reads) |
+| 17.5 | 17.4's stop rule held, and 17.6 applied if 1000 or 1001 is enforced | `on` (a deploy PR of one line) |
+| 17.6 | before the PR that enforces 1000 or 1001 | the edge: two WAF sets skip the two body routes (Terraform) |
+
+Run from the repository root on an up-to-date main, in bash or zsh (zsh: `setopt
+interactivecomments` first), logged in to gcloud as the project owner and to `ryft-lab`. No value of
+the ring is ever printed, pasted or written to a file.
+
+**17.1 The container and its accessor** (after the server PR's merge). Before the merge, a plan on main
+must say **No changes**. Anything it shows belongs to another step (11.6's second PR, 11.8, 16.7): apply
+that first.
+
+```bash
+git switch main && git pull
+terraform -chdir=infra/gcp plan -out=app-attest.tfplan
+```
+
+```text
+# Step 17.1's plan: 2 to add, 0 to change, 0 to destroy.
+#   + google_secret_manager_secret.this["app-attest-token-key"]                 (europe-west1, 30-day destroy delay)
+#   + google_secret_manager_secret_iam_binding.accessor["app-attest-token-key"] (members: ryft-api, ryft-ingest)
+```
+
+**Stop if** anything else is added, changed or destroyed, a "has moved to" line appears (#206's moves
+were recorded by the applies since: 16.0, `built`, `live`), or the binding names any account but
+`ryft-api` and `ryft-ingest`. No change to the other eleven secrets or their bindings, to `otlp-token`
+(retired), to the edge, to the services' invokers or to the zone.
+
+```bash
+terraform -chdir=infra/gcp apply app-attest.tfplan
+rm infra/gcp/app-attest.tfplan
+terraform -chdir=infra/gcp plan                     # No changes
+gcloud secrets get-iam-policy app-attest-token-key --project=ryftlab-prod --format='value(bindings.members)'
+                                                    # serviceAccount:ryft-api@…;serviceAccount:ryft-ingest@…
+```
+
+Cost: one active version, one replica, about $0.06 a month, and a few access operations at each instance's
+start (Secret Manager's list prices, *unverified*). With 2 or 3 versions enabled during a rotation, up to
+$0.18. Disable the old version once the rotation is done.
+
+**17.2 The ring's first version** (only once C2's privacy text names App Attest and is in force: D245 →
+Privacy). The value is made and piped in one go: `openssl rand -base64 32` writes the key straight into
+the pipe, so it is never a shell word, never in argv, on the screen or in the history; only the `kid` (no
+secret) is expanded. Run it with tracing off (`set +x`; zsh: `unsetopt xtrace`). The guard adds it only if
+the secret exists and has no version yet:
+
+```bash
+set +x
+if gcloud secrets describe app-attest-token-key --project ryftlab-prod >/dev/null 2>&1 && [ -z "$(gcloud secrets versions list app-attest-token-key --project ryftlab-prod --format='value(name)' --limit=1)" ]; then { printf '%s:' "$(openssl rand -hex 4)"; openssl rand -base64 32; } | gcloud secrets versions add app-attest-token-key --project ryftlab-prod --data-file=- && echo "OK: version added"; else echo "STOP: the secret is missing or already has a version"; fi
+                                                    # Created version [1] of the secret [app-attest-token-key].
+                                                    # OK: version added
+```
+
+The line's shape is `<8 hex>:<44 base64>` plus a newline. `openssl rand -hex 4` prints 8 lower-case hex
+digits (the `kid`). `openssl rand -base64 32` prints 44 characters, 32 bytes with one `=`, on one line.
+The services accept one trailing newline. Read back the version number and the shape, never the value:
+
+```bash
+gcloud secrets versions list app-attest-token-key --project=ryftlab-prod --format='value(name.basename(),state)'
+                                                    # 1 ENABLED   (the <N> for 17.3)
+gcloud secrets versions access 1 --secret=app-attest-token-key --project=ryftlab-prod \
+  | grep -cE '^[0-9a-f]{8}:[A-Za-z0-9+/]{43}=$'     # 1  (one line of the right shape)
+gcloud secrets versions access 1 --secret=app-attest-token-key --project=ryftlab-prod \
+  | cut -d: -f2 | base64 -d | wc -c                 # 32
+```
+
+Each `access` is a Data Access audit entry (Secret Manager's `DATA_READ`, `project.tf`), which is expected.
+**Stop if** the guard says STOP (look with `gcloud secrets versions list`, never `access`), the count isn't
+`1`, or the length isn't `32`. A wrong version is fixed by a new one: `gcloud secrets versions disable 1
+--secret=app-attest-token-key --project=ryftlab-prod`, then add the new version by hand with the same
+pipe (the guard refuses because a version exists), and use its number. Nothing pins the ring yet, so
+nothing reads it, and the routes still answer `501`.
+
+**17.3 The `warn` flip: a deploy PR.** It changes exactly three files (`make cloudrun-check` refuses
+`warn` unless both services pin the ring, at the same version):
+- `deploy/run/config.env`: `APP_ATTEST=off` becomes `APP_ATTEST=warn`, and `APP_ATTEST_EXEMPT_USERS=` gets
+  the smoke user's id (the beta gate's step 3 shell: `as_smoke "$API/v1/me" | jq -r .id`; a test
+  account's id names nobody and is no secret, D245);
+- `deploy/run/api.yaml` and `deploy/run/ingest.yaml`: the row
+  `- { name: APP_ATTEST_TOKEN_KEYS, valueFrom: { secretKeyRef: { name: app-attest-token-key, key: "<N>" } } }`
+  at 17.2's version, by number (the comment in `api.yaml` shows where it goes).
+
+Preconditions (D245's stop rules for `off` → `warn`). Flip only when all of these hold:
+1. **C2's privacy text names App Attest and is in force.** In the beta gate's step 3 shell (`as_smoke`,
+   `$API`), `as_smoke "$API/v1/config" | jq -r .privacy_policy_version` names the version that went live
+   with it (`PRIVACY_POLICY_VERSION`, set in the same PR as the text).
+2. **The ring is set:** 17.2's three checks.
+3. **The attesting build is on TestFlight**, and it is the build your own device runs.
+4. **Apple's root is the one the server pins.** The download's fingerprint equals both the embedded PEM
+   and the pinned constant:
+
+   ```bash
+   curl -s https://www.apple.com/certificateauthority/Apple_App_Attestation_Root_CA.pem | openssl x509 -noout -fingerprint -sha256
+                                                    # sha256 Fingerprint=1C:B9:82:3B:A2:8B:A6:AD:2D:33:A0:06:94:1D:E2:AE:4F:51:3E:F1:D4:E8:31:B9:F7:E0:FA:7B:62:42:C9:32
+   openssl x509 -in backend/internal/appattest/apple_root.pem -noout -fingerprint -sha256   # the same line
+   grep -o 'appleRootSHA256 = "[0-9a-f]*"' backend/internal/appattest/root_test.go         # the same, lower case, no colons
+   ```
+
+5. **Your own device shows accepted tokens.** The pin comes with this PR (D247's decision 1), so the
+   device can attest only from this deploy on. That makes this the first check after the merge (below).
+   `warn` refuses nothing, so checking afterwards is safe. If you want it before the flip, pin the ring
+   under `off` first in a PR of its own (D247 allows it) and check the same.
+
+**Stop if** any of 1 to 4 fails.
+
+```bash
+git fetch origin && git switch -c deploy/app-attest-warn origin/main
+# config.env: APP_ATTEST=warn and APP_ATTEST_EXEMPT_USERS=<smoke user id>; api.yaml, ingest.yaml: the ring's row at "<N>"
+make cloudrun-check                                  # refuses warn without the ring pinned in both
+bash scripts/tests/check_cloudrun_test.sh
+git diff --stat                                      # 3 files: config.env, api.yaml, ingest.yaml
+git commit -am "deploy: APP_ATTEST warn, the ring at version <N>"
+git push -u origin HEAD && gh pr create --fill -R timkrebs/ryft-platform
+```
+
+Its merge is a normal deploy (**Deploy, roll back, rotate**). api and ingest roll with `warn` and the
+ring, and from the first request a new revision serves, the three routes answer and tokens flow.
+A revision that can't read the ring doesn't start. Cloud Run then keeps the previous one, and
+`deploy.yml` goes red at the rollout. It worked when (in the beta gate's step 3 shell):
+
+```bash
+for s in api ingest; do
+  echo "$s $(gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod --format=json \
+    | jq -r '[.spec.template.spec.containers[0].env[] | select(.name | startswith("APP_ATTEST")) | "\(.name)=\(.value // .valueFrom.secretKeyRef.key)"] | join(" ")')"
+done                                                 # api APP_ATTEST=warn APP_ATTEST_EXEMPT_USERS=<id> APP_ATTEST_TOKEN_KEYS=<N>, ingest the same
+as_smoke "$API/v1/config" | jq -r .app_attest      # warn
+as_smoke -X POST "$API/v1/app-attest/challenge" -o /dev/null -w '%{http_code}\n'   # 200 (was 501); the challenge expires unused
+```
+
+Then open the attesting build on your device, use it for a minute, and read the last hour (counts only,
+no ids). `route` is the pattern with its method, as the beta gate's access line shows it:
+
+```bash
+L=(--project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=1h --limit=100000)
+S='resource.type="cloud_run_revision" AND (resource.labels.service_name="api" OR resource.labels.service_name="ingest") AND logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout"'
+gcloud logging read "$S AND jsonPayload.message=\"http\" AND jsonPayload.route:\"/v1/app-attest/\"" "${L[@]}" \
+  --format='value(jsonPayload.route,jsonPayload.status)' | sort | uniq -c
+                                                     # POST /v1/app-attest/keys 201 (once per install), …/token 200
+gcloud logging read "$S AND jsonPayload.message=\"app attest\" AND jsonPayload.code=\"app_attest_required\"" "${L[@]}" \
+  --format='value(jsonPayload.app_build,jsonPayload.reason)' | sort | uniq -c
+                                                     # no line with your build's number
+unset L S
+```
+
+**Stop if** the challenge isn't `200`, your device's `keys` or `token` isn't `201`/`200`, or your build's
+number has warn lines. Then go back with the line to `off` (a PR; `warn` refused nothing, so nobody noticed)
+and find out why (`422 app_attest_invalid` on `keys` with a real device is the case D245 left unverified).
+
+**17.4 The 7-day check** (no earlier than 7 days after 17.3's deploy). The warn line (`message` `app
+attest`, one per request without a valid token) has `code`, `reason` (`missing`, `invalid`, `expired`,
+`other_account`), `mode`, `service`, `route_group`, `method`, `app_build` (the `X-RYFT-App-Build` header,
+or empty), `app_device` (whether `X-RYFT-Device-ID` was sent: every app build sends it, scripts don't) and
+`request_id`. It carries no account, key id or token. In Cloud Logging, the services' slog `msg` is
+`jsonPayload.message` (`internal/logx`).
+
+```bash
+L=(--project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=7d --limit=100000)
+Q='resource.type="cloud_run_revision" AND (resource.labels.service_name="api" OR resource.labels.service_name="ingest") AND logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout" AND jsonPayload.message="app attest"'
+# 1. The stop rule: requests from app builds without a token, by build ("<count> <build>"; an empty build: before AA1).
+gcloud logging read "$Q AND jsonPayload.reason=\"missing\" AND jsonPayload.app_device=true" "${L[@]}" \
+  --format='value(jsonPayload.app_build)' | sort | uniq -c
+# 2. Everything else, by reason, device header and route group.
+gcloud logging read "$Q" "${L[@]}" --format='value(jsonPayload.reason,jsonPayload.app_device,jsonPayload.route_group)' | sort | uniq -c
+# 3. The edge, for 17.6: Cloud Armor's preview matches on the three routes, per priority.
+gcloud logging read 'resource.type="http_load_balancer" AND jsonPayload.previewSecurityPolicy.outcome="DENY" AND httpRequest.requestUrl:"/v1/app-attest/"' \
+  "${L[@]}" --format='value(jsonPayload.previewSecurityPolicy.priority)' | sort | uniq -c
+unset L Q
+```
+
+The stop rule before `on`. Flip only when all of these hold:
+1. **Read 1 shows no line from a build at or after `<the first App Attest build>`** for 7 days in a row.
+   A line there is a request the app sent without a token, which is an app bug.
+2. **Read 1 shows no other line either.** A line from an older build, or with an empty build, is a tester
+   on a build before App Attest. Under `on`, that build loses its queued Train writes (D245, API.md →
+   Old builds). Get them onto the attesting build (TestFlight's list), then 7 more days.
+3. **Read 2 shows only known non-app clients:** `missing false` (the Simulator, your own scripts).
+   `invalid`, `expired` or `other_account` with `true` is a bug to find first.
+4. **Every tester is on the attesting build** (TestFlight → the build → its testers).
+5. **`make smoke-prod` is green** (the beta gate's step 3 shell). The smoke user is exempt, so it passes under `on` too.
+
+**Stop if** any of these fails: stay on `warn`, which refuses nothing. Read 3 is input for 17.6, not
+for the flip.
+
+**17.5 The `on` flip: a PR of one line.**
+
+```bash
+git fetch origin && git switch -c deploy/app-attest-on origin/main
+# deploy/run/config.env: APP_ATTEST=warn becomes APP_ATTEST=on (that line only)
+make cloudrun-check                                  # refuses off -> on against the base; warn -> on passes
+git diff --stat                                      # deploy/run/config.env | 2 +-
+git commit -am "deploy: APP_ATTEST on"
+git push -u origin HEAD && gh pr create --fill -R timkrebs/ryft-platform
+```
+
+Before its merge: if 1000 (`sqli`) or 1001 (`xss`) is already enforced, or will be before this merge, 17.6
+must be applied first. An edge `403` on `POST /v1/app-attest/token` under `on` means no token, and then
+every request is refused.
+
+Its merge is a normal deploy. From the first request a new revision serves, a request without a valid
+token gets `403 app_attest_required` outside the exempt routes and users. Ingest rolls before api. It
+worked when (in the beta gate's step 3 shell):
+
+```bash
+# the env loop of 17.3: api APP_ATTEST=on …, ingest APP_ATTEST=on …
+as_smoke "$API/v1/config" | jq -r .app_attest      # on
+make smoke-prod                                      # green: the smoke user is exempt
+gcloud logging read 'resource.type="cloud_run_revision" AND (resource.labels.service_name="api" OR resource.labels.service_name="ingest") AND logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout" AND jsonPayload.message="app attest" AND jsonPayload.mode="on"' \
+  --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=1h --limit=100000 \
+  --format='value(jsonPayload.reason,jsonPayload.app_device,jsonPayload.route_group)' | sort | uniq -c
+                                                     # nothing with true, or as few as read 2 showed
+```
+
+Then the app on your device works as before, and the Simulator gets `403 app_attest_required` outside the
+exempt routes.
+
+**Rollback:** a PR of one line, `APP_ATTEST=warn` (or `git revert` of the flip). Its merge serves every
+request again from the first one the new revisions take. Faster, while that PR waits: **A rollback → By
+traffic** for api and ingest (the hold first; their previous revisions run `warn`), then merge the PR and
+release the hold. Leave the ring pinned: `warn` needs it.
+
+**Stop if** after the flip `make smoke-prod` fails, any tester on the attesting build is refused, or the
+1-hour read shows `true` lines that read 2 didn't: roll back, then find out why.
+
+**17.6 The edge: App Attest's bodies skip `sqli` and `xss`** (a PR of its own, before the PR that
+enforces 1000 or 1001; `docs/work/2026-11-20-app-attest-server/edge.md` has the analysis and the exact
+diff). In `infra/gcp/edge.tf`, a map `local.edge_waf_skip_paths` gives `sqli-v33-stable` and
+`xss-v33-stable` the path `^/v1/app-attest/(keys|token)$`, and their rules' expressions gain
+`&& !request.path.matches('…')`. The four other sets are unchanged. `tests/edge.tftest.hcl`
+(`the_policy`) pins both expressions. Ideally the PR comes after a few days of `warn`, with 17.4's read 3
+in its description. If sqli's 7 days are clean before `warn` has shipped, it comes first, without that
+read.
+
+```bash
+git switch main && git pull
+terraform -chdir=infra/gcp plan -out=edge-app-attest.tfplan
+```
+
+```text
+# Step 17.6's plan: 0 to add, 1 to change, 0 to destroy.
+#   ~ google_compute_security_policy.edge[0]   the rules at 1000 and 1001: match.expr.expression gains the path clause
+#                                              (rule is a set: each shows as one removed and one added inside the ~)
+```
+
+**Stop if** anything else changes, or any rule but 1000 and 1001 shows a diff (priority, action and
+`preview` stay unchanged).
+
+```bash
+terraform -chdir=infra/gcp apply edge-app-attest.tfplan
+rm infra/gcp/edge-app-attest.tfplan
+terraform -chdir=infra/gcp plan                      # No changes
+```
+
+The way back is the PR reverted (0/1/0). The rules no longer evaluate the two paths, so their preview
+matches there stop being logged. Any other spelling of the path is inspected as before.
 
 ### Deploy, roll back, rotate
 

@@ -562,8 +562,21 @@ jobs:
       # deploy/run (Cloud Run, what deploy.yml applies): config.env lints, every template renders with
       # fake values, and the rendered YAML has design §3's limits, the ingress, account, h2c port and
       # probes per service, the env of ticket-b.md, secrets pinned by number (migrate's equal to the
-      # services'), only the accessors' secrets, and none of P5's names (scripts/check_cloudrun.py).
-      - run: make cloudrun-check
+      # services'), only the accessors' secrets, none of P5's names, and App Attest's ring pinned in api
+      # and ingest under warn and on (scripts/check_cloudrun.py). On a pull request also the order
+      # against the base's config.env (off -> warn -> on, D245), written into the git-ignored .ci/; a
+      # base without the file fails the step. A push or a manual run has no base and skips that rule.
+      - name: make cloudrun-check (on a pull request against the base's config.env)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ -n "$BASE_REF" ]; then
+            mkdir -p .ci
+            git show "origin/$BASE_REF:deploy/run/config.env" > .ci/base-config.env
+            make cloudrun-check CLOUDRUN_BASE=.ci/base-config.env
+          else
+            make cloudrun-check
+          fi
       # The privacy policy version in deploy/run/config.env (its home on Cloud Run) has its page on
       # the site (English only, D230), compose's copy equals it, and the site has no page the
       # platform does not name (D107): consent is recorded against that version.

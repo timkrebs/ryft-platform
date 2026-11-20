@@ -67,10 +67,12 @@ func (s *steps) tickSteps(guard *confirmGuard) tickSteps {
 		},
 		settings: func(ctx context.Context) { s.add("invite settings"); guard.Refresh(ctx) },
 		purge:    func(context.Context) error { s.add("invite email purge"); return s.purgeErr },
+		attest:   func(context.Context) error { s.add("app attest purge"); return nil },
 	}
 }
 
-// The api's tick runs its five steps in order (after the db ping and the sweep, the three that were timers),
+// The api's tick runs its six steps in order (after the db ping and the sweep, the three that were timers and
+// the App Attest purge),
 // all of them even when one fails, and answers 204. Building it reads nothing from Supabase: the api starts
 // without asking (D219), and the tick's "invite settings" is the first read.
 func TestTickRunsTheAPISteps(t *testing.T) {
@@ -103,7 +105,7 @@ func TestTickRunsTheAPISteps(t *testing.T) {
 			if rec.Code != http.StatusNoContent {
 				t.Fatalf("tick = %d %s", rec.Code, rec.Body)
 			}
-			want := []string{"db ping", "outbox sweep", "account reconcile", "invite settings", "invite email purge"}
+			want := []string{"db ping", "outbox sweep", "account reconcile", "invite settings", "invite email purge", "app attest purge"}
 			if got := s.list(); !slices.Equal(got, want) {
 				t.Errorf("steps %v, want %v", got, want)
 			}

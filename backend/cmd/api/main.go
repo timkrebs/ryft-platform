@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/timkrebs/ryft/internal/app"
+	"github.com/timkrebs/ryft/internal/appattest"
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/db"
@@ -37,6 +38,7 @@ func spec() app.Spec {
 		beta      config.Beta
 		adminCfg  config.Admin
 		analytics config.Analytics
+		attest    config.AppAttest
 		key       adminKey // ADMIN_API_KEY as the edge limit compares it; set by Load
 	)
 	return app.Spec{
@@ -72,10 +74,19 @@ func spec() app.Spec {
 				return app.ConfigError{Msg: "analytics config", Err: err}
 			}
 			log.Info("analytics", "configured", analytics.ProjectKey != "")
+			// warn or on without the ring, a malformed ring, or a ring without the App ID stops the
+			// start (D247). The line names no key and no account.
+			if attest, err = config.LoadAppAttest(); err == nil {
+				err = attest.RequireAppID()
+			}
+			if err != nil {
+				return app.ConfigError{Msg: "app attest config", Err: err}
+			}
+			log.Info("app attest", "mode", attest.Mode, "ring", attest.Ring != nil, "exempt", len(attest.ExemptUsers))
 			return nil
 		},
 		Build: func(ctx context.Context, d app.Deps) (app.Parts, error) {
-			return build(ctx, d, authCfg, beta, adminCfg, analytics)
+			return build(ctx, d, authCfg, beta, adminCfg, analytics, attest)
 		},
 	}
 }
@@ -83,7 +94,7 @@ func spec() app.Spec {
 // build makes the api's mux on the opened pool and transport. ctx is Build's: the JWKS
 // refresher runs on it.
 func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Beta, adminCfg config.Admin,
-	analytics config.Analytics) (app.Parts, error) {
+	analytics config.Analytics, attest config.AppAttest) (app.Parts, error) {
 	log := d.Log
 	// The import's comparisons are internal/train's pure rules (D131).
 	st := store.New(d.Pool).WithImportRules(importRules())
@@ -102,7 +113,15 @@ func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Bet
 	ob := d.Outbox
 	h := &handler{st: st, bus: events.Publisher{Sender: ob}, outbox: ob, log: log, cache: newInsightCache(), accounts: acct,
 		engine: scoring.NewEngine(st, log), beta: beta,
-		emails: acct, webURL: adminCfg.PublicWebURL, analytics: analyticsConfig(analytics)}
+		emails: acct, webURL: adminCfg.PublicWebURL, analytics: analyticsConfig(analytics), attestMode: attest.Mode}
+	// The three /v1/app-attest routes are served only with the ring (D247); without it they answer 501.
+	if attest.Ring != nil {
+		v, err := appattest.NewVerifier(attest.AppID())
+		if err != nil {
+			return app.Parts{}, app.ConfigError{Msg: "app attest", Err: err}
+		}
+		h.attest = newAppAttest(st, v, attest.Ring, log, nil)
+	}
 	// Email-bound invites need the Supabase project to confirm emails (D159). Nothing reads its setting at
 	// start: the tick does, and the first request that needs it (binding.go). Until it is known to be on,
 	// bound codes are neither made nor redeemed.
@@ -123,6 +142,7 @@ func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Bet
 		reconcile: acct.reconcile,
 		settings:  guard.Refresh,
 		purge:     func(ctx context.Context) error { return purgeInviteEmails(ctx, st, log) },
+		attest:    func(ctx context.Context) error { return purgeAppAttest(ctx, st, log) },
 	}.ticks()...)
 	if err != nil {
 		return app.Parts{}, err
@@ -138,6 +158,7 @@ func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Bet
 		},
 		tick:     tick,
 		gate:     beta.Gate,
+		attest:   attest,
 		admin:    adminCfg,
 		authMode: authCfg.Mode,
 		clients:  d.Clients,
@@ -151,9 +172,13 @@ type muxOptions struct {
 	ready    func(context.Context) error // /readyz
 	tick     http.Handler                // POST /internal/tick (the transport's: its token is checked there)
 	gate     config.Mode                 // BETA_GATE
+	attest   config.AppAttest            // APP_ATTEST and its ring: the token check of /v1/ and the import
 	admin    config.Admin
 	authMode string
 	clients  *httpx.ClientKeys // the process's (app.Deps.Clients): the admin limit keys by it
+	// loadUser finds or creates the caller's row for /v1/ and the import; nil is ensureUser(h.st)
+	// (tests load a fixed user without a database).
+	loadUser func(context.Context, auth.Principal) (model.User, error)
 }
 
 // newMux is the api's routes: health, the tick, /v1 behind the auth middleware and the
@@ -213,6 +238,9 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	api.HandleFunc("GET /v1/behaviors/impact", h.behaviorImpact)
 	api.HandleFunc("GET /v1/journal/{day}", h.journalDay)
 	api.HandleFunc("PUT /v1/journal/{day}", h.putJournal)
+	api.HandleFunc("POST /v1/app-attest/challenge", h.attest.challenge)
+	api.HandleFunc("POST /v1/app-attest/keys", h.attest.keys)
+	api.HandleFunc("POST /v1/app-attest/token", h.attest.token)
 	api.HandleFunc("/v1/", httpx.NotFound)
 	limits := ratelimit.NewUserLimits()
 	authOpts := auth.Options{
@@ -228,10 +256,18 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	del := http.NewServeMux()
 	del.HandleFunc("DELETE /v1/me", h.deleteMe)
 	mux.Handle("DELETE /v1/me", auth.Middleware(authOpts, httpx.WithRoutes(del)))
-	authOpts.OnAuth = auth.LoadUser(ensureUser(h.st))
-	mux.Handle("/v1/", auth.Middleware(authOpts, betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))
+	load := o.loadUser
+	if load == nil {
+		load = ensureUser(h.st)
+	}
+	authOpts.OnAuth = auth.LoadUser(load)
+	// The order (API.md → Conventions → App Attest): the bearer (401) and the per-user limit, the
+	// app token, the beta gate, then the routes. DELETE /v1/me above and /v1/admin/* below are not
+	// wrapped: they never need an app token.
+	attest := appAttestGate(o.attest, log)
+	mux.Handle("/v1/", auth.Middleware(authOpts, attest(betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api))))))
 	// The training import gets 50 s instead of readTimeout, like a sync (D129).
-	mux.Handle("POST /v1/train/import", importRoute(authOpts, o.gate, h.trainImport))
+	mux.Handle("POST /v1/train/import", importRoute(authOpts, o.gate, attest, h.trainImport))
 	// The operator's routes: ADMIN_API_KEY, or an allow-listed operator's Supabase token (only with
 	// Supabase auth: a local apikey stack admits the key alone); absent without a key.
 	if adminCfg.Key != "" {
@@ -297,6 +333,10 @@ type handler struct {
 	// importFinish is the training import's finish time; 0 is importFinishTimeout (tests
 	// shorten it to make a slow finish fail fast).
 	importFinish time.Duration
+	// attest serves /v1/app-attest/*; nil without the ring: the routes answer 501 (D247).
+	attest *appAttest
+	// attestMode is APP_ATTEST, GET /v1/config → app_attest (AA2); "" is off.
+	attestMode config.Mode
 }
 
 func (h *handler) me(w http.ResponseWriter, r *http.Request) {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/timkrebs/ryft/internal/appattest/appattesttest"
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/model"
 )
@@ -130,5 +131,51 @@ func TestMainRefusesMissingPolicyBeforeConnecting(t *testing.T) {
 	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(out), `"msg":"beta config"`) ||
 		!strings.Contains(string(out), "PRIVACY_POLICY_VERSION is required: ") {
 		t.Fatalf("want exit 1 with the beta config error, got %v:\n%s", err, out)
+	}
+}
+
+// App Attest's start refusals (D247): warn or on without the ring, and a malformed ring, stop ingest
+// before it connects, and the error holds no key material; a good ring starts with one "app attest"
+// line of the mode, whether a ring is set and the exempt count, never a key or an account.
+func TestMainAppAttestConfig(t *testing.T) {
+	if os.Getenv("RYFT_TEST_MAIN") == "1" {
+		main()
+		return
+	}
+	good := appattesttest.RingLine(11, 0x1d)
+	key := good[strings.IndexByte(good, ':')+1:]
+	exempt := uuid.NewString()
+	run := func(wait time.Duration, env ...string) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), wait)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMainAppAttestConfig$")
+		cmd.Env = append([]string{"RYFT_TEST_MAIN=1", "DATABASE_URL=postgres://ingest@127.0.0.1:1/ryft", "PORT=1", "METRICS_PORT=1",
+			"AUTH_MODE=apikey", "API_KEY=0123456789abcdef", "ALLOW_INSECURE_APIKEY_AUTH=true", "PRIVACY_POLICY_VERSION=2026-10-26",
+			"PUBSUB_EMULATOR_HOST=127.0.0.1:1", "ALLOW_INSECURE_PUSH=true"}, env...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	for _, env := range [][]string{
+		{"APP_ATTEST=warn"},
+		{"APP_ATTEST=on"},
+		{"APP_ATTEST=off", "APP_ATTEST_TOKEN_KEYS=" + good[:30]},
+	} {
+		out, err := run(10*time.Second, env...)
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(out, `"msg":"app attest config"`) {
+			t.Fatalf("%v: want exit 1 with the app attest config error, got %v:\n%s", env, err, out)
+		}
+		if strings.Contains(out, `"msg":"listening"`) || strings.Contains(out, key[:12]) {
+			t.Errorf("%v: listened or printed key material:\n%s", env, out)
+		}
+	}
+	out, _ := run(3*time.Second, "APP_ATTEST=warn", "APP_ATTEST_TOKEN_KEYS="+good, "APP_ATTEST_EXEMPT_USERS="+exempt)
+	said := false
+	for _, line := range strings.Split(out, "\n") {
+		said = said || (strings.Contains(line, `"msg":"app attest"`) && strings.Contains(line, `"mode":"warn"`) &&
+			strings.Contains(line, `"ring":true`) && strings.Contains(line, `"exempt":1`))
+	}
+	if !said || strings.Contains(out, key[:12]) || strings.Contains(out, exempt) {
+		t.Fatalf("want one app attest line without the key or the account:\n%s", out)
 	}
 }

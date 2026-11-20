@@ -1,0 +1,13 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "key_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "key_id"
+  ],
+  "title": "AppAttestKey",
+  "type": "object"
+}

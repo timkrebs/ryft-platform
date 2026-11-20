@@ -46,6 +46,7 @@ func spec() app.Spec {
 	var (
 		authCfg config.Auth
 		beta    config.Beta
+		attest  config.AppAttest
 	)
 	return app.Spec{
 		Name:       "ingest",
@@ -65,15 +66,21 @@ func spec() app.Spec {
 				return app.ConfigError{Msg: "beta config", Err: err}
 			}
 			log.Info("beta", "gate", beta.Gate, "consent", beta.Consent, "privacy_policy_version", beta.PrivacyPolicyVersion)
+			// warn or on without the ring, or a malformed ring, stops the start (D247). Ingest checks
+			// tokens only, so it needs no App ID. The line names no key and no account.
+			if attest, err = config.LoadAppAttest(); err != nil {
+				return app.ConfigError{Msg: "app attest config", Err: err}
+			}
+			log.Info("app attest", "mode", attest.Mode, "ring", attest.Ring != nil, "exempt", len(attest.ExemptUsers))
 			return nil
 		},
-		Build: func(ctx context.Context, d app.Deps) (app.Parts, error) { return build(ctx, d, authCfg, beta) },
+		Build: func(ctx context.Context, d app.Deps) (app.Parts, error) { return build(ctx, d, authCfg, beta, attest) },
 	}
 }
 
 // build makes ingest's mux on the opened pool and transport. ctx is Build's: the JWKS
 // refresher runs on it.
-func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Beta) (app.Parts, error) {
+func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Beta, attest config.AppAttest) (app.Parts, error) {
 	verifier, err := auth.FromConfig(ctx, authCfg)
 	if err != nil {
 		return app.Parts{}, app.ConfigError{Msg: "auth", Err: err}
@@ -81,7 +88,7 @@ func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Bet
 	d.Log.Info("auth", "mode", authCfg.Mode)
 	// The sync flushes the outbox before it answers (D219); the tick's sweep sends what a
 	// flush could not (and what fold-workouts wrote).
-	h := &handler{st: store.New(d.Pool), outbox: d.Outbox, log: d.Log, beta: beta}
+	h := &handler{st: store.New(d.Pool), outbox: d.Outbox, log: d.Log, beta: beta, attest: attest}
 	pool := d.Pool
 	tick, err := d.Tick(ingestTicks( // the metrics push is the tick's final step (app)
 		func(ctx context.Context) error { return db.Ping(ctx, pool, "ingest") }, d.Outbox.Sweep)...)
@@ -100,9 +107,10 @@ func ingestTicks(ping, sweep func(context.Context) error) []eventbus.Tick {
 	return []eventbus.Tick{{Name: "db ping", Run: ping}, {Name: "outbox sweep", Run: sweep}}
 }
 
-// newMux is ingest's routes: health, the tick, POST /v1/sync behind the auth middleware
-// and the per-user limit, and a JSON 404 for the rest. The tick sits beside /v1, outside
-// both (D218): its token is the push service account's, which the transport's verifier
+// newMux is ingest's routes: health, the tick, POST /v1/sync behind the auth middleware,
+// the per-user limit and the app token check (h.attest; no route exempt, the exempt
+// accounts are), and a JSON 404 for the rest. The tick sits beside /v1, outside all of
+// them (D218): its token is the push service account's, which the transport's verifier
 // checks.
 func newMux(h *handler, log *slog.Logger, verifier auth.Verifier, tick http.Handler) *http.ServeMux {
 	st := h.st
@@ -120,20 +128,25 @@ func newMux(h *handler, log *slog.Logger, verifier auth.Verifier, tick http.Hand
 	api.HandleFunc("POST /v1/sync", h.sync)
 	api.HandleFunc("/v1/", httpx.NotFound)
 	limits := ratelimit.NewUserLimits()
+	load := h.loadUser
+	if load == nil {
+		load = func(ctx context.Context, p auth.Principal) (model.User, error) {
+			u, err := st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name})
+			if errors.Is(err, store.ErrDeleted) { // a deleted account's token is a bad token
+				return u, auth.Unauthorized("deleted", err)
+			}
+			return u, err
+		}
+	}
 	mux.Handle("/v1/", auth.Middleware(auth.Options{
 		Log:      log,
 		Verifier: verifier,
 		Limit: func(r *http.Request, p auth.Principal) (string, bool, time.Duration) {
 			return limits.Allow(r, p.UserID.String())
 		},
-		OnAuth: auth.LoadUser(func(ctx context.Context, p auth.Principal) (model.User, error) {
-			u, err := st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name})
-			if errors.Is(err, store.ErrDeleted) { // a deleted account's token is a bad token
-				return u, auth.Unauthorized("deleted", err)
-			}
-			return u, err
-		}),
-	}, httpx.Timeout(syncTimeout, httpx.WithRoutes(api))))
+		OnAuth: auth.LoadUser(load),
+	}, gate.AppAttest(gate.AppAttestOptions{Config: h.attest, Service: "ingest", Log: log},
+		httpx.Timeout(syncTimeout, httpx.WithRoutes(api)))))
 	mux.HandleFunc("/", httpx.NotFound)
 	return mux
 }
@@ -155,6 +168,9 @@ type handler struct {
 	outbox *outbox.Outbox // what POST /v1/sync writes in its transaction and flushes before it answers
 	log    *slog.Logger
 	beta   config.Beta
+	attest config.AppAttest // APP_ATTEST and its ring: the token check of /v1/ (no route is exempt)
+	// loadUser finds or creates the caller's row; nil is st.EnsureUser (tests load a fixed user).
+	loadUser func(context.Context, auth.Principal) (model.User, error)
 
 	expMu  sync.Mutex // the cached sync-to-score estimate
 	expSec int

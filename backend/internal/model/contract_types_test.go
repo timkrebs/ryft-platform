@@ -116,4 +116,9 @@ var contractTypes = map[string]reflect.Type{
 	"ImportSession":          reflect.TypeOf(ImportSession{}),
 	"ImportResult":           reflect.TypeOf(ImportResult{}),
 	"TrainImportResponse":    reflect.TypeOf(TrainImportResponse{}),
+	"AppAttestChallenge":     reflect.TypeOf(AppAttestChallenge{}),
+	"AppAttestKeyPost":       reflect.TypeOf(AppAttestKeyPost{}),
+	"AppAttestKey":           reflect.TypeOf(AppAttestKey{}),
+	"AppAttestTokenPost":     reflect.TypeOf(AppAttestTokenPost{}),
+	"AppAttestToken":         reflect.TypeOf(AppAttestToken{}),
 }
