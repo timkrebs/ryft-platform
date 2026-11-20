@@ -6365,3 +6365,28 @@ _Grafana half superseded by D236._
   `deploy/run` (two keys, `off`), the scripts' rules, `infra/gcp/secrets.tf`, API.md (changelog 2026-11-20),
   OBSERVABILITY, OPERATIONS → GCP → 17, STATUS. The user's steps: 17.1 (apply 2/0/0) → C2 → 17.2 → 17.3 (`warn`) →
   17.4 (7 days) → 17.6 (the edge, before `sqli` is enforced) → 17.5 (`on`).
+
+## D248 — C2: the privacy version 2026-11-20 is drafted in the work folder, not in `web/content`, until the lawyer's OK (2026-11-20)
+
+- **Context:** the head-architect's brief asks for one package for the user's lawyer: a new privacy text that describes
+  the system of 2026-11-20 (GCP, not AWS) and names App Attest (D245, D247) and PostHog (D231) before either is on,
+  registered as an unpublished draft "if the format allows", without changing `PRIVACY_POLICY_VERSION`.
+- **Decision:** the text is `docs/work/2026-11-20-privacy-c2/privacy-2026-11-20.mdx` (`status: draft`,
+  `effective: null`), with the German package beside it (`anwalt.md`, `policy-de.md`, `diff.md`) and a source per fact
+  (`facts.md`). `web/content/legal/` and `privacy-versions.json` stay unchanged. **Why not in `content/`:**
+  `web/scripts/lib/policy.mjs` requires the newest page and the list's last entry to equal `PRIVACY_POLICY_VERSION`,
+  and `web/src/lib/legal.ts` serves the newest file at `/privacy`. A draft there would fail CI, or, with the version
+  bumped, ask every user to consent to a draft.
+- **Judgement calls in the text:**
+  - The controller's name and address are a `TODO(user)` again (LEGAL_CHECKLIST section 0), although the text in
+    force names them. The supervisory authority is a marker too (U4), because it follows from the controller.
+  - Facts that only a console shows (PostHog's retention, GeoIP and replay, Supabase's log retention, Microsoft's data
+    location, support mail retention) are markers, not assumed values.
+  - The bound invite email (#129, U3) is covered in §3 and §6, so #129 is superseded once C2 is in force.
+  - Legal bases are the draft's proposals; `anwalt.md` marks each as *Vorschlag*.
+- **Found on the way (not fixed here):** `DeleteUser` leaves the account id in `feature_flags.allow_user_ids`;
+  `delete_test.go`'s `owned()` doesn't count consents, the journal, plans or `apple_tokens`; the export leaves out the
+  journal, plans and feedback (D245 already says so). `anwalt.md` → 7 lists them.
+- **Consequences:** publishing is one PR: move the file into `web/content/legal/en/privacy/`, fill the markers, set
+  `published` and `effective`, add `2026-11-20` to `privacy-versions.json`, and change `PRIVACY_POLICY_VERSION` in
+  `deploy/run/config.env` and `docker-compose.yml`. LEGAL_CHECKLIST → C2 holds the S-items against the current setup.
