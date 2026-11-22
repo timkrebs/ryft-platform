@@ -6400,3 +6400,15 @@ _Numbered after D248, which PR #228 (C2, draft) holds._
   migration 0038, tests in `internal/store` (`delete_test.go`, `invites_test.go`), `internal/db`
   (`migrate_flags_test.go`) and `cmd/api` (`invites_test.go`); API.md (changelog 2026-11-20, admin only),
   ARCHITECTURE, OBSERVABILITY, OPERATIONS → Beta, STATUS.
+
+## D250 — The training import is on for everyone (**the user's decision**, 2026-11-22; ends the dark rollout of D133)
+
+- **Context:** the flag `train.import` shipped dark with migration 0028 (D133: enabled, 0 %), testers by the
+  allow-list, from 2026-10-26.
+- **Decision:** every account can import: `{"enabled": true, "rollout_pct": 100}`, set by the user with
+  `PUT /v1/admin/flags/train.import`. No code, migration or deploy; the flag stays as the kill switch
+  (`{"enabled": false, "rollout_pct": 100}`), and the endpoint keeps checking it (D141).
+- **What still applies to an ordinary account:** consent (`403 consent_required`, `warn` acts as `on`, D129/D141),
+  the import's rate class and the per-account lease (D129, D132), the per-IP limit (D240), the invite gate and
+  App Attest as on every route (both `off` today).
+- **Consequences:** STATUS, API.md (the flag's paragraph), OPERATIONS (the import's table, `import_not_enabled`).

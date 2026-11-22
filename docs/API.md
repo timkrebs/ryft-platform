@@ -889,7 +889,7 @@ user and flag, so raising a rollout only adds users. The operator sets flags
 | `train.enabled`, `sleep.planner` | on (100 %) |
 | `today.redesign`, `coach.enabled`, `push.enabled`, `physiology.card`, `train.import`, `analytics.enabled` | off (enabled, 0 %: on only for allow-listed testers) |
 
-`train.import` is the switch for the training import (`POST /v1/train/import`): the app shows the import only while it is on, and the endpoint checks it too, so an account it is off for gets `403 import_not_enabled` whatever the app does. It ships dark (enabled, 0 %): testers get it by the allow-list.
+`train.import` is the switch for the training import (`POST /v1/train/import`): the app shows the import only while it is on, and the endpoint checks it too, so an account it is off for gets `403 import_not_enabled` whatever the app does. It shipped dark (enabled, 0 %: testers by the allow-list); since 2026-11-22 it is on for every account (100 %, D250), so `403 import_not_enabled` means the operator has turned it off again.
 
 `analytics.enabled` is the switch for the app's product analytics (`analytics` above). It ships dark the same way: testers by the allow-list, the kill switch by `enabled: false`. No endpoint checks it; the app does.
 

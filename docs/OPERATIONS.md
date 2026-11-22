@@ -4236,8 +4236,8 @@ code and gate, then scoring's lines for the same id).
 app parsed from another training app's export, each item in its own transaction, then
 queues the days with one `ingested` event (`reason` `import`) for scoring, then
 recomputes the records. Imported sessions send no `SESSION_SCORED` or `PR` push and move no
-enrolment. The switch is the flag `train.import` (dark by default: testers by the allow-list,
-Feature flags); the app hides the import while it is off, and the endpoint checks it too
+enrolment. The switch is the flag `train.import` (shipped dark, testers by the allow-list; **on for
+everyone since 2026-11-22**, `rollout_pct` 100, D250; Feature flags); the app hides the import while it is off, and the endpoint checks it too
 (`403 import_not_enabled`), so the kill switch does not wait for the app's cached config.
 A resend never overwrites what the user changed in the app since (`newer_on_server`, D141).
 
@@ -4250,7 +4250,7 @@ never a title, a value, an id list or the source app), then scoring's lines for 
 | `429`, `code=import_in_progress` | another import of the account holds the lease (`users.import_lease_until`, 70 s, D132) | nothing: the app waits `Retry-After` (10 s) and resends the same request. An instance that died mid-import blocks that account for up to 70 s; the lease expires on its own, do not clear it by hand |
 | `503`, `result=timeout` or `error` | the 50 s ran out (the items stop at 40 s), or the database failed; what was stored stays stored and was finished | nothing: the app resends, the stored items come back `unchanged`. Many in a row: the database (the api's `tick` line, step `db ping`; the uptime check `ryft-api-ready`; Supabase's status) and the access lines' `dur_ms` |
 | `403`, `code=consent_required` | no consent to the current privacy policy (the import is an upload of health data, D129); on this route `CONSENT_ENFORCE=warn` refuses too (D141) | as for a sync (Beta) |
-| `403`, `code=import_not_enabled` | the flag `train.import` is off for the account (`ryft_train_imports_total{result="disabled"}`) | intended for anyone not allow-listed; a tester: add the id to the allow-list (Feature flags) |
+| `403`, `code=import_not_enabled` | the flag `train.import` is off for the account (`ryft_train_imports_total{result="disabled"}`) | on for everyone since 2026-11-22, so the flag was turned off or lowered: check it with `adm "$API/v1/admin/flags" \| jq '.[] \| select(.key=="train.import")'` (Feature flags) |
 | `429` without a `code` | the import's own rate budget: bursts of 5, then one every 5 s (`ryft_rate_limited_total{class="import"}`) | nothing: the app waits `Retry-After` |
 | `200` with `rejected` items | items the app must change; the `code` and `message` (ids and field names) are in the response only | the app's report; `ryft_train_import_items_total{status="rejected"}` |
 | `days_touched` stay pending | scoring is behind | as for a sync (above) |
@@ -4281,7 +4281,7 @@ every change (`msg="feature flag set"`). The app caches its answer for up to six
 so a change reaches everyone within that. Rotate the key: **GCP → Deploy, roll back, rotate →
 Another secret's pin** (its example is `admin-api-key`).
 
-`analytics.enabled` (D231) ships dark like `train.import`: the app sends product analytics only while
+`analytics.enabled` (D231) ships dark as `train.import` did: the app sends product analytics only while
 it is on, `GET /v1/config` → `analytics` is set (GCP → **PostHog's project key**) and the user opted
 in. Testers first, by the allow-list; `{"enabled": false, "rollout_pct": 100}` is the kill switch.
 Nothing on the server checks the flag, so it takes effect at the app's next config.
