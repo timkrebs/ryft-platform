@@ -148,7 +148,22 @@ async function swiftLicense(identity, repo, revision, dir = '') {
       return text;
     }
   }
+  if (dir) console.error(`licenses: licence files in ${repo} at ${revision}: ${await licenceFiles(repo, revision)}`);
   return fail(`no licence file found for ${repo}/${dir} at ${revision}`);
+}
+
+// Only for the error above: where a vendored licence is, when `dir` in config/app-bundled.json is wrong.
+async function licenceFiles(repo, revision) {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/git/trees/${revision}?recursive=1`);
+    if (!res.ok) return `(GitHub API ${res.status})`;
+    const paths = (await res.json()).tree
+      .map((t) => t.path)
+      .filter((p) => /(^|\/)(licen[cs]e|copying)[^/]*$/i.test(p));
+    return paths.join(', ') || '(none)';
+  } catch (e) {
+    return `(${e.message})`;
+  }
 }
 
 function identify(text) {
