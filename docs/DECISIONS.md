@@ -6412,3 +6412,62 @@ _Numbered after D248, which PR #228 (C2, draft) holds._
   the import's rate class and the per-account lease (D129, D132), the per-IP limit (D240), the invite gate and
   App Attest as on every route (both `off` today).
 - **Consequences:** STATUS, API.md (the flag's paragraph), OPERATIONS (the import's table, `import_not_enabled`).
+
+## D251 — An install's push token follows its newest account (2026-11-22; the app's NT7)
+
+- **Context:** a shared iPhone. Account A registered its APNs token for install D. A's session expired, or its
+  sign-out `DELETE /v1/devices/D/push` failed, so the row stays. B signs in on the same phone, and iOS often hands
+  back the same token. The token moved only on an accepted `POST /v1/devices/D/push`. The invite gate refuses that
+  (`403 invite_required`), and it fails offline or on a `5xx`. Until then A's alerts reached B's lock screen. APNs
+  has no reason to answer `410` for a token that is still live, so pruning never ends it.
+- **Options:** (1) the app's preference: when an account authenticates with `X-RYFT-Device-ID: D`, drop the tokens
+  other accounts hold for D; (2) exempt the `POST` from the invite gate. (2) leaves the failed `DELETE`, the expired
+  session and the offline `POST` open, and it opens a write route to accounts without an invite. **(1) chosen.**
+- **Decision:** each account keeps the installs it was the last account on: `users.push_devices uuid[]` (migration
+  0039, newest last, at most 8, GIN index). A middleware in the api's `/v1/` chain runs after the bearer, the user
+  load and App Attest and before the beta gate. When the request's device is in the caller's list it does nothing.
+  Otherwise it **claims** D with one statement (three data-modifying CTEs): delete every `push_tokens` row for D of
+  another account, remove D from the other accounts' lists, and append D to the caller's. `POST /v1/devices/{id}/push`
+  claims `{id}` in its transaction too, for a client without the header. A `POST` for the same `{id}` by the same
+  account replaces the token (`ON CONFLICT (user_id, device_id)`, unchanged).
+- **Cost per request:** none on the hit path. The list rides on the users row the auth step already reads
+  (`EnsureUser`, every request), so a known install costs a `slices.Contains` over at most 8 UUIDs. The claim (one
+  round trip, an index scan on `push_tokens(device_id)` and on the GIN index) runs on an account's first request
+  from an install, and again only after another account used it. A per-process cache was rejected: with several
+  Cloud Run instances it can't see that another account took the install on another instance, so an account
+  coming back would skip its claim.
+- **Why after App Attest and before the beta gate:** under `APP_ATTEST=on` a claim needs an app token, so the
+  routes App Attest exempts (`attestExempt`: the `/v1/app-attest/*` routes, the sign-out `DELETE`, feedback, …)
+  never claim, and neither does the nil UUID. Under `off` and `warn`, any authenticated caller can send a header.
+  The invite gate's `403` is the case the app asked for. Only the api's `/v1/` chain claims: not ingest's sync,
+  the import route, `DELETE /v1/me` or `/v1/admin/*`.
+- **Failure:** best effort. A failed claim (two accounts claiming one install at the same moment can deadlock) is
+  logged as `claim device failed`, counted (`ryft_push_device_claims_total{result="failed"}`) and the request is
+  served. Nothing was recorded, so the next request retries. A claim inside `RegisterPushToken` fails the `POST`
+  (`5xx`), which the app retries.
+- **Abuse:** an account that knows another install's id could drop that install's token until its owner's next
+  request reclaims the install and the app registers again. Nothing is redirected, and the claim answers nothing
+  about whether the install exists. Device ids are random per install and never returned to another account. They
+  are in the operator's admin views and in two log fields (ingest's sync line, notify's APNs refusal line), so
+  whoever reads Cloud Logging or the admin page holds them. App Attest `on` raises the bar but doesn't remove the
+  vector: its token binds the account and key, not the device id. Binding the device id into the token is a
+  possible follow-up. Accepted for the beta: the other side is health alerts on the wrong lock screen.
+- **The previous account can take the install back:** a request that A's app queued before the sign-out and sends
+  later, with A's still-valid bearer and the header, claims D for A and drops B's token until B registers again.
+  The app must drop a signed-out account's queued requests, or send them without the header (API.md).
+- **Not done:** a merge (`MergeUsers`) moves tokens but not the merged-away account's list. The kept account
+  claims each install again on its next request from it, once.
+- **Consequences:** migration 0039; `model.User.PushDevices` (`json:"-"`); `store.ClaimDevice`; `cmd/api/claim.go`;
+  API.md (Conventions → Device, `POST /v1/devices/{id}/push`, changelog); OBSERVABILITY (the counter); OPERATIONS
+  (Push).
+
+## D252 — `notifications.reminders` ships dark, by a migration (2026-11-22; the app's NT5)
+
+- **Context:** the app's two new local reminders (the morning journal reminder and the phone's "not syncing"
+  fallback) are compiled off and turned on by a flag. `train.import` (0028) and `analytics.enabled` (0036) were
+  created by migrations.
+- **Decision:** migration 0040 creates `notifications.reminders` enabled at 0 % with an empty allow-list,
+  `ON CONFLICT DO NOTHING`, so a later admin change stays. No endpoint checks it, the app does. Testers get it
+  through the allow-list, and the kill switch is `enabled: false`. Raising it is the operator's
+  `PUT /v1/admin/flags/notifications.reminders`, after the app's Notifications page (N4) has shipped.
+- **Consequences:** API.md (`GET /v1/config`), OPERATIONS (Feature flags), `TestRemoteConfig`'s seeded list.

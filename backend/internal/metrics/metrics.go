@@ -182,6 +182,12 @@ var (
 		Help: "Requests without a valid app token (X-RYFT-App-Token) under APP_ATTEST warn (served) or on (403 app_attest_required), " +
 			"by reason (missing, invalid, expired, other_account) and service (api, ingest).",
 	}, []string{"reason", "service"})
+	// PushDeviceClaims counts the claims of an install for the account that used it last (D251).
+	// The hot path (the install is in the account's list) runs no claim and counts nothing.
+	PushDeviceClaims = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_push_device_claims_total",
+		Help: "Claims of an install (X-RYFT-Device-ID) for the calling account: claimed, or failed (logged, the request was served).",
+	}, []string{"result"})
 	Consents = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_consents_total",
 		Help: "Consent changes: granted, revoked, stale (POST with an outdated policy version).",

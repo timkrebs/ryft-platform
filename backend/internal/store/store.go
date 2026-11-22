@@ -52,7 +52,7 @@ const userColumns = `id, name, email, provider, tz, max_hr, sleep_base_min, slee
 	   AND c.revoked_at IS NULL ORDER BY c.granted_at DESC LIMIT 1),
 	(SELECT c.granted_at FROM consents c WHERE c.user_id = users.id AND c.kind = 'health_processing'
 	   AND c.revoked_at IS NULL ORDER BY c.granted_at DESC LIMIT 1),
-	birth_year, max_hr_source`
+	birth_year, max_hr_source, push_devices`
 
 func scanUser(row pgx.Row, extra ...any) (model.User, error) {
 	var u model.User
@@ -61,7 +61,7 @@ func scanUser(row pgx.Row, extra ...any) (model.User, error) {
 	var consentAt *time.Time
 	err := row.Scan(append([]any{&u.ID, &u.Name, &u.Email, &u.Provider, &u.TZ, &u.MaxHR, &u.SleepBaseMin,
 		&u.SleepBaseSource, &u.SleepBaseLearnedMin, &u.SleepBaseLearnedAt, &cats, &from, &to,
-		&u.BetaAccess, &consent, &consentAt, &u.BirthYear, &u.MaxHRSource}, extra...)...)
+		&u.BetaAccess, &consent, &consentAt, &u.BirthYear, &u.MaxHRSource, &u.PushDevices}, extra...)...)
 	u.Notifications = prefsOf(cats, from, to)
 	if consent != nil && consentAt != nil {
 		u.Consent = &model.Consent{PolicyVersion: *consent, GrantedAt: consentAt.UTC()}

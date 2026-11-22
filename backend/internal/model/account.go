@@ -43,6 +43,10 @@ type User struct {
 	Sources []UserSource `json:"sources"`
 	// GET /v1/me only: another account on the X-RYFT-Device-ID device (D91).
 	AccountHint *AccountHint `json:"account_hint"`
+	// The installs (X-RYFT-Device-ID) this account was the last one on, newest last, at most
+	// store.MaxPushDevices; what the claim middleware compares the request's device with (D251).
+	// Never in the API.
+	PushDevices []uuid.UUID `json:"-"`
 }
 
 // Where User.max_hr comes from; closed in v1.

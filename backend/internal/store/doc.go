@@ -15,8 +15,10 @@
 //     (AdminUserDetail, JournalDay, Trend, SyncStateOf) read without one
 //     snapshot. The import writes its outbox row in its own transaction under
 //     publisher "api" (FinishImport).
-//   - Of the 143 exported methods, 112 take the user id first after ctx and scope
-//     by it. Not every WHERE names it: RedeemInvite matches the global invite by
+//   - Of the 144 exported methods, 113 take the user id first after ctx and scope
+//     by it. Not every WHERE names it: ClaimDevice (and RegisterPushToken through it)
+//     also deletes other accounts' push tokens for the install it names and takes the
+//     install off their push_devices (D251); RedeemInvite matches the global invite by
 //     code, IsAdminAccount looks the id up in the operators' allow-list (admin_accounts,
 //     operator configuration that account deletion does not touch; a flag's allow_user_ids it does, DeleteUser removes the id), a statement that looks a row up by its own id (ArchiveBehavior,
 //     UpdateCustomExercise, Enroll) checks ownership around the lookup, and
