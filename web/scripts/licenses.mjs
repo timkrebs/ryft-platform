@@ -148,7 +148,10 @@ async function swiftLicense(identity, repo, revision, dir = '') {
       return text;
     }
   }
-  if (dir) console.error(`licenses: licence files in ${repo} at ${revision}: ${await licenceFiles(repo, revision)}`);
+  if (dir) {
+    const found = await licenceFiles(repo, revision);
+    console.error(`licenses: licence files in ${repo} at ${revision}: ${found}`);
+  }
   return fail(`no licence file found for ${repo}/${dir} at ${revision}`);
 }
 
