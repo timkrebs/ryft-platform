@@ -175,7 +175,7 @@ func duration(d time.Duration, lang string) string {
 	if lang == "de" {
 		hUnit, mUnit = "Std.", "Min."
 	}
-	const nbsp = " "
+	nbsp := string(rune(0xA0)) // U+00A0 NO-BREAK SPACE, written as a code point (check_bytes bans the raw character)
 	switch {
 	case h == 0:
 		return strconv.Itoa(m) + nbsp + mUnit

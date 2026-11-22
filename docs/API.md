@@ -1023,7 +1023,7 @@ space) in this block and on the wire, as the server writes it (a JSON escape of 
 
 ```json
 { "aps": { "alert": { "title-loc-key": "ACTIVITY_SCORED_TITLE", "title-loc-args": ["Run"],
-                      "loc-key": "ACTIVITY_SCORED_BODY", "loc-args": ["12.8", "56 min"] },
+                      "loc-key": "ACTIVITY_SCORED_BODY", "loc-args": ["12.8", "56 min"] },
            "sound": "default", "category": "ACTIVITY_SCORED", "thread-id": "ACTIVITY_SCORED",
            "mutable-content": 1 },
   "ryft": { "category": "ACTIVITY_SCORED", "day": "2026-10-20",
@@ -1031,7 +1031,9 @@ space) in this block and on the wire, as the server writes it (a JSON escape of 
             "account": "5f0e8c1a-6c1b-4a4e-9d55-1f1d2f6a3b7c" } }
 ```
 
-The same for locale `de`: `"title-loc-args": ["Lauf"]`, `"loc-args": ["12,8", "56 Min."]`.
+The same for locale `de`: `"title-loc-args": ["Lauf"]`, `"loc-args": ["12,8", "56 Min."]`. In these examples the space
+between a number and its unit stands for U+00A0 (NO-BREAK SPACE), which the payload carries; the repository bans
+the raw character in its files.
 
 `ryft`, RYFT's own keys (`RyftPushInfo`; additive, ignore keys you don't know):
 

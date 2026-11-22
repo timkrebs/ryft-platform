@@ -181,10 +181,13 @@ func TestActivityOutcome(t *testing.T) {
 	}
 }
 
+// nbspChar is U+00A0 NO-BREAK SPACE, written as a code point: check_bytes bans the raw character.
+var nbspChar = string(rune(0xA0))
+
 // docActivityRun is the run of docs/API.md's payload example (Garmin Connect, 16:02 to 16:58:30
-// UTC, strain 12.8, account in Europe/Berlin).
+// UTC, strain 12.8, account in Europe/Berlin). API.md writes the no-break space JSON-escaped.
 const docActivityRun = `{ "aps": { "alert": { "title-loc-key": "ACTIVITY_SCORED_TITLE", "title-loc-args": ["Run"],
-                      "loc-key": "ACTIVITY_SCORED_BODY", "loc-args": ["12.8", "56 min"] },
+                      "loc-key": "ACTIVITY_SCORED_BODY", "loc-args": ["12.8", "56\` + `u00a0min"] },
            "sound": "default", "category": "ACTIVITY_SCORED", "thread-id": "ACTIVITY_SCORED",
            "mutable-content": 1 },
   "ryft": { "category": "ACTIVITY_SCORED", "day": "2026-10-20",
@@ -210,7 +213,7 @@ func TestActivityMessage(t *testing.T) {
 		t.Errorf("API.md's payload example\n want %v\n  got %s", doc, payload)
 	}
 	// The wire bytes: sorted keys as encoding/json writes a map, and the no-break space raw.
-	const wire = `{"aps":{"alert":{"loc-args":["12.8","56` + " " + `min"],"loc-key":"ACTIVITY_SCORED_BODY","title-loc-args":["Run"],` +
+	wire := `{"aps":{"alert":{"loc-args":["12.8","56` + nbspChar + `min"],"loc-key":"ACTIVITY_SCORED_BODY","title-loc-args":["Run"],` +
 		`"title-loc-key":"ACTIVITY_SCORED_TITLE"},"category":"ACTIVITY_SCORED","mutable-content":1,"sound":"default",` +
 		`"thread-id":"ACTIVITY_SCORED"},"ryft":{"account":"5f0e8c1a-6c1b-4a4e-9d55-1f1d2f6a3b7c","category":"ACTIVITY_SCORED",` +
 		`"day":"2026-10-20","url":"https://ryftlab.de/activity/7d1b6c3e-2c1a-4b8e-9d3a-5a0e4f6b8c12"}}`
@@ -223,10 +226,10 @@ func TestActivityMessage(t *testing.T) {
 
 	// German: "Lauf", the decimal comma, "56 Min." with a no-break space.
 	de := Activity("2026-10-20", id, "running", 12.8, start, end, "de")
-	if de.TitleArgs[0] != "Lauf" || !reflect.DeepEqual(de.BodyArgs, []string{"12,8", "56 Min."}) {
+	if de.TitleArgs[0] != "Lauf" || !reflect.DeepEqual(de.BodyArgs, []string{"12,8", "56" + nbspChar + "Min."}) {
 		t.Errorf("german: %v %v", de.TitleArgs, de.BodyArgs)
 	}
-	if got := Render(de.BodyKey, de.BodyArgs, "de"); got != "Belastung 12,8 · 56 Min." {
+	if got := Render(de.BodyKey, de.BodyArgs, "de"); got != "Belastung 12,8 · 56"+nbspChar+"Min." {
 		t.Errorf("german body %q", got)
 	}
 	if got := Render(m.TitleKey, m.TitleArgs, "en"); got != "Run scored" {
@@ -269,7 +272,7 @@ func TestActivityMessage(t *testing.T) {
 }
 
 func TestActivityDuration(t *testing.T) {
-	const nb = " "
+	nb := nbspChar
 	for _, tc := range []struct {
 		d        time.Duration
 		en, de   string

@@ -33,13 +33,15 @@ const (
 )
 
 // The tables pinned, in report order, and the columns left out of each: the
-// row's owner (a generated id) and wall-clock stamps of the write.
+// row's owner (a generated id) and wall-clock stamps of the write. A workout's
+// device_id and source_bundle_id (0041, D255) are ingest's metadata for notify,
+// no scoring input or output, so they are left out too.
 var goldenTables = []struct {
 	section, table, key, order string
 	volatile                   []string
 }{
 	{"days", "daily_scores", "day", "day", []string{"user_id", "computed_at"}},
-	{"workouts", "workouts", "id", "start_at, source, id", []string{"user_id", "created_at"}},
+	{"workouts", "workouts", "id", "start_at, source, id", []string{"user_id", "created_at", "device_id", "source_bundle_id"}},
 	{"sessions", "sessions", "id", "started_at, id", []string{"user_id", "created_at", "updated_at", "imported_at"}},
 }
 

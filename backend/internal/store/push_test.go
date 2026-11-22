@@ -85,7 +85,8 @@ func TestNotificationPrefs(t *testing.T) {
 	ctx := context.Background()
 	id := uuid.New()
 	u, _ := st.EnsureUser(ctx, Identity{ID: id})
-	if len(u.Notifications.Categories) != 4 || !u.Notifications.Categories[model.NotifyPR] || u.Notifications.QuietHours != nil {
+	if len(u.Notifications.Categories) != len(model.NotifyCategories) || !u.Notifications.Categories[model.NotifyPR] ||
+		!u.Notifications.Categories[model.NotifyActivityScored] || u.Notifications.QuietHours != nil {
 		t.Fatalf("defaults: %+v", u.Notifications)
 	}
 	var p model.NotificationPatch
