@@ -2,6 +2,12 @@
   "$comment": "Snapshot of ../../app Package.resolved pins. Refresh: npm run licenses -- --sync",
   "pins": [
     {
+      "identity": "posthog-ios",
+      "location": "https://github.com/PostHog/posthog-ios",
+      "version": "3.98.2",
+      "revision": "a4deb7222130189d7cab89682fd3475ee0ed6e2d"
+    },
+    {
       "identity": "supabase-swift",
       "location": "https://github.com/supabase/supabase-swift",
       "version": "2.55.6",

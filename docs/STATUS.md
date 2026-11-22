@@ -80,6 +80,12 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## The app's licences gain posthog-ios 3.98.2 (2026-11-22; PR "web: the app's licences gain posthog-ios 3.98.2")
+
+The Swift snapshot pins posthog-ios 3.98.2 (app PR #137), and `/licenses` lists the two libraries it compiles into the
+app, PLCrashReporter and libwebp (`web/config/app-bundled.json`, their texts read from posthog-ios at its pin); the PR
+moves `web/.app-ref` to the app's main once #137 is merged, and `licenses:check` stays red until then.
+
 ## The training import is on for everyone (2026-11-22, D250)
 
 **The user's decision:** every account can import. The flag `train.import` goes from dark (`enabled: true,

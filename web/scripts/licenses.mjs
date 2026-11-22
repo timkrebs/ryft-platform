@@ -2,7 +2,8 @@
 // The data behind /licenses, generated at build time into src/generated/licenses.json:
 //   app  — the Swift packages the iOS app ships (config/app-packages.json, a snapshot of
 //          ../../app's Package.resolved), each licence fetched from GitHub at its pinned
-//          revision, plus the Satoshi typeface;
+//          revision, the code a package vendors into the app (config/app-bundled.json, its
+//          licence read from the package at the same revision), plus the Satoshi typeface;
 //   web  — every production npm dependency of this site (npm query .prod) with the
 //          licence text from its package, plus Satoshi.
 //
@@ -18,6 +19,7 @@ const ROOT = resolve(import.meta.dirname, '..');
 const APP = resolve(ROOT, process.env.RYFT_APP_DIR ?? '../../app');
 const RESOLVED = join(APP, 'Ryft.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved');
 const SNAPSHOT = join(ROOT, 'config/app-packages.json');
+const BUNDLED = join(ROOT, 'config/app-bundled.json');
 const CACHE = join(ROOT, '.cache/licenses');
 const OUT = join(ROOT, 'src/generated/licenses.json');
 const FONT_LICENSE = join(ROOT, 'src/fonts/FFL.txt');
@@ -72,16 +74,35 @@ const satoshi = {
 };
 
 const app = [];
-for (const pin of JSON.parse(readFileSync(SNAPSHOT, 'utf8')).pins) {
+const pins = JSON.parse(readFileSync(SNAPSHOT, 'utf8')).pins;
+const bundled = JSON.parse(readFileSync(BUNDLED, 'utf8')).bundled;
+for (const b of bundled) {
+  if (!pins.some((p) => p.identity === b.in)) {
+    fail(`config/app-bundled.json: ${b.name} is in ${b.in}, which the app no longer pins`);
+  }
+}
+for (const pin of pins) {
   const repo = pin.location.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '');
+  const version = pin.version ?? pin.revision.slice(0, 7);
   const text = await swiftLicense(pin.identity, repo, pin.revision);
   app.push({
     name: pin.identity,
-    version: pin.version ?? pin.revision.slice(0, 7),
+    version,
     license: identify(text),
     url: `https://github.com/${repo}/tree/${pin.revision}`,
     text,
   });
+  // Vendored code the package compiles into the app, with the licence of its copy in the package.
+  for (const b of bundled.filter((x) => x.in === pin.identity)) {
+    const inner = await swiftLicense(`${pin.identity}-${b.name}`, repo, pin.revision, `${b.dir}/`);
+    app.push({
+      name: `${b.name} (in ${pin.identity})`,
+      version: `${pin.identity} ${version}`,
+      license: identify(inner),
+      url: `https://github.com/${repo}/tree/${pin.revision}/${b.dir}`,
+      text: inner,
+    });
+  }
 }
 app.push(satoshi);
 
@@ -116,18 +137,18 @@ console.log(
   `licenses: ${app.length} app and ${web.length} website components (${missing} without a licence file).`,
 );
 
-async function swiftLicense(identity, repo, revision) {
+async function swiftLicense(identity, repo, revision, dir = '') {
   const cached = join(CACHE, `${identity}@${revision}.txt`);
   if (existsSync(cached)) return readFileSync(cached, 'utf8');
   for (const name of ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENCE', 'COPYING']) {
-    const res = await fetch(`https://raw.githubusercontent.com/${repo}/${revision}/${name}`);
+    const res = await fetch(`https://raw.githubusercontent.com/${repo}/${revision}/${dir}${name}`);
     if (res.ok) {
       const text = (await res.text()).trim();
       writeFileSync(cached, text);
       return text;
     }
   }
-  return fail(`no licence file found for ${repo} at ${revision}`);
+  return fail(`no licence file found for ${repo}/${dir} at ${revision}`);
 }
 
 function identify(text) {
