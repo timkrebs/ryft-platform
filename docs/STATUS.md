@@ -61,6 +61,8 @@ this machine; check with `kubectl config current-context`):
 5. **The flag stays dark** (`rollout_pct: 0`, nobody on the allow-list). When the app ships the import:
    allow-list testers, then widen, with `PUT /v1/admin/flags/train.import` (commands: OPERATIONS →
    Feature flags). Kill switch: `{"enabled": false, "rollout_pct": 100}`.
+   **Since 2026-11-22 (D250) the flag is on for everyone** (`enabled: true, rollout_pct: 100`); it was dark
+   from 2026-10-26 to then. See the section at the top.
 6. **Privacy text with the app release, not before** (PR #61, draft): flip both pages to
    `status: published`, then merge. A draft version on `main` blocks every deploy PR. Every account
    consents again (`consent_required` rises; expected).
@@ -77,6 +79,21 @@ rolling update can cut an import in flight; the app resends and the stored items
 Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
+
+## The training import is on for everyone (2026-11-22, D250)
+
+**The user's decision:** every account can import. The flag `train.import` goes from dark (`enabled: true,
+rollout_pct: 0`, testers by the allow-list, since 2026-10-26) to `{"enabled": true, "rollout_pct": 100}`; the user
+sets it with `PUT /v1/admin/flags/train.import` (OPERATIONS → Feature flags). No code, migration or deploy.
+
+**What an ordinary account still needs:** consent to the privacy policy in force (`403 consent_required`; on this
+route `warn` acts as `on`); the import's rate class (bursts of 5, then one every 5 s) and one import at a time per
+account (`429 import_in_progress`); the per-IP limit as on every route. The invite gate (`BETA_GATE=off`) and App
+Attest (`APP_ATTEST=off`) do not hold it back today; App Attest will once it goes to `warn`/`on` (OPERATIONS → GCP →
+17), as for every route.
+
+**Kill switch:** `{"enabled": false, "rollout_pct": 100}` (the endpoint refuses at once, the app hides the import
+within its six-hour config cache). This PR is docs only; nothing for the user to run beyond the flag.
 
 ## Deletion gaps from C2: allow-lists and invite notes (2026-11-20, D249; PR "store: deletion removes allow-list entries; invite notes expire")
 
@@ -1205,7 +1222,7 @@ per node) and R1 waits for a bigger node group.
 | Merge | `POST /v1/admin/users/{from}/merge-into/{to}` with `dry_run`: one transaction, the kept account's rows win, per-table moved/dropped, consent and access copied if missing, rescored over the moved days, then `from` deleted like `DELETE /v1/me`; `409` if from has more history (`force`) | migration 0024, `store/merge.go`, D90 |
 | Sync state | `X-RYFT-Device-ID` and `User.account_hint` (another account on this device); `GET /v1/me/sync`; `DailyScore.scoring_state`; `SyncResponse.accepted` / `ignored` / `scoring` (queued days, `expected_within_sec`); unknown types and out-of-window records ignored and counted instead of `422`; identical re-sends not counted | migration 0025 (`score_queue`), `cmd/api/syncstatus.go`, D91 |
 | Sync to score | `ryft_sync_to_score_seconds` per queued day, alert `SyncToScoreSlow` (p95 > 2 min, 15 min) and a dashboard panel; a silent refresh push (`ryft.refresh`) after every sync's scored days, one per account every 5 minutes, collapsed per day; event handlers recover from a panic (`ryft_event_handler_panics_total`) | `cmd/scoring`, `internal/notify`, D92 |
-| Training import | `POST /v1/train/import`: plans and sessions from another app's export, per-item results, idempotent by per-account ids, the app's edits win (`newer_on_server`), one rescore per request, no pushes, silent records; flag `train.import` (off), its own rate class and a lease per user; model 2026.10.2 (e1RM reference over 90 days, assisted sets) | `cmd/api/train_import.go`, `internal/train/import.go`, migration 0028 |
+| Training import | `POST /v1/train/import`: plans and sessions from another app's export, per-item results, idempotent by per-account ids, the app's edits win (`newer_on_server`), one rescore per request, no pushes, silent records; flag `train.import` (dark 2026-10-26, on for everyone since 2026-11-22, D250), its own rate class and a lease per user; model 2026.10.2 (e1RM reference over 90 days, assisted sets) | `cmd/api/train_import.go`, `internal/train/import.go`, migration 0028 |
 
 Also: Podman support in the Makefile, JSON errors on unknown routes, `422` for inverted or
 oversized ranges, UTC timestamps everywhere, `DailyScore.baseline_days`, end-to-end
