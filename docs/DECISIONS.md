@@ -6412,3 +6412,62 @@ _Numbered after D248, which PR #228 (C2, draft) holds._
   the import's rate class and the per-account lease (D129, D132), the per-IP limit (D240), the invite gate and
   App Attest as on every route (both `off` today).
 - **Consequences:** STATUS, API.md (the flag's paragraph), OPERATIONS (the import's table, `import_not_enabled`).
+
+## D253 — `ACTIVITY_SCORED` is decided in notify on the existing `refresh` event (2026-11-22; the app's NT1)
+
+- **Context:** the app asks for an alert when a workout synced from Apple Health has been scored. Only the platform
+  knows when it is de-duplicated, attached or not to a Train session, and has its strain. Design:
+  `docs/work/2026-11-22-notifications-nt/activity-scored-design.md`.
+- **Options:** a new key `workouts.scored` carrying the sync's workout ids (a new topic, subscription and push
+  route, so a Terraform apply, plus ids threaded through `ingested`); extending `RefreshEvent` with ids; or reusing
+  `refresh` as it is. **Reuse chosen.** `refresh` already means "a sync's (or an import's) days are scored". On it,
+  notify scans the account's undecided workouts that ended in the last 12 h. The scan sees the state after
+  duplicates and attach, whatever order events arrive in.
+- **Decision:** every rule of API.md → `ACTIVITY_SCORED`: the rules is checked in notify. They are pure functions
+  in `internal/notify/activity.go` (`ActivityRule`, `Inherited`, `ActivityOutcome`). Events stay ids only, and
+  there is no topology change and no Terraform. A throttled silent refresh still decides. Without APNs nothing is
+  decided.
+- **Cost:** a scoring that no sync caused (the timer pass, a recompute) decides nothing. A workout whose sync's
+  scoring failed is decided at the next sync's refresh, if still inside 12 h. Accepted: the alert is a convenience,
+  and the workout is in the app either way.
+
+## D254 — The `workout_alerts` ledger: decided once, inherited by the fold rule, capped under a lock (2026-11-22)
+
+- **Decision:** one row per decided workout (migration 0041), keyed `(user_id, workout_id)` with **no** foreign
+  key to `workouts`, so the mark outlives a folded or deleted copy. The row keeps the copy's source, activity and
+  times. Inheritance is a pure function: a candidate is decided when a row has its id or a duplicate member's id, or
+  matches it or a member by the fold's own rule (`workoutdup.SameWorkout`: same source and activity, ends within
+  120 s). A fold-time transfer in ingest was rejected: a sync's `deleted` runs before the fold (D146), so the old
+  copy would be gone before its mark moved. "Decided once" holds even when the alert is then capped, muted, quiet
+  or has no device.
+- **Concurrency:** `DecideWorkoutAlert` runs in one transaction under the per-user advisory lock class 7419008
+  (`locks.go`, notify only), so the 3-a-day cap holds across instances and a redelivered refresh decides nothing
+  twice (D100). APNs is called outside the transaction. When no device was reached because APNs was down, the
+  `sending` row is released and the event retried, as `deliver` does.
+- **Retention:** rows are pruned 2 days after the workout's end, inside the decide transaction. A row that old can't
+  match a candidate inside the 12 h window. `DeleteUser` deletes the rows (and `ON DELETE CASCADE` covers an older
+  image after a rollback). `MergeUsers` moves them, and the kept account's own row wins on the same id.
+
+## D255 — Workouts record their first uploader's device and their HealthKit bundle id (2026-11-22)
+
+- **Decision:** `workouts.device_id` (insert-only: the install whose sync first stored the row) and
+  `workouts.source_bundle_id` (filled once by `COALESCE`), both from `POST /v1/sync`. Rule 5 (backfill) is "stored
+  less than 1 h after the account's device row was created". `devices` is keyed `(user_id, id)` since 0007, so a
+  second account on a shared phone gets its own row and its own first hour. Rows from before 0041 have no device
+  and pass. Rule 1 excludes `dev.timkrebs.ryft` and everything under `dev.timkrebs.ryft.` (case-insensitive).
+- **Privacy:** no new category. The bundle id was already sent and validated, and the device id is the
+  per-install identifier the privacy text names. Neither is in a log line or a metric. The bundle id is returned
+  on `Workout` now, so the app's JSON export (Art. 15/20) holds what is stored. The device id stays operational,
+  like the `devices` table.
+
+## D256 — `ryft.account` on every push (2026-11-22; the app's NT1 and "Sync and performance" §5)
+
+- **Decision:** every alert and the silent refresh carry `ryft.account`, the recipient's `User.id` in lower case.
+  It is built by `Message.Payload(account)` and `SilentPayload(day, account)`, so no call site can leave it out.
+  The app drops a push for an account that isn't signed in. With D251 this closes the shared-iPhone case from both
+  ends.
+- **Privacy text first:** the policy in force (2026-10-26) lists what passes through APNs ("your push token and the
+  notification text"). The account identifier and a workout's type and duration aren't in that list. So this PR
+  merges only after a published version adds them to that sentence, with a `PRIVACY_POLICY_VERSION` bump. The
+  pending revision (C2, PR #228) is the place, so users aren't asked to consent twice. Until then the PR is a draft. `model.NotifyCategories` gains `ACTIVITY_SCORED` (default on). The `422` text is built from that list,
+  and the Swift mirror's `NotificationCategory.activityScored` joins.

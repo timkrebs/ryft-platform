@@ -70,7 +70,7 @@ func (h *handler) patchNotifications(w http.ResponseWriter, r *http.Request) {
 	}
 	for c := range p.Categories {
 		if !slices.Contains(model.NotifyCategories, c) {
-			httpx.WriteError(w, 422, "unknown category "+c+" (MORNING_SCORE, SESSION_SCORED, PR, SYNC_STALE)")
+			httpx.WriteError(w, 422, "unknown category "+c+" ("+strings.Join(model.NotifyCategories, ", ")+")")
 			return
 		}
 	}

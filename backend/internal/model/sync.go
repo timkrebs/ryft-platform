@@ -127,7 +127,9 @@ type Workout struct {
 	AlsoRecordedBy []string `json:"also_recorded_by,omitempty"`
 	// Read-only, only with GET /v1/workouts?include_hidden=true: the primary a hidden duplicate is hidden behind.
 	DuplicateOf *uuid.UUID `json:"duplicate_of,omitempty"`
-	// Input only, as on Sample.
+	// The HealthKit source's bundle identifier, as on Sample: sent on upload and, once stored, returned
+	// by GET /v1/workouts and GET /v1/workouts/{id} (the account's own data, so the export carries it).
+	// Omitted when not stored. The install that uploaded the row (device_id) is never returned.
 	SourceBundleID *string `json:"source_bundle_id,omitempty"`
 }
 

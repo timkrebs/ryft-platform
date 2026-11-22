@@ -226,7 +226,7 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, fmt.Errorf("sleep: %w", err))
 		return
 	}
-	nw, err := h.st.UpsertWorkouts(ctx, userID, req.Workouts)
+	nw, err := h.st.UpsertWorkouts(ctx, userID, req.DeviceID, req.Workouts) // the device row exists: TouchDevice ran above
 	if err != nil {
 		h.fail(w, r, fmt.Errorf("workouts: %w", err))
 		return

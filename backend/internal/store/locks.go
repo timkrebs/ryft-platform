@@ -15,10 +15,13 @@ package store
 //	                        id order across instances, D101, D219)
 //	7419007  lockAttest       a user's App Attest writes (CreateAttestChallenge, PutAttestKey),
 //	                        so the caps of 5 challenges and 10 keys hold across api instances
+//	7419008  lockAlerts     a user's ACTIVITY_SCORED decisions (DecideWorkoutAlert, notify only),
+//	                        so "decided once" and the cap of 3 a day hold across notify instances
 const (
 	lockUser        = `SELECT pg_advisory_xact_lock(7419002, hashtext($1::text))`
 	lockSession     = `SELECT pg_advisory_xact_lock(7419003, hashtext($1::text || ':' || $2::text))`
 	lockEnrollments = `SELECT pg_advisory_xact_lock(7419004, hashtext($1::text))`
 	lockApply       = `SELECT pg_advisory_xact_lock(7419005, hashtext($1::text))`
 	lockAttest      = `SELECT pg_advisory_xact_lock(7419007, hashtext($1::text))`
+	lockAlerts      = `SELECT pg_advisory_xact_lock(7419008, hashtext($1::text))`
 )

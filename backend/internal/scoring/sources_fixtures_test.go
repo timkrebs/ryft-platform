@@ -356,7 +356,7 @@ func TestEngineSourceFixtures(t *testing.T) {
 				if _, err := st.UpsertSleep(ctx, user, d.sleep); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := st.UpsertWorkouts(ctx, user, d.workouts); err != nil {
+				if _, err := st.UpsertWorkouts(ctx, user, uuid.Nil, d.workouts); err != nil {
 					t.Fatal(err)
 				}
 				if err := st.UpsertSources(ctx, user, store.SourcesOf(d.samples, d.sleep, d.workouts)); err != nil {

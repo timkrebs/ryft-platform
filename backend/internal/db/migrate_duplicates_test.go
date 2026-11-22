@@ -129,7 +129,8 @@ func testMigrateWorkoutDuplicates(t *testing.T, supabase bool) {
 		{"ryft_scoring", "UPDATE", true}, {"ryft_scoring", "SELECT", true}, {"ryft_scoring", "INSERT", false},
 		{"ryft_api", "SELECT", true}, {"ryft_api", "UPDATE", false}, {"ryft_api", "INSERT", false},
 		{"ryft_ingest", "SELECT", true}, {"ryft_ingest", "UPDATE", true}, {"ryft_ingest", "INSERT", true},
-		{"ryft_notify", "SELECT", false}, {"ryft_notify", "UPDATE", false},
+		// 0041 lets notify read it (ACTIVITY_SCORED: hidden duplicates and group members, D254).
+		{"ryft_notify", "SELECT", true}, {"ryft_notify", "UPDATE", false},
 	} {
 		got := scalar[bool](t, pool, `SELECT has_column_privilege($1, 'public.workouts', 'duplicate_of', $2)`, c.role, c.priv)
 		if got != c.want {

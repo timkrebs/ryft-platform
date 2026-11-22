@@ -78,6 +78,7 @@ func owned(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) int {
 		(SELECT count(*) FROM samples WHERE user_id=$1) + (SELECT count(*) FROM sleep_segments WHERE user_id=$1) +
 		(SELECT count(*) FROM workouts WHERE user_id=$1) + (SELECT count(*) FROM daily_scores WHERE user_id=$1) +
 		(SELECT count(*) FROM push_tokens WHERE user_id=$1) + (SELECT count(*) FROM notifications_sent WHERE user_id=$1) +
+		(SELECT count(*) FROM workout_alerts WHERE user_id=$1) +
 		(SELECT count(*) FROM user_sources WHERE user_id=$1) + (SELECT count(*) FROM feedback WHERE user_id=$1) +
 		(SELECT count(*) FROM score_queue WHERE user_id=$1) + (SELECT count(*) FROM outbox WHERE user_id=$1) +
 		(SELECT count(*) FROM sessions WHERE user_id=$1) + (SELECT count(*) FROM session_exercises WHERE user_id=$1) +
@@ -112,8 +113,13 @@ func seedUser(t *testing.T, st *Store, pool *pgxpool.Pool, id uuid.UUID) {
 	if _, err := st.UpsertSleep(ctx, id, []model.SleepSegment{{Start: now.Add(-8 * time.Hour), End: now, Stage: "core", Source: "test"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.UpsertWorkouts(ctx, id, []model.Workout{{ID: uuid.New(), Activity: "running", Start: now.Add(-time.Hour), End: now, Source: "test"}}); err != nil {
+	if _, err := st.UpsertWorkouts(ctx, id, uuid.Nil, []model.Workout{{ID: uuid.New(), Activity: "running", Start: now.Add(-time.Hour), End: now, Source: "test"}}); err != nil {
 		t.Fatal(err)
+	}
+	// ACTIVITY_SCORED's ledger (0041): a decided workout.
+	if out, err := st.DecideWorkoutAlert(ctx, id, AlertMark{WorkoutRef: WorkoutRef{ID: uuid.New(), Source: "test", Activity: "running",
+		Start: now.Add(-time.Hour), End: now}, Day: now.Format(time.DateOnly)}, func([]AlertMark, int) string { return AlertSent }); err != nil || out != AlertSent {
+		t.Fatalf("ledger row: %q %v", out, err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO daily_scores (user_id, day) VALUES ($1, current_date)`, id); err != nil {
 		t.Fatal(err)

@@ -62,7 +62,7 @@ func TestEngineHidesCrossSourceDuplicates(t *testing.T) {
 	run := dayStart.Add(18 * time.Hour)
 
 	watch := model.Workout{ID: uuid.New(), Activity: "running", Start: run, End: run.Add(45 * time.Minute), Source: dupWatch}
-	if _, err := st.UpsertWorkouts(ctx, user, []model.Workout{watch}); err != nil {
+	if _, err := st.UpsertWorkouts(ctx, user, uuid.Nil, []model.Workout{watch}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.UpsertSamples(ctx, user, hrEvery(dupWatch, run, watch.End, time.Minute, 150)); err != nil {
@@ -79,7 +79,7 @@ func TestEngineHidesCrossSourceDuplicates(t *testing.T) {
 
 	// Garmin's copy syncs, a minute longer at each end, without heart rate.
 	garmin := model.Workout{ID: uuid.New(), Activity: "running", Start: run.Add(-time.Minute), End: run.Add(46 * time.Minute), Source: dupGarmin}
-	if _, err := st.UpsertWorkouts(ctx, user, []model.Workout{garmin}); err != nil {
+	if _, err := st.UpsertWorkouts(ctx, user, uuid.Nil, []model.Workout{garmin}); err != nil {
 		t.Fatal(err)
 	}
 	if err := engine.ComputeDay(ctx, user, day); err != nil {
@@ -160,7 +160,7 @@ func TestEngineAttachesSessionsToTheVisibleWorkout(t *testing.T) {
 	}
 	watch := model.Workout{ID: uuid.New(), Activity: "strength", Start: start.Add(-2 * time.Minute), End: end.Add(time.Minute), Source: dupWatch}
 	garmin := model.Workout{ID: uuid.New(), Activity: "strength", Start: start.Add(-5 * time.Minute), End: end.Add(5 * time.Minute), Source: dupGarmin}
-	if _, err := st.UpsertWorkouts(ctx, user, []model.Workout{watch, garmin}); err != nil {
+	if _, err := st.UpsertWorkouts(ctx, user, uuid.Nil, []model.Workout{watch, garmin}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.UpsertSamples(ctx, user, hrEvery(dupWatch, watch.Start, watch.End, time.Minute, 110)); err != nil {
@@ -204,7 +204,7 @@ func TestEngineKeepsTheSpecificActivityOverOther(t *testing.T) {
 	}
 	watch := model.Workout{ID: uuid.New(), Activity: "strength", Start: start.Add(-2 * time.Minute), End: end.Add(time.Minute), Source: dupWatch}
 	garmin := model.Workout{ID: uuid.New(), Activity: "other", Start: start.Add(-5 * time.Minute), End: end.Add(5 * time.Minute), Source: dupGarmin}
-	if _, err := st.UpsertWorkouts(ctx, user, []model.Workout{watch, garmin}); err != nil {
+	if _, err := st.UpsertWorkouts(ctx, user, uuid.Nil, []model.Workout{watch, garmin}); err != nil {
 		t.Fatal(err)
 	}
 	hr := append(hrEvery(dupWatch, watch.Start, watch.End, time.Minute, 110), hrEvery(dupGarmin, garmin.Start, garmin.End, time.Minute, 110)...)
@@ -238,7 +238,7 @@ func TestEngineSeesALongWorkoutStartedEarlier(t *testing.T) {
 	if hike.Start.After(dayStart.Add(-dupMargin)) {
 		t.Fatal("precondition: the hike starts before the widened window")
 	}
-	if _, err := st.UpsertWorkouts(ctx, user, []model.Workout{hike, app}); err != nil {
+	if _, err := st.UpsertWorkouts(ctx, user, uuid.Nil, []model.Workout{hike, app}); err != nil {
 		t.Fatal(err)
 	}
 	if err := engine.ComputeDay(ctx, user, day); err != nil {
@@ -264,7 +264,7 @@ func TestEngineSkipsTheDecisionAboveTheCap(t *testing.T) {
 		{ID: uuid.New(), Activity: "running", Start: run, End: run.Add(45 * time.Minute), Source: dupWatch},
 		{ID: uuid.New(), Activity: "running", Start: run.Add(-time.Minute), End: run.Add(46 * time.Minute), Source: dupGarmin},
 	}
-	if _, err := st.UpsertWorkouts(ctx, user, pair); err != nil {
+	if _, err := st.UpsertWorkouts(ctx, user, uuid.Nil, pair); err != nil {
 		t.Fatal(err)
 	}
 	if err := engine.ComputeDay(ctx, user, day); err != nil {
@@ -278,7 +278,7 @@ func TestEngineSkipsTheDecisionAboveTheCap(t *testing.T) {
 		s := dayStart.Add(time.Duration(k) * 3 * time.Minute)
 		filler = append(filler, model.Workout{ID: uuid.New(), Activity: "walking", Start: s, End: s.Add(time.Minute), Source: "Filler"})
 	}
-	if _, err := st.UpsertWorkouts(ctx, user, filler); err != nil {
+	if _, err := st.UpsertWorkouts(ctx, user, uuid.Nil, filler); err != nil {
 		t.Fatal(err)
 	}
 	if err := engine.ComputeDay(ctx, user, day); err != nil {

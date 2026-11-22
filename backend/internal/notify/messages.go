@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/timkrebs/ryft/internal/model"
 )
 
@@ -25,9 +27,10 @@ type Message struct {
 
 // Payload is the APNs body: the alert as localisation keys and arguments, the
 // category (its actions), mutable-content so the app's service extension can
-// attach the ring, and RYFT's own keys.
-func (m Message) Payload() []byte {
-	ryft := map[string]string{"category": m.Category, "day": m.Day}
+// attach the ring, and RYFT's own keys, among them the recipient's account: the app
+// drops a push that is not for the account signed in on the phone (D256).
+func (m Message) Payload(account uuid.UUID) []byte {
+	ryft := map[string]string{"category": m.Category, "day": m.Day, "account": account.String()}
 	if m.URL != "" {
 		ryft["url"] = m.URL
 	}
@@ -44,10 +47,11 @@ func (m Message) Payload() []byte {
 	return b
 }
 
-// SilentPayload wakes the app to refresh day in the background.
-func SilentPayload(day string) []byte {
+// SilentPayload wakes the app to refresh day in the background; account is the
+// recipient's, as on an alert.
+func SilentPayload(day string, account uuid.UUID) []byte {
 	b, _ := json.Marshal(map[string]any{"aps": map[string]any{"content-available": 1},
-		"ryft": map[string]string{"kind": "refresh", "day": day}})
+		"ryft": map[string]string{"kind": "refresh", "day": day, "account": account.String()}})
 	return b
 }
 
@@ -135,6 +139,70 @@ func Record(day, sessionID, exercise, kind string, value float64, now time.Time,
 		BodyKey: key, BodyArgs: []string{v}, URL: site + "/train/session/" + sessionID, Expires: now.Add(12 * time.Hour)}
 }
 
+// activityNames is the sport's name per Workout.activity, English and German: the 20
+// activities the app sends (docs/API.md → ACTIVITY_SCORED arguments). "other" and an
+// activity added later have none and get the untitled title.
+var activityNames = map[string][2]string{
+	"running":             {"Run", "Lauf"},
+	"walking":             {"Walk", "Spaziergang"},
+	"hiking":              {"Hike", "Wanderung"},
+	"cycling":             {"Ride", "Radfahrt"},
+	"swimming":            {"Swim", "Schwimmen"},
+	"rowing":              {"Row", "Rudern"},
+	"elliptical":          {"Elliptical", "Crosstrainer"},
+	"stairs":              {"Stairs", "Treppensteigen"},
+	"strength":            {"Strength", "Krafttraining"},
+	"functional_strength": {"Functional strength", "Funktionelles Krafttraining"},
+	"crossfit":            {"Cross training", "Cross-Training"},
+	"hiit":                {"HIIT", "HIIT"},
+	"yoga":                {"Yoga", "Yoga"},
+	"core":                {"Core training", "Core-Training"},
+	"soccer":              {"Football", "Fußball"},
+	"tennis":              {"Tennis", "Tennis"},
+	"xc_skiing":           {"Cross-country ski", "Langlauf"},
+	"skiing":              {"Skiing", "Skifahren"},
+	"snowboarding":        {"Snowboarding", "Snowboarden"},
+	"cooldown":            {"Cooldown", "Cool-down"},
+}
+
+// duration is d in whole minutes rounded down: "56 min", "1 h 12 min", "2 h"; "56 Min.",
+// "1 Std. 12 Min.", "2 Std." in German. A no-break space (U+00A0) sits between a number and
+// its unit, a plain space between the hours and the minutes.
+func duration(d time.Duration, lang string) string {
+	mins := max(int(d/time.Minute), 0)
+	h, m := mins/60, mins%60
+	hUnit, mUnit := "h", "min"
+	if lang == "de" {
+		hUnit, mUnit = "Std.", "Min."
+	}
+	nbsp := string(rune(0xA0)) // U+00A0 NO-BREAK SPACE, written as a code point (check_bytes bans the raw character)
+	switch {
+	case h == 0:
+		return strconv.Itoa(m) + nbsp + mUnit
+	case m == 0:
+		return strconv.Itoa(h) + nbsp + hUnit
+	}
+	return strconv.Itoa(h) + nbsp + hUnit + " " + strconv.Itoa(m) + nbsp + mUnit
+}
+
+// Activity is ACTIVITY_SCORED: the sport's name (a title that holds no health value, as the
+// lock screen shows it with previews off), and the strain and duration. day is the local day of
+// start, id the primary's workout id. It expires 12 h after the workout's end.
+func Activity(day, id, activity string, strain float64, start, end time.Time, lang string) Message {
+	m := Message{Category: model.NotifyActivityScored, Day: day, TitleKey: "ACTIVITY_SCORED_TITLE",
+		BodyKey: "ACTIVITY_SCORED_BODY", BodyArgs: []string{decimal(strain, lang), duration(end.Sub(start), lang)},
+		URL: site + "/activity/" + id, Expires: end.Add(ActivityWindow)}
+	if names, ok := activityNames[activity]; ok {
+		m.TitleArgs = []string{names[0]}
+		if lang == "de" {
+			m.TitleArgs = []string{names[1]}
+		}
+	} else {
+		m.TitleKey = "ACTIVITY_SCORED_TITLE_UNTITLED"
+	}
+	return m
+}
+
 // Stale is SYNC_STALE: no data for hours.
 func Stale(day string, hours int, now time.Time) Message {
 	return Message{Category: model.NotifySyncStale, Day: day, TitleKey: "SYNC_STALE_TITLE",
@@ -162,6 +230,9 @@ var Catalog = map[string][2]string{
 	"PR_BODY_MAX_VOLUME":             {"%@ kg in one set (reps × kg), your best yet.", "%@ kg in einem Satz (Wdh. × kg), dein Bestwert."},
 	"SYNC_STALE_TITLE":               {"No new data", "Keine neuen Daten"},
 	"SYNC_STALE_BODY":                {"Nothing new from your watch for %@ hours. Open RYFT to sync.", "Seit %@ Stunden nichts Neues von deiner Uhr. Öffne RYFT zum Synchronisieren."},
+	"ACTIVITY_SCORED_TITLE":          {"%@ scored", "%@ ausgewertet"},
+	"ACTIVITY_SCORED_TITLE_UNTITLED": {"Activity scored", "Aktivität ausgewertet"},
+	"ACTIVITY_SCORED_BODY":           {"Strain %1$@ · %2$@", "Belastung %1$@ · %2$@"},
 }
 
 // Render fills a key's text the way iOS does (%@ and %n$@), for tests and docs.

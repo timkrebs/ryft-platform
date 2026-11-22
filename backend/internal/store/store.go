@@ -174,6 +174,8 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 			`DELETE FROM score_queue WHERE user_id=$1`,
 			`DELETE FROM outbox WHERE user_id=$1`,
 			`DELETE FROM notifications_sent WHERE user_id=$1`,
+			// ACTIVITY_SCORED's ledger: a copy of activity and times of the last two days (0041, D254).
+			`DELETE FROM workout_alerts WHERE user_id=$1`,
 			// Journal: entries before the custom behaviors they name.
 			`DELETE FROM journal_entries WHERE user_id=$1`,
 			`DELETE FROM journal_days WHERE user_id=$1`,
@@ -489,7 +491,12 @@ func (s *Store) UpsertSleep(ctx context.Context, userID uuid.UUID, in []model.Sl
 // rows changed. A row from a Train session (model.SessionSource) is never
 // overwritten by a sync, and an identical re-send is not counted. Workouts go in
 // (start_at, id) order, the order the fold and SetWorkoutDuplicates lock in.
-func (s *Store) UpsertWorkouts(ctx context.Context, userID uuid.UUID, in []model.Workout) (int, error) {
+//
+// deviceID is the install that uploaded them (uuid.Nil stores NULL): kept on the row an INSERT
+// creates and never changed, so the device that first stored a workout is the one the
+// backfill rule of ACTIVITY_SCORED asks about (0041, D255). source_bundle_id is filled once
+// (COALESCE) and stays out of the "changed" guard, so a re-send that only adds it is not counted.
+func (s *Store) UpsertWorkouts(ctx context.Context, userID, deviceID uuid.UUID, in []model.Workout) (int, error) {
 	if len(in) == 0 {
 		return 0, nil
 	}
@@ -501,18 +508,29 @@ func (s *Store) UpsertWorkouts(ctx context.Context, userID uuid.UUID, in []model
 		}
 		return bytes.Compare(x.ID[:], y.ID[:])
 	})
+	var device *uuid.UUID // NULL: no device on record (the row passes the backfill rule)
+	if deviceID != uuid.Nil {
+		device = &deviceID
+	}
 	b := &pgx.Batch{}
 	for _, w := range in {
-		b.Queue(`INSERT INTO workouts (id, user_id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m, source)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		// source_bundle_id is filled once: a row from before 0041 learns it on its next re-send (the
+		// second arm of the guard, the one time that re-send is counted), and a stored one is never
+		// changed. device_id is not in DO UPDATE at all.
+		b.Queue(`INSERT INTO workouts (id, user_id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m, source,
+			  device_id, source_bundle_id)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$12,$13)
 			ON CONFLICT (user_id, id) DO UPDATE SET activity=EXCLUDED.activity, start_at=EXCLUDED.start_at, end_at=EXCLUDED.end_at,
 			  avg_hr=EXCLUDED.avg_hr, max_hr=EXCLUDED.max_hr, energy_kcal=EXCLUDED.energy_kcal,
-			  distance_m=EXCLUDED.distance_m, source=EXCLUDED.source
-			WHERE (workouts.activity, workouts.start_at, workouts.end_at, workouts.avg_hr, workouts.max_hr, workouts.energy_kcal,
+			  distance_m=EXCLUDED.distance_m, source=EXCLUDED.source,
+			  source_bundle_id = COALESCE(workouts.source_bundle_id, EXCLUDED.source_bundle_id)
+			WHERE ((workouts.activity, workouts.start_at, workouts.end_at, workouts.avg_hr, workouts.max_hr, workouts.energy_kcal,
 			  workouts.distance_m, workouts.source) IS DISTINCT FROM (EXCLUDED.activity, EXCLUDED.start_at, EXCLUDED.end_at,
 			  EXCLUDED.avg_hr, EXCLUDED.max_hr, EXCLUDED.energy_kcal, EXCLUDED.distance_m, EXCLUDED.source)
+			  OR (workouts.source_bundle_id IS NULL AND EXCLUDED.source_bundle_id IS NOT NULL))
 			  AND workouts.source <> $11`,
-			w.ID, userID, w.Activity, w.Start, w.End, w.AvgHR, w.MaxHR, w.EnergyKcal, w.DistanceM, w.Source, model.SessionSource)
+			w.ID, userID, w.Activity, w.Start, w.End, w.AvgHR, w.MaxHR, w.EnergyKcal, w.DistanceM, w.Source, model.SessionSource,
+			device, w.SourceBundleID)
 	}
 	return s.runBatch(ctx, b)
 }
@@ -638,7 +656,8 @@ func (s *Store) ListWorkoutsBetween(ctx context.Context, userID uuid.UUID, from,
 		      WHERE p.user_id = w.user_id AND p.id = w.duplicate_of AND p.duplicate_of IS NULL)) AS hidden
 		  FROM workouts w WHERE w.user_id=$1 AND w.start_at >= $2 AND w.start_at < $3)
 		SELECT w.id, w.activity, w.start_at, w.end_at, w.avg_hr, w.max_hr, w.energy_kcal, w.distance_m, w.source, w.strain,
-		  w.muscular_load, w.session_id, w.model_version, dups.sources, CASE WHEN w.hidden THEN w.duplicate_of END
+		  w.muscular_load, w.session_id, w.model_version, dups.sources, CASE WHEN w.hidden THEN w.duplicate_of END,
+		  w.source_bundle_id
 		FROM ws w LEFT JOIN dups ON dups.id = w.id AND NOT w.hidden
 		WHERE $5::bool OR NOT w.hidden
 		ORDER BY w.start_at, w.id`, userID, from, to, model.SessionSource, includeHidden)
@@ -648,7 +667,7 @@ func (s *Store) ListWorkoutsBetween(ctx context.Context, userID uuid.UUID, from,
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.Workout, error) {
 		var w model.Workout
 		err := r.Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM, &w.Source, &w.Strain,
-			&w.MuscularLoad, &w.SessionID, &w.ModelVersion, &w.AlsoRecordedBy, &w.DuplicateOf)
+			&w.MuscularLoad, &w.SessionID, &w.ModelVersion, &w.AlsoRecordedBy, &w.DuplicateOf, &w.SourceBundleID)
 		return w, err
 	})
 }
@@ -733,7 +752,7 @@ func (s *Store) Workout(ctx context.Context, userID, id uuid.UUID) (WorkoutRow, 
 	var w WorkoutRow
 	var zones []byte
 	err := s.pool.QueryRow(ctx, `SELECT id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m,
-		source, strain, zone_minutes, trimp, muscular_load, session_id, model_version,
+		source, strain, zone_minutes, trimp, muscular_load, session_id, model_version, source_bundle_id,
 		(SELECT array_agg(DISTINCT d.source ORDER BY d.source) FROM workouts d
 		  WHERE d.user_id = workouts.user_id AND d.duplicate_of = workouts.id AND d.source <> ''
 		    AND d.source <> $3
@@ -741,7 +760,7 @@ func (s *Store) Workout(ctx context.Context, userID, id uuid.UUID) (WorkoutRow, 
 		    AND EXISTS (SELECT 1 FROM workouts p WHERE p.user_id = d.user_id AND p.id = d.duplicate_of AND p.duplicate_of IS NULL))
 		FROM workouts WHERE user_id=$1 AND id=$2`, userID, id, model.SessionSource).
 		Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM,
-			&w.Source, &w.Strain, &zones, &w.TRIMP, &w.MuscularLoad, &w.SessionID, &w.ModelVersion, &w.AlsoRecordedBy)
+			&w.Source, &w.Strain, &zones, &w.TRIMP, &w.MuscularLoad, &w.SessionID, &w.ModelVersion, &w.SourceBundleID, &w.AlsoRecordedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return w, ErrNotFound
 	}

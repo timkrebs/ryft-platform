@@ -45,9 +45,20 @@ func TestMergeUsers(t *testing.T) {
 	for _, w := range []struct {
 		user, id uuid.UUID
 	}{{from, wkShared}, {to, wkShared}, {from, wkOwn}} {
-		if _, err := st.UpsertWorkouts(ctx, w.user, []model.Workout{{ID: w.id, Activity: "running", Start: now.Add(-5 * time.Hour),
+		if _, err := st.UpsertWorkouts(ctx, w.user, uuid.Nil, []model.Workout{{ID: w.id, Activity: "running", Start: now.Add(-5 * time.Hour),
 			End: now.Add(-4 * time.Hour), Source: "Watch"}}); err != nil {
 			t.Fatal(err)
+		}
+	}
+	// The ledger of ACTIVITY_SCORED (0041): both decided the shared workout, only from the other. Merged,
+	// to keeps its row for the shared id and takes from's other, so to does not alert for it again.
+	for _, w := range []struct {
+		user, id uuid.UUID
+	}{{from, wkShared}, {to, wkShared}, {from, wkOwn}} {
+		mark := AlertMark{WorkoutRef: WorkoutRef{ID: w.id, Source: "Watch", Activity: "running", Start: now.Add(-5 * time.Hour), End: now.Add(-4 * time.Hour)},
+			Day: now.Format(time.DateOnly)}
+		if out, err := st.DecideWorkoutAlert(ctx, w.user, mark, func([]AlertMark, int) string { return AlertSent }); err != nil || out != AlertSent {
+			t.Fatalf("ledger row: %q %v", out, err)
 		}
 	}
 	// One phone for both accounts, and a second device only from used.
@@ -134,7 +145,7 @@ func TestMergeUsers(t *testing.T) {
 		}
 		return m
 	}
-	want := map[string][2]int64{"samples": {1, 1}, "sleep_segments": {1, 0}, "workouts": {1, 1}, "devices": {1, 1},
+	want := map[string][2]int64{"samples": {1, 1}, "sleep_segments": {1, 0}, "workouts": {1, 1}, "workout_alerts": {1, 1}, "devices": {1, 1},
 		"push_tokens": {1, 0}, "exercises": {1, 1}, "sessions": {1, 1}, "behaviors": {0, 1}, "journal_days": {1, 1},
 		"feedback": {1, 0}, "user_sources": {1, 0}, "app_attest_keys": {0, 2}, "app_attest_challenges": {0, 1}}
 	check := func(step string, r MergeResult) {
@@ -182,6 +193,8 @@ func TestMergeUsers(t *testing.T) {
 		{`SELECT count(*) FROM samples WHERE user_id = $1`, []any{to}, 2},
 		{`SELECT count(*) FROM workouts WHERE user_id = $1`, []any{to}, 2},
 		{`SELECT count(*) FROM devices WHERE user_id = $1`, []any{to}, 2},
+		{`SELECT count(*) FROM workout_alerts WHERE user_id = $1`, []any{to}, 2},
+		{`SELECT count(*) FROM workout_alerts WHERE user_id = $1 AND workout_id = $2`, []any{to, wkOwn}, 1},
 		{`SELECT count(*) FROM push_tokens WHERE user_id = $1`, []any{to}, 1},
 		{`SELECT count(*) FROM sessions WHERE user_id = $1`, []any{to}, 2},
 		{`SELECT count(*) FROM session_exercises WHERE user_id = $1`, []any{to}, 2},
