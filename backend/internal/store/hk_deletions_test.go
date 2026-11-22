@@ -182,7 +182,7 @@ func TestMergeWithHKIDsDoesNotViolateTheIndex(t *testing.T) {
 	put(from, now.Add(2*time.Hour), "W", nil)
 	put(from, now.Add(3*time.Hour), "W", &sameKey)
 	put(to, now.Add(3*time.Hour), "W", &sameKey) // same natural key and same id: one record
-	if _, err := st.UpsertWorkouts(ctx, from, []model.Workout{{ID: uuid.New(), Activity: "running", Start: now, End: now.Add(time.Hour), Source: "W"}}); err != nil {
+	if _, err := st.UpsertWorkouts(ctx, from, uuid.Nil, []model.Workout{{ID: uuid.New(), Activity: "running", Start: now, End: now.Add(time.Hour), Source: "W"}}); err != nil {
 		t.Fatal(err)
 	}
 

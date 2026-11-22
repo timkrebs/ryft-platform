@@ -15,10 +15,14 @@ const (
 	NotifySessionScored = "SESSION_SCORED"
 	NotifyPR            = "PR"
 	NotifySyncStale     = "SYNC_STALE"
+	// NotifyActivityScored is the alert for a synced, scored Apple Health workout
+	// (docs/API.md → Push notifications → ACTIVITY_SCORED: the rules).
+	NotifyActivityScored = "ACTIVITY_SCORED"
 )
 
-// NotifyCategories is every category a user can turn off, in display order.
-var NotifyCategories = []string{NotifyMorningScore, NotifySessionScored, NotifyPR, NotifySyncStale}
+// NotifyCategories is every category a user can turn off, in display order (the
+// order of the API's table). The 422 text of PATCH /v1/me/notifications lists it.
+var NotifyCategories = []string{NotifyMorningScore, NotifySessionScored, NotifyPR, NotifySyncStale, NotifyActivityScored}
 
 // PushRegistration is POST /v1/devices/{id}/push.
 type PushRegistration struct {

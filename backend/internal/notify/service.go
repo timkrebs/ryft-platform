@@ -29,6 +29,12 @@ type Store interface {
 	NotificationSent(ctx context.Context, userID uuid.UUID, day, category string, devices int) error
 	DropPushToken(ctx context.Context, token string) error
 	PushDelivered(ctx context.Context, token string) error
+	// ACTIVITY_SCORED (0041): the scan, the decision under the user's lock, and how a claimed send ended.
+	ActivityCandidates(ctx context.Context, userID uuid.UUID, now time.Time) ([]store.ActivityCandidate, error)
+	DecideWorkoutAlert(ctx context.Context, userID uuid.UUID, mark store.AlertMark,
+		decide func(ledger []store.AlertMark, sentOnDay int) string) (string, error)
+	FinishWorkoutAlert(ctx context.Context, userID, workoutID uuid.UUID, outcome string, devices int) error
+	ReleaseWorkoutAlert(ctx context.Context, userID, workoutID uuid.UUID, memberIDs []uuid.UUID) error
 }
 
 // Sender is APNs (*apns.Client).
@@ -112,7 +118,7 @@ func (s *Service) morning(ctx context.Context, ev model.ScoredEvent) error {
 		return nil
 	}
 	if err := s.deliver(ctx, &r, Refresh, ev.Day, apns.PushBackground, func(string) ([]byte, string, time.Time) {
-		return SilentPayload(ev.Day), "refresh-" + ev.Day, now.Add(6 * time.Hour)
+		return SilentPayload(ev.Day, r.ID), "refresh-" + ev.Day, now.Add(6 * time.Hour)
 	}); err != nil {
 		return err
 	}
@@ -139,7 +145,7 @@ func (s *Service) morning(ctx context.Context, ev model.ScoredEvent) error {
 	}
 	return s.deliver(ctx, &r, model.NotifyMorningScore, ev.Day, apns.PushAlert, func(lang string) ([]byte, string, time.Time) {
 		m := Morning(ev.Day, *score.Recovery, score.Readiness, score.State, r.Loc, lang)
-		return m.Payload(), m.Category + "-" + ev.Day, m.Expires
+		return m.Payload(r.ID), m.Category + "-" + ev.Day, m.Expires
 	})
 }
 
@@ -197,7 +203,7 @@ func (s *Service) session(ctx context.Context, ev model.SessionScoredEvent) erro
 		} else {
 			m = Session(ev.Day, ev.SessionID.String(), n.Title, strain, len(n.PRs), now, lang)
 		}
-		return m.Payload(), m.Category + "-" + ev.SessionID.String()[:8], m.Expires
+		return m.Payload(r.ID), m.Category + "-" + ev.SessionID.String()[:8], m.Expires
 	})
 }
 
@@ -238,7 +244,7 @@ func (s *Service) CheckStale(ctx context.Context) error {
 		uctx := logx.WithFields(ctx, &f)
 		if err := s.deliver(uctx, &r, model.NotifySyncStale, day, apns.PushAlert, func(string) ([]byte, string, time.Time) {
 			m := Stale(day, hours, now)
-			return m.Payload(), m.Category + "-" + day, m.Expires
+			return m.Payload(r.ID), m.Category + "-" + day, m.Expires
 		}); err != nil {
 			s.Log.ErrorContext(uctx, "sync stale", "err", err)
 		}
@@ -265,14 +271,17 @@ func (s *Service) deliver(ctx context.Context, r *store.Recipient, category, day
 		return nil
 	}
 	accepted, lastErr := s.sendAll(ctx, r, category, pushType, build)
+	// Release and record run on a context that survives ctx's end (see settleContext).
+	sctx, cancel := settleContext(ctx)
+	defer cancel()
 	if accepted == 0 && lastErr != nil {
-		if err := s.St.ReleaseNotification(ctx, r.ID, day, category); err != nil {
+		if err := s.St.ReleaseNotification(sctx, r.ID, day, category); err != nil {
 			s.Log.WarnContext(ctx, "release claim", "err", err)
 		}
 		count(category, "failed")
 		return lastErr
 	}
-	if err := s.St.NotificationSent(ctx, r.ID, day, category, accepted); err != nil {
+	if err := s.St.NotificationSent(sctx, r.ID, day, category, accepted); err != nil {
 		s.Log.WarnContext(ctx, "record send", "err", err)
 	}
 	result := "sent"
@@ -350,32 +359,145 @@ func (s *Service) refreshed(user uuid.UUID, now time.Time) bool {
 }
 
 // refresh: the silent push after scoring finished a sync's days, at most one
-// per user every RefreshEvery (shared with the morning one), collapsed per day.
+// per user every RefreshEvery (shared with the morning one), collapsed per day;
+// then, whether it was sent, throttled or had no device to go to, the scan for
+// workouts to announce (ACTIVITY_SCORED, D253). A redelivered event repeats the
+// scan: what it decided is skipped, so it sends nothing twice (D100).
 func (s *Service) refresh(ctx context.Context, ev model.RefreshEvent) error {
 	if s.APNs == nil {
 		count(Refresh, "unconfigured")
 		return nil
 	}
-	r, ok, err := s.recipient(ctx, ev.UserID, Refresh)
-	if !ok {
+	r, err := s.St.Recipient(ctx, ev.UserID)
+	if errors.Is(err, store.ErrNotFound) {
+		count(Refresh, "stale")
+		return events.Permanent(err) // the account was deleted
+	}
+	if err != nil {
 		return err
 	}
 	now := s.Now()
-	if s.refreshed(ev.UserID, now) {
+	switch {
+	case len(r.Tokens) == 0:
+		count(Refresh, "no_token")
+	case s.refreshed(ev.UserID, now):
 		count(Refresh, "throttled")
-		return nil
+	default:
+		accepted, lastErr := s.sendAll(ctx, &r, Refresh, apns.PushBackground, func(string) ([]byte, string, time.Time) {
+			return SilentPayload(ev.Day, r.ID), "refresh-" + ev.Day, now.Add(6 * time.Hour)
+		})
+		// A refresh minutes late is no use: a failure is logged and counted, not retried.
+		result := "sent"
+		if accepted == 0 {
+			result = "failed"
+			if lastErr != nil {
+				s.Log.WarnContext(ctx, "refresh push", "err", lastErr)
+			}
+		}
+		count(Refresh, result)
 	}
-	accepted, lastErr := s.sendAll(ctx, &r, Refresh, apns.PushBackground, func(string) ([]byte, string, time.Time) {
-		return SilentPayload(ev.Day), "refresh-" + ev.Day, now.Add(6 * time.Hour)
-	})
-	// A refresh minutes late is no use: a failure is logged and counted, not retried.
-	result := "sent"
-	if accepted == 0 {
-		result = "failed"
-		if lastErr != nil {
-			s.Log.WarnContext(ctx, "refresh push", "err", lastErr)
+	return s.activities(ctx, &r, now)
+}
+
+// activities decides every workout of r the scan finds and announces the ones that pass the
+// rules (docs/API.md → ACTIVITY_SCORED: the rules). Every candidate is tried; the first error
+// is returned, so the event is retried and what was decided stays decided.
+func (s *Service) activities(ctx context.Context, r *store.Recipient, now time.Time) error {
+	cands, err := s.St.ActivityCandidates(ctx, r.ID, now)
+	if err != nil {
+		return err
+	}
+	var first error
+	for _, c := range cands {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.activity(ctx, r, c, now); err != nil && first == nil {
+			first = err
 		}
 	}
-	count(Refresh, result)
+	return first
+}
+
+// activity applies the rules to one candidate, records the decision, and sends when it is to be
+// sent. A skipped candidate leaves nothing behind (a later scan looks again); every decided one
+// leaves a ledger row and one count. Nothing about the workout is logged: the row is the trail.
+func (s *Service) activity(ctx context.Context, r *store.Recipient, c ActivityCandidate, now time.Time) error {
+	verdict := ActivityRule(c, now)
+	if verdict == Skip {
+		return nil
+	}
+	pre := ""
+	switch {
+	case verdict == Backfill:
+		pre = store.AlertBackfill
+	case !Allowed(r.Prefs, model.NotifyActivityScored):
+		pre = store.AlertMuted
+	case isQuiet(r.Prefs, now.In(r.Loc)):
+		pre = store.AlertQuiet
+	case len(r.Tokens) == 0:
+		pre = store.AlertNoToken
+	}
+	day := c.Start.In(r.Loc).Format(dayLayout)
+	// The workouts hidden behind c are decided with it: if c's copy is deleted later, one of them
+	// becomes visible and must not alert again.
+	mark := store.AlertMark{WorkoutRef: c.WorkoutRef, Day: day, Members: c.Members}
+	outcome, err := s.St.DecideWorkoutAlert(ctx, r.ID, mark, func(ledger []store.AlertMark, sentOnDay int) string {
+		return ActivityOutcome(c, ledger, sentOnDay, pre, ActivityDailyCap)
+	})
+	if err != nil {
+		return err
+	}
+	if outcome != store.AlertSending {
+		count(model.NotifyActivityScored, outcome)
+		return nil
+	}
+	accepted, lastErr := s.sendAll(ctx, r, model.NotifyActivityScored, apns.PushAlert, func(lang string) ([]byte, string, time.Time) {
+		m := Activity(day, c.ID.String(), c.Activity, *c.Strain, c.Start, c.End, lang)
+		return m.Payload(r.ID), m.Category + "-" + c.ID.String(), m.Expires
+	})
+	if accepted == 0 && lastErr != nil {
+		// Nobody was reached because APNs could not be: give the claim back and retry the event.
+		// ctx may be the very thing that ended the send (the deadline, the shutdown), so the release
+		// does not run on it, or the row would stay "sending" and use up one of the day's three.
+		sctx, cancel := settleContext(ctx)
+		defer cancel()
+		memberIDs := make([]uuid.UUID, len(c.Members))
+		for k, m := range c.Members {
+			memberIDs[k] = m.ID
+		}
+		if err := s.St.ReleaseWorkoutAlert(sctx, r.ID, c.ID, memberIDs); err != nil {
+			s.Log.WarnContext(ctx, "release claim", "err", err)
+		}
+		count(model.NotifyActivityScored, "failed")
+		return lastErr
+	}
+	result := store.AlertSent
+	if accepted == 0 {
+		result = store.AlertFailed
+	}
+	sctx, cancel := settleContext(ctx)
+	defer cancel()
+	if err := s.St.FinishWorkoutAlert(sctx, r.ID, c.ID, result, accepted); err != nil {
+		s.Log.WarnContext(ctx, "record send", "err", err)
+	}
+	count(model.NotifyActivityScored, result)
+	s.Log.InfoContext(ctx, "push", "category", model.NotifyActivityScored, "day", day, "devices", accepted, "of", len(r.Tokens))
 	return nil
+}
+
+// settleTimeout bounds the store call that ends a claimed send.
+const settleTimeout = 5 * time.Second
+
+// settleContext is the context for ending a claim (release, or record how the send ended). It keeps
+// ctx's values but not its cancellation: when the Pub/Sub deadline or a shutdown cancelled ctx during
+// the APNs send, the claim must still be given back or finished, or it stays "sending". A short
+// timeout bounds it.
+func settleContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+}
+
+func isQuiet(p model.NotificationPrefs, now time.Time) bool {
+	_, quiet := QuietUntil(p, now)
+	return quiet
 }

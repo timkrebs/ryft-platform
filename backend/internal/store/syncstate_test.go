@@ -116,13 +116,13 @@ func TestUpsertCountsOnlyChanges(t *testing.T) {
 	}
 	w := model.Workout{ID: uuid.New(), Activity: "running", Start: now.Add(-time.Hour), End: now, Source: "Watch"}
 	for k, want := range []int{1, 0} {
-		if n, err := st.UpsertWorkouts(ctx, id, []model.Workout{w}); err != nil || n != want {
+		if n, err := st.UpsertWorkouts(ctx, id, uuid.Nil, []model.Workout{w}); err != nil || n != want {
 			t.Errorf("workout %d: %d %v, want %d", k, n, err, want)
 		}
 	}
 	kcal := 300.0
 	w.EnergyKcal = &kcal
-	if n, _ := st.UpsertWorkouts(ctx, id, []model.Workout{w}); n != 1 {
+	if n, _ := st.UpsertWorkouts(ctx, id, uuid.Nil, []model.Workout{w}); n != 1 {
 		t.Errorf("a changed workout counts: %d", n)
 	}
 }

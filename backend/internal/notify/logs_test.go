@@ -37,7 +37,7 @@ var notifyLogKeys = logcheck.Lines{
 
 var (
 	notifyStandardKeys = logcheck.Standard("notify")
-	categories         = logcheck.Enum(model.NotifyMorningScore, model.NotifySessionScored, model.NotifyPR, model.NotifySyncStale, Refresh)
+	categories         = logcheck.Enum(model.NotifyMorningScore, model.NotifySessionScored, model.NotifyPR, model.NotifySyncStale, model.NotifyActivityScored, Refresh)
 	apnsReason         = regexp.MustCompile(`^[A-Za-z]{1,64}$`)
 )
 
@@ -66,6 +66,18 @@ func (s *logStore) NotificationSent(ctx context.Context, u uuid.UUID, day, categ
 		return errDB
 	}
 	return s.fakeStore.NotificationSent(ctx, u, day, category, devices)
+}
+func (s *logStore) FinishWorkoutAlert(ctx context.Context, u, w uuid.UUID, outcome string, devices int) error {
+	if s.failSent {
+		return errDB
+	}
+	return s.fakeStore.FinishWorkoutAlert(ctx, u, w, outcome, devices)
+}
+func (s *logStore) ReleaseWorkoutAlert(ctx context.Context, u, w uuid.UUID, members []uuid.UUID) error {
+	if s.failRelease {
+		return errDB
+	}
+	return s.fakeStore.ReleaseWorkoutAlert(ctx, u, w, members)
 }
 func (s *logStore) ReleaseNotification(ctx context.Context, u uuid.UUID, day, category string) error {
 	if s.failRelease {
@@ -151,13 +163,47 @@ func TestNotifyLogsNoHealthValuesOrTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// 5. an announced workout (71 minutes, strain 13.7, a run of Garmin Connect) whose send is
+	// not recorded: no line names the workout, its sport, source, strain or duration
+	run := ranAt(now.Add(-time.Hour), 71)
+	run.Strain = fptr(13.7)
+	s, ls, _ = build()
+	ls.failSent = true
+	ls.cands = []store.ActivityCandidate{run}
+	if err := handle(s, ls.recipient.ID, events.NotifyMessage{Refresh: &model.RefreshEvent{UserID: ls.recipient.ID, Day: "2026-10-19"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ls.outcomes(); len(got) != 1 {
+		t.Fatalf("the workout is decided: %v", got)
+	}
+	// 6. the same with APNs down and the release failing: the event is retried
+	s, ls, la = build()
+	la.down, ls.failRelease = true, true
+	ls.cands = []store.ActivityCandidate{ranAt(now.Add(-2*time.Hour), 30)}
+	if err := handle(s, ls.recipient.ID, events.NotifyMessage{Refresh: &model.RefreshEvent{UserID: ls.recipient.ID, Day: "2026-10-19"}}); err == nil {
+		t.Fatal("APNs unreachable: the event is retried")
+	}
+
 	forbid := logcheck.Forbidden{
-		Texts:   []string{live, dead, refused},
-		Numbers: []float64{82, 78, 80},
+		Texts:   []string{live, dead, refused, run.ID.String(), run.Source, run.Activity},
+		Numbers: []float64{82, 78, 80, 13.7, 71},
 	}
 	lines, problems := logcheck.Check(buf.String(), notifyStandardKeys, notifyLogKeys, forbid)
 	for _, p := range problems {
 		t.Error(p)
+	}
+	// the announced workout is the one line that names ACTIVITY_SCORED, by category and local day only
+	announced := 0
+	for _, p := range lines["push"] {
+		if p["category"] == model.NotifyActivityScored {
+			announced++
+			if p["day"] != "2026-10-19" {
+				t.Errorf("the push line names the local day: %v", p)
+			}
+		}
+	}
+	if announced != 1 {
+		t.Errorf("%d ACTIVITY_SCORED push lines, want 1", announced)
 	}
 	// whose it is stays on every line, from the context
 	for msg, recs := range lines {

@@ -80,6 +80,29 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Notifications NT1: `ACTIVITY_SCORED` and `ryft.account` (2026-11-22, D253–D256; PR "push: ACTIVITY_SCORED for workouts synced from Apple Health (NT1)")
+
+The second of the two notification PRs (the first: NT7, NT5, NT3, NT4). Contract first (API.md → Push notifications
+→ `ACTIVITY_SCORED`: the rules), then the sender (`docs/work/2026-11-22-notifications-nt/activity-scored-design.md`).
+- A workout synced from Apple Health, scored, primary, not RYFT's own, within 12 h of its end, at least 10 min, not
+  backfill: one alert ever, at most 3 a local day, dropped in quiet hours. It is decided in notify on the existing
+  `refresh` event (no topology or Terraform change, D253), and every decision goes to the ledger `workout_alerts`
+  (D254). Workouts record their first device and their bundle id (D255).
+- `ryft.account` on every alert and on the silent refresh (D256). `NotificationPrefs.categories.ACTIVITY_SCORED`,
+  default on.
+- Migration 0041. Nothing is sent until the APNs key is configured (as before).
+- **NT2** (watch-detected): no data exists to tell. Planned shape in API.md, built only once the app finds a
+  HealthKit key. **NT6** (journal reminder on the account): planned shape in API.md, not built.
+
+- `Workout.source_bundle_id` is now stored and returned (the app's export holds it).
+
+**Merge condition (D256):** the privacy text in force lists what passes through APNs, and doesn't name the account
+identifier or a workout's type and duration. Add them to that sentence in the pending revision (C2, #228), with its
+`PRIVACY_POLICY_VERSION` bump. Merge this PR only after that version is published. It stays a draft until then.
+**On merge:** `deploy.yml` runs migrate (0041), then rolls the services. Nothing for the user to run. **Open:**
+the AASA gains `/activity/*` in a web PR once the app's `AppRoute.activity` ships. The privacy review also noted
+that the text in force still names AWS as the host (production is on GCP since D246). C2 should fix that too.
+
 ## The training import is on for everyone (2026-11-22, D250)
 
 **The user's decision:** every account can import. The flag `train.import` goes from dark (`enabled: true,

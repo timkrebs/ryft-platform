@@ -38,13 +38,15 @@ func TestMorningPayload(t *testing.T) {
 		} `json:"aps"`
 		RYFT map[string]string `json:"ryft"`
 	}
-	if err := json.Unmarshal(m.Payload(), &p); err != nil {
+	account := uuid.MustParse("5f0e8c1a-6c1b-4a4e-9d55-1f1d2f6a3b7c")
+	if err := json.Unmarshal(m.Payload(account), &p); err != nil {
 		t.Fatal(err)
 	}
 	if p.APS.Alert.TitleKey != "MORNING_SCORE_TITLE" || p.APS.Alert.TitleArgs[0] != "82%" ||
 		p.APS.Alert.Key != "MORNING_SCORE_BODY_BALANCED" || p.APS.Alert.Args[0] != "78" ||
-		p.APS.Category != "MORNING_SCORE" || p.APS.Mutable != 1 || p.RYFT["url"] != "https://ryftlab.de/day/2026-10-19" {
-		t.Fatalf("payload %s", m.Payload())
+		p.APS.Category != "MORNING_SCORE" || p.APS.Mutable != 1 || p.RYFT["url"] != "https://ryftlab.de/day/2026-10-19" ||
+		p.RYFT["account"] != account.String() {
+		t.Fatalf("payload %s", m.Payload(account))
 	}
 	if got := Render(m.TitleKey, m.TitleArgs, "en"); got != "Recovery 82%" {
 		t.Fatalf("title %q", got)
@@ -108,7 +110,8 @@ func TestCatalog(t *testing.T) {
 		Session("d", "s", "t", 1, 0, now, "en"), Session("d", "s", "", 1, 1, now, "en"), Session("d", "s", "t", 1, 2, now, "en"),
 		Record("d", "s", "x", model.PRE1RM, 1, now, "en"), Record("d", "s", "x", model.PRMaxWeight, 1, now, "en"),
 		Record("d", "s", "x", model.PRMaxReps, 1, now, "en"), Record("d", "s", "x", model.PRMaxVolume, 1, now, "en"),
-		Stale("d", 21, now)} {
+		Stale("d", 21, now),
+		Activity("d", "w", "running", 1, now, now.Add(time.Hour), "en"), Activity("d", "w", "other", 1, now, now.Add(time.Hour), "en")} {
 		for _, k := range []struct {
 			key  string
 			args []string
@@ -169,11 +172,39 @@ type fakeStore struct {
 	claims    map[string]int // day/category → devices
 	dropped   []string
 	delivered []string
+
+	// ACTIVITY_SCORED (the methods are in activity_service_test.go)
+	cands        []store.ActivityCandidate
+	ledger       []store.AlertMark // in decision order
+	alertDevices map[uuid.UUID]int
+
+	recipientErr error // returned by Recipient when set (store.ErrNotFound: the account is gone)
+	// ctxSeen records the context state of the calls that end a claim, by call name: the
+	// release and the record of a send must not see the caller's cancellation.
+	ctxSeen map[string]ctxState
+}
+
+// ctxState is what a store call's context looked like when the call was made.
+type ctxState struct {
+	err      error // ctx.Err()
+	deadline bool  // ctx has a deadline
+}
+
+// saw records the context of a call; the caller holds f.mu.
+func (f *fakeStore) saw(call string, ctx context.Context) {
+	if f.ctxSeen == nil {
+		f.ctxSeen = map[string]ctxState{}
+	}
+	_, ok := ctx.Deadline()
+	f.ctxSeen[call] = ctxState{err: ctx.Err(), deadline: ok}
 }
 
 func key(day, category string) string { return day + "/" + category }
 
 func (f *fakeStore) Recipient(context.Context, uuid.UUID) (store.Recipient, error) {
+	if f.recipientErr != nil {
+		return store.Recipient{}, f.recipientErr
+	}
 	return f.recipient, nil
 }
 func (f *fakeStore) MorningScore(context.Context, uuid.UUID, string) (store.Morning, error) {
@@ -194,15 +225,17 @@ func (f *fakeStore) ClaimNotification(_ context.Context, _ uuid.UUID, day, categ
 	f.claims[key(day, category)] = -1
 	return true, nil
 }
-func (f *fakeStore) ReleaseNotification(_ context.Context, _ uuid.UUID, day, category string) error {
+func (f *fakeStore) ReleaseNotification(ctx context.Context, _ uuid.UUID, day, category string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.saw("ReleaseNotification", ctx)
 	delete(f.claims, key(day, category))
 	return nil
 }
-func (f *fakeStore) NotificationSent(_ context.Context, _ uuid.UUID, day, category string, devices int) error {
+func (f *fakeStore) NotificationSent(ctx context.Context, _ uuid.UUID, day, category string, devices int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.saw("NotificationSent", ctx)
 	f.claims[key(day, category)] = devices
 	return nil
 }
@@ -223,13 +256,25 @@ type fakeAPNs struct {
 	mu   sync.Mutex
 	sent []apns.Notification
 	down bool
+
+	// cancelOnAlert, when set, is called as an alert push is sent: the Pub/Sub deadline or a shutdown
+	// ends the caller's context during the send. With cancelFails the send then fails with the
+	// context's error; without, APNs had already answered 200.
+	cancelOnAlert context.CancelFunc
+	cancelFails   bool
 }
 
-func (f *fakeAPNs) Send(_ context.Context, n apns.Notification) (apns.Result, error) {
+func (f *fakeAPNs) Send(ctx context.Context, n apns.Notification) (apns.Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.down {
 		return apns.Result{}, errors.New("connection refused")
+	}
+	if f.cancelOnAlert != nil && n.PushType == apns.PushAlert {
+		f.cancelOnAlert()
+		if f.cancelFails {
+			return apns.Result{}, ctx.Err()
+		}
 	}
 	f.sent = append(f.sent, n)
 	if strings.HasPrefix(n.Token, "dead") {
@@ -444,7 +489,8 @@ func TestRefreshAfterSync(t *testing.T) {
 	}
 	var payload map[string]any
 	_ = json.Unmarshal(ap.sent[0].Payload, &payload)
-	if r, _ := payload["ryft"].(map[string]any); r["kind"] != "refresh" || r["day"] != "2026-10-21" || ap.sent[0].CollapseID != "refresh-2026-10-21" {
+	if r, _ := payload["ryft"].(map[string]any); r["kind"] != "refresh" || r["day"] != "2026-10-21" || ap.sent[0].CollapseID != "refresh-2026-10-21" ||
+		r["account"] != st.recipient.ID.String() {
 		t.Fatalf("payload %s, collapse %s", ap.sent[0].Payload, ap.sent[0].CollapseID)
 	}
 	clock = now.Add(4 * time.Minute)

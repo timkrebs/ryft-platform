@@ -307,7 +307,7 @@ func TestDeletionRyftSessionWorkoutIsNotDeletable(t *testing.T) {
 	e := newDelEnv(t)
 	at := base()
 	mine, hk := uuid.New(), uuid.New()
-	if _, err := e.st.UpsertWorkouts(context.Background(), e.user.ID, []model.Workout{
+	if _, err := e.st.UpsertWorkouts(context.Background(), e.user.ID, uuid.Nil, []model.Workout{
 		{ID: mine, Activity: "strength", Start: at, End: at.Add(time.Hour), Source: "ryft-session"},
 		{ID: hk, Activity: "running", Start: at.Add(5 * time.Hour), End: at.Add(6 * time.Hour), Source: "Watch"}}); err != nil {
 		t.Fatal(err)
@@ -891,7 +891,7 @@ func TestRyftSessionWorkoutSurvivesAnUploadAndDeletionOfItsID(t *testing.T) {
 	e := newDelEnv(t)
 	at := base()
 	x := uuid.New()
-	if _, err := e.st.UpsertWorkouts(context.Background(), e.user.ID, []model.Workout{
+	if _, err := e.st.UpsertWorkouts(context.Background(), e.user.ID, uuid.Nil, []model.Workout{
 		{ID: x, Activity: "strength", Start: at, End: at.Add(time.Hour), Source: "ryft-session"}}); err != nil {
 		t.Fatal(err)
 	}

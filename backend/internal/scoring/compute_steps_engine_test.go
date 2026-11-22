@@ -88,7 +88,7 @@ func (s *stepSeed) nights(days ...string) {
 func (s *stepSeed) workoutAvg(activity string, avgHR float64, from, to string) {
 	s.t.Helper()
 	w := model.Workout{ID: uuid.New(), Activity: activity, Start: s.at(from), End: s.at(to), AvgHR: &avgHR, Source: "watch"}
-	if _, err := s.st.UpsertWorkouts(context.Background(), s.user, []model.Workout{w}); err != nil {
+	if _, err := s.st.UpsertWorkouts(context.Background(), s.user, uuid.Nil, []model.Workout{w}); err != nil {
 		s.t.Fatal(err)
 	}
 	s.workout = w.ID

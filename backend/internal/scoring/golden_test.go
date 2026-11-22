@@ -259,7 +259,7 @@ func goldenSync(t *testing.T, st *store.Store, user uuid.UUID, loc *time.Locatio
 	if _, err := st.UpsertSleep(ctx, user, sleep); err != nil {
 		t.Fatalf("sleep: %v", err)
 	}
-	if _, err := st.UpsertWorkouts(ctx, user, workouts); err != nil {
+	if _, err := st.UpsertWorkouts(ctx, user, uuid.Nil, workouts); err != nil {
 		t.Fatalf("workouts: %v", err)
 	}
 	if err := st.UpsertSources(ctx, user, store.SourcesOf(samples, sleep, workouts)); err != nil {

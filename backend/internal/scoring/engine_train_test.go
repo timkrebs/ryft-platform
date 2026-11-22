@@ -133,7 +133,7 @@ func TestEngineScoresStrengthSessions(t *testing.T) {
 
 	// The watch's strength workout arrives and overlaps the session.
 	hk := model.Workout{ID: uuid.New(), Activity: "strength", Start: start.Add(-5 * time.Minute), End: end.Add(2 * time.Minute), Source: "Apple Watch"}
-	if _, err := st.UpsertWorkouts(ctx, user, []model.Workout{hk}); err != nil {
+	if _, err := st.UpsertWorkouts(ctx, user, uuid.Nil, []model.Workout{hk}); err != nil {
 		t.Fatal(err)
 	}
 	if err := engine.ComputeDay(ctx, user, day); err != nil {

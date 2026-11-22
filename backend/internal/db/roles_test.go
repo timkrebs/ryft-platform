@@ -49,7 +49,7 @@ var crud = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
 var (
 	journalTables = []string{"behaviors", "user_behaviors", "journal_days", "journal_entries"}
 	betaTables    = []string{"consents", "beta_invite_codes", "user_sources", "feedback", "admin_audit", "score_queue", "outbox", "admin_accounts", "beta_invite_uses",
-		"app_attest_keys", "app_attest_challenges"}
+		"app_attest_keys", "app_attest_challenges", "workout_alerts"}
 )
 
 // trainTables are migration 0011's.
@@ -75,6 +75,8 @@ var grants = map[string]map[string][]string{
 		"push_tokens": {"SELECT", "DELETE"}, "notifications_sent": crud, "personal_records": {"SELECT"},
 		"schema_migrations": {"SELECT"},
 		"outbox":            {"SELECT", "INSERT", "DELETE"}, // 0034: its quiet-hours waits; UPDATE of the relay's columns only (below)
+		// 0041: the ledger; UPDATE of outcome and devices only, and workouts and devices column by column (below).
+		"workout_alerts": {"SELECT", "INSERT", "DELETE"},
 	},
 	"ryft_api": {
 		"users": {"SELECT", "INSERT", "UPDATE", "DELETE"}, "devices": {"SELECT", "DELETE"},
@@ -89,7 +91,8 @@ var grants = map[string]map[string][]string{
 		"beta_invite_uses": crud,       // 0033: UPDATE because a merge moves rows
 		// 0037: the api alone; a key's counter and last use are updated, a challenge never is.
 		"app_attest_keys": crud, "app_attest_challenges": {"SELECT", "INSERT", "DELETE"},
-		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
+		"workout_alerts": {"SELECT", "DELETE"}, // 0041: deletion; UPDATE (user_id) for the merge (below)
+		"exercises":      crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
 }
@@ -145,8 +148,8 @@ func TestServiceRoleGrants(t *testing.T) {
 			t.Errorf("ryft_scoring UPDATE workouts.%s: %v, want %v", col, has, want)
 		}
 	}
-	// api may move a merged account's raw data: the owner column only (0024, D90).
-	for _, table := range []string{"samples", "sleep_segments", "workouts", "devices"} {
+	// api may move a merged account's raw data: the owner column only (0024, D90), and its ledger (0041).
+	for _, table := range []string{"samples", "sleep_segments", "workouts", "devices", "workout_alerts"} {
 		for col, want := range map[string]bool{"user_id": true, "start_at": false, "value": false, "last_sync_at": false} {
 			var exists, has bool
 			if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = $2)`,
@@ -247,6 +250,47 @@ func TestServiceRoleGrants(t *testing.T) {
 		{"ryft_api", "sessions", "origin", "INSERT", true}, {"ryft_api", "session_sets", "assist_kg", "UPDATE", true},
 		{"ryft_api", "users", "import_lease_until", "UPDATE", true},
 	} {
+		var has bool
+		if err := pool.QueryRow(ctx, `SELECT has_column_privilege($1, $2, $3, $4)`, c.role, "public."+c.table, c.col, c.priv).Scan(&has); err != nil {
+			t.Fatal(err)
+		}
+		if has != c.want {
+			t.Errorf("%s %s %s.%s: %v, want %v", c.role, c.priv, c.table, c.col, has, c.want)
+		}
+	}
+	// 0041: notify reads what the activity rules need of a workout and no health value, writes none of it,
+	// reads when a device was first seen, and finishes a claim with its outcome and devices only; the api moves
+	// the ledger's owner column only. The new workouts columns: ingest writes them (table level, 0009), scoring
+	// and the api read them and write neither.
+	type colPriv struct {
+		role, table, col, priv string
+		want                   bool
+	}
+	var checks []colPriv
+	for _, col := range []string{"user_id", "id", "activity", "start_at", "end_at", "source", "source_bundle_id", "device_id",
+		"strain", "session_id", "duplicate_of", "created_at"} {
+		checks = append(checks, colPriv{"ryft_notify", "workouts", col, "SELECT", true},
+			colPriv{"ryft_notify", "workouts", col, "UPDATE", false}, colPriv{"ryft_notify", "workouts", col, "INSERT", false})
+	}
+	for _, col := range []string{"avg_hr", "max_hr", "energy_kcal", "distance_m", "trimp", "zone_minutes", "muscular_load", "model_version"} {
+		checks = append(checks, colPriv{"ryft_notify", "workouts", col, "SELECT", false})
+	}
+	for col, want := range map[string]bool{"user_id": true, "last_sync_at": true, "id": true, "created_at": true, "name": false,
+		"app_version": false, "last_sync_summary": false} {
+		checks = append(checks, colPriv{"ryft_notify", "devices", col, "SELECT", want})
+	}
+	for _, col := range []string{"user_id", "workout_id", "source", "activity", "start_at", "end_at", "day", "outcome", "devices", "decided_at"} {
+		checks = append(checks, colPriv{"ryft_notify", "workout_alerts", col, "UPDATE", col == "outcome" || col == "devices"},
+			colPriv{"ryft_api", "workout_alerts", col, "UPDATE", col == "user_id"})
+	}
+	for _, col := range []string{"device_id", "source_bundle_id"} {
+		checks = append(checks,
+			colPriv{"ryft_ingest", "workouts", col, "INSERT", true}, colPriv{"ryft_ingest", "workouts", col, "UPDATE", true},
+			colPriv{"ryft_scoring", "workouts", col, "SELECT", true}, colPriv{"ryft_scoring", "workouts", col, "INSERT", false},
+			colPriv{"ryft_scoring", "workouts", col, "UPDATE", false},
+			colPriv{"ryft_api", "workouts", col, "SELECT", true}, colPriv{"ryft_api", "workouts", col, "UPDATE", false})
+	}
+	for _, c := range checks {
 		var has bool
 		if err := pool.QueryRow(ctx, `SELECT has_column_privilege($1, $2, $3, $4)`, c.role, "public."+c.table, c.col, c.priv).Scan(&has); err != nil {
 			t.Fatal(err)
@@ -424,6 +468,86 @@ func TestServiceRolesLogInAndPassRLS(t *testing.T) {
 	if _, err := notify.Exec(ctx, `SELECT import_source FROM sessions`); err == nil {
 		t.Fatal("notify must not read import_source")
 	}
+
+	// 0041, through RLS: ingest records the uploading device and the bundle; notify reads the columns the
+	// activity rules need and the device's first sight (no restrictive policy narrows its read), no health
+	// value, writes no workout, and claims, finishes and prunes ledger rows; ingest and scoring never touch
+	// the ledger; the api moves its owner column and erases it.
+	const dev41, w41 = "aaaaaaaa-0000-0000-0000-0000000000d1", "aaaaaaaa-0000-0000-0000-0000000000f3"
+	if _, err := ingest.Exec(ctx, `INSERT INTO devices (id, user_id, name) VALUES ($1, $2, 't')`, dev41, id); err != nil {
+		t.Fatalf("ingest records a device: %v", err)
+	}
+	if _, err := ingest.Exec(ctx, `INSERT INTO workouts (id, user_id, activity, start_at, end_at, source, device_id, source_bundle_id)
+		VALUES ($1, $2, 'running', now() - interval '40 minutes', now() - interval '5 minutes', 'Phone', $3, 'com.example.app')`,
+		w41, id, dev41); err != nil {
+		t.Fatalf("ingest stores a workout's device and bundle: %v", err)
+	}
+	if err := notify.QueryRow(ctx, `SELECT count(*) FROM workouts w JOIN devices d ON d.user_id = w.user_id AND d.id = w.device_id
+		WHERE w.user_id = $1 AND w.id = $2 AND w.source <> 'ryft-session' AND w.session_id IS NULL AND w.duplicate_of IS NULL
+		  AND w.strain IS NULL AND w.source_bundle_id = 'com.example.app' AND w.activity = 'running'
+		  AND w.end_at - w.start_at >= interval '10 minutes' AND w.created_at >= d.created_at`, id, w41).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("notify reads a workout's rule columns and its device through RLS: n=%d err=%v", n, err)
+	}
+	for _, q := range []string{`SELECT avg_hr FROM workouts`, `SELECT energy_kcal FROM workouts`, `SELECT * FROM workouts`,
+		`SELECT name FROM devices`, `UPDATE workouts SET strain = 1 WHERE id = '` + w41 + `'`,
+		`DELETE FROM workouts WHERE id = '` + w41 + `'`} {
+		if _, err := notify.Exec(ctx, q); err == nil {
+			t.Errorf("notify must not: %s", q)
+		}
+	}
+	claim := `INSERT INTO workout_alerts (user_id, workout_id, source, activity, start_at, end_at, day, outcome)
+		VALUES ($1, $2, 'Phone', 'running', now() - interval '40 minutes', now() - interval '5 minutes', current_date, 'sending')
+		ON CONFLICT DO NOTHING`
+	if ct, err := notify.Exec(ctx, claim, id, w41); err != nil || ct.RowsAffected() != 1 {
+		t.Fatalf("notify claims a workout: %v %v", ct, err)
+	}
+	if ct, err := notify.Exec(ctx, claim, id, w41); err != nil || ct.RowsAffected() != 0 {
+		t.Fatalf("a second claim of the same workout inserts nothing: %v %v", ct, err)
+	}
+	if ct, err := notify.Exec(ctx, `UPDATE workout_alerts SET outcome = 'sent', devices = 1
+		WHERE user_id = $1 AND workout_id = $2 AND outcome = 'sending'`, id, w41); err != nil || ct.RowsAffected() != 1 {
+		t.Fatalf("notify finishes a claim: %v %v", ct, err)
+	}
+	if err := notify.QueryRow(ctx, `SELECT count(*) FROM workout_alerts WHERE user_id = $1 AND day = current_date
+		AND outcome IN ('sending', 'sent')`, id).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("notify counts the day's sends: n=%d err=%v", n, err)
+	}
+	if _, err := notify.Exec(ctx, `DELETE FROM workout_alerts WHERE user_id = $1 AND end_at < now() - interval '2 days'`, id); err != nil {
+		t.Fatalf("notify prunes its ledger: %v", err)
+	}
+	for _, q := range []string{`UPDATE workout_alerts SET day = day + 1`, `UPDATE workout_alerts SET user_id = user_id`,
+		`TRUNCATE workout_alerts`} {
+		if _, err := notify.Exec(ctx, q); err == nil {
+			t.Errorf("notify must not: %s", q)
+		}
+	}
+	for role, c := range map[string]*pgx.Conn{"ryft_ingest": ingest, "ryft_scoring": scoring} {
+		for _, q := range []string{`SELECT 1 FROM workout_alerts`,
+			`INSERT INTO workout_alerts (user_id, workout_id, source, activity, start_at, end_at, day, outcome)
+			   VALUES ('` + id + `', gen_random_uuid(), 'Phone', 'running', now(), now(), current_date, 'sent')`,
+			`UPDATE workout_alerts SET outcome = 'sent'`, `DELETE FROM workout_alerts`} {
+			if _, err := c.Exec(ctx, q); err == nil {
+				t.Errorf("%s must not: %s", role, q)
+			}
+		}
+	}
+	if err := api.QueryRow(ctx, `SELECT count(*) FROM workout_alerts WHERE user_id = $1`, id).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("api reads the ledger through RLS: n=%d err=%v", n, err)
+	}
+	if ct, err := api.Exec(ctx, `UPDATE workout_alerts SET user_id = $1 WHERE user_id = $1 AND workout_id = $2`, id, w41); err != nil ||
+		ct.RowsAffected() != 1 {
+		t.Fatalf("api moves a merged account's ledger rows: %v %v", ct, err)
+	}
+	if _, err := api.Exec(ctx, `UPDATE workout_alerts SET outcome = 'capped' WHERE user_id = $1`, id); err == nil {
+		t.Error("api must not change an outcome")
+	}
+	if _, err := api.Exec(ctx, claim, id, "aaaaaaaa-0000-0000-0000-0000000000f4"); err == nil {
+		t.Error("api must not decide an alert")
+	}
+	if ct, err := api.Exec(ctx, `DELETE FROM workout_alerts WHERE user_id = $1`, id); err != nil || ct.RowsAffected() != 1 {
+		t.Fatalf("api erases an account's ledger: %v %v", ct, err)
+	}
+
 	if _, err := asRoleErr(dsn, "ryft_api", "wrong-password"); err == nil {
 		t.Fatal("a wrong password must fail")
 	}

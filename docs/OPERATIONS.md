@@ -4320,6 +4320,21 @@ was a Grafana rule: notify's error lines show it).
 A device token APNs reports gone is deleted (`ryft_push_tokens_pruned_total`). Raise
 `push.enabled` (above) once sending works, so the app starts asking for permission.
 
+**`ACTIVITY_SCORED` (D253–D255).** notify decides a synced workout on the silent refresh after its sync's
+scoring. Every decision is a row in `workout_alerts`, pruned 2 days after the workout's end, so the table is the
+support trail; the logs carry no workout id. `ryft_push_notifications_total{category="ACTIVITY_SCORED"}` counts
+the outcomes (`sent`, `failed`, `capped`, `backfill`, `inherited`, `muted`, `quiet`, `no_token`, `duplicate`).
+A tester who got no alert: in the Supabase SQL editor,
+
+```sql
+SELECT workout_id, day, outcome, devices, decided_at FROM workout_alerts
+WHERE user_id = '<uuid>' ORDER BY decided_at DESC LIMIT 20;
+```
+
+No row means the workout was never a candidate: not synced, no strain, hidden, shorter than 10 min, from RYFT's own
+bundle, a session attached, or scored more than 12 h after its end. A row `sending` older than a minute is a send
+cut off by a crash. It is lost (at most once) and counts toward that day's 3.
+
 ## Apex site and apple-app-site-association
 
 `https://ryftlab.de` is the static export of **`web/`** in this repository on Firebase Hosting

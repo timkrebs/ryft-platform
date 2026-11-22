@@ -157,7 +157,7 @@ var (
 	// PushNotifications counts what notify decided per category, sent or not (notify).
 	PushNotifications = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_push_notifications_total",
-		Help: "Notifications notify decided on, by category (MORNING_SCORE, SESSION_SCORED, PR, SYNC_STALE, REFRESH = the silent push) and result: sent, failed, muted (category off), quiet, deferred (until quiet hours end), duplicate (already sent), throttled, stale, import (an imported session, never announced), no_token, unconfigured (no APNs key).",
+		Help: "Notifications notify decided on, by category (MORNING_SCORE, SESSION_SCORED, PR, SYNC_STALE, ACTIVITY_SCORED, REFRESH = the silent push) and result: sent, failed, muted (category off), quiet, deferred (until quiet hours end), duplicate (already sent or decided), throttled, stale, import (an imported session, never announced), no_token, unconfigured (no APNs key); ACTIVITY_SCORED only: capped (the 4th and later of a local day), backfill (first stored by a new device's sync), inherited (a copy of a workout that was decided).",
 	}, []string{"category", "result"})
 	APNsResponses = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "ryft_apns_responses_total",

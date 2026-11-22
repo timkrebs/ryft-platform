@@ -39,7 +39,7 @@ so are the operator routes' `actor.kind` (`key` or `user`, Admin routes → The 
 | Profile — Notifications | per-category toggles, quiet hours | `User.notifications`, `PATCH /v1/me/notifications` |
 | (launch, then every 6 h) | feature flags | `GET /v1/config` |
 | (after the first sync, on every token change; sign-out) | push registration | `POST` / `DELETE /v1/devices/{id}/push` |
-| Notifications | morning score, scored session, record, no new data; silent refresh | **Push notifications** below |
+| Notifications | morning score, scored session, record, no new data, scored activity (a synced workout); silent refresh | **Push notifications** below |
 | (after Sign in with Apple) | let deletion revoke the Apple grant | `POST /v1/me/apple-authorization` |
 | (after sign-in, then about hourly; D245, D247: `501` until the server has its token key) | App Attest: one key per account and install, an app token for every request | `POST /v1/app-attest/challenge`, `POST /v1/app-attest/keys`, `POST /v1/app-attest/token`; the headers `X-RYFT-App-Token` and `X-RYFT-App-Build`; `GET /v1/config` → `app_attest` (Conventions → **App Attest**) |
 | Strain — Train | start a workout, today's plan, live session, summary with load and PRs | `GET /v1/plans/today`, `PUT /v1/sessions/{id}`, `POST /v1/sessions/{id}/complete` |
@@ -720,7 +720,8 @@ again once that is resolved.
 { "id": "5f0e8c1a-6c1b-4a4e-9d55-1f1d2f6a3b7c", "name": "Tim K", "email": "tim@example.com",
   "provider": "apple", "tz": "Europe/Berlin", "max_hr": 190, "sleep_base_min": 455,
   "sleep_base_source": "learned", "sleep_base_learned_min": 455, "sleep_base_learned_at": "2026-10-18T02:00:04Z",
-  "notifications": { "categories": { "MORNING_SCORE": true, "SESSION_SCORED": true, "PR": false, "SYNC_STALE": true },
+  "notifications": { "categories": { "MORNING_SCORE": true, "SESSION_SCORED": true, "PR": false, "SYNC_STALE": true,
+                                     "ACTIVITY_SCORED": true },
                      "quiet_hours": { "from": "22:30", "to": "07:00" } },
   "beta_access": true,
   "consent": { "policy_version": "2026-10-20", "granted_at": "2026-10-20T09:12:44Z" },
@@ -754,7 +755,7 @@ The user is created on the first authenticated request with `tz = Europe/Berlin`
 | `birth_year` | int? | For the max-HR estimate; nothing finer is stored. `PATCH /v1/me` accepts 1920 to the current year − 16. |
 | `max_hr_source` | string | `default` (190, nothing known), `estimated` (208 − 0.7 · age, Tanaka, from `birth_year`), `manual` (set with `PATCH`). Closed enum. |
 | `sources` | `[UserSource]` | Apps and devices that sent data in the last 30 days, newest first: `name` (HealthKit source name), `bundle_id` (string?, when the app sent it), `kinds` (closed enum, sorted: `energy`, `hr`, `hrv`, `resp`, `sleep`, `spo2`, `steps`, `workout`; `hr` covers heart rate, resting heart rate and VO₂max), `last_seen` (the latest record's time), `samples_7d` (see below). `[]` when nothing arrived. |
-| `notifications` | `NotificationPrefs` | Push preferences: every category (`MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE`) with whether it is on (default on), and `quiet_hours` (`{from, to}`, local `HH:MM`, or `null`). Change with `PATCH /v1/me/notifications`. |
+| `notifications` | `NotificationPrefs` | Push preferences: every category the server sends (`MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE`, `ACTIVITY_SCORED`) with whether it is on (default on), and `quiet_hours` (`{from, to}`, local `HH:MM`, or `null`). The keys are the categories this server knows: `ACTIVITY_SCORED` is listed only by a server that sends it (changelog 2026-11-22), so show a category's switch only when its key is here. Change with `PATCH /v1/me/notifications`. |
 | `account_hint` | `AccountHint?` | Set when this account has no data yet and the device in `X-RYFT-Device-ID` synced **another** account in the last 30 days: probably the same person signed in another way (Apple vs. email). `{"kind": "other_account_on_device", "other_provider": "email", "other_last_sync": "2026-10-20T06:58:00Z"}`: `kind` closed enum (one value so far), `other_provider` string? (`apple`, `email`), `other_last_sync` timestamp. Never an id or an email. Offer "sign in with email instead" and the support contact; the operator can merge accounts. `null` otherwise. |
 
 **`UserSource.samples_7d`** (`{string: int}`) counts the **samples** (not sleep segments or workouts, which `kinds` covers) stored for that source with `start` in the last 7 × 24 hours, per sample `type`: the keys are the eight `Sample.type` values (`heart_rate`, `hrv_sdnn`, `resting_hr`, `respiratory_rate`, `spo2`, `vo2max`, `active_energy`, `steps`), **all present on every source, `0` when none arrived**. That is how the app tells a tracker that writes heart rate but no HRV (`hrv_sdnn: 0` next to `heart_rate` in the thousands) from one that writes both. The source is matched by `name`; the counts are after the sync's duplicate handling (each stored row once). The type keys are an open set (a later version may add one): ignore keys you do not know and treat a missing key as `0`. The counts are exact as of the response or taken from the last scoring pass (at most about 15 minutes old); do not compare them to a sync's `accepted`. The field is absent only from a platform that predates 2026-10-31; decode it as optional. There is no way to choose which source feeds which metric yet.
@@ -896,17 +897,20 @@ user and flag, so raising a rollout only adds users. The operator sets flags
 ### `PATCH /v1/me/notifications` — push preferences
 
 Body `NotificationPatch`, both fields optional: `categories` (`{category: bool}`, merged
-into the stored ones; the four categories above), `quiet_hours` (`{"from": "22:30", "to":
+into the stored ones; the keys of `User.notifications.categories`), `quiet_hours` (`{"from": "22:30", "to":
 "07:00"}`, local times; `from` later than `to` spans midnight, equal times mean none;
 `null` clears them, leaving the field out keeps them). Returns `NotificationPrefs`:
 
 <!-- type: model.NotificationPrefs -->
 ```json
-{ "categories": { "MORNING_SCORE": true, "SESSION_SCORED": true, "PR": false, "SYNC_STALE": true },
+{ "categories": { "MORNING_SCORE": true, "SESSION_SCORED": true, "PR": false, "SYNC_STALE": true,
+                  "ACTIVITY_SCORED": false },
   "quiet_hours": { "from": "22:30", "to": "07:00" } }
 ```
 
 `422` for an unknown category or a time that is not `HH:MM`; `400` for unknown fields.
+A server before the `ACTIVITY_SCORED` sender answers `422` for `ACTIVITY_SCORED` (and leaves it out of
+`GET /v1/me`): send a category only when `GET /v1/me` lists it.
 
 ### `POST /v1/devices/{id}/push` — register for push
 
@@ -942,11 +946,57 @@ bundle ID as topic. **Until the APNs key is configured** (Apple Developer Progra
 | `SESSION_SCORED` | A completed strength session has its load (scoring has run), within 12 h of its end. The first one each day; not during quiet hours. | `SESSION_SCORED_TITLE` (session title) or `SESSION_SCORED_TITLE_UNTITLED` · `SESSION_SCORED_BODY` (strain), `_PR` (strain) or `_PRS` (strain, number of records) | `https://ryftlab.de/train/session/<id>` |
 | `PR` | Instead of `SESSION_SCORED` when that category is off and the session set a record. | `PR_TITLE` (exercise name) · `PR_BODY_E1RM`, `_MAX_WEIGHT`, `_MAX_REPS` or `_MAX_VOLUME` (value) | `https://ryftlab.de/train/session/<id>` |
 | `SYNC_STALE` | No heart-rate or step sample for 20 hours (users with data in the last 7 days), once a day between 09:00 and 21:00 local, not during quiet hours. | `SYNC_STALE_TITLE` · `SYNC_STALE_BODY` (hours) | — |
+| `ACTIVITY_SCORED` | A workout synced from Apple Health (a watch, or a tracker that writes to Apple Health) has its strain: scoring has run and duplicates are decided. Within 12 h of its end, at least 10 min long. Not a Train session, an import or RYFT's own workout; not backfilled history; at most 3 a day, one per workout; during quiet hours dropped. Rules below. | `ACTIVITY_SCORED_TITLE` (sport name) or `ACTIVITY_SCORED_TITLE_UNTITLED` · `ACTIVITY_SCORED_BODY` (strain, duration) | `https://ryftlab.de/activity/<workout id>` |
+
+**`ACTIVITY_SCORED`: the rules.** The `notify` service decides when scoring has finished a sync's (or an
+import's) days, the event of the silent refresh. At that point it decides every workout of the account that
+ended in the 12 h before and is not decided yet, with the server's clock as *now*. A scoring that no sync caused
+(the timer pass, a recompute) decides nothing. A workout is sent the alert only when all of these hold:
+
+1. **Uploaded through `POST /v1/sync`** (any HealthKit source), and not RYFT's own:
+   - `source` is not `ryft-session`, and the workout has no `session_id` after this scoring (a Train
+     session attached to it is `SESSION_SCORED`'s and `PR`'s; the attach is decided at scoring, so this
+     check follows it);
+   - `source_bundle_id` is not the RYFT app's bundle id, **`dev.timkrebs.ryft`**, nor one under it
+     (`dev.timkrebs.ryft.` followed by anything: a watch app or an extension), compared without regard to
+     case. A missing `source_bundle_id` (builds before 2026-10-20) passes. So a workout the app itself
+     writes to Apple Health never alerts;
+   - activities the app creates (`PUT /v1/activities/{id}`, not in this contract yet; `origin` `manual` or
+     `ryft`) never send it. `POST /v1/train/import` creates no workouts and sends no alert (as before).
+2. **Scored and visible.** The workout has a `strain` (any value, `0` and `0.x` included). An unscored one
+   sends nothing. It is the **primary** of its duplicate group or in none (Duplicate workouts); a hidden
+   duplicate sends nothing.
+3. **Over, and recent.** `end` ≤ now ≤ `end` + 12 h. Nothing waits: a workout whose `end` is still in the
+   future at this scoring is not sent now, and a later scoring of its day within the window may send it;
+   a scoring after the window sends nothing.
+4. **At least 10 minutes**: `end` − `start` ≥ 600 s.
+5. **Not backfill.** Not a workout first stored by a `POST /v1/sync` whose `device_id` the platform had
+   first seen less than 1 h before that request (the device row's creation time). A new install's history
+   stays quiet even inside the 12 h window. A phone that was offline for hours uploads a recent workout
+   from a known device, and it alerts. A workout stored before the sender shipped (2026-11-22) has no device
+   on record and passes.
+6. **Once per workout.** No alert was decided for this workout before (below).
+7. **At most 3 per local day** per account: the day is the workout's `start` in the account's `tz`
+   (`ryft.day`); the count is the alerts sent for workouts of that day. The 4th and later are dropped,
+   not held.
+8. **Allowed**: `categories.ACTIVITY_SCORED` is on (default on), and now is not in quiet hours. During
+   quiet hours the alert is **dropped**, not held.
+
+**Decided once.** The first scoring at which a workout passes rules 1–6 decides it, whatever rules 7 and
+8 then do (sent, capped, switched off, quiet hours, no registered device). A decided workout never
+alerts again: not on a re-score, a changed `strain` or a new `model_version`, not after quiet hours end.
+A workout that fails rule 5 or is past its window is decided too. The mark passes on:
+
+- a same-source copy of a decided workout (same `source` and `activity`, `start`s and `end`s each within
+  120 s: the fold's rule, Duplicate workouts) is decided too, whether the older copy was folded, deleted
+  through `deleted`, or is still stored (a Garmin rewrite under a new UUID alerts once);
+- a primary is decided when any workout of its duplicate group was (a group whose primary changes
+  alerts at most once).
 
 With every `MORNING_SCORE` event, also when that category is off or quiet hours hold
 it back, a **silent** push (`content-available`, background priority) tells the app to
 refresh the day: `{"aps": {"content-available": 1}, "ryft": {"kind": "refresh", "day":
-"2026-10-19"}}`. The same silent push follows **every sync once scoring has finished its
+"2026-10-19", "account": "5f0e8c1a-6c1b-4a4e-9d55-1f1d2f6a3b7c"}}` (`ryft.account` below). The same silent push follows **every sync once scoring has finished its
 days** (`day`: the newest day the sync touched; collapsed per day), so the app shows the
 new scores without polling. The same silent push follows an **import** once scoring has finished its days (`day`: the newest of `days_touched`); an import sends no `SESSION_SCORED` and no `PR` alert, whatever it contains (`POST /v1/train/import`). Together at most one every 5 minutes per account: iOS
 budgets background pushes, so poll `GET /v1/me/sync` as the fallback.
@@ -963,21 +1013,105 @@ An alert's payload:
                       "loc-key": "MORNING_SCORE_BODY_BALANCED", "loc-args": ["78"] },
            "sound": "default", "category": "MORNING_SCORE", "thread-id": "MORNING_SCORE",
            "mutable-content": 1 },
-  "ryft": { "category": "MORNING_SCORE", "day": "2026-10-19", "url": "https://ryftlab.de/day/2026-10-19" } }
+  "ryft": { "category": "MORNING_SCORE", "day": "2026-10-19", "url": "https://ryftlab.de/day/2026-10-19",
+            "account": "5f0e8c1a-6c1b-4a4e-9d55-1f1d2f6a3b7c" } }
 ```
 
+`ACTIVITY_SCORED` for the run of `GET /v1/workouts` (Garmin Connect, 16:02–16:58:30 UTC, strain
+12.8, account in `Europe/Berlin`, locale `en`). The space inside `56 min` is a raw U+00A0 (no-break
+space) in this block and on the wire, as the server writes it (a JSON escape of it would decode the same):
+
+```json
+{ "aps": { "alert": { "title-loc-key": "ACTIVITY_SCORED_TITLE", "title-loc-args": ["Run"],
+                      "loc-key": "ACTIVITY_SCORED_BODY", "loc-args": ["12.8", "56 min"] },
+           "sound": "default", "category": "ACTIVITY_SCORED", "thread-id": "ACTIVITY_SCORED",
+           "mutable-content": 1 },
+  "ryft": { "category": "ACTIVITY_SCORED", "day": "2026-10-20",
+            "url": "https://ryftlab.de/activity/7d1b6c3e-2c1a-4b8e-9d3a-5a0e4f6b8c12",
+            "account": "5f0e8c1a-6c1b-4a4e-9d55-1f1d2f6a3b7c" } }
+```
+
+The same for locale `de`: `"title-loc-args": ["Lauf"]`, `"loc-args": ["12,8", "56 Min."]`.
+
+`ryft`, RYFT's own keys (`RyftPushInfo`; additive, ignore keys you don't know):
+
+| Key | Type | Notes |
+| --- | --- | --- |
+| `category` | string? | The category of an alert (the table above). Absent on the silent refresh. |
+| `kind` | string? | `refresh` on the silent refresh. Absent on alerts. |
+| `day` | string | `YYYY-MM-DD` in the account's `tz`: the scored day (`MORNING_SCORE`, refresh), the day of the session or workout `start` (`SESSION_SCORED`, `PR`, `ACTIVITY_SCORED`), today (`SYNC_STALE`). |
+| `url` | string? | The page the tap opens (the table above). Absent on `SYNC_STALE` and the refresh. `ACTIVITY_SCORED`: `https://ryftlab.de/activity/<id>`, `<id>` the primary's `Workout.id`, lower case, the id `GET /v1/workouts/{id}` takes. |
+| `account` | string? | The recipient's `User.id` (lower case), on **every** alert and on the silent refresh, from 2026-11-22. **Drop** a notification whose `account` isn't the signed-in account's `User.id` (a late push to a shared iPhone after a change of account); treat a missing one as before (older servers). |
+
+**Links.** The tap is routed inside the app (`ryft.url` through the app's `AppRoute` parser), so it
+needs no universal link. `/activity/*` is not in the site's AASA yet; it joins it in a later web PR once the
+app's `AppRoute.activity` ships (the site's AASA test reads the app's routes). An `/activity/<id>` that was
+later hidden still opens (`GET /v1/workouts/{id}` answers `200` on a hidden duplicate); one that was
+folded answers `404`: show that workout's `ryft.day` instead.
+
 `category` is the `UNNotificationCategory` identifier, `thread-id` groups by category,
-`mutable-content` lets a Notification Service Extension attach the ring. A notification
-replaces an undelivered one of the same category and day (`apns-collapse-id`) and
-expires at the end of the local day (`MORNING_SCORE`), after 12 h (`SESSION_SCORED`,
-`PR`) or 6 h (`SYNC_STALE`). Arguments are formatted for the registered `locale`:
+`mutable-content` lets a Notification Service Extension attach the ring. Alerts go with
+`apns-priority` 10, the silent refresh with 5. `apns-collapse-id` (an undelivered notification with
+the same id is replaced) and `apns-expiration`:
+
+| Category | `apns-collapse-id` | Expires |
+| --- | --- | --- |
+| `MORNING_SCORE` | `MORNING_SCORE-<day>` | at the end of the local day |
+| `SESSION_SCORED`, `PR` | `<category>-<first 8 characters of the session id>` | 12 h after sending |
+| `SYNC_STALE` | `SYNC_STALE-<day>` | 6 h after sending |
+| `ACTIVITY_SCORED` | `ACTIVITY_SCORED-<workout id>` (the primary's lower-case id; 52 bytes, under APNs' 64) | at the workout's `end` + 12 h |
+| silent refresh | `refresh-<day>` | 6 h after sending |
+
+Arguments are formatted for the registered `locale`:
 `82%` / `82 %`, `11.2` / `11,2`, exercise names in English or German.
+
+**`ACTIVITY_SCORED` arguments.** The title names no health value (the lock screen shows it with previews
+off), so it is the sport only:
+
+- **Title**: `ACTIVITY_SCORED_TITLE` with the name of `Workout.activity` from the table below (matched
+  exactly, lower case); `ACTIVITY_SCORED_TITLE_UNTITLED` (no arguments) when the activity is `other` or
+  not in the table. `Workout.activity` is an open string: a value added later has no name until a
+  platform change adds it here and in `internal/notify`.
+- **Body** `ACTIVITY_SCORED_BODY`: `%1$@` the strain with one decimal and a trailing `.0` dropped, as
+  `SESSION_SCORED` (`12.8` / `12,8`, `13`); `%2$@` the duration, whole minutes of `end` − `start`
+  rounded down: under 60 `56 min` / `56 Min.`; from 60 `1 h 12 min` / `1 Std. 12 Min.`, whole hours
+  `2 h` / `2 Std.`. A no-break space (U+00A0) is between each number and its unit, a plain space
+  between the hours and the minutes.
+
+| `activity` | en | de |
+| --- | --- | --- |
+| `running` | Run | Lauf |
+| `walking` | Walk | Spaziergang |
+| `hiking` | Hike | Wanderung |
+| `cycling` | Ride | Radfahrt |
+| `swimming` | Swim | Schwimmen |
+| `rowing` | Row | Rudern |
+| `elliptical` | Elliptical | Crosstrainer |
+| `stairs` | Stairs | Treppensteigen |
+| `strength` | Strength | Krafttraining |
+| `functional_strength` | Functional strength | Funktionelles Krafttraining |
+| `crossfit` | Cross training | Cross-Training |
+| `hiit` | HIIT | HIIT |
+| `yoga` | Yoga | Yoga |
+| `core` | Core training | Core-Training |
+| `soccer` | Football | Fußball |
+| `tennis` | Tennis | Tennis |
+| `xc_skiing` | Cross-country ski | Langlauf |
+| `skiing` | Skiing | Skifahren |
+| `snowboarding` | Snowboarding | Snowboarden |
+| `cooldown` | Cooldown | Cool-down |
+
+These are the values the app's HealthKit mapper sends today (every other `HKWorkoutActivityType` is
+`other`).
 
 The keys, as the app ships them in `Localizable.xcstrings` (`%@` and positional
 `%1$@`, as iOS fills `loc-args`):
 
 | Key | en | de |
 | --- | --- | --- |
+| `ACTIVITY_SCORED_BODY` | Strain %1$@ · %2$@ | Belastung %1$@ · %2$@ |
+| `ACTIVITY_SCORED_TITLE` | %@ scored | %@ ausgewertet |
+| `ACTIVITY_SCORED_TITLE_UNTITLED` | Activity scored | Aktivität ausgewertet |
 | `MORNING_SCORE_BODY_BALANCED` | Readiness %@. You're ready to perform: a good day to push. | Bereitschaft %@. Du bist bereit: ein guter Tag für hohe Belastung. |
 | `MORNING_SCORE_BODY_CALIBRATING` | Readiness %@. RYFT is still learning your baselines. | Bereitschaft %@. RYFT lernt noch deine Ausgangswerte. |
 | `MORNING_SCORE_BODY_DEPLETED` | Readiness %@. Take it easy today and protect tonight's sleep. | Bereitschaft %@. Geh es heute ruhig an und schütze deinen Schlaf. |
@@ -995,6 +1129,25 @@ The keys, as the app ships them in `Localizable.xcstrings` (`%@` and positional
 | `SESSION_SCORED_TITLE_UNTITLED` | Workout scored | Training ausgewertet |
 | `SYNC_STALE_BODY` | Nothing new from your watch for %@ hours. Open RYFT to sync. | Seit %@ Stunden nichts Neues von deiner Uhr. Öffne RYFT zum Synchronisieren. |
 | `SYNC_STALE_TITLE` | No new data | Keine neuen Daten |
+
+The `·` in `ACTIVITY_SCORED_BODY` is U+00B7 with a plain space on each side.
+
+**Planned (not built).** Agreed shapes, so neither side invents another; nothing below is served, and
+none of it is in the Swift mirror. Each ships with its own changelog entry.
+
+- **NT2: a workout the watch detected.** The data doesn't exist yet: `Workout` has no field for how a
+  workout began, `POST /v1/sync` rejects unknown fields (`400`), and the app reads no `HKWorkout.metadata`.
+  Planned: `Workout.detected` (bool?, omitted when unknown), accepted on `POST /v1/sync` first, then stored
+  and returned on `Workout`; the app sends it only while a flag of its own in `GET /v1/config` is on
+  (`sync.detected`, the pattern of the app's `sync.deletions`; neither flag is in this file's flag table
+  yet); `ACTIVITY_SCORED_BODY_DETECTED` used instead of `ACTIVITY_SCORED_BODY` when `detected` is `true`,
+  one argument (the strain): en "Detected by your watch. Strain %@. Tap to review.", de "Von deiner Uhr
+  erkannt. Belastung %@. Zum Prüfen öffnen.". Built only once the app reports a HealthKit key that tells
+  the two apart on real watch workouts. Until then every alert uses `ACTIVITY_SCORED_BODY`.
+- **NT6: the journal reminder's setting on the account.** Planned: `NotificationPrefs.journal_reminder`,
+  `{"on": true, "minute": 1230}` (`minute`: minute of the local day, 0–1439; 1230 is 20:30), absent from
+  `GET /v1/me` until built. `PATCH /v1/me/notifications` rejects unknown fields today (`400`), so the app
+  sends it only once `GET /v1/me` returns the field.
 
 ### `POST /v1/me/consent` · `DELETE /v1/me/consent` — consent to health-data processing
 
@@ -1379,6 +1532,7 @@ were folded are deleted, not hidden, and are not returned.
 | `energy_kcal` | number? | Omitted when absent. |
 | `distance_m` | number? | Omitted when absent. |
 | `source` | string | |
+| `source_bundle_id` | string? | The HealthKit source's bundle identifier as `POST /v1/sync` sent it (first non-empty value kept). Omitted when unknown: workouts stored before 2026-11-22, `ryft-session` workouts, builds that didn't send it. Returned since 2026-11-22 (it was input only), also on the workouts of `GET /v1/days/{day}`. |
 | `strain` | number? | 0–21, filled by scoring, including an attached session's muscular load. Omitted until scored. |
 | `muscular_load` | number? | Muscular load (TRIMP-equivalent) of the strength session attached to this workout. Omitted when none. |
 | `session_id` | uuid? | That session. Omitted when none. A workout with `source` `ryft-session` was created for a session that has no matching HealthKit workout. |
@@ -3118,6 +3272,8 @@ struct AnalyticsConfig: Codable {   // RemoteConfig.analytics (PostHog EU Cloud)
 
 enum NotificationCategory: String, Codable, CaseIterable {
     case morningScore = "MORNING_SCORE", sessionScored = "SESSION_SCORED", pr = "PR", syncStale = "SYNC_STALE"
+    case activityScored = "ACTIVITY_SCORED" // changelog 2026-11-22; show its switch, and PATCH it, only when
+    // GET /v1/me's categories list it (a server before the sender answers 422 for it).
 }
 
 struct QuietHours: Codable, Equatable {
@@ -3156,6 +3312,7 @@ struct RyftPushInfo: Decodable {   // userInfo["ryft"] of a notification
     let kind: String?              // "refresh" on the silent refresh
     let day: String
     let url: String?
+    let account: String?           // the recipient's User.id; drop the push when it isn't the signed-in one; nil (older servers) = as before
 }
 
 struct UserPatch: Codable {   // PATCH /v1/me, every field optional
@@ -3501,6 +3658,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-11-22 | **Push: the category `ACTIVITY_SCORED`, and `ryft.account` on every push** (D253–D256; platform PR `push/activity-scored`, the contract and the sender; answers the app's `API_REQUESTS.md` → Notifications NT1, and agrees NT2 and NT6 as planned; "Sync and performance" §5). Additive; no v1 field renamed, removed or retyped. **Category:** `ACTIVITY_SCORED` (Push notifications → the table and **`ACTIVITY_SCORED`: the rules**): a workout uploaded through `POST /v1/sync` that has its strain after scoring, is the primary (or in no duplicate group), has no `session_id`, `source` not `ryft-session`, `source_bundle_id` not `dev.timkrebs.ryft` (or under it); `end` ≤ now ≤ `end` + 12 h; ≥ 10 min; not first stored by a sync from a device first seen under 1 h earlier; decided once per workout (the mark passes to a fold's kept copy and to a duplicate group's primary); at most 3 per local day of `start`; quiet hours drop it. **Keys:** `ACTIVITY_SCORED_TITLE` (sport name; the en/de name table for the 20 activities the app sends), `ACTIVITY_SCORED_TITLE_UNTITLED` (`other` or unnamed), `ACTIVITY_SCORED_BODY` (strain as `SESSION_SCORED`'s, duration `56 min` / `1 h 12 min`, `56 Min.` / `1 Std. 12 Min.`, U+00A0 before each unit). **Payload:** `ryft.url` `https://ryftlab.de/activity/<primary Workout.id>`, `ryft.day` the local day of `start`; `apns-collapse-id` `ACTIVITY_SCORED-<workout id>`, `apns-expiration` `end` + 12 h, priority 10; the collapse ids and expiries of every push are now a table. **`ryft.account`:** the recipient's `User.id` on every alert and on the silent refresh; the app drops a push for another account and treats a missing one as before; the `ryft` keys are a table. **Preference:** `NotificationPrefs.categories.ACTIVITY_SCORED` (default on), listed by `GET /v1/me` and accepted by `PATCH /v1/me/notifications` once the sender ships; the examples show it. **AASA:** `/activity/*` joins the site's AASA in a later web PR, after the app's `AppRoute.activity` (the tap is routed in the app, nothing waits on it). **Planned (not built):** NT2 `Workout.detected` and `ACTIVITY_SCORED_BODY_DETECTED` behind a flag; NT6 `NotificationPrefs.journal_reminder` `{on, minute}`. **Workouts:** `Workout.source_bundle_id` is now stored and returned by `GET /v1/workouts`, `GET /v1/workouts/{id}` and the workouts of `GET /v1/days/{day}` (omitted when unknown; it was input only), so the app's data export holds it. **Behaviour:** until the sender deploys, `GET /v1/me` doesn't list `ACTIVITY_SCORED`, `PATCH` answers `422` for it, and pushes carry no `account`. **Swift:** `RyftPushInfo.account: String?`; `NotificationCategory.activityScored` (`ACTIVITY_SCORED`); the app gates its switch on `GET /v1/me`, since a server before this entry neither lists nor accepts it. |
 | 2026-11-20 | **Admin only: an unbound invite code's `note` expires; a deleted account leaves the flags' allow-lists** (D249; platform PR `store: deletion removes allow-list entries; invite notes expire`). `GET /v1/admin/invites`: the `note` of an unbound code is now `""` 30 days after the code could no longer be redeemed (revoked, expired or used up), as a bound code's already was; its `status` and `revoked_at` don't change. `GET /v1/admin/flags`: `allow_user_ids` no longer holds the id of a deleted account (`DELETE /v1/me` and the admin deletion remove it; migration 0038 removed those of earlier deletions). **Fields:** none added, renamed or removed. **The app:** nothing; it never calls `/v1/admin/*`, and `GET /v1/config` answers as before. **Swift:** none. |
 | 2026-11-20 | **App Attest: the server (mode off)** (D247; platform PR `api: App Attest, the server (mode off)`; answers the app's `API_REQUESTS.md` → App Attest AA1–AA4). Additive; no v1 field renamed, removed or retyped. **Served:** `POST /v1/app-attest/challenge`, `POST /v1/app-attest/keys` and `POST /v1/app-attest/token` exist now, but answer only where the server has its token key; without it they answer `501`, which the app treats like the `404` without a `code` (not live, no header). Production ships in mode `off` without the token key, so it answers `501` until the `warn` PR sets it (after the privacy text names App Attest); local compose answers `501`. **Modes:** `off` doesn't read `X-RYFT-App-Token` and logs nothing; `warn` serves and logs a request without a valid token; `on` refuses it with `403 app_attest_required`; never `off` → `on`. **Codes:** `app_attest_required` (`403`), `app_attest_challenge_invalid` (`422`), `app_attest_invalid` (`422`), `app_attest_key_unknown` (`404`) join Errors' `code` table and the status table's `403`, `404` and `422` rows (they were a paragraph); the `invite_required` row's list of routes gains the three App Attest routes (outside the beta gate). **AA1:** Conventions → App build: the optional request header `X-RYFT-App-Build: <CFBundleVersion>`, `^[0-9]+(\.[0-9]+){0,3}$`, at most 24 characters; a missing or malformed value is ignored and never refused; written only into the App Attest warn line, never a metric label. **AA2:** `GET /v1/config` → `app_attest` (`"off"`, `"warn"` or `"on"`, closed, always present): the app may skip the challenge probe under `"off"`; a `501` or `404` from the challenge route stays authoritative; under `"on"` the config read itself needs a token. **AA3:** `ttl_sec` is 3600 today and never below 600; the app renews with under `min(300, ttl_sec / 2)` seconds left (it said 5 minutes). **AA4:** the three routes' `error` texts are fixed sentences and never echo `challenge`, `key_id`, `assertion`, `attestation` or a token. **Development attestations:** production only on every server (D247): `APP_ATTEST_ENVIRONMENTS` is gone from step 7, and a development attestation is `422 app_attest_invalid`. **Examples:** the three routes' bodies are type-checked `json` blocks now (`AppAttestChallenge`, `AppAttestKeyPost`, `AppAttestKey`, `AppAttestTokenPost`, `AppAttestToken`), the `http` exchanges keep the headers; a request with both headers is shown. **Behaviour:** none for the app in production until the token key is set; `GET /v1/config` gains a field. **Old builds:** they ignore `app_attest` and see `501` where they saw `404`, which D245 already told them to treat alike. **The app:** send `X-RYFT-App-Build` on every request; decode `app_attest` as optional (missing or unknown: probe as before); renew by `min(300, ttl_sec / 2)`. **Swift:** `RemoteConfig.appAttest: String`; `APIErrorCode` gains `appAttestRequired`, `appAttestChallengeInvalid`, `appAttestInvalid`, `appAttestKeyUnknown` (the comment after the enum is replaced); the `AppAttestToken.ttlSec` comment states the floor. |
 | 2026-11-19 | **Docs only: no Kubernetes stack any more** (D246; platform PR `remove: Kubernetes, Argo CD, Vault, admission, AWS (D3)`). Conventions → Base URLs loses its last sentence: the Kubernetes manifests, whose Ingress served both services on one host, are deleted. Production stays `https://api.ryftlab.de` and `https://ingest.ryftlab.de`, local compose `:8082` and `:8081`. **Behaviour:** none; no route, field, status or `code` changes. **The app:** nothing. **Swift:** none. |

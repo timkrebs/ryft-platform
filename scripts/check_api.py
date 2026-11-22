@@ -664,7 +664,7 @@ for _ in range(2):
     check(status == 204, f"DELETE /v1/devices/{{id}}/push: {status}")
 ok("/v1/devices/{id}/push: register (twice), 422/400 on bad input, delete (twice)")
 
-CATS = {"MORNING_SCORE", "SESSION_SCORED", "PR", "SYNC_STALE"}
+CATS = {"MORNING_SCORE", "SESSION_SCORED", "PR", "SYNC_STALE", "ACTIVITY_SCORED"}
 prefs0 = get("/v1/me")["notifications"]
 check(set(prefs0) == {"categories", "quiet_hours"} and set(prefs0["categories"]) == CATS
       and all(isinstance(v, bool) for v in prefs0["categories"].values()), f"User.notifications: {prefs0}")

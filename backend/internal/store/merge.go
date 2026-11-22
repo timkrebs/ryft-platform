@@ -210,6 +210,12 @@ func (m merger) run(res *MergeResult) error {
 		"same workout id: to's kept")); err != nil {
 		return err
 	}
+	// ACTIVITY_SCORED's ledger (0041): the mark of a workout moves with it, so to does not alert
+	// for a workout from already decided. No foreign key to workouts, so the order does not matter.
+	if err := add(m.move("workout_alerts", `NOT EXISTS (SELECT 1 FROM workout_alerts t WHERE t.user_id = $2 AND t.workout_id = s.workout_id)`,
+		"same workout id: to's kept")); err != nil {
+		return err
+	}
 	if err := add(m.move("devices", `NOT EXISTS (SELECT 1 FROM devices t WHERE t.user_id = $2 AND t.id = s.id)`,
 		"same device id: to's kept")); err != nil {
 		return err
