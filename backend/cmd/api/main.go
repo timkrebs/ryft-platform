@@ -262,10 +262,13 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	}
 	authOpts.OnAuth = auth.LoadUser(load)
 	// The order (API.md → Conventions → App Attest): the bearer (401) and the per-user limit, the
-	// app token, the beta gate, then the routes. DELETE /v1/me above and /v1/admin/* below are not
-	// wrapped: they never need an app token.
+	// user row, the app token, the device claim (D251), the beta gate, then the routes. The claim
+	// sits after the app token, so a request without one claims nothing under APP_ATTEST=on, and
+	// before the beta gate, so the invite gate's 403 still claims. DELETE /v1/me above and
+	// /v1/admin/* below are not wrapped: they never need an app token and claim nothing.
 	attest := appAttestGate(o.attest, log)
-	mux.Handle("/v1/", auth.Middleware(authOpts, attest(betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api))))))
+	claim := claimDevice(h.st, log)
+	mux.Handle("/v1/", auth.Middleware(authOpts, attest(claim(betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))))
 	// The training import gets 50 s instead of readTimeout, like a sync (D129).
 	mux.Handle("POST /v1/train/import", importRoute(authOpts, o.gate, attest, h.trainImport))
 	// The operator's routes: ADMIN_API_KEY, or an allow-listed operator's Supabase token (only with

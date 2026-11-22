@@ -52,11 +52,56 @@ func (s *Store) UpdateNotificationPrefs(ctx context.Context, id uuid.UUID, p mod
 	return u, err
 }
 
-// RegisterPushToken stores the install's token for the user. A token is one
+// MaxPushDevices is how many installs an account's push_devices list keeps; a ninth claim drops
+// the oldest from the list (never a token).
+const MaxPushDevices = 8
+
+// claimDeviceSQL is the claim, one statement (D251). The three data-modifying CTEs run once and
+// to completion, on one snapshot: they touch different rows (the tokens of other accounts, the
+// users rows of other accounts, the caller's users row), so none depends on another.
+// $1 the caller, $2 the install, $3 MaxPushDevices. The caller's list: D removed, the newest
+// $3-1 of the rest kept (slice from the end), D appended last.
+const claimDeviceSQL = `WITH dropped AS (
+		DELETE FROM push_tokens WHERE device_id = $2::uuid AND user_id <> $1::uuid RETURNING 1
+	), others AS (
+		UPDATE users SET push_devices = array_remove(push_devices, $2::uuid)
+		WHERE push_devices @> ARRAY[$2::uuid] AND id <> $1::uuid RETURNING 1
+	), mine AS (
+		UPDATE users SET push_devices = (array_remove(push_devices, $2::uuid))[
+			greatest(cardinality(array_remove(push_devices, $2::uuid)) - ($3::int - 2), 1):] || $2::uuid
+		WHERE id = $1::uuid RETURNING 1
+	)
+	SELECT (SELECT count(*) FROM dropped)::int`
+
+// rower is the pool or a transaction: what claim needs.
+type rower interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func claim(ctx context.Context, q rower, userID, deviceID uuid.UUID) (int, error) {
+	var dropped int
+	err := q.QueryRow(ctx, claimDeviceSQL, userID, deviceID, MaxPushDevices).Scan(&dropped)
+	return dropped, err
+}
+
+// ClaimDevice makes the install the user's: it deletes the push tokens other accounts hold for
+// it, removes it from their push_devices and appends it to the user's (newest last, at most
+// MaxPushDevices). One statement, so atomic and one round trip; running it again changes only
+// the order of the user's own list. It answers how many tokens it dropped.
+func (s *Store) ClaimDevice(ctx context.Context, userID, deviceID uuid.UUID) (int, error) {
+	return claim(ctx, s.pool, userID, deviceID)
+}
+
+// RegisterPushToken stores the install's token for the user and claims the install (ClaimDevice),
+// so a client that sends no X-RYFT-Device-ID header gets the same result. A token is one
 // app install's: wherever else it was registered (another account signed in on
-// the same phone, a reinstall under a new device id), it moves here.
+// the same phone, a reinstall under a new device id), it moves here. A second registration
+// for the same install replaces the token (one row per account and install).
 func (s *Store) RegisterPushToken(ctx context.Context, userID, deviceID uuid.UUID, reg model.PushRegistration) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := claim(ctx, tx, userID, deviceID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM push_tokens WHERE token=$3 AND (user_id, device_id) <> ($1, $2)`,
 			userID, deviceID, reg.Token); err != nil {
 			return err

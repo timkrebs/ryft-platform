@@ -4286,6 +4286,18 @@ it is on, `GET /v1/config` → `analytics` is set (GCP → **PostHog's project k
 in. Testers first, by the allow-list; `{"enabled": false, "rollout_pct": 100}` is the kill switch.
 Nothing on the server checks the flag, so it takes effect at the app's next config.
 
+`notifications.reminders` (D252, migration 0040) ships dark the same way. It gates the app's two local reminders
+(the morning journal reminder and the "not syncing" fallback), no push. Raise it only after the app's
+Notifications page with its switches (N4) has shipped. Testers first, then everyone:
+
+```bash
+adm -X PUT "$API/v1/admin/flags/notifications.reminders" \
+  -d '{"enabled": true, "rollout_pct": 0, "allow_user_ids": ["<uuid>"]}'
+adm -X PUT "$API/v1/admin/flags/notifications.reminders" -d '{"enabled": true, "rollout_pct": 100}'
+# Kill switch: the app removes the scheduled reminders at its next config read
+adm -X PUT "$API/v1/admin/flags/notifications.reminders" -d '{"enabled": false, "rollout_pct": 100}'
+```
+
 **Stop if**, before the first account goes on its allow-list, the privacy policy in force (the
 version `GET /v1/config` → `privacy_policy_version` names, published at `https://ryftlab.de/privacy`)
 doesn't name PostHog (EU Cloud) as a processor, with the purpose and the opt-in, or PostHog's project
@@ -4319,6 +4331,14 @@ Revoking the key in Apple Developer makes APNs answer `403` (no alert since D236
 was a Grafana rule: notify's error lines show it).
 A device token APNs reports gone is deleted (`ryft_push_tokens_pruned_total`). Raise
 `push.enabled` (above) once sending works, so the app starts asking for permission.
+
+**A shared iPhone (D251).** An install's token follows its newest account: the first `/v1/` request of an
+account with `X-RYFT-Device-ID: D` deletes the tokens other accounts hold for D, even when the invite gate then
+refuses the request. Nothing to run. A failed claim is the warn line `claim device failed` (no ids). The request
+was served, and the next one retries. A tester who reports another account's alert on their phone: check the
+api's lines for `claim device failed` around their sign-in, and whether their app build sends the header (the App
+Attest warn line's `app_device`, under `warn`). The install ids are kept in `users.push_devices` until the account
+is deleted.
 
 ## Apex site and apple-app-site-association
 

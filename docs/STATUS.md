@@ -80,6 +80,21 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Notifications NT7, NT5, NT3, NT4 (2026-11-22, D251, D252; PR "push: a device's token follows its newest account")
+
+The app's notification requests, the first of two PRs (`docs/work/2026-11-22-notifications-nt/plan.md`).
+- **NT7 (D251):** an install's push token follows its newest account. The first `/v1/` request of an account with
+  `X-RYFT-Device-ID: D` deletes the tokens other accounts registered for D. It runs before the beta gate, so the
+  invite gate's `403` still does it. `POST /v1/devices/{id}/push` does the same. Cost: nothing for a known install
+  (the list is on the users row the auth step reads), one statement on an account's first request from an install.
+  Migration 0039 (`users.push_devices`, two indexes). Counter `ryft_push_device_claims_total`.
+- **NT5 (D252):** the flag `notifications.reminders`, enabled at 0 % with an empty allow-list (migration 0040).
+- **NT3, NT4:** answered in API.md. No behaviour change: `SESSION_SCORED` and `PR` are dropped during quiet hours.
+
+**On merge:** `deploy.yml` runs migrate (0039, 0040), then rolls the services. **Nothing for the user to run.**
+Raising `notifications.reminders` comes later, after the app's N4 (OPERATIONS → Feature flags).
+**Open:** NT1 (`ACTIVITY_SCORED`) is the second PR.
+
 ## The training import is on for everyone (2026-11-22, D250)
 
 **The user's decision:** every account can import. The flag `train.import` goes from dark (`enabled: true,
