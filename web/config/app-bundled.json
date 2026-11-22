@@ -1,7 +1,7 @@
 {
   "$comment": "Code a Swift package of app-packages.json compiles into the app from its own repository (vendored). Each entry is listed on /licenses after the package, with the licence file found in `dir` of the package's repository at its pinned revision. Keep in step with the app's LicensesView.",
   "bundled": [
-    { "name": "PLCrashReporter", "in": "posthog-ios", "dir": "vendor/PLCrashReporter" },
+    { "name": "PLCrashReporter", "in": "posthog-ios", "dir": "vendor/PHPLCrashReporter" },
     { "name": "libwebp", "in": "posthog-ios", "dir": "vendor/libwebp" }
   ]
 }
