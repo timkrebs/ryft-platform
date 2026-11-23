@@ -6412,3 +6412,231 @@ _Numbered after D248, which PR #228 (C2, draft) holds._
   the import's rate class and the per-account lease (D129, D132), the per-IP limit (D240), the invite gate and
   App Attest as on every route (both `off` today).
 - **Consequences:** STATUS, API.md (the flag's paragraph), OPERATIONS (the import's table, `import_not_enabled`).
+
+## D257 — Direct connections: OAuth in api, a push inbox in ingest, no token on the processing path, and a connection's data goes with it (2026-11-23; supersedes ARCHITECTURE "Why HealthKit and not the Garmin API" and "What to build next" item 6; amends D48, D69, D101, D218, D240, D242, D244)
+
+- **Context:**
+  - A Garmin reaches RYFT only through Apple Health, and that path carries no HRV, respiration or SpO₂. HRV is 45 %
+    of Recovery.
+  - Suunto writes no sleep, HRV or resting HR to Apple Health at all.
+  - The head architect's brief of 2026-11-23 (the root plan §3–§4) asks for a provider-agnostic foundation, built and
+    shipped dark against a fake provider, with Garmin's adapter in a phase 2 that waits for the programme's approval
+    and documentation.
+  - The starter tier is push only, has no history, and caps the users.
+  - The design, the tables, the flows and the file split are `docs/work/2026-11-23-connections/design.md`.
+- **Superseded:**
+  - ARCHITECTURE's "Why HealthKit and not the Garmin API" said the programme was closed and suggested an unofficial
+    Connect client for Garmin-only metrics. HealthKit stays the default source and the only one with history.
+  - A direct connection through the official programme is now the way to a vendor's data that Apple Health does not
+    carry.
+  - **An unofficial client is ruled out:** it holds the user's password, breaks without notice, and no agreement
+    covers it.
+  - "What to build next" item 6 is removed.
+- **Decision:**
+  1. **Roles and the sealing invariant.**
+     - api owns connections and tokens: start, callback, confirm, exchange, refresh, deregistration.
+     - ingest owns the provider inbox and processes pushes.
+     - scoring gets no new grant.
+     - Tokens and PKCE verifiers are sealed with `internal/sealed`; only api holds `DATA_ENCRYPTION_KEY` (D48's
+       invariant, unchanged).
+     - **Processing a push needs no token.** A provider that ever needs one to deliver data (a pull callback) is a new
+       architecture decision, not an adapter detail.
+  2. **Tables** (migration 0042, additive):
+     - `connections`: metadata. ingest may read the provider-user lookup and write only status and `last_data_at`.
+     - `connection_tokens`, `connection_pending` (a grant waiting for its confirm, kept apart from the live
+       connection), `connection_states` and `connection_deregistrations`: api only, like `apple_tokens` (D48).
+     - One live link per provider account: the unique index on `connections` covers only `connected` and
+       `needs_reauth`. A `revoked` row keeps no provider user id and no permissions.
+     - `provider_inbox`: unique on (provider, kind, record id), ingest's.
+     - On existing tables:
+       - `origin` and `vendor` on `samples` and `sleep_segments`, plus `record_id`, and `record_state` on the sleep;
+       - `origin` on `user_sources`;
+       - `hrv_metric` on `daily_scores`, plus the data-quality design's never-built coverage columns (`coverage`,
+         `score_status`, `final_at`, `first_recovery_at`), so PR 3 needs no migration.
+     - Every new CHECK on an existing table is `NOT VALID`, and no index is built on `samples` or `sleep_segments`.
+     - Direct rows use the reserved source `ryft-direct-<provider>`. The sync drops records with that prefix.
+  3. **The contract:**
+     - `GET /v1/me/connections`, with each connection's `provider_user_id` and `permissions` (Art. 15);
+     - `POST /v1/me/connections/{provider}/start`: `409 connection_limit`, and `403 consent_required` with `warn`
+       acting as `on` (D141);
+     - `GET /v1/connect/{provider}/callback`: no bearer, no App Attest, no invite gate. It answers `302
+       ryft://connect/{provider}?status=ok|denied|expired|error`;
+     - `DELETE /v1/me/connections/{provider}`;
+     - `connections_deregistered` on `DELETE /v1/me` and `deregistered` on a disconnect, over every grant ended,
+       unconfirmed pending ones included: `null` none, `true` each deregistered or skipped as live elsewhere, `false`
+       retried in the background;
+     - `origin` on `User.sources[]` and `coverage.sleep_origin`;
+     - `coverage.hrv_metric`;
+     - the sample type `hrv_rmssd` (ms).
+     - Statuses `connected`, `needs_reauth` and `revoked` are a closed set.
+  4. **A confirm step (a deviation from the brief):**
+     - `status=ok` carries a one-time `ticket`;
+     - the link becomes `connected` only when the app sends `POST /v1/me/connections/{provider}/confirm` with the
+       ticket and the bearer of the account that started it, within 10 minutes.
+     - Without it, a bearer-less callback lets anyone send their own `authorize_url` to someone else and receive that
+       person's health data.
+     - The ticket is a binding nonce, worthless without that bearer. It is not a token and not health data, so "nothing
+       sensitive in the URL" holds.
+     - A repeat confirm with the same ticket answers 200 until 10 minutes after the callback.
+     - **Until the confirm, the live connection and its tokens are untouched.** The swap happens in one transaction
+       at confirm: the same provider account refreshes the live row; a different provider account disconnects the old
+       connection first (its data deleted as on any disconnect); a provider account linked to another RYFT account
+       moves (that link ends as `revoked` / `relinked`, its data deleted, its tokens deleted with no deregistration
+       call, because that call would end the new grant too).
+     - **No deregistration ever ends a live grant.** Before every call to the provider, for every reason (an expired
+       or replaced pending grant, the cap, a missing permission, a disconnect, a deleted account), api checks whether
+       any account holds that provider account as `connected` or `needs_reauth`. If one does, it deletes the tokens
+       and calls nothing. Otherwise an attacker's own authorize URL, completed by a connected victim and left to
+       expire, would end the victim's connection and, by the rule below, delete the victim's data. Pinned by
+       `TestDeregisterSkipsALiveGrant`.
+  5. **OAuth:**
+     - state: 32 random bytes as hex. Only its SHA-256 is stored. Single use, 10 minutes, bound to the account, at
+       most 3 open per account and provider;
+     - PKCE S256;
+     - redirect URI `CONNECT_CALLBACK_BASE` + `/v1/connect/<provider>/callback`;
+     - no state, code or ticket in any log line (a test).
+  6. **The user cap** is config, `CONNECT_<PROVIDER>_USER_CAP` (a required key of `config.env`, `0` for Garmin
+     until phase 2).
+     - It counts the provider's pending, connected and needs-reauth links plus the accounts holding an open state.
+       Start reserves a slot.
+     - It is checked at start, callback and confirm under the advisory lock 7419009 (7419008 is open PR
+       `push/activity-scored`'s).
+  7. **The hook:**
+     - `POST /connect/{provider}/push` on ingest, outside `/v1/`;
+     - order: served provider → per-IP class `hook` → the body bounded by the provider (at most 4 MiB) → the provider's
+       own verification over the raw body → split into items → the users resolved through `connections`;
+     - one transaction: an inbox row and its outbox event per new or changed item. The conflict update is guarded by
+       `user_id`, so a record-id collision never writes one account's data into another's row (counted, logged as an
+       error);
+     - at most 500 `pending` inbox rows per account; items beyond are not stored;
+     - flush, then 200;
+     - nothing is processed inline. A repeat is the same row: an identical body is a no-op, a changed one (version not
+       lower) goes back to pending with `revision`+1.
+     - Items for nobody, for a pending link, or for an account without consent to the policy in force are not
+       stored, and still answered 200.
+  8. **The event** `inbox.received`:
+     - topic `ryft-inbox-received`, unordered, published by ingest;
+     - consumed by ingest at `/push/inbox.received`, a third consumer with `ryft-dlq-ingest` and `dlq-ingest-hold`
+       (amends D218's two consumers);
+     - its body holds ids only.
+     - The consumer:
+       - checks consent again, mode-independent, and checks the connection;
+       - parses with the adapter's pure `ParseRecord`;
+       - stores through `store.ApplyDirect`: the apply lock, the record's earlier rows replaced, the upserts, the
+         queue, `ingested` (reason `connect`) and the inbox row marked processed, in one transaction.
+     - Idempotent, with a test (D100).
+  9. **The inbox's life:**
+     - `pending` → `processed` or `dropped` (payload deleted at once, the row kept 30 days for dedupe);
+     - or → `failed` (parse error, 20 attempts, or 7 days pending), kept 7 days, then deleted by ingest's tick
+       (`ryft_connect_inbox_purged_total`).
+     - Pending rows older than an hour are published again.
+  10. **The hook's traffic class:**
+      - in process (D240): class `hook`, 50/s, bursts of 200, apart from `ip`;
+      - at the edge (D242): Cloud Armor rule 1900, a throttle on `ingest.` + `/connect/` at 6,000 per 60 s per
+        address, ahead of the ban at 2000;
+      - prepared in Terraform, applied by the user;
+      - the six WAF rules are scoped away from the callback and `/connect/` in the same change, so no preview match
+        logs the callback's URL with its `state` and `code`;
+      - a third log exclusion, `connect-callback` (`logging.tf`), unconditional (not tied to the edge's phase),
+        drops every load balancer and Cloud Run request-log entry whose URL contains `/v1/connect/`. The api's own access line, which has no query, still records it.
+  11. **Flag** `connect.garmin`: shipped dark (`enabled`, 0 %, allow-list), listed in `GET /v1/config`. It gates
+      `available`, start and confirm: a confirm while it is off answers 404, and the pending grant is handled like an
+      expired one (deregistered unless a live connection elsewhere holds it). It never gates a disconnect, which also
+      skips App Attest and the invite gate.
+      - The cap never counts the caller's own connection, open states or pending grant.
+      - `CONNECT_PROVIDERS` (in git, api and ingest equal) is the per-deploy switch, empty in phase 1.
+      - The fake provider exists only under `CONNECT_FAKE=on`, which config refuses on Cloud Run.
+  12. **Alerts within the cap of six (D244):**
+      - inbox age and poison rows come from policies 5 and 4 through the topology;
+      - the hook's outcomes are the log-based counter `ryft_connect_pushes`;
+      - `ryft_notices` gains `connect capacity` (80 % of the cap), `connect no data` (a connected account without data
+        for 36 h), `connect inbox failed` and `connect deregistration stuck`, each written at most once a day;
+      - policy 6 is renamed "Notices: feedback, admin access, connections".
+      - No seventh policy.
+  13. **Scoring (PR 3):**
+      - two HRV metrics, never mixed: a baseline per metric, the night's metric for Recovery, a device change
+        calibrating as `short_history` from the new metric's own nights;
+      - one night one record: a direct source beats Apple Health for the same vendor, and today's most-asleep rule
+        decides across vendors;
+      - the provider's "light" is `core`;
+      - a re-sent night replaces the earlier one, and `night_complete` follows its validation state;
+      - the model version moves once, together with the coverage work PR 3 builds.
+- **What happens to stored data when a connection ends:** **RYFT deletes everything it received through that
+  connection, and rescores the days it touched.**
+  - **When:** the user disconnects in RYFT, the user removes RYFT at the provider, the provider account is relinked
+    to another RYFT account, or the RYFT account is deleted.
+  - **Deleted:**
+    - the direct sleep and HRV rows;
+    - the inbox rows;
+    - the direct `user_sources` entry;
+    - the tokens, which go to a deregistration queue first, retried by api's tick for 30 days, then given up and
+      counted.
+  - **Rescored:** the touched days, so no stored score or baseline keeps a value from that source.
+  - **Kept:**
+    - the same vendor's data that arrived through Apple Health (HealthKit data, under the Health permission and the
+      account, not this connection);
+    - every other source's data;
+    - a `revoked` row (provider, status and times; no token, provider user id or permissions) for 90 days, so the
+      app can say "removed at the provider";
+    - Supabase's backups until they expire. The restore runbook deletes direct rows without a live connection.
+  - **Why:**
+    - the root plan's data card promises "disconnect deletes";
+    - users read "disconnect" as stop and remove;
+    - minimisation leaves no purpose for an ended source's raw records;
+    - keeping the scores would keep the provider's HRV in `hrv_ms`.
+  - **To be confirmed in phase 2 against Garmin's API agreement:** whether deletion on deregistration is required and
+    within what time, and whether derived scores count as Garmin data. A lesser requirement leaves this rule as it
+    is; a stricter one extends it.
+  - `needs_reauth` and a withdrawn consent end nothing. Pushes are dropped while consent is not to the policy in
+    force, and stored data stays readable as today (SCORING → Consent).
+- **Rejected:**
+  - **Hook and processing in api.** api would become a raw-data writer, and the tokens would sit on the data path.
+  - **Processing in ingest's tick.** Up to 15 minutes late, a home-made retry, no backlog signal.
+  - **One table for connections and tokens with column grants.** D48 chose an own table for the same reason.
+  - **An index on `record_id`.** It is a scan of `samples` under the migration's locks; the existing indexes with
+    time bounds suffice.
+  - **An ordered topic.** A poison row would stall a user's later records; the apply lock already serialises.
+  - **Keeping data on disconnect, or asking the user.** Covered above.
+  - **A new `calibrating_reason` for a metric change.** A closed enum; `short_history` is true.
+  - **A seventh alert policy.**
+  - **The unofficial Connect client.** Covered above.
+- **Phase 2 precondition:** a cryptographic signature over the push body, or an equivalent the programme documents.
+  Without one, a forged deregistration notice would delete an account's data. If the programme offers only an
+  unsigned push, a secret in the URL or an address list, that is a new decision before Garmin ships.
+- **Unverified / phase 2, from the programme docs:**
+  - Garmin's endpoints, scopes and token lifetimes;
+  - its push verification, and whether ingest then needs a secret;
+  - its record ids, versions and validation states;
+  - its deregistration and permission notices, and its retry policy for a push answered 5xx;
+  - whether it publishes source ranges;
+  - its brand rules;
+  - the cap's number;
+  - the bundle id `com.garmin.connect.mobile` → `garmin` mapping (from our own API.md example; check it against
+    `user_sources`).
+- **Privacy (for C2, before the first real connection):**
+  - **The new flow:** RYFT receives the user's sleep and HRV from the provider at the user's request (the role of
+    Garmin to be confirmed in phase 2).
+  - **Kept:**
+    - the provider's user id, the granted permissions, the connection times;
+    - the tokens, encrypted, api only;
+    - each record in the inbox until processed (a failed one 7 days), its digest 30 days;
+    - the records as health data.
+  - **Deleted:** as above. The deregistration retry runs 30 days. No address is stored.
+  - The text and `PRIVACY_POLICY_VERSION` change together.
+- **Consequences:**
+  - migration 0042;
+  - `internal/connect` (+ `fake`);
+  - `internal/store/{connections,inbox,direct}.go`;
+  - api's routes and four tick steps, ingest's hook, consumer and tick step;
+  - the topology (+ outputs);
+  - `internal/app`'s `hook` class;
+  - `internal/config/connect.go`;
+  - `deploy/run` (`CONNECT_PROVIDERS`, `CONNECT_GARMIN_USER_CAP`, `CONNECT_CALLBACK_BASE`) and `check_cloudrun.py`;
+  - compose's fake;
+  - `infra/gcp` (`edge.tf` rule 1900 and the WAF scope exclusion, `logging.tf` `connect-callback`, `secrets.tf`
+    `connect-garmin-client-secret`, monitoring, policy 6);
+  - the smoke;
+  - API.md (changelog 2026-11-23), ARCHITECTURE, SUPABASE, OBSERVABILITY, OPERATIONS, SCORING (PR 3), STATUS.
+  - **The user's steps:** the Terraform apply (rule 1900, the WAF scope, the log exclusion, the secret container,
+    monitoring); in phase 2 the secret
+    value, the cap, the privacy text, then the allow-list.
