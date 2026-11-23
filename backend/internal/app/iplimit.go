@@ -4,9 +4,12 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/timkrebs/ryft/internal/eventbus"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/ratelimit"
@@ -27,9 +30,24 @@ const (
 	ipIdle = time.Minute
 )
 
+// The hook class (D257): a provider's pushes to ingest's POST /connect/{provider}/push come from the provider's few
+// addresses and in bursts (a day's records at once), so they get a bucket of their own and take nothing from the
+// ip class: 50 a second, bursts of 200, per instance. The edge (infra/gcp, Cloud Armor rule 1900) throttles the
+// same traffic first, at 6,000 per 60 s per address, above one instance's ceiling here (200 + 50*60 = 3,200).
+const (
+	hookPerSecond = 50
+	hookBurst     = 200
+	hookMaxKeys   = 4096
+	hookIdle      = time.Minute
+	hookPrefix    = "/connect/"
+)
+
 const (
 	// ipClass is ryft_rate_limited_total's class of the edge limit's refusals.
 	ipClass = "ip"
+	// hookClass is the class of the hook's refusals.
+	hookClass = "hook"
+	hookCode  = "hook_limit"
 	// ipCode is the access line's code of a refusal.
 	ipCode = "ip_limit"
 	// tooManyRequests is the body of the edge's 429, as docs/API.md (Errors → 429) has it: Traefik's.
@@ -42,6 +60,7 @@ const (
 type ipLimit struct {
 	clients *httpx.ClientKeys
 	lim     *ratelimit.Capped
+	hook    *ratelimit.Capped        // POST /connect/ on an Edge service
 	exempt  func(*http.Request) bool // the service's own (Spec.LimitExempt); nil: none
 }
 
@@ -49,8 +68,10 @@ func newIPLimit(clients *httpx.ClientKeys, exempt func(*http.Request) bool, now 
 	// The series exists at 0 from the start, as the admin series do: increase() over a counter born at 1
 	// sees no increase, so an instance's first refusal would otherwise be invisible.
 	metrics.RateLimited.WithLabelValues(ipClass)
+	metrics.RateLimited.WithLabelValues(hookClass)
 	return &ipLimit{clients: clients, exempt: exempt,
-		lim: ratelimit.NewCapped(ipPerSecond, ipBurst, ipMaxKeys, ratelimit.Idle(ipIdle), ratelimit.Clock(now))}
+		lim:  ratelimit.NewCapped(ipPerSecond, ipBurst, ipMaxKeys, ratelimit.Idle(ipIdle), ratelimit.Clock(now)),
+		hook: ratelimit.NewCapped(hookPerSecond, hookBurst, hookMaxKeys, ratelimit.Idle(hookIdle), ratelimit.Clock(now))}
 }
 
 // wrap limits next. What limitExempt or the service's hook passes takes no token.
@@ -60,9 +81,13 @@ func (l *ipLimit) wrap(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if ok, wait := l.lim.Allow(l.clients.Key(r)); !ok {
-			metrics.RateLimited.WithLabelValues(ipClass).Inc()
-			httpx.SetCode(r, ipCode)
+		lim, class, code := l.lim, ipClass, ipCode
+		if isHook(r) {
+			lim, class, code = l.hook, hookClass, hookCode
+		}
+		if ok, wait := lim.Allow(l.clients.Key(r)); !ok {
+			metrics.RateLimited.WithLabelValues(class).Inc()
+			httpx.SetCode(r, code)
 			writeTooMany(w, wait)
 			return
 		}
@@ -75,7 +100,22 @@ func (l *ipLimit) wrap(next http.Handler) http.Handler {
 // checks; compose's /healthz and /readyz) and the tick, Pub/Sub's push of ryft-tick from Google's push
 // servers, the only push api and ingest take (TestEdgeLimitExemptsEveryPushOfApiAndIngest); its token is
 // the tick's to check. Neither must fail because someone else floods the same front end.
-func limitExempt(r *http.Request) bool { return httpx.IsLive(r) || httpx.IsReady(r) || isTick(r) }
+func limitExempt(r *http.Request) bool {
+	return httpx.IsLive(r) || httpx.IsReady(r) || isTick(r) || isEdgePush(r)
+}
+
+// edgePushPaths are the push routes api and ingest serve besides the tick (ingest's /push/inbox.received): Pub/Sub's
+// push servers deliver them, and the push token is checked behind the limit like the tick's.
+var edgePushPaths = eventbus.EdgePushPaths()
+
+func isEdgePush(r *http.Request) bool {
+	return r.Method == http.MethodPost && slices.Contains(edgePushPaths, r.URL.Path)
+}
+
+// isHook says whether r is a provider's push to a hook (POST /connect/...): the hook class's.
+func isHook(r *http.Request) bool {
+	return r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, hookPrefix)
+}
 
 // writeTooMany is the edge's 429 as Traefik answered it and docs/API.md documents it: the plain-text body
 // Too Many Requests (no trailing newline, no JSON), Retry-After the wait rounded up to whole seconds (at

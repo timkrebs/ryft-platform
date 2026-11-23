@@ -1638,8 +1638,10 @@ compose stack and `make smoke-supabase` against the copy step 3 forbids.
   (D83); D236 dropped it, because nothing reads the app's metrics on Cloud Run.
   - A third log-based counter, `ryft_notices` (`infra/gcp/monitoring.tf`), counts this line on api's
     stdout, and two admin lines with it (14a.9). Its one label is `kind`, the line's message, a closed set
-    of three. No id becomes a label, and no category either.
-  - The policy **RYFT · Feedback and admin access** (`alerts.tf`, warning, both channels) fires on any
+    (of three then; seven since D257 added the connection notices, **Direct connections**). No id becomes
+    a label, and no category either.
+  - The policy **RYFT · Notices: feedback, admin access, connections** (named RYFT · Feedback and admin
+    access until D257 added the connection notices; `alerts.tf`, warning, both channels) fires on any
     such line in the last 5 minutes, one incident per kind, and notifies the opening only. It closes by
     itself about 5 minutes after the last line, so the next feedback opens a new incident and notifies
     again. Its mail and push name the policy and the kind (`feedback received`), never the report, its
@@ -1688,8 +1690,8 @@ token; it refreshes once). The key's own use and `admin second factor required` 
    # Step 14a.9's plan (alert_app_channel set): 2 to add, 0 to change, 0 to destroy.
    #   read: data.google_monitoring_notification_channel.email[0] (ryft-timkrebs)
    #   + google_logging_metric.notices               ryft_notices, the label kind                 = 1
-   #   + google_monitoring_alert_policy.notices[0]   RYFT · Feedback and admin access (WARNING)   = 1 (2) to add
-   #   Changes to Outputs: monitoring (policies + "RYFT · Feedback and admin access", log_metrics + "ryft_notices")
+   #   + google_monitoring_alert_policy.notices[0]   RYFT · Notices: feedback, admin access, connections (WARNING) = 1 (2) to add
+   #   Changes to Outputs: monitoring (policies + "RYFT · Notices: feedback, admin access, connections", log_metrics + "ryft_notices")
    # With alert_app_channel unset (the gate off): 1 to add, the metric alone. Under the stop line: the same.
    ```
 
@@ -1755,7 +1757,7 @@ token; it refreshes once). The key's own use and `admin second factor required` 
    there too (crawlers, your page): they aren't counted.
 4. **Expected:** per kind, within about 5 minutes of its line (the log-based metric's lag of a minute or
    two, the 60 s hold, the evaluation), one mail to `ryft-timkrebs` and one push in the Google Cloud app,
-   each naming **RYFT · Feedback and admin access** and the kind, the subject `RYFT · <kind>`: three of
+   each naming **RYFT · Notices: feedback, admin access, connections** and the kind, the subject `RYFT · <kind>`: three of
    each. Monitoring → Alerting → Incidents lists three, one per kind. Each closes by itself about 5
    minutes after its line, with no closing notice (only the opening is notified). No mail or push names
    an account, the report's text or a reason. Whether Google renders `${metric.label.kind}` in the
@@ -1771,7 +1773,7 @@ token; it refreshes once). The key's own use and `admin second factor required` 
   again, in a new tab). No line of any kind: a `LOG_LEVEL` above `info` in `deploy/run`.
 - **Its point:** Monitoring → Metrics explorer → `logging/user/ryft_notices`, by `kind`. A line but no
   point: the metric's filter doesn't match the line. Report it, with the line's keys (not their values).
-- **Its incident:** Monitoring → Alerting → **RYFT · Feedback and admin access**, the condition's chart.
+- **Its incident:** Monitoring → Alerting → **RYFT · Notices: feedback, admin access, connections**, the condition's chart.
   A point but no incident: report it.
 - **Its delivery:** an incident but no mail or push: 11.4's stop rule (the channel).
 
@@ -2184,6 +2186,14 @@ place: that rule's `preview` true → false), 0 to destroy. The way back is the 
 **Before 1000 (`sqli`) or 1001 (`xss`) is enforced:** App Attest's two body routes skip both sets by
 path first, in a PR of its own (17.6). Their base64 bodies can read as SQL or as an event handler to
 libinjection, and a `403` there means no app token.
+
+**The direct connections' two paths need no step** (D257, design §6.2, §7.5): the six WAF rules already
+skip `/v1/connect/<provider>/callback` on api and `/connect/` on ingest (the provider's `code` can read
+as SQL, and the hook's body is the provider's; the callback checks its two parameters itself, the hook
+verifies before it parses). So no preview match is logged for them, and enforcing any set changes
+nothing there. The hook has its own throttle at priority 1900 (6,000 requests per 60 s per address,
+then `429`), ahead of the ban at 2000; its denials are a priority of their own on the dashboard's Cloud
+Armor tile.
 
 ### 17. App Attest *(D245, D247)*
 
@@ -3085,11 +3095,12 @@ line. Cutting its cost is the edge's way back, one PR a step: `locked` → `live
 ### Dead letters and the outbox
 
 **Dead letters** (D218, design §2.2). An event that fails its 20 delivery attempts is forwarded by
-Pub/Sub from its push subscription to the consumer's dead-letter topic, `ryft-dlq-scoring` or
-`ryft-dlq-notify`, with the `CloudPubSubDeadLetterSource*` attributes added. An event the consumer can
-never handle (its data doesn't decode, or its `ryft-key` isn't the push path's) is filed there by the
-consumer itself, with `ryft-error`, and acked. The hold subscriptions `dlq-scoring-hold` and
-`dlq-notify-hold` keep each letter **14 days**; then Pub/Sub drops it. "RYFT · Dead letters held"
+Pub/Sub from its push subscription to the consumer's dead-letter topic, `ryft-dlq-scoring`,
+`ryft-dlq-notify` or (D257, ingest's consumer of the inbox) `ryft-dlq-ingest`, with the
+`CloudPubSubDeadLetterSource*` attributes added. An event the consumer can never handle (its data
+doesn't decode, or its `ryft-key` isn't the push path's) is filed there by the consumer itself, with
+`ryft-error`, and acked. The hold subscriptions `dlq-scoring-hold`, `dlq-notify-hold` and
+`dlq-ingest-hold` keep each letter **14 days**; then Pub/Sub drops it. "RYFT · Dead letters held"
 fires while one holds a letter. The cause is in the consumer's log (`handle event failed`, its `err`), around the
 letter's time.
 
@@ -3101,6 +3112,7 @@ scripts/dlq.sh --project ryftlab-prod list               # per hold subscription
 scripts/dlq.sh --project ryftlab-prod show scoring 5     # in full, the data decoded (n: 1 to 1000, or all)
 scripts/dlq.sh --project ryftlab-prod replay scoring 1   # after fixing the cause: back to its topic as a redelivery, then acked
 scripts/dlq.sh --project ryftlab-prod purge notify       # notify's: a push hours late is wrong (replay refuses without --force)
+scripts/dlq.sh --project ryftlab-prod replay ingest 1    # ingest's (inbox.received, D257): Direct connections → The inbox's dead letters
 ```
 
 `list` and `show` pull without acking and hand the letters back at once, so nothing moves. One pass
@@ -3129,7 +3141,8 @@ policy (design §2.2). Call it done when `list` is empty 30 minutes later and th
 (the dashboard's "5xx per second") are flat.
 
 **Which letters are replayed** (D150). Only the keys the consumer handles: scoring `ingested`,
-`session.completed`; notify `scored`, `session.scored`, `refresh`. The script reads them from
+`session.completed`; notify `scored`, `session.scored`, `refresh`; ingest `inbox.received` (to
+`ryft-inbox-received`, unordered). The script reads them from
 `infra/gcp/pubsub.auto.tfvars.json`. The key is read where a publisher can't write it:
 
 - **Pub/Sub forwarded it** (`CloudPubSubDeadLetterSourceSubscription` is set; `list` says
@@ -3202,7 +3215,8 @@ is gone. The tick's clean deletes it 7 days after it was published.
 Cloud Monitoring's six policies (`infra/gcp/alerts.tf`, D236, D244) reach the email `ryft-timkrebs`
 and the Google Cloud app. Each notification links its incident (Monitoring → Alerting →
 Incidents), which names the series that crossed: the check, the service, the subscription or the
-kind. The dashboard **RYFT · Overview** has the context of the first five. An incident closes by
+kind. The dashboard **RYFT · Overview** has the context of the first five; **RYFT · Connections**
+(D257) that of the inbox's backlog and dead letters and of the connection notices. An incident closes by
 itself once its query returns nothing, or 30 minutes after its data stops; the sixth's when its
 data stops, without a closing notice.
 
@@ -3211,15 +3225,16 @@ data stops, without a closing notice.
 | RYFT · Uptime check failing (critical) | a check fails from 2 of its 3 locations for 10 minutes | the check's page (which location, which status or TLS error). `ryft-site-*`: Firebase Hosting and the `site` job of `deploy.yml` (Deploy, roll back, rotate → The site). `ryft-api-ready`, `ryft-ingest-ready`: the service's revisions and its log; `/health/ready` is the database behind it, so Supabase's status next |
 | RYFT · 5xx over 2 % (api, ingest) (critical) | 5xx above 2 % of a service's requests over 10 minutes, at least 3, held 10 minutes | Logs Explorer: `resource.type="cloud_run_revision" resource.labels.service_name="<service>" httpRequest.status>=500` (Cloud Run's request log; from `edge = "built"` on it keeps api's and ingest's 5xx only, which is all this needs, D242), then the service's ERROR lines (the dashboard's logs panel). A deploy just before: roll back (Deploy, roll back, rotate) |
 | RYFT · Tick missing (critical; only while the tick runs) | a service without a tick of `result` ok for 45 minutes (three ticks), held 5 | Logs Explorer `jsonPayload.message="tick"` for the service: `result` error and its `err` name the step (the outbox sweep, the purges, the reconcile, a database that is down). No line at all: the Scheduler job `ryft-tick` (`gcloud scheduler jobs describe ryft-tick --location=europe-west1 --project=ryftlab-prod`), then the subscription `tick-<service>`. A `LOG_LEVEL` above `info` silences the line, and this policy with it |
-| RYFT · Dead letters held (warning) | a hold subscription (`dlq-*-hold`) holds a letter, held 5 minutes | `scripts/dlq.sh --project ryftlab-prod list`, the cause in the consumer's log by `messageId` (**Dead letters and the outbox**) |
-| RYFT · Event backlog over 15 minutes (warning) | an event subscription's oldest unacked event is over 15 minutes old, held 5 | the consumer's request log (429, 5xx) and its max instances; it dead-letters after 20 attempts, and then the policy above fires |
-| RYFT · Feedback and admin access (warning; D244) | a line of one kind on api in the last 5 minutes, held 1: `feedback received`, `admin signed in` (an operator session begun, per instance), or `admin auth rejected` but for `reason` `missing` and `expired`. One incident per kind; it stays one while the lines keep coming | by the kind in the subject. **feedback received**: `/admin` → Feedback, or `scripts/beta_report.sh feedback` (GCP 14a.8); Resolve it once read. **admin signed in**: if it wasn't you, **Beta → Admin sign-in → Lost phone, or any doubt about the admin account**, at once, then `/admin` → Audit. **admin auth rejected**: Logs Explorer `resource.labels.service_name="api" jsonPayload.message="admin auth rejected"`, its `reason`: `not_a_token` a scanner or a wrong key; `signature`, `unknown_key` a forged or foreign token; `role`, `not_admin`, `not_allowed` a valid token that isn't an operator's; any other reason (`malformed`, `issuer`, `audience`, `key_mismatch`, …, `internal/auth/supabase.go`) a token that isn't one of the project's. Many, or ongoing: the admin routes' per-address limit answers them with `429` (**Beta → Admin sign-in**) |
+| RYFT · Dead letters held (warning) | a hold subscription (`dlq-*-hold`) holds a letter, held 5 minutes | `scripts/dlq.sh --project ryftlab-prod list`, the cause in the consumer's log by `messageId` (**Dead letters and the outbox**; `dlq-ingest-hold`: **Direct connections → The inbox's dead letters**) |
+| RYFT · Event backlog over 15 minutes (warning) | an event subscription's oldest unacked event is over 15 minutes old, held 5 | the consumer's request log (429, 5xx) and its max instances; it dead-letters after 20 attempts, and then the policy above fires. `ingest-inbox-received` is ingest's own consumer of the provider inbox (D257): its 5xx are a database error, and the rows wait `pending` (**Direct connections → Connected but no data**) |
+| RYFT · Notices: feedback, admin access, connections (warning; D244, D257) | a line of one kind in the last 5 minutes, held 1: on api `feedback received`, `admin signed in` (an operator session begun, per instance), `admin auth rejected` but for `reason` `missing` and `expired`, `connect capacity`, `connect no data`, `connect deregistration stuck`; on ingest `connect inbox failed`. The four connection kinds come at most once a day each (the tick of 06:00–06:14 UTC) while their condition holds. One incident per kind; it stays one while the lines keep coming | by the kind in the subject. **feedback received**: `/admin` → Feedback, or `scripts/beta_report.sh feedback` (GCP 14a.8); Resolve it once read. **admin signed in**: if it wasn't you, **Beta → Admin sign-in → Lost phone, or any doubt about the admin account**, at once, then `/admin` → Audit. **admin auth rejected**: Logs Explorer `resource.labels.service_name="api" jsonPayload.message="admin auth rejected"`, its `reason`: `not_a_token` a scanner or a wrong key; `signature`, `unknown_key` a forged or foreign token; `role`, `not_admin`, `not_allowed` a valid token that isn't an operator's; any other reason (`malformed`, `issuer`, `audience`, `key_mismatch`, …, `internal/auth/supabase.go`) a token that isn't one of the project's. Many, or ongoing: the admin routes' per-address limit answers them with `429` (**Beta → Admin sign-in**). **connect capacity**: **Direct connections → The cap**. **connect no data**: **Direct connections → Connected but no data** (the dashboard RYFT · Connections first). **connect deregistration stuck**: **Direct connections → The deregistration queue**. **connect inbox failed**: **Direct connections → Failed inbox rows** |
 
 What no policy covers since D236 (OBSERVABILITY → Cloud Monitoring → What D236 dropped): a slow
 sync (ingest's p95 panel), 429s (their panel), APNs, the admin page's other events (`admin second
 factor required`, `admin auth unavailable`: **Beta → Admin sign-in** → Alerts), the www redirect and
 the certificate's days left (its panel; Google renews it, and a failed renewal fails TLS, which the
-uptime checks see). Feedback and the admin sign-ins have the sixth policy since D244.
+uptime checks see). Feedback and the admin sign-ins have the sixth policy since D244, and the direct
+connections' four notices since D257 (no seventh policy).
 
 ### A deploy: what the old pod logs
 
@@ -3748,7 +3763,9 @@ force: `deploy.yml` rolls api and ingest with the new value, and its `site` job 
 checks that the live `/privacy` shows it (**GCP → Deploy, roll back, rotate → The site**). CI's
 `manifests` runs `node web/scripts/check-policy-version.mjs --strict` (published version, pages,
 compose) and `scripts/check_policy_in_force.sh` (the version in `deploy/run/config.env` is listed,
-has an English page, and on a pull request that page is `status: published`).
+has an English page, and on a pull request that page is `status: published`). The same PR decides the
+connections' consent cutoff, `CONNECT_MIN_POLICY_VERSION` (D259): **Direct connections → Moving the
+consent cutoff**.
 
 What to watch after the merge's deploy (read-only, from the repository root):
 
@@ -3906,7 +3923,7 @@ second from one address now get `429`, the `401` text is `admin key or admin sig
 and the scheme `bearer` in lower case is accepted. Granting access is two statements in the
 SQL editor, as the owner, by id; they are one trust domain (the Supabase project owner), and the
 row exists so that revoking takes effect at once, not so that two parties must agree. **An alert
-notices each admin session begun** (D244: the sixth condition, **RYFT · Feedback and admin access**,
+notices each admin session begun** (D244: the sixth condition, **RYFT · Notices: feedback, admin access, connections**,
 kind `admin signed in`). The api writes `admin signed in` once per operator session per instance,
 when a token passes with a TOTP at most 10 minutes old: a sign-in on the page, or its re-challenge
 after 12 hours. One that wasn't you is the lost-phone case (below). It doesn't see a token already in
@@ -4032,7 +4049,7 @@ no-store`, `/` kept `connect-src 'none'`, the api ran with `ADMIN_WEB_ORIGINS` (
 preflight `204` with `access-control-allow-origin: https://ryftlab.de`), and the operator's sign-in on the page worked.
 On Firebase Hosting the site job's live check covers the headers (**GCP → 10g**); the sign-in is not re-recorded.
 
-**Alerts.** On GCP one since D244: **RYFT · Feedback and admin access** (GCP → When an alert
+**Alerts.** On GCP one since D244: **RYFT · Notices: feedback, admin access, connections** (GCP → When an alert
 fires), whose kinds `admin signed in` and `admin auth rejected` stand in for Grafana's two rules
 that D236 dropped. `AdminWebUsed` was the page being used; now each session begun is one notice
 (`admin signed in`, no key of its own on the line). If it was not you, act (below).
@@ -4255,6 +4272,496 @@ never a title, a value, an id list or the source app), then scoring's lines for 
 | `200` with `rejected` items | items the app must change; the `code` and `message` (ids and field names) are in the response only | the app's report; `ryft_train_import_items_total{status="rejected"}` |
 | `days_touched` stay pending | scoring is behind | as for a sync (above) |
 | sessions older than 400 days without strain | by design: stored for history and records, never scored (D128) | nothing |
+
+## Direct connections
+
+D257, design `docs/work/2026-11-23-connections/design.md`. A provider links an account by OAuth on
+**api** (start, callback, confirm; the tokens sealed, api only) and pushes the account's records to
+ingest's hook `POST /connect/{provider}/push`, which verifies, stores them in `provider_inbox` and
+publishes `inbox.received`; ingest's own consumer (`/push/inbox.received`) applies them, the event's
+row and up to 24 more pending sleep and HRV rows of that account in one transaction (25 records and
+1,500 rows at most) with one `ingested` event for all their days. When a
+connection ends, **everything it brought is deleted and the touched days are rescored** (D257, design
+§8). Phase 1 ships dark: `CONNECT_PROVIDERS` is empty in `deploy/run/config.env`, the flag
+`connect.garmin` is at 0 % with an empty allow-list, and the fake provider runs in compose only
+(config refuses it on Cloud Run). Until phase 2 every query below returns nothing on production.
+
+**Signals** (OBSERVABILITY → Cloud Monitoring; no policy of their own, D244's cap):
+- the dashboard **RYFT · Connections**: the hook's requests by provider and outcome
+  (`ryft_connect_pushes`), ingest's 429s, the inbox subscription's backlog and its hold, and a logs
+  panel of the hook's lines and its `hook_limit` refusals;
+- policy 6, **RYFT · Notices: feedback, admin access, connections**, by kind, at most once a day each
+  (the tick of 06:00–06:14 UTC) while it holds: `connect capacity`, `connect no data`, `connect
+  deregistration stuck`, `connect inbox failed` (below, one heading each);
+- policy 5 on `ingest-inbox-received` (a consumer that fails every push for 15 minutes) and policy 4
+  on `dlq-ingest-hold` (20 failed deliveries): **The inbox's dead letters** below;
+- a database down at the hook is a `503` to the provider, so policy 2 (5xx over 2 %) on ingest. So
+  are a full hook (`busy`) and a verification that cannot run now (`rejected` with `503`): **The hook is
+  busy or slow** below.
+
+**api's tick, the connection steps** (every 15 minutes, after the other steps of `POST /internal/tick`,
+inside its 45 s). The order is `connect purge` → `connect gauges` (the gauges and the daily notices) →
+`connect refresh` → `connect deregister`, so the steps that use only the database never wait behind a
+provider. Each step has its own deadline: 8 s for purge and gauges, 12 s for refresh and deregister.
+A step that runs out logs `tick: step failed` (`err` `the step ran out of its 12s, the next tick goes
+on: …`), and the next step starts. A refreshed grant is saved on a detached context of 5 s, so it is
+kept even when its step or the tick has run out: the provider has already rotated the tokens, and its
+refresh token is single use. If that save fails too (ERROR `connect refresh: the refreshed grant was
+not saved`), the stored refresh token may be dead, and the next refresh can make the link
+`needs_reauth`. `connect deregister` first gives up on the queue rows older than 30 days (the
+database), then calls the provider for up to 20 rows. ingest's own step is `connect inbox`
+(republish, expire, purge, the notice `connect inbox failed`).
+
+Every query here runs in Supabase's SQL editor as the owner (or `psql` as the owner, GCP 7). They
+print user ids; keep the results off shared screens. Never select `payload` (health data) or a
+`*_enc` column. The log reads use:
+
+```bash
+L=(--project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs)
+```
+
+### The monitoring part of the apply (PR 2)
+
+The PR's `infra/gcp` plan is the user's (never applied by an agent). Its monitoring lines, with
+alerting on (with it off, the policy line is absent):
+
+```bash
+terraform -chdir=infra/gcp plan -out=connect.tfplan
+#   + google_logging_metric.connect_pushes            ryft_connect_pushes, labels provider and outcome    = 1
+#   + google_monitoring_dashboard.connections         RYFT · Connections                                  = 1 (2) to add
+#   ~ google_logging_metric.notices                   filter: + the four connect kinds, ingest too;
+#                                                     the label kind's description                         = 1
+#   ~ google_monitoring_alert_policy.notices[0]       display_name "RYFT · Feedback and admin access"
+#                                                     -> "RYFT · Notices: feedback, admin access, connections";
+#                                                     the condition's name; the documentation              = 1 (2) to change
+#   ~ google_monitoring_alert_policy.promql["dead-letters"], ["push-backlog"]
+#                                                     the query: + dlq-ingest-hold, + ingest-inbox-received  = 2 (4) to change
+#   ~ google_monitoring_dashboard.overview            the subscriptions' tiles take the new ones (regexes)  = 1 (5) to change
+#   Changes to Outputs: monitoring (log_metrics + "ryft_connect_pushes", + connections_dashboard,
+#   policies: the renamed one)
+# plus the PR's other lines (the topology's topics, subscription and hold, rule 1900 and the WAF scope,
+# the log exclusion connect-callback, the secret container): the PR's description has them.
+terraform -chdir=infra/gcp apply connect.tfplan
+rm infra/gcp/connect.tfplan
+terraform -chdir=infra/gcp output monitoring     # 6 policies, the renamed one among them; ryft_connect_pushes among log_metrics
+```
+
+**Stop if** the plan replaces (`-/+`) `google_logging_metric.notices` or the notices policy (both are
+updates in place; a replaced metric starts from nothing and the policy would point at it during the
+apply), or shows a seventh `google_monitoring_alert_policy` (D244's cap, D257). Policy 6's first
+connection notice can come only once a provider is served (phase 2): until then the four kinds have
+no line, and a test of the policy is the feedback one (GCP 14a.9).
+
+### The cap (notice `connect capacity`)
+
+api counts, per provider, the `connected` and `needs_reauth` connections plus the accounts holding an
+open start (10 minutes) or an unconfirmed grant, against `CONNECT_<PROVIDER>_USER_CAP` in
+`deploy/run/config.env`; at the cap a start answers `409 connection_limit` and `GET
+/v1/me/connections` shows `accepting: false` (a reconnect is always accepted). The notice comes at
+80 %.
+
+```sql
+SELECT provider, status, count(*) FROM connections GROUP BY 1, 2 ORDER BY 1, 2;
+SELECT provider, count(DISTINCT user_id) FROM connection_states WHERE expires_at > now() GROUP BY 1;
+SELECT provider, count(*) FROM connection_pending WHERE confirmed_at IS NULL AND confirm_expires_at > now() GROUP BY 1;
+-- needs_reauth for a week: candidates to ask to reconnect or disconnect (they hold a slot)
+SELECT provider, user_id, status_reason, status_at FROM connections WHERE status = 'needs_reauth' AND status_at < now() - interval '7 days';
+```
+
+Raise the cap only as far as the programme allows (phase 2, from the programme docs), in a PR of one
+line:
+
+```bash
+git fetch origin && git switch -c deploy/connect-cap origin/main
+# deploy/run/config.env: CONNECT_GARMIN_USER_CAP=<n> becomes CONNECT_GARMIN_USER_CAP=<m> (that line only)
+make cloudrun-check
+git commit -am "deploy: the Garmin connection cap at <m>"
+git push -u origin HEAD && gh pr create --fill -R timkrebs/ryft-platform
+```
+
+Its merge's deploy rolls api with the new cap (**GCP → Deploy, roll back, rotate**). `revoked` rows
+never count.
+
+### Moving the consent cutoff (D259)
+
+`CONNECT_MIN_POLICY_VERSION` (`deploy/run/config.env`, ingest only) is the oldest health-processing
+consent version whose pushes ingest still accepts: the hook and the inbox consumer keep an account's
+records while its consent is not withdrawn and is to that version or a later one. Empty means the
+policy in force (`PRIVACY_POLICY_VERSION`). A withdrawn consent always drops. api's start and confirm
+always require the policy in force, so a new connection or a relink consents to the new text anyway.
+
+**When.** Decide it in the same PR as the `PRIVACY_POLICY_VERSION` change (**Beta → A new policy
+text**), never in a PR of its own afterwards:
+- the change touches how health data is processed (what is collected, the purpose, a processor or
+  recipient, retention): the cutoff moves to the new version;
+- a wording change (anything else): the cutoff stays where it is. It is pinned to a date
+  (`2026-10-26` since D259), so leaving the line alone is the wording case. Never empty it: an empty
+  value follows `PRIVACY_POLICY_VERSION`, so the next policy PR would drop every older consent.
+
+The edit, in that policy PR (one line; `docker-compose.yml` does not set it):
+
+```bash
+# deploy/run/config.env, next to PRIVACY_POLICY_VERSION=<old> becoming PRIVACY_POLICY_VERSION=<new>:
+#   health processing changed:  CONNECT_MIN_POLICY_VERSION=<new>
+#   wording only:               leave CONNECT_MIN_POLICY_VERSION as it is
+make cloudrun-check
+```
+
+`make cloudrun-check` (`scripts/check_cloudrun.py`, CI's `manifests` job) checks the rendered
+templates: the value is empty or a real `YYYY-MM-DD` calendar date, not after ingest's
+`PRIVACY_POLICY_VERSION` (a later cutoff would drop consents to the text in force), and it is in
+`ingest.yaml` only (`api.yaml` with it fails). It does not check that the date is a published
+version: take it from `web/content/legal/privacy-versions.json`.
+
+**What users see.** An account whose consent is older than the cutoff (or withdrawn) keeps its
+connection `connected`, but its pushes are dropped as `no_consent`: at the hook before any inbox row,
+and by the consumer for rows already pending (`dropped`, `no_consent`). That lasts until the user
+consents in the app (it asks at its next start). **What was dropped is lost:** the provider keeps no
+history at our tier, and nothing redelivers it after the consent. After 36 hours such an account is
+in the notice `connect no data` (**Connected but no data**). Before merging a PR that moves the
+cutoff, list who it drops and tell them to open the app the same day:
+
+```sql
+SELECT c.provider, c.user_id, k.policy_version, c.last_data_at
+  FROM connections c
+  LEFT JOIN LATERAL (SELECT policy_version FROM consents
+                      WHERE user_id = c.user_id AND kind = 'health_processing' AND revoked_at IS NULL
+                      ORDER BY granted_at DESC LIMIT 1) k ON true
+ WHERE c.status = 'connected' AND (k.policy_version IS NULL OR k.policy_version < '<new cutoff>')
+ ORDER BY 3 NULLS FIRST;
+```
+
+The merge's deploy rolls ingest with the new value (**GCP → Deploy, roll back, rotate**); for a
+minute an old instance may still apply the old cutoff.
+
+**Watching it** (D258). On **RYFT · Connections** the logs panel's `connect push` lines carry a
+`no_consent` count per request; the request's outcome stays `accepted`, so the `ryft_connect_pushes`
+tile does not move (a cutoff that drops everyone looks like accepted pushes and no new data). The
+consumer's line `connect inbox` has `outcome` `no_consent`. In compose, the same counts are
+`ryft_connect_push_items_total{outcome="no_consent"}` and
+`ryft_connect_inbox_processed_total{outcome="no_consent"}`. Read-only, after the merge:
+
+```bash
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="ingest" AND jsonPayload.message="connect push" AND jsonPayload.no_consent:*' \
+  "${L[@]}" --freshness=1d --limit=500 --format='value(timestamp,jsonPayload.provider,jsonPayload.kind,jsonPayload.no_consent)'
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="ingest" AND jsonPayload.message="connect inbox" AND jsonPayload.outcome="no_consent"' \
+  "${L[@]}" --freshness=1d --limit=500 --format='value(timestamp,jsonPayload.provider,jsonPayload.kind)' | wc -l
+```
+
+Counts that do not fall within a day or two of the merge are accounts that have not opened the app:
+the SQL above, with the cutoff in force, names them.
+
+### Connected but no data (notice `connect no data`)
+
+A connection `connected` over 36 hours ago that stored nothing for 36 hours
+(`ryft_connect_stale_connections`). No history exists at the provider's tier we use: what was not
+delivered is lost, so find out the same day.
+
+1. **The dashboard RYFT · Connections, the hook's tile.** `rejected` and no `accepted`: the
+   provider's verification no longer passes, for every user (a secret rotated at the provider, or
+   the adapter): **Rotating a provider's secret** below. Nothing at all: the provider sends nothing
+   (**A provider outage** below), or the edge refuses it (the tile "ingest: 429" and the logs panel's
+   `hook_limit`; once the edge is built, priority 1900 on the overview's Cloud Armor tile).
+   `accepted` as usual: it is this account (step 2).
+2. **Which accounts, and their inbox:**
+
+   ```sql
+   SELECT provider, user_id, connected_at, last_data_at FROM connections
+    WHERE status = 'connected' AND connected_at < now() - interval '36 hours'
+      AND (last_data_at IS NULL OR last_data_at < now() - interval '36 hours') ORDER BY last_data_at NULLS FIRST;
+   SELECT state, error, count(*), max(received_at) FROM provider_inbox
+    WHERE user_id = '<user uuid>' AND provider = '<provider>' GROUP BY 1, 2;
+   ```
+
+   - `pending` rows piling up: the consumer (policy 5, **The inbox's dead letters**).
+   - `failed`: **Failed inbox rows**.
+   - `dropped` with `no_consent`: the account's consent is withdrawn or older than the consent cutoff,
+     so its pushes are dropped (design §7.3, D259; **Moving the consent cutoff** above). The app asks
+     for consent at its next start; the data in between is lost.
+   - No row since `last_data_at`: the provider sends nothing for this account. Its items may also be
+     dropped at the hook before any row: `unknown_user` (no live link: a relink or a revocation the
+     account didn't see) or `no_consent`. The hook's lines count them, per request:
+
+   ```bash
+   gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="ingest" AND jsonPayload.message="connect push"' \
+     "${L[@]}" --freshness=2d --limit=200 --format=json | jq -c '.[] | {timestamp} + (.jsonPayload | del(.message))'
+   ```
+
+3. **The account itself:** the app's Settings shows the connection. The user may have stopped wearing
+   or syncing the device to the provider. Ask them to open the provider's app; if nothing comes for
+   another day, to disconnect and connect again (that deletes what this connection brought, D257).
+
+### A provider outage
+
+Seen as: the hook's tile flat (no pushes), callbacks answering `status=error` (the line `connect
+callback`, `reason` `exchange_failed`), refreshes failing transiently (backed off up to 24 hours;
+the grant stays), deregistrations retrying (the notice `connect deregistration stuck` after 24
+hours), then `connect no data` after 36 hours.
+
+```bash
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="api" AND jsonPayload.message="connect callback"' \
+  "${L[@]}" --freshness=1d --limit=500 --format='value(jsonPayload.provider,jsonPayload.status,jsonPayload.reason)' | sort | uniq -c
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="api" AND jsonPayload.message="tick: step failed" AND jsonPayload.step:"connect"' \
+  "${L[@]}" --freshness=1d --limit=50 --format='value(timestamp,jsonPayload.step,jsonPayload.err)'
+```
+
+Nothing to do on RYFT's side: every step retries on its own (refresh and deregistration in api's
+tick, the provider's own push retries, phase 2: confirm its policy). Check the provider's status page,
+and tell testers that new data from it waits. Do **not** take the provider out of
+`CONNECT_PROVIDERS` for an outage: the hook would answer `404` to the pushes that do come, and starts
+and confirms `404` as well. To stop new connections only (the existing ones keep flowing), turn the
+flag off for everyone (**Feature flags**, the kill switch, on `connect.garmin`); it never gates a
+disconnect.
+
+### The hook is busy or slow (`busy`, `timeout`)
+
+Each ingest instance takes at most **2** pushes at once (`maxHookInflight` in
+`backend/cmd/ingest/connect.go`). The rest of the instance's 4 requests (`containerConcurrency` in
+`deploy/run/ingest.yaml`) stay free for `/v1/sync`. A third push is answered `503` with `Retry-After:
+5` before its body is read: outcome `busy`, nothing stored, and the provider sends it again. A body that
+has not arrived within 10 s (`hookReadTimeout`) is answered `408`: outcome `timeout`, nothing stored.
+Both show on **RYFT · Connections**, on the tile "Hook requests per hour". `busy` is a 5xx, so a burst
+of it can open policy 2 on ingest.
+
+A few `busy` in a burst are normal: the provider retries. **A sustained `busy`** (every hour, or with
+policy 2 open) means the provider pushes faster than 2 slots per instance drain. Cloud Run does not
+add an instance for it, because the instance is not at its 4 yet. Before raising the cap, look at
+these (read-only):
+
+```bash
+# 1. How long a push holds its slot (dur_ms): over a second or two is the database, not the cap
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="ingest" AND jsonPayload.message="http" AND jsonPayload.path:"/connect/"' \
+  "${L[@]}" --freshness=1h --limit=500 --format='value(jsonPayload.status,jsonPayload.dur_ms)' | sort | uniq -c | sort -rn | head -20
+# 2. The outcomes per hour, busy and timeout among them
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="ingest" AND jsonPayload.message="connect push"' \
+  "${L[@]}" --freshness=6h --limit=2000 --format='value(jsonPayload.provider,jsonPayload.outcome)' | sort | uniq -c
+```
+
+3. On **RYFT · Overview**: ingest's instances (`maxScale` is 2), its p95 and its 5xx. Are the pushes
+   coming at a sync peak, so that `/v1/sync` holds the other slots too?
+4. Is it `accepted` or `duplicate` traffic? The `connect push` lines' item counts show whether the
+   provider re-sends what it already sent (`duplicate`). That calls for a question to the provider,
+   not more slots.
+
+Slow pushes (step 1) point to the database: Supabase, and the inbox's pending rows (`SELECT state,
+count(*) FROM provider_inbox GROUP BY 1`). Fix that first. The cap is a code constant, not config.
+Raising it, or raising `containerConcurrency` with it, is a change to backend and `ingest.yaml` in one
+PR. Every hook slot is taken from `/v1/sync`, which has the SyncSlow budget on the overview (10 s).
+
+A sustained **`timeout`** means a sender trickles its body. From the real provider, that is its
+network or bodies near `too_large`. From elsewhere, it is a slow sender holding slots, and the edge's
+hook throttle (priority 1900) applies once the edge is built. Each one is answered `408`, nothing is
+stored, and the provider sends it again (phase 2: check that its retry policy covers `408`).
+
+### Rotating a provider's secret
+
+The client secret is api's (`CONNECT_GARMIN_CLIENT_SECRET`, secret `connect-garmin-client-secret`,
+accessor `ryft-api` only), pinned by version in `deploy/run/api.yaml` from phase 2 on; it is used for
+the exchange, refreshes and deregistrations. A push-verification secret exists only if phase 2's
+programme needs one (`connect-garmin-push-secret`, ingest's, pinned in `deploy/run/ingest.yaml`);
+when it rotates at the provider and not here, every push is `rejected` (`401`), which the tile shows at
+once. **Phase 2, from the programme docs:** whether the provider keeps the old secret valid until you
+revoke it (then the order below), and whether a wrong client secret is refused as an invalid grant
+(then every refresh it touches would set `needs_reauth`: rotate in one go, and check step 4 at once).
+
+1. The new value from the provider's developer console, then the version (the same `put` as GCP 5,
+   hidden prompt, nothing on argv):
+
+   ```bash
+   put() { read -rs "?Value for $1: " V; echo; printf '%s' "$V" | gcloud secrets versions add "$1" --project=ryftlab-prod --data-file=-; unset V; }
+   put connect-garmin-client-secret          # Created version [N+1]   (the push secret: put connect-garmin-push-secret)
+   pbcopy < /dev/null
+   ```
+
+2. The pin, a PR (**GCP → Deploy, roll back, rotate → Another secret's pin**):
+
+   ```bash
+   git fetch origin && git switch -c chore/rotate-connect-garmin-client-secret origin/main
+   git grep -n 'name: connect-garmin-client-secret,' -- deploy/run/   # api.yaml only (the push secret: ingest.yaml only); its key "N" to "N+1" by hand
+   make cloudrun-check
+   bash scripts/tests/check_cloudrun_test.sh
+   git commit -am "deploy: connect-garmin-client-secret at version <N+1>"
+   git push -u origin HEAD && gh pr create --fill -R timkrebs/ryft-platform
+   ```
+
+3. Its merge's deploy rolls api (or ingest) onto N+1. Then revoke the old secret at the provider.
+4. Check: no `tick: step failed` for `connect refresh` or `connect deregister` in the next tick (the
+   query in **A provider outage**), and a connect with your own test account (start, confirm) gives
+   `connect callback` `status` `ok`. For the push secret: the hook's tile shows `accepted` again.
+5. After a day, disable N: `gcloud secrets versions disable <N> --secret=connect-garmin-client-secret --project=ryftlab-prod`.
+
+**Stop if** `git grep` shows a pin you didn't move, or `make cloudrun-check` fails. Never rotate
+`data-key` for this: the tokens are sealed with it (D211).
+
+### Failed inbox rows (notice `connect inbox failed`)
+
+An inbox row is `failed` when its record does not parse (`error` `parse`: the adapter's bug), after 20
+attempts (`attempts`), or after 7 days pending (`expired`). ingest's tick deletes failed rows 7 days
+after they failed; until then the payload stays for a replay. The provider re-sending the record
+replays it too (a changed payload goes back to `pending`).
+
+```sql
+SELECT provider, kind, error, count(*), min(processed_at), max(processed_at)
+  FROM provider_inbox WHERE state = 'failed' GROUP BY 1, 2, 3 ORDER BY 4 DESC;
+-- the shape of a parse failure, never the values: its top-level keys only
+SELECT id, provider, kind, version, revision, (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(payload) k) AS keys
+  FROM provider_inbox WHERE state = 'failed' AND error = 'parse' ORDER BY id LIMIT 20;
+```
+
+- `parse`: fix the adapter (`internal/connect/<provider>`, a test with the shape), deploy, then step
+  below.
+- `attempts` or `expired`: the consumer failed for a while; the cause is in ingest's log (`handle event
+  failed`, and **The inbox's dead letters**). Fix it, deploy, then the step below.
+
+The consumer batches: one event stores its row with up to 24 more pending sleep and HRV rows of that
+account (25 records, 1,500 rows) in one transaction, with one `ingested` event for all their days. The
+line `connect inbox batch` (`records`) is such a batch. The later events of the rows it took find them
+`processed` and do nothing. If the batch fails, the consumer applies the event's row alone (WARN
+`connect inbox batch failed, applying the row alone`). The other rows stay `pending` for their own
+events, so one bad record fails only its own row.
+
+**After the fix is deployed**, put the rows back to `pending`. ingest's tick republishes pending rows
+older than an hour (100 a tick), and the consumer applies them as any other (idempotent, D100):
+
+```sql
+UPDATE provider_inbox SET state = 'pending', attempts = 0, error = NULL, processed_at = NULL
+ WHERE state = 'failed' AND error = '<parse|attempts|expired>' AND payload IS NOT NULL;   -- prints UPDATE <n>
+```
+
+A row that fails again is `failed` again. Rows of an account that has no live connection any more go
+to `dropped` (`no_connection`). Within the hour after the update, `SELECT state, count(*) FROM
+provider_inbox GROUP BY 1` shows them `processed`.
+
+### The deregistration queue (notice `connect deregistration stuck`)
+
+Every ended grant's tokens wait in `connection_deregistrations` until api's tick (`connect
+deregister`, 20 rows a tick) has told the provider, with backoff up to 24 hours. After 30 days it gives
+up (`given_up`): the step does that first, before it calls the provider. It deletes the tokens, and
+the provider keeps pushing into the void (the hook drops it as `unknown_user`). A grant that a live connection of another account still holds is never deregistered,
+only deleted (`skipped_live`, design §6.3).
+
+```sql
+SELECT provider, reason, last_error, count(*), min(created_at), max(attempts)
+  FROM connection_deregistrations GROUP BY 1, 2, 3 ORDER BY 5;
+```
+
+- `last_error` the same for all, and the provider down: **A provider outage**; nothing to do.
+- A client-credential error: **Rotating a provider's secret**.
+- To try one now (once the cause is gone): `UPDATE connection_deregistrations SET next_attempt_at =
+  now() WHERE id = <id>;`, then the next tick (15 minutes). The `tick: step failed` query above shows
+  a failure.
+- Rows near 30 days whose user asked RYFT to end the link: remove the app at the provider's own
+  console if the programme offers one (phase 2), then let the row go.
+
+### The inbox's dead letters (`dlq-ingest-hold`)
+
+An `inbox.received` event that failed its 20 deliveries goes to `ryft-dlq-ingest` and waits in
+`dlq-ingest-hold` for 14 days; policy 4 fires, and policy 5 before it. The letter names an inbox row
+(`inbox_id`, `user_id`, `provider`, `kind`, `revision`, `request_id`), never its record.
+
+```bash
+scripts/dlq.sh --project ryftlab-prod list              # dlq-ingest-hold's letters among the others
+scripts/dlq.sh --project ryftlab-prod show ingest 5     # in full, the event decoded
+scripts/dlq.sh --project ryftlab-prod replay ingest 1   # after the fix is deployed: back to ryft-inbox-received
+scripts/dlq.sh --project ryftlab-prod purge ingest      # asks first
+```
+
+A replay is safe: the consumer reads the row, and a row that is no longer `pending` answers `204`
+without a change (D100). It is often not needed: ingest's tick republishes every `pending` row older
+than an hour by itself, and the consumer marks a row `failed` (`attempts`) at its 20th try, so the
+letters' rows are usually already `failed` or `processed` (**Failed inbox rows**). Purge once the rows
+are dealt with. The rules for a replay are **GCP → Dead letters and the outbox**.
+
+### Disconnecting a user by hand
+
+The user disconnects in the app (`DELETE /v1/me/connections/{provider}`, design §6.4), and that is the
+way. There is **no admin route** for it (design §4, §6.4). When the user cannot (no app, a support
+request in writing), the SQL below does what `store.Disconnect` does, as the database owner.
+
+**It deletes data, for good (D257, design §8):** the account's direct sleep and HRV rows from that
+provider, its inbox rows, its direct source, its connection; the days are rescored without them. There
+is no history at the provider to bring them back, and only a backup restore would (**Backups**). Run it
+only on the user's own request, and note the request. Data from the same vendor that came through
+Apple Health stays.
+
+1. Look first (the connection, and an unconfirmed grant, which this SQL cannot queue: its tokens are
+   sealed for the pending grant, and api's tick queues it within 15 minutes of its expiry):
+
+   ```sql
+   SELECT provider, status, connected_at, last_data_at FROM connections WHERE user_id = '<user uuid>';
+   SELECT provider, confirmed_at, confirm_expires_at FROM connection_pending WHERE user_id = '<user uuid>';
+   ```
+
+2. The disconnect, one transaction (a `DO` block: any error rolls all of it back). Set the two values
+   in its first lines:
+
+   ```sql
+   DO $$
+   DECLARE
+     u    uuid := '<user uuid>';
+     p    text := '<provider>';          -- garmin
+     tz   text;
+     lo   timestamptz;
+     hi   timestamptz;
+     days text[];
+     n    bigint;
+   BEGIN
+     PERFORM pg_advisory_xact_lock(7419005, hashtext(u::text));   -- lockApply: waits for ingest's consumer
+     SELECT users.tz INTO tz FROM users WHERE id = u;
+     IF tz IS NULL THEN RAISE EXCEPTION 'no account %', u; END IF;
+     IF EXISTS (SELECT 1 FROM connection_pending WHERE user_id = u AND provider = p AND confirmed_at IS NULL) THEN
+       RAISE EXCEPTION 'an unconfirmed grant is pending: run this again 25 minutes after its confirm_expires_at';
+     END IF;
+     -- the span of the direct data, before it goes
+     SELECT min(t0), max(t1) INTO lo, hi FROM (
+       SELECT min(start_at) t0, max(end_at) t1 FROM samples WHERE user_id = u AND origin = 'direct' AND vendor = p
+       UNION ALL
+       SELECT min(start_at), max(end_at) FROM sleep_segments WHERE user_id = u AND origin = 'direct' AND vendor = p) x;
+     -- the tokens to the deregistration queue, still sealed (same AD); not for a revoked connection
+     INSERT INTO connection_deregistrations (user_id, provider, provider_user_id, reason, access_enc, refresh_enc)
+       SELECT c.user_id, c.provider, c.provider_user_id, 'disconnect', t.access_enc, t.refresh_enc
+         FROM connections c JOIN connection_tokens t USING (user_id, provider)
+        WHERE c.user_id = u AND c.provider = p AND c.status <> 'revoked';
+     GET DIAGNOSTICS n = ROW_COUNT; RAISE NOTICE 'queued for deregistration: %', n;
+     DELETE FROM connection_tokens  WHERE user_id = u AND provider = p;
+     DELETE FROM connection_pending WHERE user_id = u AND provider = p;   -- confirmed rows only: no token
+     DELETE FROM connections        WHERE user_id = u AND provider = p;
+     GET DIAGNOSTICS n = ROW_COUNT; RAISE NOTICE 'connections: %', n;
+     DELETE FROM provider_inbox     WHERE user_id = u AND provider = p;
+     DELETE FROM samples        WHERE user_id = u AND origin = 'direct' AND vendor = p;
+     GET DIAGNOSTICS n = ROW_COUNT; RAISE NOTICE 'samples: %', n;
+     DELETE FROM sleep_segments WHERE user_id = u AND origin = 'direct' AND vendor = p;
+     GET DIAGNOSTICS n = ROW_COUNT; RAISE NOTICE 'sleep segments: %', n;
+     DELETE FROM user_sources   WHERE user_id = u AND origin = 'direct' AND name = 'ryft-direct-' || p;
+     -- every local day of the span, one either side, at most 400 days back: queued and announced
+     IF lo IS NOT NULL THEN
+       SELECT array_agg(to_char(d, 'YYYY-MM-DD') ORDER BY d) INTO days
+         FROM generate_series(greatest((lo AT TIME ZONE tz)::date - 1, (now() AT TIME ZONE tz)::date - 400),
+                              (hi AT TIME ZONE tz)::date + 1, interval '1 day') d;
+       INSERT INTO score_queue (user_id, day, queued_at, scored_at)
+         SELECT u, d::date, now(), NULL FROM unnest(days) d
+         ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL;
+       INSERT INTO outbox (publisher, user_id, routing_key, message_id, reason, payload)
+         VALUES ('api', u, 'ingested', '', 'disconnect',
+                 jsonb_build_object('user_id', u, 'days', to_jsonb(days), 'reason', 'disconnect', 'request_id', 'disconnect-by-hand'));
+       RAISE NOTICE 'days queued: % (% to %)', cardinality(days), days[1], days[cardinality(days)];
+     END IF;
+   END $$;
+   ```
+
+3. What follows on its own: api's next tick (at most 15 minutes) sends the `ingested` event (its outbox
+   sweep) and deregisters at the provider (`connect deregister`, under the live-grant rule); scoring
+   rescores the days. Check after 30 minutes:
+
+   ```sql
+   SELECT count(*) FROM connection_deregistrations WHERE user_id = '<user uuid>' AND provider = '<provider>';   -- 0 once deregistered
+   SELECT count(*) FROM outbox WHERE user_id = '<user uuid>' AND reason = 'disconnect' AND published_at IS NULL; -- 0
+   SELECT count(*) FROM score_queue WHERE user_id = '<user uuid>' AND scored_at IS NULL;                       -- 0 once scored
+   ```
+
+**Mirrors design §6.4**, steps 1–8. Before phase 2's first real connection, compare it with
+`store.Disconnect` (`backend/internal/store/connections.go`, `direct.go`) line by line and correct it
+here if they differ; a one-off admin route would replace it if this is needed more than rarely.
 
 ## Feature flags
 
@@ -4532,6 +5039,50 @@ There is no dump job of RYFT's own. Before restoring a backup:
 4. `gh workflow run deploy.yml --ref main -R timkrebs/ryft-platform`: every run runs `migrate`,
    which sets the role passwords in case the backup predates them (**GCP → Deploy, roll back,
    rotate**). The api's tick (its `account reconcile` step) erases the restored accounts.
+5. **Direct connections** (D257, design §8, §12). A connection ended after the backup was taken comes
+   back with it, its data and its tokens included: disconnects leave no tombstone. So, with step 1,
+   also download `SELECT user_id, provider, status FROM connections` as CSV. After the restore, every
+   restored `connected` or `needs_reauth` pair that the CSV lacks, or holds as `revoked`, is ended
+   again by hand, one by one (**Direct connections → Disconnecting by hand**; its tokens then go to
+   the queue and are deregistered). Then the direct rows that no live connection holds any more (the
+   backup's rows of a connection already gone) are deleted and their days rescored, in one
+   transaction:
+
+   ```sql
+   DO $$
+   DECLARE r record; days text[];
+   BEGIN
+     FOR r IN
+       SELECT x.user_id, x.vendor, min(x.t0) lo, max(x.t1) hi, u.tz FROM (
+         SELECT user_id, vendor, min(start_at) t0, max(end_at) t1 FROM samples WHERE origin = 'direct' GROUP BY 1, 2
+         UNION ALL
+         SELECT user_id, vendor, min(start_at), max(end_at) FROM sleep_segments WHERE origin = 'direct' GROUP BY 1, 2) x
+       JOIN users u ON u.id = x.user_id
+       WHERE NOT EXISTS (SELECT 1 FROM connections c WHERE c.user_id = x.user_id AND c.provider = x.vendor
+                           AND c.status IN ('connected', 'needs_reauth'))
+       GROUP BY x.user_id, x.vendor, u.tz
+     LOOP
+       PERFORM pg_advisory_xact_lock(7419005, hashtext(r.user_id::text));
+       DELETE FROM samples        WHERE user_id = r.user_id AND origin = 'direct' AND vendor = r.vendor;
+       DELETE FROM sleep_segments WHERE user_id = r.user_id AND origin = 'direct' AND vendor = r.vendor;
+       DELETE FROM user_sources   WHERE user_id = r.user_id AND origin = 'direct' AND name = 'ryft-direct-' || r.vendor;
+       DELETE FROM provider_inbox WHERE user_id = r.user_id AND provider = r.vendor;
+       SELECT array_agg(to_char(d, 'YYYY-MM-DD') ORDER BY d) INTO days
+         FROM generate_series(greatest((r.lo AT TIME ZONE r.tz)::date - 1, (now() AT TIME ZONE r.tz)::date - 400),
+                              (r.hi AT TIME ZONE r.tz)::date + 1, interval '1 day') d;
+       INSERT INTO score_queue (user_id, day, queued_at, scored_at)
+         SELECT r.user_id, d::date, now(), NULL FROM unnest(days) d
+         ON CONFLICT (user_id, day) DO UPDATE SET queued_at = now(), scored_at = NULL;
+       INSERT INTO outbox (publisher, user_id, routing_key, message_id, reason, payload)
+         VALUES ('api', r.user_id, 'ingested', '', 'disconnect',
+                 jsonb_build_object('user_id', r.user_id, 'days', to_jsonb(days), 'reason', 'disconnect', 'request_id', 'restore-orphans'));
+       RAISE NOTICE 'orphaned direct rows of one account and %: % days queued', r.vendor, cardinality(days);
+     END LOOP;
+   END $$;
+   ```
+
+   A notice per account and provider, or none. api's next tick sends the events, and scoring rescores
+   the days.
 
 **Restore drill, monthly** (Pro): **GCP → 14a.7** (D239). It replaces the drill that stood here:
 its copy is connected to nothing, so no service and no smoke runs against it.

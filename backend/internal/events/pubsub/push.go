@@ -53,7 +53,7 @@ type Publisher interface {
 
 // PushOptions configure a consumer's push handling.
 type PushOptions struct {
-	Consumer string            // events.ConsumerScoring or events.ConsumerNotify
+	Consumer string            // events.ConsumerScoring, events.ConsumerNotify or events.ConsumerIngest
 	Verifier auth.PushVerifier // the push token check (auth.GoogleOIDC; auth.InsecurePush locally)
 	DLQ      Publisher         // publishes the consumer's bad events to its dead-letter topic
 	Deferrer Deferrer          // stores a Defer; nil: a Defer is a nack
@@ -93,7 +93,7 @@ func NewPush(o PushOptions, fn events.Handler) (*Push, error) {
 
 // Paths are the routes Register serves: scoring's /push/ingested and
 // /push/session.completed; notify's /push/scored, /push/session.scored, /push/refresh
-// and /push/wait.
+// and /push/wait; ingest's /push/inbox.received.
 func (p *Push) Paths() []string { return slices.Clone(p.paths) }
 
 // Register serves "POST <path>" on mux for every path of Paths.

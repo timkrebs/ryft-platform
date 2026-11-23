@@ -14,6 +14,7 @@ import (
 	"github.com/timkrebs/ryft/internal/appattest"
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
+	"github.com/timkrebs/ryft/internal/connect"
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/eventbus"
 	"github.com/timkrebs/ryft/internal/events"
@@ -22,6 +23,7 @@ import (
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/ratelimit"
 	"github.com/timkrebs/ryft/internal/scoring"
+	"github.com/timkrebs/ryft/internal/sealed"
 	"github.com/timkrebs/ryft/internal/store"
 )
 
@@ -39,6 +41,7 @@ func spec() app.Spec {
 		adminCfg  config.Admin
 		analytics config.Analytics
 		attest    config.AppAttest
+		conn      config.Connect
 		key       adminKey // ADMIN_API_KEY as the edge limit compares it; set by Load
 	)
 	return app.Spec{
@@ -83,10 +86,16 @@ func spec() app.Spec {
 				return app.ConfigError{Msg: "app attest config", Err: err}
 			}
 			log.Info("app attest", "mode", attest.Mode, "ring", attest.Ring != nil, "exempt", len(attest.ExemptUsers))
+			// The fake on Cloud Run, a provider without its cap, its client or the data key, or a callback base that
+			// is no https origin stops the start (D257). The line names the providers, never a secret.
+			if conn, err = config.LoadConnect("api"); err != nil {
+				return app.ConfigError{Msg: "connect config", Err: err}
+			}
+			log.Info("connect", "providers", conn.Providers, "callback_base", conn.CallbackBase != "")
 			return nil
 		},
 		Build: func(ctx context.Context, d app.Deps) (app.Parts, error) {
-			return build(ctx, d, authCfg, beta, adminCfg, analytics, attest)
+			return build(ctx, d, authCfg, beta, adminCfg, analytics, attest, conn)
 		},
 	}
 }
@@ -94,7 +103,7 @@ func spec() app.Spec {
 // build makes the api's mux on the opened pool and transport. ctx is Build's: the JWKS
 // refresher runs on it.
 func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Beta, adminCfg config.Admin,
-	analytics config.Analytics, attest config.AppAttest) (app.Parts, error) {
+	analytics config.Analytics, attest config.AppAttest, conn config.Connect) (app.Parts, error) {
 	log := d.Log
 	// The import's comparisons are internal/train's pure rules (D131).
 	st := store.New(d.Pool).WithImportRules(importRules())
@@ -134,6 +143,21 @@ func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Bet
 	if settings == nil {
 		log.Warn("email-bound invites are unavailable: the api has no Supabase admin client (SUPABASE_SERVICE_ROLE_KEY unset, or apikey mode)")
 	}
+	// Direct connections (D257): the providers served, the key that seals their tokens (only the api holds it), and
+	// the routes behind them. Without a provider the routes still answer (404 unknown_provider, an empty list) and a
+	// disconnect still works.
+	reg, err := connectRegistry(conn)
+	if err != nil {
+		return app.Parts{}, app.ConfigError{Msg: "connect config", Err: err}
+	}
+	var dataKey *sealed.Key
+	if conn.DataKey != "" {
+		if dataKey, err = sealed.ParseKey(conn.DataKey); err != nil {
+			return app.Parts{}, app.ConfigError{Msg: "connect config", Err: err}
+		}
+	}
+	h.conn = newConnectAPI(st, reg, conn, dataKey, beta, ob, log)
+	acct.conn = h.conn
 	purgeSeries()
 	pool := d.Pool
 	tick, err := d.Tick(tickSteps{ // the metrics push is the tick's final step (app)
@@ -143,6 +167,7 @@ func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Bet
 		settings:  guard.Refresh,
 		purge:     func(ctx context.Context) error { return purgeInviteEmails(ctx, st, log) },
 		attest:    func(ctx context.Context) error { return purgeAppAttest(ctx, st, log) },
+		connect:   h.conn.ticks(),
 	}.ticks()...)
 	if err != nil {
 		return app.Parts{}, err
@@ -193,6 +218,10 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 
 	api := http.NewServeMux()
 	api.HandleFunc("GET /v1/config", h.remoteConfig)
+	api.HandleFunc("GET /v1/me/connections", h.conn.list)
+	api.HandleFunc("POST /v1/me/connections/{provider}/start", h.conn.start)
+	api.HandleFunc("POST /v1/me/connections/{provider}/confirm", h.conn.confirm)
+	api.HandleFunc("DELETE /v1/me/connections/{provider}", h.conn.disconnect)
 	api.HandleFunc("GET /v1/model", h.modelInfo)
 	api.HandleFunc("GET /v1/me", h.me)
 	api.HandleFunc("GET /v1/me/sync", h.syncStatus)
@@ -256,6 +285,9 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	del := http.NewServeMux()
 	del.HandleFunc("DELETE /v1/me", h.deleteMe)
 	mux.Handle("DELETE /v1/me", auth.Middleware(authOpts, httpx.WithRoutes(del)))
+	// The provider's redirect carries no bearer, no app token and no gate: the browser sends it, not the app. It
+	// sits outside the /v1/ chain, like the tick, and always answers 302 (D257).
+	mux.Handle("GET /v1/connect/{provider}/callback", httpx.Timeout(readTimeout, http.HandlerFunc(h.conn.callback)))
 	load := o.loadUser
 	if load == nil {
 		load = ensureUser(h.st)
@@ -335,6 +367,8 @@ type handler struct {
 	importFinish time.Duration
 	// attest serves /v1/app-attest/*; nil without the ring: the routes answer 501 (D247).
 	attest *appAttest
+	// conn serves the Connections routes and the tick's steps (D257).
+	conn *connectAPI
 	// attestMode is APP_ATTEST, GET /v1/config → app_attest (AA2); "" is off.
 	attestMode config.Mode
 }
@@ -357,6 +391,17 @@ const sourcesWindow = 30 * 24 * time.Hour
 // withSources adds User.sources, which the per-request user row does not load.
 func (h *handler) withSources(r *http.Request, u model.User) (model.User, error) {
 	src, err := h.st.UserSources(r.Context(), u.ID, time.Now().Add(-sourcesWindow))
+	for i := range src {
+		switch src[i].Origin {
+		case "":
+			src[i].Origin = model.OriginHealthKit
+		case model.OriginDirect:
+			// A direct source is stored under its reserved name; the app sees the provider's, and no bundle id.
+			if p, ok := connect.ProviderOfSource(src[i].Name); ok && h.conn != nil {
+				src[i].Name, src[i].BundleID = h.conn.reg.DisplayName(p), nil
+			}
+		}
+	}
 	u.Sources = src
 	return u, err
 }

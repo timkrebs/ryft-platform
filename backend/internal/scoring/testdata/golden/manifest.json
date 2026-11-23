@@ -5,7 +5,7 @@
     "sessions": ["user_id", "created_at", "updated_at", "imported_at"],
     "workouts": ["user_id", "created_at"]
   },
-  "fields": "15211855271502612580",
+  "fields": "9435900101371445051",
   "first_day": "2026-10-05",
   "inputs": {
     "user-a": {

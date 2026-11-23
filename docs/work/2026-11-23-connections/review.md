@@ -28,3 +28,37 @@ left to the user (design §17 Q1). The brief's "drop without consent in force" s
 | 4 | should | callback logging exclusion only with the edge built | unconditional (`infra/gcp/logging.tf`) |
 | 5 | should | this file showed blockers open | rows marked resolved |
 | nits | — | "3 open" scope, `deregistered` in two cases, a two-body example, `ConnectCallback` path parsing, `rmssd` ≠ direct, reserve `unknown` | fixed in API.md / design |
+
+## PR 2 `connect/foundation` reviews (2026-11-23)
+
+The first code review's findings were lost when the disk filled mid-run (the reviewer could not recall them); a
+fresh code review runs on the tree. Security and SRE: no blocker.
+
+| # | From | Sev | Finding | Fix | Owner | State |
+|---|---|---|---|---|---|---|
+| P2-1 | security | should | `infra/gcp/logging.tf:25` exclusion is a substring match: `?x=/v1/connect/` on any probe drops its Cloud Armor denial and 5xx entries | anchor: `httpRequest.requestUrl=~"^https://[^/]+/v1/connect/[a-z0-9]+/callback(\?|$)"` + test | infra-engineer | fixed (80/80 terraform test) |
+| P2-2 | security + SRE | should | `cmd/ingest/connect.go:124` reads up to 4 MiB of an unverified body under the 60 s request limit; ingest runs concurrency 4 × 2 instances, so 8 slow unsigned pushes starve `/v1/sync` (no exposure while `CONNECT_PROVIDERS` is empty: 404 before the read) | per-route in-flight cap on the hook (excess → 503 + `Retry-After`) and a short read deadline | backend-engineer | fixed (round 1) |
+| P2-3 | SRE | should | a big push can delay every later sync's scoring by up to 15 min | find the queueing point; keep a push's refresh from blocking sync refreshes | backend-engineer | fixed (round 1) |
+| P2-4 | SRE | should | api tick: the connection steps share one time budget; a slow provider skips the daily notices and can lose a refreshed token | per-step deadlines, notices not behind provider calls, persist a refreshed grant on a context detached from the step deadline | backend-engineer | fixed (round 1) |
+| P2-5 | security | nit | `edge.tf:57` `!request.path.startsWith('/connect/')` skips the WAF on every host and method | scope to `^/connect/[a-z0-9]+/push$` on the ingest host | infra-engineer | fixed (80/80 terraform test) |
+| P2-6 | security | nit | `cmd/api/connections.go:711`, `store/connections.go:634`: the B2 live-grant check runs outside the cap lock; ignores another account's pending grant for the same provider user | re-check under the lock; count the other pending grant | backend-engineer | fixed (round 1) |
+| P2-7 | security | nit | `connect/registry.go:63-72` `PushSide()` returns the whole Provider (a type assertion reaches OAuth) | a wrapper exposing only the push methods | backend-engineer | fixed (round 1) |
+| P2-8 | security | nit | `0042:251` ingest may set `provider_user_id` to any value | trigger: ingest may only null it | database-engineer | fixed (trigger, tested on PG14) |
+| P2-9 | security | nit | `scripts/check_cloudrun.py:249` the provider list is not stripped before the fake check (`"garmin, fake"` passes) | strip items + test | gitops-engineer | fixed (script test green) |
+| P2-10 | security | nit | PKCE `code_challenge_method=S256` not pinned by the interface | pin it in `internal/connect` + test (phase 2 adapter inherits) | backend-engineer | fixed (round 1) |
+| P2-11 | lead | should | compose api had no `DATA_ENCRYPTION_KEY`: config refuses a served provider without it, so the smoke could not start | dev key (32 zero bytes) in `docker-compose.yml` | lead | fixed |
+| P2-12 | code | should | `cmd/ingest/connect.go:274` reads the payload unlocked; `lockInbox` (`store/direct.go:277`) checks only `state='pending'`: a re-push (revision 2) during processing is marked processed with revision 1 applied, and the provider's re-send is then a duplicate (a provisional night stays provisional) | `Revision` on `InboxItem`; `lockInbox … AND revision=$n` → `DirectNotPending`; covers the batched `Also` rows; race test | backend-engineer | fixed (round 2) |
+| P2-13 | code | should | `deregistered` when another RYFT account holds the provider account live: API.md:1238 says `false`, `settled(depSkipped)` (`cmd/api/connections.go:684`) and design §4.5/§4.6 say `true` | **lead: API.md wins** (the contract, more honest: the grant is not ended); code + test → `false`, design amended by the lead | backend-engineer, lead | fixed (round 2) |
+| P2-14 | code | should | relinking confirm locks the other account's `connections` row, then its apply lock (`store/connections.go:376-380`); `ApplyDirect`/`ApplyDeregistration`/`ApplyPermissions`/`Disconnect` take the apply lock first → 40P01 | find the other account unlocked, take its apply lock, re-select FOR UPDATE | backend-engineer | fixed (round 2) |
+| P2-15 | code | should | callback: `PutPendingCapped` fails with `ErrConnectNoAccount`/a DB error after the exchange (`cmd/api/connections.go:473-479`): the grant lives on at the provider | `QueueDeregistration` as the cap branch does | backend-engineer | fixed (round 2) |
+| P2-16 | code | nit | `StoreInbox` resolves owners outside its tx (`inbox.go:69`); `lockInbox` doesn't check the provider user id: a push in flight during a replacing confirm is applied to the replaced account | resolve owners in the tx with `FOR SHARE` on `connections`; check the link's provider user id at apply | backend-engineer | fixed (round 2) |
+| P2-17 | code | nit | `boundedItem` (`cmd/ingest/connect.go:248`) passes JSON jsonb rejects (lone `\ud800`): insert fails → 503 → the provider retries forever | savepoint per item → `bad_item` (or reject the escapes) | backend-engineer | fixed (round 2) |
+| P2-18 | code | nit | `Disconnect` (`store/connections.go:514`) runs `deleteDirectData` with nothing to end (a full sample scan under the apply lock, on a gate-exempt route) | skip without connection or pending grant | backend-engineer | fixed (round 2) |
+| P2-19 | code | nit | `SaveRefresh` updates 0 rows silently when a disconnect ran mid-refresh: the rotated tokens are lost, the old ones deregister as `gone` | check rows affected; queue the new tokens | backend-engineer | fixed (round 2) |
+| P2-20 | code | nit | repeat confirm after a relink away answers 200 with a `revoked` connection (`store/connections.go:334`) | `409 connect_ticket_invalid` (API.md: a 409 on a repeat → read the list) | backend-engineer | fixed (round 2) |
+| P2-21 | code | nit | a processed deregistration notice keeps its row and digest 30 days; relink + revoke within that window is a duplicate and ignored | clear the provider user's inbox rows on a confirm after `revoked` | backend-engineer | fixed (round 2) |
+| P2-22 | code | nit | dead `_ = skipped` in `cmd/api/connections_test.go:631-634` | remove | backend-engineer | fixed (round 2) |
+| P2-23 | backend | follow-up | `internal/notify/service.go:364`: one 5-min silent-refresh throttle per user, so a connect refresh can swallow a sync refresh that follows it | not in PR 2 (the app refreshes on the first; a later sync shows on the next open) | — | deferred |
+
+Privacy (phase 2): Garmin as a processor needs a DPA and a privacy-text update that discloses the 30-day
+deregistration rows after account deletion and failed payloads up to 14 days.

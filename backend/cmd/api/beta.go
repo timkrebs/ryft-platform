@@ -29,6 +29,8 @@ var gateOpen = map[string]bool{
 	"POST /v1/app-attest/challenge": true, "POST /v1/app-attest/keys": true, "POST /v1/app-attest/token": true,
 }
 
+// DELETE /v1/me/connections/{provider} is open too (isDisconnect): ending a connection is never gated.
+//
 // betaGate acts on accounts without beta access outside the open routes: on
 // refuses them (403 invite_required), warn serves them with X-RYFT-Gate (D87).
 // It runs after the user row is loaded.
@@ -37,7 +39,7 @@ func betaGate(mode config.Mode, next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if gateOpen[r.Method+" "+r.URL.Path] || gate.Invite(w, r, mode, userOf(r), "api") {
+		if gateOpen[r.Method+" "+r.URL.Path] || isDisconnect(r) || gate.Invite(w, r, mode, userOf(r), "api") {
 			next.ServeHTTP(w, r)
 		}
 	})

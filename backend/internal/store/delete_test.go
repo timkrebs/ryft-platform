@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/timkrebs/ryft/internal/connect"
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/model"
 )
@@ -84,7 +85,10 @@ func owned(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) int {
 		(SELECT count(*) FROM session_sets WHERE user_id=$1) + (SELECT count(*) FROM personal_records WHERE user_id=$1) +
 		(SELECT count(*) FROM beta_invite_uses WHERE user_id=$1) +
 		(SELECT count(*) FROM app_attest_keys WHERE user_id=$1) + (SELECT count(*) FROM app_attest_challenges WHERE user_id=$1) +
-		(SELECT count(*) FROM plans WHERE user_id=$1) + (SELECT count(*) FROM exercises WHERE user_id=$1)`, id).Scan(&n)
+		(SELECT count(*) FROM plans WHERE user_id=$1) + (SELECT count(*) FROM exercises WHERE user_id=$1) +
+		(SELECT count(*) FROM connections WHERE user_id=$1) + (SELECT count(*) FROM connection_tokens WHERE user_id=$1) +
+		(SELECT count(*) FROM connection_pending WHERE user_id=$1) + (SELECT count(*) FROM connection_states WHERE user_id=$1) +
+		(SELECT count(*) FROM provider_inbox WHERE user_id=$1)`, id).Scan(&n)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +146,25 @@ func seedUser(t *testing.T, st *Store, pool *pgxpool.Pool, id uuid.UUID) {
 		t.Fatal(err)
 	}
 	seedAttest(t, st, id) // an attested key and an open challenge (0037)
+	seedConnection(t, st, pool, id)
 	seedImport(t, pool, id)
+}
+
+// seedConnection gives the account a direct connection (0042, D257): a confirmed link with tokens, a grant waiting
+// for its confirm, an open OAuth state, a stored record and the direct data of a processed one.
+func seedConnection(t *testing.T, st *Store, pool *pgxpool.Pool, id uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	if err := st.GrantConsent(ctx, id, "2026-10-26", nil); err != nil {
+		t.Fatal(err)
+	}
+	connectAs(t, st, id, "seed-"+id.String()[:8])
+	callback(t, st, id, "seed-pending-"+id.String()[:8], 100)
+	if err := st.StartConnect(ctx, id, testProvider, 100, NewState{Hash: connect.Hash(id.String()), VerifierEnc: []byte("v"), PolicyVersion: "p", Expires: time.Now().Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	pushNight(t, st, pool, id, "seed-"+id.String()[:8], "seed", time.Now().Add(-10*time.Hour).UTC().Truncate(time.Second))
+	store1(t, st, item("sleep", "waiting-"+id.String()[:8], "seed-"+id.String()[:8], 1, `{}`))
 }
 
 // seedImport gives the account what the training import (0028) adds: an imported session with an
@@ -192,6 +214,13 @@ func TestDeleteUserErasesEverythingAndStaysDeleted(t *testing.T) {
 
 	if err := st.DeleteUser(ctx, a); err != nil {
 		t.Fatal(err)
+	}
+	// The connection's tokens, and the unconfirmed grant's, wait in the deregistration queue (no foreign key).
+	if rows, err := st.UserDeregistrations(ctx, a); err != nil || len(rows) != 2 || rows[0].Reason != "account_deleted" {
+		t.Fatalf("deregistrations of the deleted account: %+v %v", rows, err)
+	}
+	if rows, _ := st.UserDeregistrations(ctx, b); len(rows) != 0 {
+		t.Fatal("the other account's tokens were queued")
 	}
 	if n := owned(t, pool, a); n != 0 {
 		t.Fatalf("%d rows of the deleted user left", n)

@@ -67,6 +67,16 @@ run "no_key_and_no_secret_value_in_state" {
     )
     error_message = "app-attest-token-key is a container only: its value is added with gcloud (OPERATIONS -> GCP -> App Attest), never as secret_data"
   }
+
+  # Garmin's client secret (D257) likewise: an empty container in phase 1, its value added with gcloud
+  # in phase 2, kept by prevent_destroy (`this`).
+  assert {
+    condition = (
+      contains(keys(google_secret_manager_secret.this), "connect-garmin-client-secret") &&
+      !contains(keys(google_secret_manager_secret.retired), "connect-garmin-client-secret")
+    )
+    error_message = "connect-garmin-client-secret is a container with prevent_destroy (this), its value never in Terraform"
+  }
 }
 
 run "prevent_destroy_and_delayed_destruction" {
@@ -202,21 +212,57 @@ run "logs_in_the_eu_for_14_days" {
   }
 
   # No inclusion filter: the one `filter =` in logging.tf is the exclusions' (D242), and with the edge
-  # off there is none.
+  # off only connect-callback (D257) is one.
   assert {
     condition = (
       google_logging_project_sink.ryft_logs.destination == "logging.googleapis.com/projects/ryftlab-prod/locations/europe-west1/buckets/ryft-logs" &&
       length(regexall("(?m)^\\s*filter\\s*=", file("${path.module}/logging.tf"))) == 1 &&
       length(regexall("(?m)^\\s*content\\s*\\{[^}]*\\n\\s*filter\\s*=\\s*exclusions\\.value\\.query\\n", file("${path.module}/logging.tf"))) == 1 &&
       google_logging_project_sink.ryft_logs.filter == null &&
-      length(google_logging_project_sink.ryft_logs.exclusions) == 0
+      [for e in google_logging_project_sink.ryft_logs.exclusions : e.name] == ["connect-callback"]
     )
-    error_message = "the sink routes everything into ryft-logs: no inclusion filter, and with the edge off no exclusion"
+    error_message = "the sink routes everything into ryft-logs: no inclusion filter, and with the edge off only connect-callback (D257)"
   }
 
   assert {
     condition     = length(regexall("(?m)^\\s*import\\s*\\{", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
     error_message = "no import block: _Default is switched off by the runbook's gcloud command (logging.tf)"
+  }
+}
+
+# Review S4 (D257): the callback's URL, its OAuth state and code, is kept nowhere, in any phase of
+# the edge. One sink in the root, the one into ryft-logs (_Default is off, _Required takes audit logs
+# only), and it drops every entry with that URL, whatever else would keep it. Edge off first: api's
+# Cloud Run request log then keeps every request, the callback's included, but for this exclusion.
+run "no_sink_keeps_a_connect_callback_url_edge_off" {
+  command = plan
+
+  assert {
+    condition = (
+      length(regexall("(?m)^\\s*resource\\s+\"google_logging_(project|folder|organization|billing_account)_sink\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      google_logging_project_sink.ryft_logs.filter == null &&
+      [for e in google_logging_project_sink.ryft_logs.exclusions : [e.name, e.filter]] == [["connect-callback", "httpRequest.requestUrl=~\"^https?://[^/]+/v1/connect/[a-z0-9]+/callback([?]|$)\""]] &&
+      alltrue([for e in google_logging_project_sink.ryft_logs.exclusions : e.disabled != true])
+    )
+    error_message = "edge off: one sink, and it excludes every entry whose URL is a direct-connection callback (connect-callback, anchored, enabled), unconditionally"
+  }
+}
+
+run "no_sink_keeps_a_connect_callback_url" {
+  command = plan
+
+  variables {
+    edge = "live"
+  }
+
+  assert {
+    condition = (
+      length(regexall("(?m)^\\s*resource\\s+\"google_logging_(project|folder|organization|billing_account)_sink\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      google_logging_project_sink.ryft_logs.filter == null &&
+      [for e in google_logging_project_sink.ryft_logs.exclusions : e.filter if e.name == "connect-callback"] == ["httpRequest.requestUrl=~\"^https?://[^/]+/v1/connect/[a-z0-9]+/callback([?]|$)\""] &&
+      alltrue([for e in google_logging_project_sink.ryft_logs.exclusions : e.disabled != true])
+    )
+    error_message = "one sink, and from edge = built on it excludes every entry whose URL is a direct-connection callback (connect-callback, anchored, enabled)"
   }
 }
 

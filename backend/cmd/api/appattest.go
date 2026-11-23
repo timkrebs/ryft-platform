@@ -43,6 +43,9 @@ func attestExempt(r *http.Request) bool {
 	if r.Method != http.MethodDelete {
 		return false
 	}
+	if isDisconnect(r) { // a connection can always be ended (D257)
+		return true
+	}
 	// DELETE /v1/devices/{id}/push: one non-empty segment between the two, as the mux matches it.
 	id, ok := strings.CutPrefix(r.URL.Path, "/v1/devices/")
 	if !ok {

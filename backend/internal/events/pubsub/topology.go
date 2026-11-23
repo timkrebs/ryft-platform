@@ -17,9 +17,11 @@ import (
 //	ryft-ingested, ryft-session-completed   api, ingest → scoring (/push/<key>, ordered by user)
 //	ryft-scored, ryft-session-scored,
 //	ryft-refresh                             scoring → notify (/push/<key>)
+//	ryft-inbox-received                      ingest → ingest (/push/inbox.received; a provider record the hook stored, D257)
 //	ryft-notify-wait                         notify's deferrals → notify (/push/wait, ryft-key = the event's)
 //	ryft-tick                                Cloud Scheduler → every service (/internal/tick)
-//	ryft-dlq-scoring, ryft-dlq-notify        dead letters, held 14 days for scripts/dlq.sh
+//	ryft-dlq-scoring, ryft-dlq-notify,
+//	ryft-dlq-ingest                          dead letters, held 14 days for scripts/dlq.sh
 //
 // One topic per key keeps D99's publish matrix: Pub/Sub grants publishing per topic,
 // so ingest cannot publish a session.
@@ -31,10 +33,12 @@ const (
 	TopicScored           = "ryft-scored"
 	TopicSessionScored    = "ryft-session-scored"
 	TopicRefresh          = "ryft-refresh"
+	TopicInboxReceived    = "ryft-inbox-received"
 	TopicNotifyWait       = "ryft-notify-wait"
 	TopicTick             = "ryft-tick"
 	TopicDLQScoring       = "ryft-dlq-scoring"
 	TopicDLQNotify        = "ryft-dlq-notify"
+	TopicDLQIngest        = "ryft-dlq-ingest"
 )
 
 // The services, as Terraform and Cloud Run name them.
@@ -87,6 +91,7 @@ const (
 	dlqRetention   = 14 * 24 * time.Hour // a dead letter is kept 14 days
 	scoringAck     = 300 * time.Second   // = scoring's Cloud Run request timeout
 	notifyAck      = 60 * time.Second
+	ingestAck      = 60 * time.Second // one record's apply transaction
 	tickAck        = 600 * time.Second
 )
 
@@ -127,7 +132,7 @@ type Topology struct {
 	Hold   []HoldSubscription
 }
 
-// consumers are the two event consumers: their keys, their dead-letter topic and how
+// consumers are the three event consumers: their keys, their dead-letter topic and how
 // long Pub/Sub waits for their answer.
 var consumers = []struct {
 	name string
@@ -137,15 +142,17 @@ var consumers = []struct {
 }{
 	{events.ConsumerScoring, events.ScoringKeys, TopicDLQScoring, scoringAck},
 	{events.ConsumerNotify, events.NotifyKeys, TopicDLQNotify, notifyAck},
+	{events.ConsumerIngest, events.IngestKeys, TopicDLQIngest, ingestAck},
 }
 
-// eventTopics are the five event keys' topics, with who publishes each (D99).
+// eventTopics are the six event keys' topics, with who publishes each (D99).
 var eventTopics = []Topic{
 	{Name: TopicIngested, Key: events.KeyIngested, Publishers: []string{ServiceAPI, ServiceIngest}, Ordered: true},
 	{Name: TopicSessionCompleted, Key: events.KeySessionCompleted, Publishers: []string{ServiceAPI}, Ordered: true},
 	{Name: TopicScored, Key: events.KeyScored, Publishers: []string{ServiceScoring}},
 	{Name: TopicSessionScored, Key: events.KeySessionScored, Publishers: []string{ServiceScoring}},
 	{Name: TopicRefresh, Key: events.KeyRefresh, Publishers: []string{ServiceScoring}},
+	{Name: TopicInboxReceived, Key: events.KeyInboxReceived, Publishers: []string{ServiceIngest}},
 }
 
 // TickServices are the services the tick reaches, a subscription each.

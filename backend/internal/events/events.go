@@ -21,12 +21,14 @@ const (
 	KeyScored           = "scored"
 	KeySessionScored    = "session.scored"
 	KeyRefresh          = "refresh"
+	KeyInboxReceived    = "inbox.received" // ingest's own: a provider record stored by the hook (D257)
 )
 
-// The two consumers, a dead-letter topic each.
+// The three consumers, a dead-letter topic each.
 const (
 	ConsumerScoring = "scoring"
 	ConsumerNotify  = "notify"
+	ConsumerIngest  = "ingest"
 )
 
 // The keys each consumer takes. A new event key must be added to one of them (and
@@ -34,10 +36,14 @@ const (
 var (
 	ScoringKeys = []string{KeyIngested, KeySessionCompleted}
 	NotifyKeys  = []string{KeyScored, KeySessionScored, KeyRefresh}
+	IngestKeys  = []string{KeyInboxReceived}
 )
 
 // ReasonSessionCompleted is the IngestedEvent.Reason a session event becomes.
 const ReasonSessionCompleted = "session_completed"
+
+// ReasonInbox is the metric reason of an inbox.received event.
+const ReasonInbox = "inbox"
 
 // Message is one event on the wire.
 type Message struct {
@@ -117,6 +123,7 @@ const ReasonUnknown = "unknown"
 // ryft_events_handled_total is one of them or ReasonUnknown. A new reason in a publisher
 // must be added here, or it is counted as unknown.
 var Reasons = []string{model.ReasonSync, "recompute", "merge", "session", model.ReasonImport,
+	model.ReasonConnect, model.ReasonDisconnect, ReasonInbox,
 	ReasonSessionCompleted, "scored", "session_scored", "refresh"}
 
 // MetricReason is reason when it is one of Reasons, else ReasonUnknown. An ingested
@@ -245,6 +252,40 @@ func DecodeIngested(key string, data []byte) (model.IngestedEvent, error) {
 		return ev, nil
 	}
 	return model.IngestedEvent{}, fmt.Errorf("not an event for scoring: %q", key)
+}
+
+// InboxReceived encodes an inbox.received event. The message id carries the revision, so a changed re-push is
+// another message and a repeat of the same one is the same (nothing dedups on it, D100).
+func InboxReceived(ev model.InboxReceivedEvent) (Message, error) {
+	return encode(KeyInboxReceived, ReasonInbox, fmt.Sprintf("inbox:%d:%d", ev.InboxID, ev.Revision), ev)
+}
+
+// DecodeInboxReceived turns a message for ingest into its event.
+func DecodeInboxReceived(key string, data []byte) (model.InboxReceivedEvent, error) {
+	var ev model.InboxReceivedEvent
+	if key != KeyInboxReceived {
+		return ev, fmt.Errorf("not an event for ingest: %q", key)
+	}
+	if err := json.Unmarshal(data, &ev); err != nil {
+		return ev, logx.JSONError(err)
+	}
+	if ev.InboxID <= 0 {
+		return ev, errors.New("inbox event without an id")
+	}
+	return ev, nil
+}
+
+// IngestHandler decodes ingest's one event (DecodeInboxReceived) and hands fn the InboxReceivedEvent. Data that
+// does not decode is Bad; the metric reason is ReasonInbox.
+func IngestHandler(fn func(context.Context, model.InboxReceivedEvent) error) Handler {
+	return func(ctx context.Context, key string, data []byte) error {
+		ev, err := DecodeInboxReceived(key, data)
+		if err != nil {
+			return Bad(err)
+		}
+		SetReason(ctx, ReasonInbox)
+		return fn(ctx, ev)
+	}
 }
 
 // NotifyMessage is one event for notify: exactly one of the three is set.

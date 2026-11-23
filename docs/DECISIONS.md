@@ -6640,3 +6640,67 @@ _Numbered after D248, which PR #228 (C2, draft) holds._
   - **The user's steps:** the Terraform apply (rule 1900, the WAF scope, the log exclusion, the secret container,
     monitoring); in phase 2 the secret
     value, the cap, the privacy text, then the allow-list.
+
+## D258 — Direct connections get their own dashboard, and the hook's counter is by provider, kind and outcome (2026-11-23; amends D236, D244, D257)
+
+- **Context:** D257 §12 keeps the connections inside the cap of six policies. Its tiles on the overview would move
+  the overview's layout, which the edge tests pin, and the feature ships dark. The brief asks for pushes counted by
+  provider, kind and outcome; the design's `connect push` line had no kind.
+- **Decision:**
+  - A dashboard of its own, "RYFT · Connections" (`infra/gcp/monitoring.tf`): hook requests by provider and
+    outcome, the inbox's oldest unacked event, the dead letters held, and the hook's log lines. No new policy.
+  - The `connect push` line carries `kind`: the push's record kind when its items share one, `mixed` when they
+    differ, `none` when the request is refused before parsing. `ryft_connect_pushes` extracts it as a label. The
+    kinds are the adapter's closed set, so the label's cardinality stays small.
+- **Rejected:** tiles on the overview (the edge tests and the overview's purpose: the live system, not a dark
+  feature); a label per item outcome (the per-item counts stay on the line and in the local Prometheus counter).
+
+## D259 — Direct connections: pushes follow a consent cutoff, a revocation at the provider deletes, the notices stay in policy 6 (**the user's decisions**, 2026-11-23; answers D257 design §17 Q1–Q3; amends D78 for the hook only)
+
+- **Context:** a provider keeps no history, so a push dropped is lost for good. D257 dropped every push of an
+  account whose consent is to an older policy version than the one in force, which would cost every such account
+  its nights after each policy change until the user opens the app again (the C2 text is the next one). The
+  security review reads health-data consent as bound to its purpose, not to the text's version.
+- **Decision:**
+  1. **The consent cutoff.** `CONNECT_MIN_POLICY_VERSION` (ingest, `deploy/run/config.env`, a `YYYY-MM-DD` date not
+     after `PRIVACY_POLICY_VERSION`; empty would mean the policy in force, the D257 behaviour). It ships pinned to
+     `2026-10-26`, the version in force, so a policy PR that forgets the line keeps older consents instead of
+     dropping them. The hook and the
+     consumer accept an account's push while its health-processing consent is not withdrawn and is to that version
+     or a later one. The operator moves the cutoff only when a policy change touches how health data is processed;
+     a wording change leaves it. A withdrawn consent always drops. `start` and `confirm` keep requiring consent to
+     the policy in force (the app asks for it there). The lawyer reviewing C2 (#228) confirms the reading before
+     phase 2's first real connection.
+  2. **A revocation at the provider is a disconnect** (D257 §8): the connection's data is deleted and the touched
+     days rescored; the same vendor's data from Apple Health stays. The app shows the connection as ended with its
+     data removed and offers to reconnect. Revisited against Garmin's agreement in phase 2; keeping the data until
+     a RYFT disconnect would be a one-line change if the agreement allows it.
+  3. **The connection notices stay in policy 6** (capacity, no data for 36 h, failed inbox rows, stuck
+     deregistrations), each at most once a day, to the email and app channels. No seventh policy.
+- **Rejected:** dropping on any version gap (permanent loss on every text change); holding pushes in the inbox
+  until re-consent (stores data under a consent the design treated as lapsed, and adds a state); keeping data after
+  a provider-side revocation (likely against the provider's terms; decided in phase 2); a seventh policy (one more
+  channel set to keep, no gain at beta scale).
+
+## D260 — Direct connections: the hook keeps room for sync, the consumer batches an account's pending rows, the api tick budgets each step (2026-11-23; amends D257 §7.2, §7.3, §6.3; review P2-2, P2-3, P2-4)
+
+- **Context:** ingest serves `/v1/sync` and the hook on 4 slots an instance, 2 instances at most, and the hook reads
+  a body before it can verify it. Every inbox row emitted its own `ingested` event on the per-user ordered topic
+  that sync shares, so a push of N records put N rescore walks ahead of the user's next sync (up to ~15 min). The
+  api's connection tick ran its steps under one shared deadline, so a slow provider starved the daily notices and
+  could drop a grant the provider had already rotated.
+- **Decision:**
+  - The hook takes at most 2 requests in flight per instance (`maxHookInflight`); the excess answers `503` with
+    `Retry-After` before reading (outcome `busy`). A body has 10 s to arrive (`hookReadTimeout`; `408`, outcome
+    `timeout`, nothing stored). The 2 other slots stay for sync.
+  - The consumer stores the account's other pending sleep and HRV rows in the same transaction (at most 25
+    records, 1500 rows) and emits one `ingested` event for the union of their days; a failing batch falls back to
+    the row alone. Idempotency (D100) and the outbox (D101) hold per batch.
+  - The api tick runs purge → gauges (the daily notices) → refresh → deregister, each under its own deadline
+    (8 s for a database step, 12 s for a provider step). A refreshed grant is saved on a context detached from the
+    step's deadline (5 s of its own).
+- **Rejected:** raising ingest's concurrency for the hook (makes the slow-body case cheaper to mount); a separate
+  topic for direct data (one more subscription and ordering scope for a dark feature; batching removes the
+  backlog); one longer tick deadline (still lets a provider starve the notices).
+- **Follow-up, not here:** notify's silent-refresh throttle is per user, so a connect refresh can swallow a sync's
+  that follows within 5 min (review P2-23).

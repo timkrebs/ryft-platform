@@ -39,6 +39,7 @@ type accounts struct {
 	apple *apple.Client
 	key   *sealed.Key // encrypts stored Apple refresh tokens
 	log   *slog.Logger
+	conn  *connectAPI // ends the account's connections at their providers (D257); nil in tests that have none
 }
 
 func newAccounts(st *store.Store, log *slog.Logger, c config.Auth) (*accounts, error) {
@@ -175,6 +176,9 @@ type AccountDeleted struct {
 	// AppleTokenRevoked: null when no Sign in with Apple token was stored,
 	// false when the revocation is retried in the background.
 	AppleTokenRevoked *bool `json:"apple_token_revoked"`
+	// ConnectionsDeregistered (D257): null when the account had no connection to end, true when every provider
+	// ended its grant in the one attempt, false when one could not be reached (the platform retries for 30 days).
+	ConnectionsDeregistered *bool `json:"connections_deregistered"`
 }
 
 // deleteMe erases the caller's account: every row now, then the Sign in with
@@ -206,8 +210,13 @@ func (h *handler) eraseAccount(ctx context.Context, id uuid.UUID) (AccountDelete
 	h.cache.forget(id)
 	appleRevoked := h.accounts.revokeApple(ctx, id)
 	authDeleted := h.accounts.deleteAuthUser(ctx, id)
-	h.log.InfoContext(ctx, "account deleted", "deleted_user", id, "auth_user_deleted", authDeleted, "apple_token_revoked", appleRevoked)
-	return AccountDeleted{Status: "deleted", AuthUserDeleted: authDeleted, AppleTokenRevoked: appleRevoked}, nil
+	var conns *bool
+	if h.accounts.conn != nil {
+		conns = h.accounts.conn.endAccount(ctx, id)
+	}
+	h.log.InfoContext(ctx, "account deleted", "deleted_user", id, "auth_user_deleted", authDeleted, "apple_token_revoked", appleRevoked,
+		"connections_deregistered", conns)
+	return AccountDeleted{Status: "deleted", AuthUserDeleted: authDeleted, AppleTokenRevoked: appleRevoked, ConnectionsDeregistered: conns}, nil
 }
 
 // appleAuthorization is the POST /v1/me/apple-authorization body: the

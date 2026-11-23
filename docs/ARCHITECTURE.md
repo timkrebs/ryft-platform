@@ -31,27 +31,59 @@ flowchart LR
 
 Pub/Sub also pushes the tick to every service's `POST /internal/tick` (Events below).
 
-## Why HealthKit and not the Garmin API
+## Direct connections
 
-Garmin's Connect Developer Program (Health/Activity APIs) is approval-only, aimed at
-businesses, and stopped accepting new applications in 2026. Garmin Connect already
-writes heart rate, resting HR, HRV, respiratory rate, SpO2, sleep (with stages on
-current firmware), workouts, steps and active energy to Apple Health, so reading
-HealthKit gets the same signals with a stable, documented API and no credentials on
-the server. It also makes the platform watch-agnostic.
+Apple Health stays the default source and the only one with history. Garmin Connect writes heart rate, resting
+HR, sleep, workouts, steps and active energy to it, so reading HealthKit gets most signals with a stable API and
+no credentials on the server, and it keeps the platform watch-agnostic. What it does not carry is the overnight
+HRV, respiration and SpO2 (HRV is 45 % of Recovery), and Suunto writes no sleep, HRV or resting HR to it at all.
+A **direct connection** (D257) closes that gap: the user links their account at the provider's own service with
+OAuth, and the provider pushes the user's records to RYFT. It replaces the earlier plan of an unofficial Connect
+client, which is ruled out: it holds the user's password, breaks without notice and no agreement covers it.
 
-Garmin-only metrics (Body Battery, Training Readiness, HRV *status*) do not reach
-HealthKit. If you ever want them, add a `garmin-sync` service that uses the
-unofficial Connect client (`garth` / `python-garminconnect` style) and writes into
-the same `samples` table with new `type` values — nothing else changes.
+```mermaid
+flowchart LR
+    app[RYFT app] -- "start, confirm (bearer)" --> api
+    prov[(provider)] -- "OAuth callback" --> api
+    api -- "tokens sealed, api only" --> pg[(Postgres)]
+    prov -- "POST /connect/{provider}/push" --> ingest
+    ingest -- "verify, inbox row + outbox event, one tx, 200" --> pg
+    ingest -- "inbox.received" --> ps[(Pub/Sub)] -- "push" --> ingest
+    ingest -- "ApplyDirect, ingested" --> pg
+    api -- "tick: refresh, deregister, purge" --> prov
+```
+
+- **Two halves, two services.** The api owns the OAuth half: `start` (state and PKCE, the cap), the provider's
+  `callback` (no bearer: the grant waits as `connection_pending`), `confirm` (the app, with the bearer, swaps the
+  grant in), the tokens (sealed with `internal/sealed`, which only the api imports), refresh, and ending a grant at
+  the provider. ingest owns the push half: the hook, the inbox and a consumer. A provider is a Go interface split in
+  two (`internal/connect`: `OAuth`, `PushSide`); ingest's registry holds the push halves only, so no token is
+  reachable from its path and **processing a push needs none**.
+- **The hook** (`POST /connect/{provider}/push`, outside `/v1/`): the provider's own verification over the raw
+  body, a bounded body, then in one transaction an inbox row and its `inbox.received` event per record, and `200`.
+  Nothing is processed inline. A repeat is the same row; a changed re-push reopens it. It has its own per-address
+  class (`hook`, D240) and its own edge rule.
+- **The consumer** (`/push/inbox.received` on ingest): checks the consent in force and the link, parses with the
+  adapter's pure `ParseRecord`, and stores through `store.ApplyDirect` (the same apply lock and queue as a sync),
+  then emits `ingested` (reason `connect`). Idempotent (D100). A processed row's payload is deleted; a failed one is
+  kept 7 days; ingest's tick keeps the inbox (republish after an hour, expire after 7 days, purge).
+- **Data** carries `origin = 'direct'`, the provider as `vendor` and the reserved source `ryft-direct-<provider>`
+  (a sync record with that prefix is dropped). **When a connection ends, everything received through it is
+  deleted and the days are rescored**; the same vendor's Apple Health data stays.
+- **Safety nets:** no deregistration ever ends a live grant (the live-grant rule checks `connections` first, B2);
+  at most 500 pending inbox rows per account; a provider whose push signature cannot be verified never enters
+  `CONNECT_PROVIDERS`. The fake provider (`internal/connect/fake`) runs under `CONNECT_FAKE=on` in compose only;
+  `config` refuses it on Cloud Run. Garmin's adapter is phase 2 and needs the programme's documentation.
+
+Design: `docs/work/2026-11-23-connections/design.md`; contract: [`API.md`](API.md) → Connections.
 
 ## Services
 
 | Service   | Port | Responsibility | Talks to |
 | --- | --- | --- | --- |
-| `ingest`  | 8080 | `POST /v1/sync`: validate, idempotent upsert of samples / sleep / workouts, publish `ingested` with the local days touched (through its outbox) | Postgres, Pub/Sub |
+| `ingest`  | 8080 | `POST /v1/sync`: validate, idempotent upsert of samples / sleep / workouts, publish `ingested` with the local days touched (through its outbox); the provider hook `POST /connect/{provider}/push` and the consumer of `inbox.received` (`/push/inbox.received`) for direct connections (D257) | Postgres, Pub/Sub |
 | `scoring` | 8080 (push, tick, health) | Take `ingested` and `session.completed` from Pub/Sub's pushes (`/push/<key>`); recompute touched days oldest-first, including the day's strength sessions and the workouts carrying their load; on each tick (every 15 min) recompute yesterday + today; publish `scored` (today's first recovery), `session.scored` and `refresh` (a sync's days scored) | Postgres, Pub/Sub |
-| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute`, Train (`/v1/exercises`, `/v1/plans`, `/v1/sessions`), the journal (`/v1/behaviors`, `/v1/journal/{day}`, `/v1/behaviors/impact`), `GET /v1/config`, `GET /v1/model`, consent and invite (`/v1/me/consent`, `/v1/me/invite`), `POST /v1/feedback`, push registration and preferences — see [`API.md`](API.md); the operator's `/v1/admin/` flags, invites, feedback and users | Postgres, Pub/Sub |
+| `api`     | 8080 | `GET /v1/me`, `PATCH /v1/me`, `GET /v1/days`, `GET /v1/days/{day}`, `GET /v1/sleep`, `GET /v1/workouts[/{id}]`, `GET /v1/trends`, `GET /v1/insights`, `POST /v1/recompute`, Train (`/v1/exercises`, `/v1/plans`, `/v1/sessions`), the journal (`/v1/behaviors`, `/v1/journal/{day}`, `/v1/behaviors/impact`), `GET /v1/config`, `GET /v1/model`, consent and invite (`/v1/me/consent`, `/v1/me/invite`), `POST /v1/feedback`, push registration and preferences, direct connections (`/v1/me/connections`, the provider's `/v1/connect/{provider}/callback`; D257) — see [`API.md`](API.md); the operator's `/v1/admin/` flags, invites, feedback and users | Postgres, Pub/Sub |
 | `notify`  | 8080 (push, tick, health) | Take `scored`, `session.scored` and `refresh` from Pub/Sub's pushes; send APNs pushes; on each tick the no-data check | Postgres, Pub/Sub, APNs |
 
 All four are one Go module (`backend/`), one Dockerfile (`--build-arg SERVICE=…`), and
@@ -154,7 +186,7 @@ generic `500` with the request ID while the details go to the log. Logs are JSON
 GCP serverless (D216). `internal/events` is the transport-neutral interface (`events.Bus`),
 `internal/events/pubsub` the transport (REST publish, the push and tick handlers, the
 topology; standard library only), `internal/eventbus` builds it from the configuration.
-Five events, one topic each: `ingested` (`{user_id, days[], reason, request_id}`;
+Six events, one topic each: `inbox.received` (`{inbox_id, user_id, provider, kind, revision, request_id}`, ids only; ingest to ingest, unordered, D257) and `ingested` (`{user_id, days[], reason, request_id}`;
 `request_id`: the request that caused it, for log correlation) and `session.completed`
 (`{user_id, session_id, day, request_id}`, handled like an ingest of that day) are pushed
 to scoring, ordered by `user_id`; `scored` (`{user_id, day, request_id}`), `session.scored`
@@ -166,14 +198,14 @@ wrote it publishes it right after the commit, and the tick's sweep sends what th
 (D101, D219): a Pub/Sub outage delays events, it loses none. Pub/Sub pushes each event to
 the consumer's `POST /push/<key>` with a Google OIDC token that `internal/auth` checks; a
 204 acks, anything else is retried, and after 20 attempts it is dead-lettered to
-`ryft-dlq-scoring`/`ryft-dlq-notify` and held 14 days (OPERATIONS → GCP → Dead letters and
+`ryft-dlq-scoring`/`ryft-dlq-notify`/`ryft-dlq-ingest` and held 14 days (OPERATIONS → GCP → Dead letters and
 the outbox). notify's quiet hours wait as outbox rows with a not-before time and come back
 through `ryft-notify-wait`. Delivery is at least once and every handler idempotent (D100).
-Each service may publish only to its own topics (ingest `ryft-ingested`, api that and
+Each service may publish only to its own topics (ingest `ryft-ingested` and `ryft-inbox-received`, api `ryft-ingested` and
 `ryft-session-completed`, scoring its three, notify `ryft-notify-wait`; D99). No service
 runs a timer: Cloud Scheduler's `ryft-tick` publishes every 15 minutes, and each service's
 `POST /internal/tick` runs its periodic steps within a budget (the outbox sweep, scoring's
-pass, notify's stale check, api's deletion reconcile and invite email purge). The topology
+pass, notify's stale check, api's deletion reconcile and invite email purge, api's connection refresh and deregistration, ingest's inbox upkeep). The topology
 is Go (`internal/events/pubsub/topology.go`); `go run ./cmd/pubsub-topology` generates
 Terraform's `infra/gcp/pubsub.auto.tfvars.json` and the emulator's
 `deploy/pubsub-emulator/init.sh`. Design: [`MESSAGING_DESIGN.md`](MESSAGING_DESIGN.md). If
@@ -191,8 +223,8 @@ import rules between packages are `backend/internal/arch_test.go`.
 
 | Package | Owns | Depends on | Tested by |
 | --- | --- | --- | --- |
-| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, appattest, apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, ratelimit, scoring, sealed, store, train | 38 files (Postgres) |
-| `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | app, auth, config, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 9 files (Postgres) |
+| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, appattest, apple, auth, behavior, config, connect, connect/fake, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, ratelimit, scoring, sealed, store, train | 39 files (Postgres) |
+| `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | app, auth, config, connect, connect/fake, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 11 files (Postgres) |
 | `cmd/migrate` | migrate applies the migrations as the schema owner, loads the built-in exercises and plans, and sets the service roles' passwords where they changed. | db, httpx, smoke | none |
 | `cmd/notify` | notify wires internal/notify to its push routes and the 15-minute tick. | apns, app, config, eventbus, events, logx, notify, store | 1 file |
 | `cmd/pubsub-topology` | pubsub-topology writes the Pub/Sub topology (internal/events/pubsub) as Terraform's variables and as the emulator's init script. | events/pubsub | 1 file |
@@ -204,8 +236,10 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/apple` | talks to Sign in with Apple's REST API: it exchanges the authorization code for a refresh token and revokes that token on deletion. | logx | 2 files |
 | `internal/auth` | owns bearer checks (Supabase JWT or a dev key on /v1, Google OIDC on pushes and ticks), the per-user limit hook and the Supabase admin client. | config, httpx, logx, metrics, model | 6 files |
 | `internal/behavior` | owns the journal's arithmetic: the fixed ids of the built-in behaviors, what an entry may hold, and how a behavior changes the morning after. | model, train | 1 file |
-| `internal/config` | owns the services' environment configuration: what each variable means, its default and which combinations are refused. | appattest | 4 files |
-| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 18 files (Postgres) |
+| `internal/config` | owns the services' environment configuration: what each variable means, its default and which combinations are refused. | appattest | 5 files |
+| `internal/connect` | is the provider-agnostic side of direct connections: what a provider's adapter implements, the OAuth helpers and the registry (D257). | model | 3 files |
+| `internal/connect/fake` | is the one provider adapter of phase 1 (D257), a provider with no network, for tests, compose and make smoke. | connect, model | 1 file |
+| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 19 files (Postgres) |
 | `internal/eventbus` | owns building a service's Pub/Sub transport from its configuration: the Bus, the push verifier, the push and tick handlers and the wait sender. | auth, config, events, events/pubsub | 1 file |
 | `internal/events` | owns the five trigger events the services exchange, their encoding, and what a handler's error means. | logx, metrics, model | 1 file |
 | `internal/events/outbox` | owns the outbox table's rows and the relay that moves them to the broker, so an event is never lost between a database write and a publish. | events, httpx, metrics | 1 file (Postgres) |
@@ -223,9 +257,9 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/retry` | owns start-up retry with backoff and jitter for dependencies that may not be up yet. | none | 1 file |
 | `internal/scoring` | owns the Recovery, Strain, Sleep and Readiness model and the Engine that applies it to stored data and writes the daily rows. | config, events, metrics, model, scoring/workoutdup, store, train | 25 files (Postgres) |
 | `internal/scoring/workoutdup` | owns the two rules that make one activity one workout: the same-source fold and the cross-source duplicate mark. | model | 1 file |
-| `internal/sealed` | encrypts the few secrets the platform stores (Apple refresh tokens) with AES-256-GCM. | none | 1 file |
+| `internal/sealed` | encrypts the few secrets the platform stores (Apple refresh tokens, direct connections' tokens and PKCE verifiers) with AES-256-GCM. | none | 1 file |
 | `internal/smoke` | owns the Go end-to-end smoke against a running stack. | model | 1 file |
-| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, events, events/outbox, logx, metrics, model, scoring/workoutdup, train | 24 files (Postgres) |
+| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, connect, events, events/outbox, logx, metrics, model, scoring/workoutdup, train | 27 files (Postgres) |
 | `internal/testsupport` | holds the helpers the Postgres-backed tests of several packages share. | none | via cmd/api, cmd/ingest, db, events/outbox, store |
 | `internal/train` | holds the pure rules of the Train feature that are not scoring. | model | 2 files |
 
@@ -257,15 +291,16 @@ whose tests import it. `make smoke` and the golden fixtures are not attributed t
 - `feature_flags(key)` — remote config (0014): `enabled`, `rollout_pct`, `allow_user_ids`.
 - `push_tokens(user_id, device_id)` — the app's APNs token per install (unique), `env`, `locale` (0015); `notifications_sent(user_id, day, category)` — what notify sent, claimed before sending. `users.notify_categories` (off switches), `quiet_from` / `quiet_to`.
 - **App Attest** (0037, D245, D247): `app_attest_keys(user_id, key_id)` — per account and app install the attested key: `key_id` (32 bytes), `public_key` (65-byte uncompressed P-256), `environment` (`production` only), `counter` (the last assertion's, a uint32), `attested_at`, `last_used_at`; at most 10 per account (the eleventh evicts the least recently used), deleted 90 days after the last use. `app_attest_challenges(user_id, hash)` — the open challenges as SHA-256 of the challenge, never in clear, 5 minutes, at most 5 per account, single use (`DELETE … RETURNING`). Only `ryft_api` sees them. Both go with the account (`DELETE /v1/me`, and the foreign keys cascade); a merge deletes the merged account's, never moves them; the app's export does not include them (device credentials, like push tokens). No token is stored.
+- **Direct connections** (0042, D257): `connections(user_id, provider)` — metadata only (`status` `connected` / `needs_reauth` / `revoked`, `provider_user_id`, `permissions`, `policy_version`, `connected_at`, `last_data_at`; a revoked row keeps neither id nor permissions and goes after 90 days); `connection_tokens` (sealed access and refresh tokens, api only); `connection_pending` (the grant between callback and confirm, with the SHA-256 of its ticket); `connection_states` (open OAuth flows: the state's SHA-256 and the sealed PKCE verifier, 10 minutes, single use, at most 3 per account); `connection_deregistrations` (the retry queue for ending grants at the provider, 30 days, no foreign key); `provider_inbox` (ingest's: one row per provider record, its payload gone once processed). `samples` and `sleep_segments` gain `origin`, `vendor`, `record_id` (and `record_state` on sleep), `user_sources` gains `origin`, `daily_scores` gains `hrv_metric` and the coverage columns (PR 3 fills them). `hrv_rmssd` joins the sample types. Everything goes with the account (the tokens move to the queue first); the export is `GET /v1/me/connections` and the direct records themselves.
 - **Train** (migrations 0011–0012, D58–D63): `exercises` and `plans` (built-ins with `user_id NULL` from the seeds, custom rows per user), `plan_days`, `plan_exercises`, `plan_enrollments` (one active per user), `sessions` → `session_exercises` → `session_sets` keyed by `(user_id, id)` with client-generated ids, `personal_records(user_id, exercise_id, kind)`. `workouts.muscular_load` / `session_id` say which workout carries a session's load.
 
 **Database roles** (migration 0009; `internal/db/roles_test.go` pins the matrix):
 
 | Role | May |
 | --- | --- |
-| `ryft_ingest` | read/insert/update `users`, `devices`, `samples`, `sleep_segments`, `workouts`; read `deleted_users.id` only |
+| `ryft_ingest` | read/insert/update `users`, `devices`, `samples`, `sleep_segments`, `workouts`; read `deleted_users.id` only; all of `provider_inbox`; read the provider-user lookup of `connections` and update only its status columns, `last_data_at` and, to clear them on a revocation, `provider_user_id` and `permissions`; delete `user_sources` (the direct source of a revoked link); never a token (0042) |
 | `ryft_scoring` | read the raw tables, exercises and sessions; insert/update `daily_scores`; update only `strain`, `trimp`, `zone_minutes`, `muscular_load`, `session_id` of `workouts`, and create and delete only its own (`ryft-session`); update only the load columns of `sessions` |
-| `ryft_api` | read everything; insert/update/delete `users`; delete the user's rows (account deletion); insert/update `deleted_users`; all of `apple_tokens`, which no other role can read; all of the Train tables, the journal tables, `feature_flags` and `push_tokens`; read and delete `notifications_sent`; all of `app_attest_keys` and read/insert/delete `app_attest_challenges`, which no other role can read (0037) |
+| `ryft_api` | read everything; insert/update/delete `users`; delete the user's rows (account deletion); insert/update `deleted_users`; all of `apple_tokens`, which no other role can read; all of the Train tables, the journal tables, `feature_flags` and `push_tokens`; read and delete `notifications_sent`; all of `app_attest_keys` and read/insert/delete `app_attest_challenges`, which no other role can read (0037); all of `connections`, `connection_tokens`, `connection_pending`, `connection_deregistrations`, and insert/read/delete `connection_states`, which no other role can read; read and delete `provider_inbox` rows (0042, D257) |
 | `ryft_notify` | read a user's `id`, `tz` and notification settings only; read and delete `push_tokens`; all of `notifications_sent`; read `devices.last_sync_at`, `samples` (user, type, start), the morning's score columns, a session's title, status and load, `personal_records` and exercise names (migration 0015) |
 
 None of them may create, alter or drop anything, or truncate. Every new table must grant
@@ -454,8 +489,9 @@ No credential is shared, and none is broader than its user (design §5).
 
 - **Secrets** (D222): Secret Manager. Each secret is readable only by the accounts that need it:
   `db-password-<svc>` by that service and migrate, `db-password-owner` by migrate,
-  `supabase-secret-key`, `admin-api-key`, `apple-key-p8`, `data-key` and `posthog-project-key` by
-  api, `apns-key-p8` by notify (`infra/gcp/secrets.tf`). The user adds the values (`gcloud secrets
+  `supabase-secret-key`, `admin-api-key`, `apple-key-p8`, `data-key` (which also seals direct connections'
+  tokens, D257) and `posthog-project-key` by api, the provider's client secret (`connect-<provider>-client-secret`)
+  by api only, `apns-key-p8` by notify (`infra/gcp/secrets.tf`). The user adds the values (`gcloud secrets
   versions add`, `OPERATIONS.md` → GCP → 5); they never pass through Terraform state, a terminal or
   argv. `deploy/run` pins each by version number, never `latest`; a role password moves with
   `scripts/rotate_db_password.sh`.
@@ -521,4 +557,3 @@ Step by step, including restore: [`OPERATIONS.md`](OPERATIONS.md) → GCP.
 4. **Multi-user**: per-device API keys mapped to `user_id`, so others can join.
 5. **Journal** (the behaviour-impact feature): a `journal` table + correlation against
    next-day recovery, surfaced as more insight rules.
-6. **Garmin-only metrics** via an optional `garmin-sync` service.

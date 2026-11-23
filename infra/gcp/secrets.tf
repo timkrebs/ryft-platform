@@ -23,6 +23,10 @@ locals {
     # `<kid>:<base64 of 32 bytes>`; the first signs (api), every line verifies (api and ingest). The value
     # never passes through Terraform (OPERATIONS -> GCP -> App Attest); deploy/run pins it from the warn flip on.
     "app-attest-token-key" = ["ryft-api", "ryft-ingest"]
+    # Garmin's OAuth client secret for direct connections (D257), read as CONNECT_GARMIN_CLIENT_SECRET:
+    # api alone exchanges and refreshes the tokens. An empty container in phase 1; the user adds the
+    # version in phase 2 (after the programme's approval), and deploy/run/api.yaml pins it only then.
+    "connect-garmin-client-secret" = ["ryft-api"]
   }
 
   # Retired secrets, on their way out (docs/OPERATIONS.md -> GCP, step 11.6). prevent_destroy on

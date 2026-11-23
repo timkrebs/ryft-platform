@@ -1,0 +1,53 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "connected_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "history": {
+      "type": "string"
+    },
+    "last_data_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "permissions": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "provider_user_id": {
+      "nullable": true,
+      "type": "string"
+    },
+    "provides": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "connected_at",
+    "history",
+    "last_data_at",
+    "permissions",
+    "provider",
+    "provider_user_id",
+    "provides",
+    "status"
+  ],
+  "title": "Connection",
+  "type": "object"
+}
