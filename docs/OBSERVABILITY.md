@@ -3,7 +3,8 @@
 RYFT on Cloud Run has one observability: **Cloud Monitoring** (D236, which supersedes D224's
 Grafana half). Nothing scrapes the services and nothing is pushed: what Google measures itself
 (Cloud Run, Pub/Sub), log-based metrics counted from lines the services write, uptime
-checks from outside, the dashboard "RYFT · Overview" and six alert policies (D244), all in `infra/gcp`
+checks from outside, the dashboards "RYFT · Overview" and "RYFT · Connections" (D257) and six alert
+policies (D244), all in `infra/gcp`
 (**Cloud Monitoring** below). Logs are JSON (`slog`) on stdout, in Cloud Logging's bucket
 `ryft-logs` for 14 days (**Logs** below). Without Cloud Run (compose) each service serves
 `GET /metrics` on its own port, **9090** (`METRICS_PORT`, no auth), apart from the API and
@@ -28,20 +29,22 @@ the workspace variable `alert_app_channel` is set, the app channel's resource na
 | Uptime checks | `monitoring.googleapis.com/uptime_check/check_passed`, `…/time_until_ssl_cert_expires` | `check_id`, `checker_location` | policy 1, the dashboard |
 | Log-based | `logging_googleapis_com:user_ryft_ticks` | `result` (ours), `service_name` (the resource's) | policy 3, the dashboard |
 | Log-based | `logging_googleapis_com:user_ryft_errors` | `service_name` (the resource's) | the dashboard |
-| Log-based (D244) | `logging.googleapis.com/user/ryft_notices` (a classic filter, not PromQL) | `kind` (ours) | policy 6 |
+| Log-based (D244, D257) | `logging.googleapis.com/user/ryft_notices` (a classic filter, not PromQL) | `kind` (ours) | policy 6 |
+| Log-based (D257) | `logging_googleapis_com:user_ryft_connect_pushes` | `provider`, `kind`, `outcome` (ours), `service_name` (the resource's) | the dashboard RYFT · Connections |
 | Load balancer (from `edge = "built"`, D242) | `loadbalancing_googleapis_com:https_request_count` (`https_lb_rule`) | `backend_target_name`, `response_code_class` (a number: `500`), `response_code` | the dashboard |
 | Cloud Armor (the same) | `networksecurity_googleapis_com:https_request_count` (`network_security_policy`) | `backend_target_name`, `blocked` | the dashboard |
 | Log-based (the same) | `logging_googleapis_com:user_ryft_edge_denials`, `…_preview_matches` | `priority` (ours) | the dashboard |
 
 ### The log-based metrics
 
-Three counters (`DELTA`, `INT64`) of lines the services write, nothing pushed. D236's two needed no
-Go change; D244's counts one new api line too. All three read only the services' own stream on Cloud
-Run (`resource.type="cloud_run_revision"`, the `run.googleapis.com/stdout` log, and for errors
-`stderr` too), never Cloud Run's request log. **No label may carry an IP, a user id, an email or a
-message id**: `ryft_ticks` has one label of its own, `result`, and `ryft_notices` one, `kind`, each
-a closed set (`tests/monitoring.tftest.hcl` pins both); the service is the resource's
-`service_name`.
+Four counters (`DELTA`, `INT64`) of lines the services write, nothing pushed. D236's two needed no
+Go change; D244's counts one new api line too, and D257 adds the connections' lines. All four read
+only the services' own stream on Cloud Run (`resource.type="cloud_run_revision"`, the
+`run.googleapis.com/stdout` log, and for errors `stderr` too), never Cloud Run's request log. **No
+label may carry an IP, a user id, an email or a message id**: `ryft_ticks` has one label of its own,
+`result`, `ryft_notices` one, `kind`, and `ryft_connect_pushes` three, `provider`, `kind` and `outcome`, each a
+closed set (`tests/monitoring.tftest.hcl` pins them, and the run `the_connect_lines_are_written` pins
+the D257 messages, and the hook's seven outcomes, to the Go that writes them); the service is the resource's `service_name`.
 
 - **`ryft_ticks`**: one per `POST /internal/tick` a service handled, from the line `tick`
   (`internal/events/pubsub/tick.go`: `result` `ok` or `error`, with `message_id` and `took`, which
@@ -56,9 +59,35 @@ a closed set (`tests/monitoring.tftest.hcl` pins both); the service is the resou
   `admin auth rejected` (`adminauth.go`'s `reject`), but not for `reason` `missing` (no bearer:
   crawlers) or `expired` (the operator's own page with an old token, which refreshes once). The
   reasons are left out by a negative list on purpose: a reason added later counts. Not counted: the
-  key's own use (scripts, smoke) and `admin second factor required` (in the audit). The filter
-  names api only. All three lines are INFO, so a `LOG_LEVEL` above `info` silences them and policy
-  6. No panel (it would change the dashboard; a free follow-up).
+  key's own use (scripts, smoke) and `admin second factor required` (in the audit). All three lines
+  are INFO, so a `LOG_LEVEL` above `info` silences them and policy 6. **Since D257 four connection
+  notices** (design §10), each matched on the service that writes it:
+  - `connect capacity` (api): a provider's counted links (`connected` and `needs_reauth`, plus the
+    accounts holding an open start or an unconfirmed grant) are at 80 % of `CONNECT_<PROVIDER>_USER_CAP`
+    or more;
+  - `connect no data` (api): at least one connection `connected` over 36 hours ago has stored nothing
+    for 36 hours (`ryft_connect_stale_connections` above 0);
+  - `connect deregistration stuck` (api): a row of the deregistration queue is older than 24 hours;
+  - `connect inbox failed` (ingest): at least one `provider_inbox` row is `failed`.
+
+  The four come from the tick steps `connect gauges` (api) and `connect inbox` (ingest), **at most once a day**:
+  only the tick that starts 06:00–06:14 UTC writes them, and only while the condition holds, so
+  policy 6 notifies once a day per kind and never every 15 minutes. They must be at `info` or above.
+  The line's other fields (counts, providers) stay in the log. No panel (it would change the
+  overview; a free follow-up).
+- **`ryft_connect_pushes`** (D257): ingest's line `connect push`, one per request to the hook
+  `POST /connect/{provider}/push` of a served provider (an unserved one is a `404` before the line), by
+  `provider` (the registry's name) and `outcome`, the request's: `accepted` (verified and split; every
+  item answered `200`, stored or not), `rejected` (the provider's verification refused it: `401`; or
+  could not run now: `503`), `too_large` (`413`), `bad_body` (`400`), `error` (the database: `503`, the
+  provider retries), `busy` (the instance's 2 hook slots were taken: `503` with `Retry-After`, before
+  the body is read) and `timeout` (the body did not arrive within 10 s: `408`, nothing stored). A
+  sustained `busy` is OPERATIONS → Direct connections → The hook is busy or slow. The
+  line's per-item counts stay in the log (by kind they are `ryft_connect_push_items_total`, compose
+  only). No user id, record id, address or body is on the line. A tile on **RYFT · Connections**, no
+  policy (the cap): a provider secret that no longer verifies shows there at once as `rejected`, and as
+  the notice `connect no data` within 36 hours. Flat until phase 2: `CONNECT_PROVIDERS` is empty on
+  Cloud Run and the fake is compose only.
 
 A counter writes no point for a minute without a matching line, so "no tick" is an absent series:
 policy 3 names every service and asks for each. A log-based metric counts from its creation on,
@@ -91,6 +120,19 @@ by service and result; the oldest unacked event and the undelivered events per e
 the dead letters held per hold subscription; ERROR lines per hour by service; uptime (the share of
 locations passing) and the certificate's days left, by check; and a logs panel of the services'
 `severity>=ERROR` lines from `ryft-logs`. ingest's p95 is what SyncSlow paged on (10 s).
+
+### The dashboard "RYFT · Connections" (D257)
+
+`google_monitoring_dashboard.connections`, apart from the overview (the feature ships dark, and the
+overview's tiles stay as `tests/edge.tftest.hcl` pins them): the hook's requests per hour by provider
+and outcome (`ryft_connect_pushes`); ingest's 429s per second (the hook class and the `ip` class
+together: Cloud Run's metric has no path); the inbox's oldest unacked event per subscription (policy 5
+fires above 900 s) and the dead letters its hold keeps (policy 4), both named from the topology
+(ingest's push subscriptions with a dead-letter topic, `ingest-inbox-received` and `dlq-ingest-hold`
+today; the overview shows them among the others); and a logs panel of ingest's `connect push` lines
+and the access lines of its `hook_limit` refusals (`msg="http"`, `code` `hook_limit`: no address, no
+query), from `ryft-logs`. The edge's rule 1900 (the hook's throttle, D257) is a priority on the
+overview's Cloud Armor tile once the edge is built.
 
 ### The edge (D242)
 
@@ -131,7 +173,7 @@ table with the commands is OPERATIONS → GCP → When an alert fires.
 | 3 | RYFT · Tick missing | each of api, ingest, scoring, notify (`label_replace(vector(1), …)`) `unless` it has `increase(user_ryft_ticks{result="ok"}[45m]) > 0`: no ok tick in three ticks, an absent series included. Only while the tick runs (not under `serve = false` or the stop line) | every 300 s, 300 s | critical |
 | 4 | RYFT · Dead letters held | `max by (subscription_id) (num_undelivered_messages{the hold subscriptions}) > 0` | every 300 s, 300 s | warning |
 | 5 | RYFT · Event backlog over 15 minutes | `max by (subscription_id) (oldest_unacked_message_age{the event subscriptions}) > 900`: a consumer that is down or fails every push, before its 20 attempts run out and policy 4 fires | every 300 s, 300 s | warning |
-| 6 | RYFT · Feedback and admin access (D244) | `user/ryft_notices`, `ALIGN_SUM` over 300 s, `REDUCE_SUM` by `metric.label.kind`, `> 0`: a feedback, an admin session begun or a refused admin bearer in the last 5 minutes, one series per kind. A classic threshold, not PromQL: one feedback is one point of a sparse `DELTA` counter, and `increase()` over one was never verified (D236). `evaluation_missing_data` `INACTIVE`: once 5 minutes pass without a line the incident closes, so the next line is a new incident and a new notification; only the opening is notified (`notification_prompts` `OPENED`) | 60 s | warning |
+| 6 | RYFT · Notices: feedback, admin access, connections (D244; renamed and widened by D257) | `user/ryft_notices`, `ALIGN_SUM` over 300 s, `REDUCE_SUM` by `metric.label.kind`, `> 0`: a feedback, an admin session begun, a refused admin bearer or one of the four connection notices (at most once a day each) in the last 5 minutes, one series per kind, seven kinds. A classic threshold, not PromQL: one feedback is one point of a sparse `DELTA` counter, and `increase()` over one was never verified (D236). `evaluation_missing_data` `INACTIVE`: once 5 minutes pass without a line the incident closes, so the next line is a new incident and a new notification; only the opening is notified (`notification_prompts` `OPENED`) | 60 s | warning |
 
 The subscriptions are named from the topology (`pubsub.auto.tfvars.json`), so a new consumer is in
 4 and 5 without an edit. Incidents close when the query returns nothing, or 30 minutes after their
@@ -172,7 +214,7 @@ list, the line's key) and a privacy check.
 | Item | Price | RYFT |
 | --- | --- | --- |
 | Alert conditions, reading A (the brief's: $1.50 a condition; no longer on Google's page, D244) | $1.50 × 5 | **$7.50** (about €6.50–7) |
-| Policy 6 (D244; Google's pricing page through search snippets, 2026-11-19, *(search)*, not verified: alerting charged no sooner than 2027-09-01, then $0.35 a month per metric reference in a policy and $0.50 per million points returned) | 1 metric reference, at most 3 series (one per kind), usually none | **$0** until then, about **$0.35–0.45** after |
+| Policy 6 (D244; Google's pricing page through search snippets, 2026-11-19, *(search)*, not verified: alerting charged no sooner than 2027-09-01, then $0.35 a month per metric reference in a policy and $0.50 per million points returned) | 1 metric reference, at most 7 series (one per kind, D257 added four), usually none | **$0** until then, about **$0.35–0.45** after |
 | Alert conditions, reading B (possibly from May 2026: $0.10 a condition, $0.35 per million time series returned; not verified here) | $0.10 × 5 + series | $0.50 + about $0.21 = **about $0.70** |
 | Time series returned (reading B) | at most: 5xx 43,800 evaluations × 6 series, ticks 8,760 × 4, holds 8,760 × 2, backlog 8,760 × 6, uptime 43,800 × 5 | about 0.6 million, at most |
 | Uptime check executions | free up to 1 million (not verified here) | 131,400: $0 |
@@ -227,7 +269,7 @@ app rules', gone with D236 (**Cloud Monitoring → What D236 dropped, and what c
 | `ryft_http_request_duration_seconds` | histogram | `route` | ingest, api | Request latency. |
 | `ryft_samples_ingested_total` | counter | `kind`, `type` | ingest | Records accepted by `POST /v1/sync`: `kind="sample"` with the sample type, `kind="sleep"` with the stage, `kind="workout"`. |
 | `ryft_last_sync_timestamp_seconds` | gauge | — | ingest | Unix time of the last successful sync of any user. Resets on restart. (Had a `device` label before multi-user; per-user or per-device series would be unbounded.) |
-| `ryft_rate_limited_total` | counter | `class` | ingest, api | Requests answered `429` by the per-user rate limit: `class="sync"` (`POST /v1/sync`), `session` (`PUT /v1/sessions/{id}`), `invite` (`POST /v1/me/invite`), `import` (`POST /v1/train/import`: bursts of 5, then one every 5 s; the app's batches one after another stay under it) or `default`; or `admin_ip` (`/v1/admin/*`: 10 a second per client address, bursts of 20, per instance, 4,096 addresses, newer ones share a bucket; a request bearing `ADMIN_API_KEY` is not limited; the address is never logged or labelled); or `ip` (D240: every route of api and ingest but the health paths and the tick, before any token: 20 a second per client address, bursts of 50, per instance, 65,536 addresses, newer ones share a bucket; on api a request to `/v1/admin/*` bearing `ADMIN_API_KEY` passes; its access line has `code` `ip_limit`). The recompute gate (one per minute) is not counted here. |
+| `ryft_rate_limited_total` | counter | `class` | ingest, api | Requests answered `429` by the per-user rate limit: `class="sync"` (`POST /v1/sync`), `session` (`PUT /v1/sessions/{id}`), `invite` (`POST /v1/me/invite`), `import` (`POST /v1/train/import`: bursts of 5, then one every 5 s; the app's batches one after another stay under it) or `default`; or `admin_ip` (`/v1/admin/*`: 10 a second per client address, bursts of 20, per instance, 4,096 addresses, newer ones share a bucket; a request bearing `ADMIN_API_KEY` is not limited; the address is never logged or labelled); or `ip` (D240: every route of api and ingest but the health paths and the tick, before any token: 20 a second per client address, bursts of 50, per instance, 65,536 addresses, newer ones share a bucket; on api a request to `/v1/admin/*` bearing `ADMIN_API_KEY` passes; its access line has `code` `ip_limit`); or `hook` (D257, ingest: `POST /connect/` instead of `ip`, 50 a second per client address, bursts of 200, 4,096 addresses, idle 1 minute; its access line has `code` `hook_limit`; `/push/` is exempt). The recompute gate (one per minute) is not counted here. |
 | `ryft_http_panics_total` | counter | `route` | all | Handler panics turned into a `500` by the recover middleware. Each also logs `msg="panic"` with the stack. A tick step's panic counts under `route="POST /internal/tick"`; the tick goes on with its next step and answers `204` (D219). |
 | `ryft_goroutine_panics_total` | counter | none | all (once a service starts through `internal/app`) | Panics recovered in a service's own goroutines: its servers (HTTP, and `/metrics` where it listens); there are no consumers, timers or relay goroutines any more (D219). The service shuts down in order and exits 2, as an unrecovered panic does; the `msg="panic"` line names the `task` and holds the stack. A panic in a ready check is counted too (the line names the `check`, logged at most once a minute) and the service keeps running. Any is a bug. The process exits 2 right after it, before any push would carry the increase: Cloud Logging's `msg="panic"` line and the instance's exit are the traces. |
 | `ryft_http_text_refused_total` | counter | `route`, `at` | ingest, api | Requests refused for text the database cannot store (a NUL, or bytes that are not UTF-8; API.md → Errors → NUL): `at="body"` (`\u0000` in a JSON string, `422`), `url` (path or query, `400`), `database` (Postgres refused it, SQLSTATE 22021/22P05, `422`). No log line beyond the access line, and never the text. `database` above 0 means a path the checks and the raw-JSON normalisation missed, or a server-side bug producing bad text; the route says where (alert TextRefusedByDatabase). |
@@ -278,6 +320,19 @@ app rules', gone with D236 (**Cloud Monitoring → What D236 dropped, and what c
 | `ryft_train_imports_total` | counter | `result` | api | `POST /v1/train/import` requests past authentication (D124): `ok` (`200`, also when every item was rejected), `invalid` (`400`/`413`/`422` or `403 consent_required`: nothing processed), `disabled` (`403 import_not_enabled`: the flag `train.import` is off for the account; nothing read), `busy` (`429 import_in_progress`: another import of the account holds the lease, D132), `timeout` (`503 "request timed out"`: the items ran into the 50 s budget, or the client went away), `error` (`503`: the database failed). After `timeout` and `error` the stored items stay stored and are finished (queue and event, then records); the app resends and gets them back `unchanged`. A steady `busy` for one account means a lease left by a pod that died (it expires after 70 s). |
 | `ryft_train_import_items_total` | counter | `kind`, `status` | api | Items of the import: `kind` `plan` or `session`, `status` `created`, `unchanged` (identical, nothing written), `updated` (replaced whole), `rejected` (the `code` is in the response, not here). Mostly `unchanged` means the app resends files it already sent. |
 | `ryft_train_import_seconds` | histogram | — | api | Duration of an import that took the lease: the items, the records and the queueing. The budget is 50 s (the items stop 10 s before it so the finish fits); p95 above ~20 s means the per-item reads (D131's note) need batching. |
+| `ryft_connect_pushes_total` | counter | `provider`, `kind`, `outcome` | ingest | Requests to the hook `POST /connect/{provider}/push` of a served provider (D257, design §7.2): `accepted`, `rejected` (the provider's verification refused it, `401`, or could not run, `503`), `too_large` (`413`), `bad_body` (`400`), `error` (the database, `503`), `busy` (`503` with `Retry-After`: the instance's 2 hook slots taken, nothing read), `timeout` (`408`: no whole body within 10 s, nothing stored). On Cloud Run the log-based `ryft_connect_pushes` counts the same line (`connect push`). |
+| `ryft_connect_push_items_total` | counter | `provider`, `kind`, `outcome` | ingest | The hook's items (`kind` `sleep`, `hrv`, `deregistration`, `permissions`): `stored` (new inbox row), `updated` (changed payload, version not lower: back to pending), `duplicate` (same digest), `stale` (lower version), `unknown_user` (no live connection, a pending grant included), `no_consent` (consent withdrawn, or older than ingest's cutoff `CONNECT_MIN_POLICY_VERSION`, empty = the policy in force, D259; OPERATIONS → Direct connections → Moving the consent cutoff), `id_collision` (the record id is another account's row: nothing written, an adapter bug, also an ERROR line), `over_cap` (the account already has 500 pending rows), `bad_item`. Only `stored` and `updated` write a row. Every outcome answers `200`. |
+| `ryft_connect_inbox_processed_total` | counter | `provider`, `kind`, `outcome` | ingest | The consumer of `inbox.received` (`/push/inbox.received`): `processed` (applied), `no_consent` (as the hook's, D259), `no_connection`, `stale` (dropped, payload deleted), `failed` (a record that does not parse, or 20 attempts), `retry` (a transient error: `500`, Pub/Sub retries). One event can store its row and up to 24 more pending sleep and HRV rows of the account (25 records, 1,500 rows, one transaction, one `ingested` event for all their days): each row a batch took counts `processed` once, and its own later event changes nothing. |
+| `ryft_connect_inbox_oldest_seconds` | gauge | `state` | ingest | Age of the oldest inbox row in `pending` and in `failed`, set by the tick step `connect inbox`. `failed` above 0 is the notice `connect inbox failed` (once a day). |
+| `ryft_connect_inbox_purged_total` | counter | `state` | ingest | Inbox rows the tick deleted: `processed` and `dropped` 30 days, `failed` 7 days after they left `pending`. |
+| `ryft_connect_connections` | gauge | `provider`, `status` | api | Connections by `status` (a closed set, design §10), set by the tick step `connect gauges`. `needs_reauth` is a user the app asks to reconnect. |
+| `ryft_connect_capacity_ratio` | gauge | `provider` | api | Counted links over `CONNECT_<PROVIDER>_USER_CAP` (design §6.1). 0.8 or more is the notice `connect capacity`. |
+| `ryft_connect_stale_connections` | gauge | `provider` | api | `connected` connections, connected over 36 hours ago, that stored nothing for 36 hours. Above 0 is the notice `connect no data`. |
+| `ryft_connect_starts_total` | counter | `provider`, `outcome` | api | `POST /v1/me/connections/{provider}/start`: `ok`, `consent_required`, `connection_limit` (the cap), `unknown_provider`. |
+| `ryft_connect_callbacks_total` | counter | `provider`, `status` | api | `GET /v1/connect/{provider}/callback`, by the status it redirects with: `ok`, `denied`, `expired`, `error` (the line `connect callback` has the closed `reason`). |
+| `ryft_connect_confirms_total` | counter | `provider`, `outcome` | api | `POST …/confirm`: `ok`, `repeat`, `invalid` (another account's or an unknown ticket: many is someone's authorize URL sent around), `expired`, `replaced` (another provider account replaced the connection), `relinked` (the provider account moved from another RYFT account). |
+| `ryft_connect_token_refreshes_total` | counter | `provider`, `outcome` | api | The tick step `connect refresh`: `ok`, `needs_reauth` (the grant is gone: the app asks to reconnect), `error` (transient, backed off; also a refreshed grant that could not be saved within its own 5 s, detached from the step's deadline, with the ERROR line `connect refresh: the refreshed grant was not saved`). |
+| `ryft_connect_deregistrations_total` | counter | `provider`, `reason`, `outcome` | api | Deregistrations at the provider, inline and from the queue: `ok`, `gone` (the provider no longer knew the grant), `retry`, `given_up` (30 days; the step `connect deregister` gives up on those first, before it calls the provider), `skipped_live` (a live connection holds that provider account: nothing called, the tokens deleted, design §6.3). `reason` is the queue's (`disconnect`, `account_deleted`, `confirm_expired`, `cap`, `missing_permission`, `replaced`). |
 | `go_*`, `process_*` | | | all | Go runtime and process collectors; part of what a push would carry (about 50 series per instance). |
 
 ## Alerts
@@ -409,7 +464,7 @@ pod logs has the `gcloud logging read` queries.
 | `metrics server` | `err` | the `/metrics` port could not be bound or its server failed (compose); the service runs on without it |
 | `panic` | `task` (a server), `check` (a ready check: `db`, `auth`) or `step` (a tick step), `panic`, `stack` | a server's panic: counted in `ryft_goroutine_panics_total`, the service shuts down in order and exits 2. A check's: counted there too, the service runs on. A tick step's: counted in `ryft_http_panics_total` (`route="POST /internal/tick"`), the tick goes on with its next step |
 | `tick` | `result` (`ok`, `error`), `message_id`, `took` | one per tick handled (`ryft_ticks_total`). On Cloud Run the log-based metric `ryft_ticks` counts these lines by `result` alone (D236; policy 3, Tick missing): renaming the message or the key, or changing its values, is a change to `infra/gcp/monitoring.tf` too |
-| `tick: step failed` | `step`, `err`, `took` | a step returned an error or panicked; the tick goes on. `step` is a closed set: `db ping`, `outbox sweep`, `scoring pass`, `stale check`, `account reconcile`, `invite settings`, `invite email purge`, `app attest purge`, `finally` |
+| `tick: step failed` | `step`, `err`, `took` | a step returned an error or panicked; the tick goes on. `step` is a closed set: `db ping`, `outbox sweep`, `scoring pass`, `stale check`, `account reconcile`, `invite settings`, `invite email purge`, `app attest purge`, `finally`; api's `connect purge`, `connect gauges` (8 s each), `connect refresh`, `connect deregister` (25 s each; in that order, last in the tick: a step past its own deadline fails with `the step ran out of its <d>, the next tick goes on` and the next one starts) and ingest's `connect inbox` |
 | `tick: the budget is spent, step skipped` | `step`, `budget` | the tick's budget (45 s; scoring 240 s) ended before that step began |
 | `tick: the final step failed` | `err` | the metrics push at the end of the tick failed: `otlp push: HTTP <status>: …` or the transport's error (only with the push configured, which nothing committed does: The OTLP push (dormant) above) |
 | `tick: the previous one still runs, skipping this one` | `message_id` | a tick arrived while one runs in this instance (`result="overlap"`) |
@@ -435,6 +490,22 @@ pod logs has the `gcloud logging read` queries.
 | `app attest key attested` | none | api: a key was attested and stored (`201`) |
 | `app attest purged` | `challenges`, `keys` | the tick's step `app attest purge` removed expired challenges or keys unused for 90 days (D245); only when it removed any |
 | `app attest purge failed` | `err` | warn: that step's query failed; the step reports it as `tick: step failed` too |
+
+**Direct connections** (D257; api and ingest). The lines the signals above count, and the ones the
+runbooks read (OPERATIONS → Direct connections). Never a token, a state, a code, a ticket, a provider
+user id, a record id, a payload or an address; the callback's access line has no query (a `logcheck`
+test).
+
+| Message | Keys | When |
+| --- | --- | --- |
+| `connect push` | `provider`, `kind`, `outcome` (`accepted`, `rejected`, `too_large`, `bad_body`, `error`, `busy`, `timeout`), the item counts per outcome | ingest, one per hook request to a served provider: the log-based `ryft_connect_pushes` |
+| `connect record id collision` (ERROR) | `provider`, `kind` | ingest: an item's record id is another account's row (`id_collision`): an adapter bug; `ryft_errors` counts it |
+| `connect callback` | `provider`, `status`, `reason` (`ok`, `access_denied`, `missing_permission`, `state_unknown`, `state_expired`, `exchange_failed`, `no_account`, `no_consent`, `cap`, `provider_unknown`), `user_id` when the state resolved one | api, one per callback |
+| `connect capacity`, `connect no data`, `connect deregistration stuck` | counts and providers only, never an id | api's tick step `connect gauges`, at most once a day (06:00–06:14 UTC) while it holds: `ryft_notices`, policy 6 |
+| `connect inbox failed` | counts only, never an id | ingest's tick step `connect inbox`, the same rule |
+| `connect inbox` | `provider`, `kind`, `outcome` (`processed`, `no_consent`, `no_connection`, `stale`, `failed`), `days`, `code` | ingest's consumer, one per event it settles |
+| `connect inbox batch` | `provider`, `records` | ingest's consumer stored the event's row with other pending rows of the account in one transaction (at most 25 records, 1,500 rows) and one `ingested` event |
+| `connect inbox batch failed, applying the row alone` (WARN) | `provider`, `kind`, `records` | the batch's transaction failed; the event's row is applied alone, the others stay `pending` for their own events |
 
 Never logged: health values (scores, samples, sleep, workouts, baselines, the learned
 sleep need, the readiness state), tokens (APNs device tokens included), the

@@ -8,13 +8,34 @@ resource "google_logging_project_bucket_config" "ryft_logs" {
   description    = "Every log of ryftlab-prod, 14 days (infra/gcp)"
 }
 
-# The edge's exclusions (D242), from edge = built on: name => what it drops, in Logging's query
-# language (lines are ANDed). What no sink takes is stored nowhere: _Default is off (checks.tf), and
-# _Required takes audit logs only. So with the edge a client's IP address is stored only with a
-# request Cloud Armor denied or a preview rule flagged, or one that failed with a 5xx on api or ingest
-# (Cloud Run's request log, below), here for 14 days.
+# The sink's exclusions: name => what it drops, in Logging's query language (lines are ANDed). What
+# no sink takes is stored nowhere: _Default is off (checks.tf), and _Required takes audit logs only.
 locals {
-  log_exclusions = {
+  # Always, whatever the edge's phase (D257, review S4).
+  log_exclusions_always = {
+    # Direct connections' OAuth callback: GET /v1/connect/<provider>/callback carries the state and the
+    # provider's authorization code in its query. Every entry with that URL goes, whichever log it is
+    # in: api's Cloud Run request log (every request with edge = off, its 5xx from built on) and the
+    # load balancer's kept entries (a denial, a preview match). Both write requestUrl absolute (scheme,
+    # host, path, query: https://api.ryftlab.de/..., or the run.app host), so the match is anchored to
+    # exactly that path, a query or the end after it (review P2-1): a substring would let any probe
+    # carrying ?x=/v1/connect/ drop its own denial or 5xx. http:// too, for a callback that reached the
+    # redirect to HTTPS. RE2, written without a backslash ([?], not \?), so neither HCL nor the Logging
+    # string unescapes it. The api's own access line (stdout, no query, no httpRequest field) still
+    # records the request and its status, and the 5xx alert reads Cloud Run's request metrics, not this
+    # log.
+    "connect-callback" = {
+      description = "Every request entry whose URL is a direct-connection callback, with its OAuth state and code (infra/gcp, D257)"
+      query = join("\n", [
+        "httpRequest.requestUrl=~\"^https?://[^/]+/v1/connect/[a-z0-9]+/callback([?]|$)\"",
+      ])
+    }
+  }
+
+  # The edge's (D242), from edge = built on. With them a client's IP address is stored only with a
+  # request Cloud Armor denied or a preview rule flagged, or one that failed with a 5xx on api or
+  # ingest (Cloud Run's request log, below), here for 14 days.
+  log_exclusions_edge = {
     # The load balancer logs every request (sample 1.0, edge.tf) with the client's IP, the URL and the
     # user agent. Kept: Cloud Armor's denials (a WAF rule enforced, the rate rule's 429 and ban:
     # enforcedSecurityPolicy.outcome DENY) and preview matches (previewSecurityPolicy, present only when
@@ -46,8 +67,9 @@ locals {
   }
 }
 
-# Everything into ryft-logs (no inclusion filter), from edge = built on less the two exclusions above.
-# The bucket is in this project, so the sink's writer identity needs no grant.
+# Everything into ryft-logs (no inclusion filter) less connect-callback, and from edge = built on less
+# the edge's two exclusions as well. The bucket is in this project, so the sink's writer identity
+# needs no grant.
 resource "google_logging_project_sink" "ryft_logs" {
   project                = var.project_id
   name                   = "ryft-logs"
@@ -56,7 +78,7 @@ resource "google_logging_project_sink" "ryft_logs" {
   unique_writer_identity = true
 
   dynamic "exclusions" {
-    for_each = local.edge_built ? local.log_exclusions : {}
+    for_each = merge(local.log_exclusions_always, local.edge_built ? local.log_exclusions_edge : {})
 
     content {
       name        = exclusions.key

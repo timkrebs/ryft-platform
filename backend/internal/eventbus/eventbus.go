@@ -89,5 +89,12 @@ func (t *Transport) WaitSender() (events.Sender, error) {
 	return s, nil
 }
 
+// EdgePushPaths are the push routes api and ingest serve besides the tick (ingest's /push/inbox.received, D257): the
+// edge's per-address limit never counts them, as it never counts the tick (Google's push servers share a few
+// addresses, and the push token is checked behind it).
+func EdgePushPaths() []string {
+	return append(pubsub.PushPaths(pubsub.ServiceAPI), pubsub.PushPaths(pubsub.ServiceIngest)...)
+}
+
 // PathTick is the tick's route, for the mux.
 const PathTick = pubsub.PathTick

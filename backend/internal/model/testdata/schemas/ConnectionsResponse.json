@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "available": {
+      "items": {
+        "$ref": "AvailableConnection"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "connections": {
+      "items": {
+        "$ref": "Connection"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "available",
+    "connections"
+  ],
+  "title": "ConnectionsResponse",
+  "type": "object"
+}

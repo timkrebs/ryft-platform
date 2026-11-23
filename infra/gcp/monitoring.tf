@@ -95,27 +95,47 @@ resource "google_logging_metric" "errors" {
   }
 }
 
-# api's lines the operator wants to hear of at once (D244, the user's decision of 2026-11-19): condition
-# 6 (alerts.tf) fires on each, by kind. All three are INFO lines: a LOG_LEVEL above info silences them,
-# and condition 6 with them.
+# The lines the operator wants to hear of at once (D244, the user's decision of 2026-11-19; D257 adds
+# the connections'): condition 6 (alerts.tf) fires on each, by kind. The first three are INFO lines,
+# and the four connection notices must be INFO or above: a LOG_LEVEL above info silences an INFO line,
+# and condition 6 with it.
+#   api's
 #   feedback received    backend/cmd/api/feedback.go, once per report stored (POST /v1/feedback)
 #   admin signed in      once per operator session per instance: a token whose TOTP is at most 10
 #                        minutes old (a sign-in on /admin, or its re-challenge after 12 h). No key of its own
 #   admin auth rejected  adminauth.go's reject, but for reason missing (no bearer: crawlers) and expired
 #                        (the operator's own page with an old token; it refreshes once). A negative list
 #                        on purpose: a reason added later counts.
-# In Logging's query language OR binds tighter than AND, so every group has its parentheses. The label
-# kind is the line's message, a closed set of three by the filter; the lines' ids (feedback_id, user_id,
-# request_id, admin_actor) stay in the log and never become a label.
+#   connect capacity     the tick step connect gauges (design 6.3, 10): a provider's counted links are
+#                        at 80 % of its cap or more
+#   connect no data      the same step: a connection connected over 36 h ago has stored nothing for 36 h
+#   connect deregistration stuck
+#                        the same step: a row of the deregistration queue is older than 24 h
+#   ingest's
+#   connect inbox failed the tick step inbox: at least one provider_inbox row in state failed
+# The four connection notices are written at most once a day, by the tick that starts 06:00-06:14 UTC,
+# while their condition holds, so condition 6 notifies once a day per kind, not every 15 minutes.
+# Each message is matched on the service that writes it. In Logging's query language OR binds tighter
+# than AND, so every group has its parentheses. The label kind is the line's message, a closed set of
+# seven by the filter; the lines' ids (feedback_id, user_id, request_id, admin_actor), counts and
+# providers stay in the log and never become a label.
+locals {
+  notices_api = join(" OR ", concat(
+    [for m in ["feedback received", "admin signed in"] : "jsonPayload.message=\"${m}\""],
+    ["(jsonPayload.message=\"admin auth rejected\" AND NOT jsonPayload.reason=\"missing\" AND NOT jsonPayload.reason=\"expired\")"],
+    [for m in ["connect capacity", "connect no data", "connect deregistration stuck"] : "jsonPayload.message=\"${m}\""],
+  ))
+  notices_ingest = "jsonPayload.message=\"connect inbox failed\""
+}
+
 resource "google_logging_metric" "notices" {
   project     = var.project_id
   name        = "ryft_notices"
-  description = "api's feedback received, admin signed in and admin auth rejected lines (not for reason missing or expired), by kind (infra/gcp, D244)"
+  description = "api's feedback received, admin signed in, admin auth rejected (not for reason missing or expired) and connection notices, ingest's connect inbox failed, by kind (infra/gcp, D244, D257)"
   filter = join("\n", [
     "resource.type=\"cloud_run_revision\"",
-    "resource.labels.service_name=\"api\"",
     local.log_stdout,
-    "(jsonPayload.message=\"feedback received\" OR jsonPayload.message=\"admin signed in\" OR (jsonPayload.message=\"admin auth rejected\" AND NOT jsonPayload.reason=\"missing\" AND NOT jsonPayload.reason=\"expired\"))",
+    "((resource.labels.service_name=\"api\" AND (${local.notices_api})) OR (resource.labels.service_name=\"ingest\" AND ${local.notices_ingest}))",
   ])
 
   metric_descriptor {
@@ -127,12 +147,63 @@ resource "google_logging_metric" "notices" {
     labels {
       key         = "kind"
       value_type  = "STRING"
-      description = "The line's message: feedback received, admin signed in or admin auth rejected"
+      description = "The line's message: feedback received, admin signed in, admin auth rejected, connect capacity, connect no data, connect deregistration stuck or connect inbox failed"
     }
   }
 
   label_extractors = {
     "kind" = "EXTRACT(jsonPayload.message)"
+  }
+}
+
+# ingest's hook (D257, design 7.2): one line connect push per request to POST /connect/{provider}/push
+# that reached a served provider (an unserved one is a 404 without the line), by the provider (from the
+# registry, a closed set) and the request's outcome (accepted, rejected: the provider's verification
+# failed, too_large, bad_body, error: the database, busy: the instance's two hook slots were taken, a 503
+# with Retry-After before the body is read, timeout: the body did not arrive within 10 s, a 408, nothing
+# stored). The per-item counts on the line stay in the log
+# (the Prometheus counter ryft_connect_push_items_total has them by kind, served locally only). No user
+# id, record id, address or body is on the line. A dashboard (RYFT · Connections), no policy (the cap,
+# D244): a provider secret rotated under us shows here at once as rejected, and as the notice connect
+# no data within 36 h.
+resource "google_logging_metric" "connect_pushes" {
+  project     = var.project_id
+  name        = "ryft_connect_pushes"
+  description = "ingest's connect push lines, one per request to the hook of a served provider, by provider, kind and outcome (infra/gcp, D257, D258)"
+  filter = join("\n", [
+    "resource.type=\"cloud_run_revision\"",
+    "resource.labels.service_name=\"ingest\"",
+    local.log_stdout,
+    "jsonPayload.message=\"connect push\"",
+  ])
+
+  metric_descriptor {
+    metric_kind  = "DELTA"
+    value_type   = "INT64"
+    unit         = "1"
+    display_name = "RYFT connection pushes"
+
+    labels {
+      key         = "provider"
+      value_type  = "STRING"
+      description = "The provider the push was for (the registry's name, a closed set)"
+    }
+    labels {
+      key         = "kind"
+      value_type  = "STRING"
+      description = "The push's record kind (the adapter's closed set), mixed when its items differ, none when it was refused before parsing"
+    }
+    labels {
+      key         = "outcome"
+      value_type  = "STRING"
+      description = "The request's outcome: accepted, rejected, too_large, bad_body, error, busy or timeout"
+    }
+  }
+
+  label_extractors = {
+    "provider" = "EXTRACT(jsonPayload.provider)"
+    "kind"     = "EXTRACT(jsonPayload.kind)"
+    "outcome"  = "EXTRACT(jsonPayload.outcome)"
   }
 }
 
@@ -360,6 +431,88 @@ resource "google_monitoring_dashboard" "overview" {
             title = "ERROR lines (the services' own)"
             logsPanel = {
               filter        = "resource.type=\"cloud_run_revision\"\n(${local.log_stdout} OR ${local.log_stderr})\nseverity>=ERROR"
+              resourceNames = ["projects/${var.project_id}/locations/${google_logging_project_bucket_config.ryft_logs.location}/buckets/${google_logging_project_bucket_config.ryft_logs.bucket_id}/views/_AllLogs"]
+            }
+          }
+        })],
+      )
+    }
+  })
+}
+
+# ---- the dashboard "RYFT · Connections" (D257) ----------------------------------------------------------
+# Direct connections' own board, apart from the overview: the feature ships dark (CONNECT_PROVIDERS is
+# empty until phase 2), so its tiles are flat until then, and the overview's tiles and positions stay
+# as tests/edge.tftest.hcl pins them. The hook's requests by provider and outcome, ingest's 429s (the
+# hook class and the ip class together: Cloud Run's metric has no path, and the access line's code,
+# hook_limit or ip_limit, tells them apart in the logs panel), and the inbox's event subscription and
+# hold, named from the topology (ingest's dead-lettered push subscriptions; the overview has them too,
+# among the others). The logs panel: ingest's connect push lines and its hook_limit refusals (the
+# access line http, which has no address and no query).
+locals {
+  connect_dashboard_name = "RYFT · Connections"
+
+  connect_event_subs = sort([for k, s in var.pubsub_push_subscriptions : k if s.service == "ingest" && s.dead_letter_topic != ""])
+  connect_dlq_topics = distinct([for k, s in var.pubsub_push_subscriptions : s.dead_letter_topic if s.service == "ingest" && s.dead_letter_topic != ""])
+  connect_holds      = sort([for k, h in var.pubsub_hold_subscriptions : k if contains(local.connect_dlq_topics, h.topic)])
+
+  connect_promql = [
+    ["Hook requests per hour, by provider and outcome (ryft_connect_pushes)", "sum by (provider, outcome) (increase(logging_googleapis_com:user_${google_logging_metric.connect_pushes.name}{${local.run}}[1h]))"],
+    ["ingest: 429 per second (the hook class and the ip class; the logs panel tells them apart)", "sum by (service_name) (rate(run_googleapis_com:request_count{${local.run}, service_name=\"ingest\", response_code=\"429\"}[5m]))"],
+    ["Inbox: oldest unacked event (s), by subscription (policy 5 over 900)", "max by (subscription_id) (pubsub_googleapis_com:subscription_oldest_unacked_message_age{${local.pubsub}, subscription_id=~\"${join("|", local.connect_event_subs)}\"})"],
+    ["Inbox: dead letters held (scripts/dlq.sh list; policy 4)", "max by (subscription_id) (pubsub_googleapis_com:subscription_num_undelivered_messages{${local.pubsub}, subscription_id=~\"${join("|", local.connect_holds)}\"})"],
+  ]
+
+  connect_logs_filter = join("\n", [
+    "resource.type=\"cloud_run_revision\"",
+    "resource.labels.service_name=\"ingest\"",
+    local.log_stdout,
+    "(jsonPayload.message=\"connect push\" OR (jsonPayload.message=\"http\" AND jsonPayload.code=\"hook_limit\"))",
+  ])
+
+  # Positions as the overview's (no zero written: the API leaves zeros out, and the plan would show a
+  # change every time). Two 24-wide tiles a row, the logs panel across the row below.
+  connect_tile_xy = { for i in range(length(local.connect_promql) + 1) : i => (
+    i < length(local.connect_promql)
+    ? { x = (i % 2) * 24, y = floor(i / 2) * 16 }
+    : { x = 0, y = ceil(length(local.connect_promql) / 2) * 16 }
+  ) }
+  connect_tile_at = { for i, p in local.connect_tile_xy : i => merge(
+    p.x == 0 ? {} : { xPos = p.x },
+    p.y == 0 ? {} : { yPos = p.y },
+  ) }
+}
+
+resource "google_monitoring_dashboard" "connections" {
+  project = var.project_id
+
+  dashboard_json = jsonencode({
+    displayName = local.connect_dashboard_name
+    mosaicLayout = {
+      columns = 48
+      tiles = concat(
+        [for i, w in local.connect_promql : merge(local.connect_tile_at[i], {
+          width  = 24
+          height = 16
+          widget = {
+            title = w[0]
+            xyChart = {
+              chartOptions = { mode = "COLOR" }
+              dataSets = [{
+                plotType        = "LINE"
+                targetAxis      = "Y1"
+                timeSeriesQuery = { prometheusQuery = w[1] }
+              }]
+            }
+          }
+        })],
+        [merge(local.connect_tile_at[length(local.connect_promql)], {
+          width  = 48
+          height = 20
+          widget = {
+            title = "ingest: the hook's lines (connect push) and its hook_limit refusals"
+            logsPanel = {
+              filter        = local.connect_logs_filter
               resourceNames = ["projects/${var.project_id}/locations/${google_logging_project_bucket_config.ryft_logs.location}/buckets/${google_logging_project_bucket_config.ryft_logs.bucket_id}/views/_AllLogs"]
             }
           }

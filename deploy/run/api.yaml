@@ -62,6 +62,17 @@ spec:
             # Without it the three routes answer 501, and warn or on refuse to start (check_cloudrun.py refuses them).
             - { name: APP_ATTEST, value: "${APP_ATTEST}" }
             - { name: APP_ATTEST_EXEMPT_USERS, value: "${APP_ATTEST_EXEMPT_USERS}" }
+            # Direct connections (D257, design §9): the providers served and Garmin's user cap from config.env
+            # (CONNECT_PROVIDERS one line for api and ingest), the redirect URI's base (<base>/v1/connect/
+            # <provider>/callback). Phase 2 adds, in the PR that puts garmin into CONNECT_PROVIDERS, the client
+            # id and the client secret at the version Secret Manager gave it (by number; no version exists
+            # before, and a pin to a missing version keeps the revision from starting):
+            #   { name: CONNECT_GARMIN_CLIENT_ID, value: <the programme's id> }
+            #   { name: CONNECT_GARMIN_CLIENT_SECRET, valueFrom: { secretKeyRef: { name: connect-garmin-client-secret, key: "<n>" } } }
+            # The fake provider (CONNECT_FAKE*) is compose only: check_cloudrun.py refuses it in any template.
+            - { name: CONNECT_PROVIDERS, value: "${CONNECT_PROVIDERS}" }
+            - { name: CONNECT_GARMIN_USER_CAP, value: "${CONNECT_GARMIN_USER_CAP}" }
+            - { name: CONNECT_CALLBACK_BASE, value: "https://api.ryftlab.de" }
             - { name: ADMIN_WEB_ORIGINS, value: "https://ryftlab.de" }
             - { name: ADMIN_API_KEY, valueFrom: { secretKeyRef: { name: admin-api-key, key: "1" } } }
             - { name: APPLE_TEAM_ID, value: M77SKHKG63 }

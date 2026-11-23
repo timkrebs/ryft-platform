@@ -1,6 +1,7 @@
 # Cloud Monitoring's alert policies (D236, D244): six conditions, one policy each, all to both channels.
 # The cap is six (tests/monitoring.tftest.hcl): every condition has a monthly price (D236 -> Cost, D244
-# -> The price), and a seventh needs a decision, not a line here. The sixth was the user's (2026-11-19).
+# -> The price), and a seventh needs a decision, not a line here. The sixth was the user's (2026-11-19);
+# the direct connections' notices joined it rather than adding a seventh (D257).
 #
 # Gated: nothing in this file exists until alert_app_channel is set (local.alerting, runbook step
 # 11.1). Then the email channel is read by its display name: none, or two with that name, fails the
@@ -63,7 +64,7 @@ locals {
         EOT
         every    = "60s"
         hold     = "600s"
-        look     = "Logs Explorer: resource.type=\"cloud_run_revision\" resource.labels.service_name=\"<service>\" httpRequest.status>=500; then the service's ERROR lines (dashboard RYFT · Overview)."
+        look     = "Logs Explorer: resource.type=\"cloud_run_revision\" resource.labels.service_name=\"<service>\" httpRequest.status>=500; then the service's ERROR lines (dashboard RYFT · Overview). On ingest, 503s on /connect/ are the hook's busy or a database error (dashboard RYFT · Connections; docs/OPERATIONS.md -> Direct connections -> The hook is busy or slow)."
       }
 
       # A letter waits in a DLQ hold subscription: an event a consumer failed on 20 times
@@ -194,26 +195,29 @@ resource "google_monitoring_alert_policy" "promql" {
   depends_on = [google_logging_metric.ticks]
 }
 
-# Condition 6 (D244): a line of ryft_notices (monitoring.tf) in the last 5 minutes, one series per kind
-# (feedback received, admin signed in, admin auth rejected). Held 60 s, the shortest that lets missing
-# data count: once 5 minutes pass without a line the series has no data, INACTIVE closes the incident,
-# and the next line opens a new one and notifies again (with the default, an open incident would swallow
-# it until auto_close). Only the opening is notified: no closing mail for every feedback. Gated by
+# Condition 6 (D244, D257): a line of ryft_notices (monitoring.tf) in the last 5 minutes, one series per
+# kind (feedback received, admin signed in, admin auth rejected; connect capacity, connect no data,
+# connect deregistration stuck, connect inbox failed). Held 60 s, the shortest that lets missing data
+# count: once 5 minutes pass without a line the series has no data, INACTIVE closes the incident, and
+# the next line opens a new one and notifies again (with the default, an open incident would swallow it
+# until auto_close). Only the opening is notified: no closing mail for every feedback. The connection
+# notices come at most once a day each (the tick of 06:00-06:14 UTC), so each notifies once a day while
+# its condition holds. One policy for all seven kinds, no seventh policy (D244's cap, D257). Gated by
 # alerting alone, like 1, 2, 4 and 5: under the stop line or with serve = false no line comes, so it
-# stays quiet, and the flips don't destroy and recreate it. Documentation variables: Google renders
-# ${metric.label.kind}, a label group_by keeps; written $${...} here so Terraform leaves it alone. No
-# ${log.*} variable: the line's fields stay out of the notification.
+# stays quiet, and the flips don't destroy and recreate it. Renaming it is an update in place.
+# Documentation variables: Google renders ${metric.label.kind}, a label group_by keeps; written $${...}
+# here so Terraform leaves it alone. No ${log.*} variable: the line's fields stay out of the notification.
 resource "google_monitoring_alert_policy" "notices" {
   count = local.alerting ? 1 : 0
 
   project               = var.project_id
-  display_name          = "RYFT · Feedback and admin access"
+  display_name          = "RYFT · Notices: feedback, admin access, connections"
   combiner              = "OR"
   severity              = "WARNING"
   notification_channels = local.alert_channels
 
   conditions {
-    display_name = "A feedback, an admin sign-in or a refused admin bearer, by kind"
+    display_name = "A feedback, an admin sign-in, a refused admin bearer or a connection notice, by kind"
 
     condition_threshold {
       filter                  = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.notices.name}\" AND resource.type=\"cloud_run_revision\""
@@ -244,11 +248,15 @@ resource "google_monitoring_alert_policy" "notices" {
     mime_type = "text/markdown"
     subject   = "RYFT · $${metric.label.kind}"
     content = trimspace(<<-EOT
-      **$${metric.label.kind}** on api: a notice, not an outage. It closes by itself about 5 minutes after the last such line. First look, by kind:
+      **$${metric.label.kind}**: a notice, not an outage. It closes by itself about 5 minutes after the last such line. First look, by kind:
 
-      - **feedback received**: a tester sent a report. ryftlab.de/admin -> Feedback (Resolve it there once read), or `scripts/beta_report.sh feedback`.
-      - **admin signed in**: an operator session began on ryftlab.de/admin (password and a fresh TOTP). If it wasn't you: docs/OPERATIONS.md -> Beta -> Admin sign-in -> Lost phone, or any doubt about the admin account, at once; then /admin -> Audit.
-      - **admin auth rejected**: an admin route refused a bearer (not a missing or an expired one). Logs Explorer: `jsonPayload.message="admin auth rejected"`, its `reason`.
+      - **feedback received** (api): a tester sent a report. ryftlab.de/admin -> Feedback (Resolve it there once read), or `scripts/beta_report.sh feedback`.
+      - **admin signed in** (api): an operator session began on ryftlab.de/admin (password and a fresh TOTP). If it wasn't you: docs/OPERATIONS.md -> Beta -> Admin sign-in -> Lost phone, or any doubt about the admin account, at once; then /admin -> Audit.
+      - **admin auth rejected** (api): an admin route refused a bearer (not a missing or an expired one). Logs Explorer: `jsonPayload.message="admin auth rejected"`, its `reason`.
+      - **connect capacity** (api, once a day while it holds): a provider's connections reached 80 % of its user cap. docs/OPERATIONS.md -> Direct connections -> The cap.
+      - **connect no data** (api, once a day): a connected account has stored nothing from its provider for 36 h. First the dashboard RYFT · Connections (rejected pushes: the provider's secret or verification), then docs/OPERATIONS.md -> Direct connections -> Connected but no data.
+      - **connect deregistration stuck** (api, once a day): a provider deregistration has waited over 24 h. docs/OPERATIONS.md -> Direct connections -> The deregistration queue.
+      - **connect inbox failed** (ingest, once a day): inbox rows ingest could not process. docs/OPERATIONS.md -> Direct connections -> Failed inbox rows.
 
       ${local.alert_look}.
     EOT

@@ -92,19 +92,20 @@ func (s *Store) RecordSync(ctx context.Context, userID, deviceID uuid.UUID, summ
 }
 
 // UserSources lists the sources with a kind seen since the given time, one per
-// name (its kinds sorted, the latest bundle id), newest first.
+// name and origin (its kinds sorted, the latest bundle id), newest first. A direct
+// source's name is the reserved ryft-direct-<provider>: the caller shows the provider's name.
 func (s *Store) UserSources(ctx context.Context, userID uuid.UUID, since time.Time) ([]model.UserSource, error) {
 	rows, err := s.pool.Query(ctx, `SELECT name,
 		  (array_agg(bundle_id ORDER BY last_seen DESC) FILTER (WHERE bundle_id IS NOT NULL))[1],
-		  array_agg(kind ORDER BY kind), max(last_seen)
+		  array_agg(kind ORDER BY kind), max(last_seen), origin
 		FROM user_sources WHERE user_id = $1 AND last_seen >= $2
-		GROUP BY name ORDER BY max(last_seen) DESC, name`, userID, since)
+		GROUP BY name, origin ORDER BY max(last_seen) DESC, name, origin`, userID, since)
 	if err != nil {
 		return nil, err
 	}
 	out := []model.UserSource{}
 	var u model.UserSource
-	_, err = pgx.ForEachRow(rows, []any{&u.Name, &u.BundleID, &u.Kinds, &u.LastSeen}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&u.Name, &u.BundleID, &u.Kinds, &u.LastSeen, &u.Origin}, func() error {
 		u.LastSeen = u.LastSeen.UTC()
 		out = append(out, u)
 		u = model.UserSource{}

@@ -35,8 +35,8 @@ locals {
     "protocolattack-v33-stable"   = true
   }
 
-  # Set => its rule's priority. All before the rate rule: a throttle's conform action allow ends the
-  # evaluation, so a rule after it would never run.
+  # Set => its rule's priority. All before the hook's throttle (1900) and the rate rule (2000): a
+  # throttle's conform action allow ends the evaluation, so a rule after it would never run.
   edge_waf_priority = {
     "sqli-v33-stable"             = 1000
     "xss-v33-stable"              = 1001
@@ -44,6 +44,35 @@ locals {
     "rce-v33-stable"              = 1003
     "scannerdetection-v33-stable" = 1004
     "protocolattack-v33-stable"   = 1005
+  }
+
+  # Paths no WAF set inspects (D257, review S4): conditions ANDed to every set's expression, so a
+  # request there never matches, enforced or in preview, and no preview match keeps its URL. The
+  # callback's query carries the OAuth state and the provider's code; the hook's body is a provider's
+  # payload, verified before it is parsed. The callback checks its two parameters itself (hex state,
+  # bounded code). The hook's skip is only ingest's host, POST and the exact push path (review P2-5):
+  # every other host, method or path under /connect/ is inspected. Any other spelling of either path
+  # (a trailing /, an escape, upper case) or of the Host header is inspected as before, so this opens
+  # no bypass. Cloud Armor allows 5 subexpressions per expression: the set's call, the callback's and
+  # the hook's three are exactly 5, so a further condition here needs a rule of its own. Enforcing a
+  # set needs no step for these paths (OPERATIONS -> GCP -> 16).
+  edge_waf_skip = [
+    "!request.path.matches('^/v1/connect/[a-z0-9]+/callback$')",
+    "!(request.headers['host'] == '${local.edge_hook.host}' && request.method == 'POST' && request.path.matches('^${local.edge_hook.path_prefix}[a-z0-9]+/push$'))",
+  ]
+
+  # The provider hook's own class (D257, design 7.5): ingest's POST /connect/<provider>/push, keyed on
+  # the address the load balancer sees. 6,000 per 60 s is above one ingest instance's in-process
+  # ceiling for the class (D240's hook: bursts of 200 + 50/s x 60 = 3,200) and below two instances'
+  # (6,400). A throttle, not a ban: over it is 429, and its conform action allow ends the evaluation,
+  # so hook traffic never counts toward the rate rule's ban. A request whose Host header is spelled
+  # otherwise (a port, upper case) misses it and meets the rate rule, which is the stricter of the two.
+  edge_hook = {
+    priority     = 1900
+    host         = "ingest.${local.domain}"
+    path_prefix  = "/connect/"
+    count        = 6000
+    interval_sec = 60
   }
 
   # The rate rule, enforced, keyed on the address the load balancer sees (IP; never XFF_IP, which a
@@ -151,8 +180,32 @@ resource "google_compute_security_policy" "edge" {
 
       match {
         expr {
-          expression = "evaluatePreconfiguredWaf('${rule.key}', {'sensitivity': 1})"
+          expression = join(" && ", concat(["evaluatePreconfiguredWaf('${rule.key}', {'sensitivity': 1})"], local.edge_waf_skip))
         }
+      }
+    }
+  }
+
+  rule {
+    description = "Provider hook (${local.edge_hook.host} ${local.edge_hook.path_prefix}): over ${local.edge_hook.count} in ${local.edge_hook.interval_sec} s per address 429, never banned (D257)"
+    action      = "throttle"
+    priority    = local.edge_hook.priority
+    preview     = false
+
+    match {
+      expr {
+        expression = "request.headers['host'] == '${local.edge_hook.host}' && request.path.startsWith('${local.edge_hook.path_prefix}')"
+      }
+    }
+
+    rate_limit_options {
+      enforce_on_key = "IP"
+      conform_action = "allow"
+      exceed_action  = "deny(429)"
+
+      rate_limit_threshold {
+        count        = local.edge_hook.count
+        interval_sec = local.edge_hook.interval_sec
       }
     }
   }

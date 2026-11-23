@@ -28,3 +28,10 @@ Rollback: everything ships dark (`connect.garmin` off, fake provider only in com
 
 ## Needs the user
 Terraform apply (secrets, edge rule); creating the client secret once Garmin approves; phase 2 inputs (docs, credentials).
+
+## Added 2026-11-23: D259 (the user's answers to design §17)
+| # | Owner | What | Acceptance |
+|---|---|---|---|
+| T9 | backend-engineer | `CONNECT_MIN_POLICY_VERSION` in ingest config; the hook (`store.StoreInbox`) and the consumer accept consent not withdrawn and ≥ the cutoff; empty = the policy in force | config tests (date, not after `PRIVACY_POLICY_VERSION`); store + consumer tests: older-but-≥-cutoff kept, below cutoff and withdrawn dropped |
+| T10 | gitops-engineer | `CONNECT_MIN_POLICY_VERSION=` in `config.env`, ingest.yaml env, `check_cloudrun.py` (date, ≤ policy version) | `make cloudrun-check` + script test |
+| T11 | sre | OPERATIONS runbook: when to move the cutoff (a policy change touching health-data processing) | runbook names the exact edit |

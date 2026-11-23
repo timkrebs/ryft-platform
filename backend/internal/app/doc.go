@@ -24,7 +24,9 @@
 //     the answer Traefik's plain-text 429. The health paths, the tick and
 //     Spec.LimitExempt (the api's admin key) take no token. The limit logs
 //     nothing; a refusal is ryft_rate_limited_total{class="ip"} and the access
-//     line's code ip_limit.
+//     line's code ip_limit. A provider's push, POST /connect/..., has a class of its
+//     own (hook: 50 a second, bursts of 200, code hook_limit) that takes nothing from
+//     ip, and ingest's /push/inbox.received is exempt like the tick (D257).
 //   - The metrics push is the tick's final step and runs once more after the
 //     http step at SIGTERM. On Cloud Run (K_SERVICE) there is no /metrics
 //     listener, and the ready paths answer {"error":"not ready"} with the cause

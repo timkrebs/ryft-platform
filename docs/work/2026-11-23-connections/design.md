@@ -140,9 +140,10 @@ tokens then wait in the queue until an adapter can deregister them).
 ```
 - `deregistered`: `bool?`, over every grant this call ends: the live connection's tokens **and** an unconfirmed
   pending grant for the provider.
-  - `true`: each was deregistered at the provider, or skipped because a live connection of another account holds that
-    provider account (§6.3's rule; RYFT holds no token from this call any more, so nothing is left to do).
-  - `false`: at least one attempt failed and is retried in the background for 30 days; the app has nothing to do.
+  - `true`: each was deregistered at the provider (or the provider no longer knew it).
+  - `false`: at least one was not ended at the provider: an attempt failed and is retried in the background for 30
+    days, or it was skipped because a live connection of another account holds that provider account (§6.3's rule;
+    not retried). The app has nothing to do. (Amended 2026-11-23, review P2-13: `docs/API.md` is the contract.)
   - `null`: there was nothing to deregister (no connection or a `revoked` one, and no unconfirmed pending grant).
   - A pending grant alone (no connection) gives `true` or `false` by the same rules.
 - `data_deleted`: always `true` (§8), also when there was no data.
@@ -151,7 +152,7 @@ tokens then wait in the queue until an adapter can deregister them).
 ### 4.6 `DELETE /v1/me`
 Gains `"connections_deregistered": bool?`, with the same rules as `deregistered` in §4.5 over all the account's
 grants (connections and unconfirmed pending grants, every provider): `null` when there were none, `true` when each
-was deregistered or skipped as live elsewhere, `false` while the background retry has work. Same spirit as
+was deregistered, `false` when one was not (retried in the background, or skipped as live elsewhere). Same spirit as
 `apple_token_revoked`.
 
 ### 4.7 Other additive fields
@@ -504,8 +505,8 @@ connection started; there is no history, so that is never more than the connecti
 ### 6.5 `DELETE /v1/me`
 - The tokens move inside `DeleteUser` (§5.5).
 - After the commit, the handler runs one bounded attempt (5 s in total) over the account's queue rows. The answer's
-  `connections_deregistered` follows §4.6 (`null` none, `true` all done or skipped as live elsewhere, `false` the
-  tick retries).
+  `connections_deregistered` follows §4.6 (`null` none, `true` all done, `false` the
+  tick retries or one was skipped as live elsewhere).
 - The existing `account reconcile` step is untouched. `connect deregister` is its own step, because these rows outlive
   the tombstone's other columns.
 
@@ -1016,6 +1017,9 @@ What goes where:
   privacy text, the flag's allow-list.
 
 ## 17. Needs the user
+
+**Answered 2026-11-23 (D259):** Q1, a consent cutoff `CONNECT_MIN_POLICY_VERSION` for the hook and the consumer;
+Q2, a revocation at the provider deletes, as written; Q3, policy 6. Q4 waits on phase 2.
 
 1. **The consent-version gap.** While an account's consent is to an older policy version (not withdrawn), its pushes
    are dropped. With no history at the provider, that data is gone for good, for example after the C2 text change until

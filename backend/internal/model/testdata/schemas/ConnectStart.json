@@ -1,0 +1,18 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "authorize_url": {
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "authorize_url",
+    "expires_at"
+  ],
+  "title": "ConnectStart",
+  "type": "object"
+}

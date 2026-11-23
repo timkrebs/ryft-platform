@@ -1,0 +1,22 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "data_deleted": {
+      "type": "boolean"
+    },
+    "deregistered": {
+      "nullable": true,
+      "type": "boolean"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "data_deleted",
+    "deregistered",
+    "status"
+  ],
+  "title": "ConnectionDeleted",
+  "type": "object"
+}

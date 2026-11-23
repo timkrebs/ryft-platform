@@ -75,9 +75,9 @@ run "secret_accessors_exactly" {
     condition = toset(keys(google_secret_manager_secret.this)) == toset([
       "db-password-api", "db-password-ingest", "db-password-scoring", "db-password-notify", "db-password-owner",
       "supabase-secret-key", "admin-api-key", "apple-key-p8", "apns-key-p8", "data-key",
-      "posthog-project-key", "app-attest-token-key",
+      "posthog-project-key", "app-attest-token-key", "connect-garmin-client-secret",
     ])
-    error_message = "the 10 secret containers of ticket B still in use, posthog-project-key (D231) and app-attest-token-key (D247); otlp-token is retired (step 11.6)"
+    error_message = "the 10 secret containers of ticket B still in use, posthog-project-key (D231), app-attest-token-key (D247) and connect-garmin-client-secret (D257); otlp-token is retired (step 11.6)"
   }
 
   assert {
@@ -106,10 +106,10 @@ run "secret_accessors_exactly" {
 
   assert {
     condition = alltrue([
-      for s in ["supabase-secret-key", "admin-api-key", "apple-key-p8", "data-key", "posthog-project-key"] :
+      for s in ["supabase-secret-key", "admin-api-key", "apple-key-p8", "data-key", "posthog-project-key", "connect-garmin-client-secret"] :
       google_secret_manager_secret_iam_binding.accessor[s].members == toset(["serviceAccount:ryft-api@ryftlab-prod.iam.gserviceaccount.com"])
     ])
-    error_message = "the Supabase secret key, ADMIN_API_KEY, the Apple key, the data key and the PostHog key: api only"
+    error_message = "the Supabase secret key, ADMIN_API_KEY, the Apple key, the data key, the PostHog key and Garmin's client secret (D257): api only"
   }
 
   assert {

@@ -18,13 +18,17 @@
     },
     "name": {
       "type": "string"
+    },
+    "origin": {
+      "type": "string"
     }
   },
   "required": [
     "bundle_id",
     "kinds",
     "last_seen",
-    "name"
+    "name",
+    "origin"
   ],
   "title": "UserSource",
   "type": "object"

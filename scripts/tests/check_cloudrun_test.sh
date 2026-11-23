@@ -49,11 +49,21 @@ fresh() {
   for f in api.yaml ingest.yaml; do
     if grep -qF -- "$RINGROW" "$d/$f"; then drop "$f" "$RINGROW"; fi
   done
+  # Direct connections (D257) likewise start dark: no provider, cap 0, no Garmin id or secret row.
+  baseline config.env '^CONNECT_PROVIDERS=' 'CONNECT_PROVIDERS='
+  baseline config.env '^CONNECT_GARMIN_USER_CAP=' 'CONNECT_GARMIN_USER_CAP=0'
+  baseline config.env '^CONNECT_MIN_POLICY_VERSION=' 'CONNECT_MIN_POLICY_VERSION='
+  for r in "$GIDROW" "$GSECROW"; do
+    if grep -qF -- "$r" "$d/api.yaml"; then drop api.yaml "$r"; fi
+  done
   base=
 }
 # The ring's env row (D245): the marker starts with the list item, so the templates' comment that shows
 # the row is not it.
 RINGROW='- { name: APP_ATTEST_TOKEN_KEYS,'
+# Garmin's phase-2 rows in api.yaml (D257), list items like the ring's (api.yaml's comment shows them).
+GIDROW='- { name: CONNECT_GARMIN_CLIENT_ID,'
+GSECROW='- { name: CONNECT_GARMIN_CLIENT_SECRET,'
 base=
 # baseline <file> <regex> <line>: the copy's one line matching <regex> becomes <line>.
 baseline() {
@@ -137,7 +147,8 @@ printf -v s '%20s' ''; ref=${s// /q}
 printf -v s '%10s' ''; akey=${s// /A}; nkey=${s// /N}
 {
   printf '%s\n' "PRIVACY_POLICY_VERSION=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' "$HERE/deploy/run/config.env")" LOG_LEVEL=info \
-    BETA_GATE=on XFF_TRUSTED_HOPS=1 APP_ATTEST=off "APP_ATTEST_EXEMPT_USERS=$(printf '%08x-0000-4000-8000-%012x' 7 7)"
+    BETA_GATE=on XFF_TRUSTED_HOPS=1 APP_ATTEST=off "APP_ATTEST_EXEMPT_USERS=$(printf '%08x-0000-4000-8000-%012x' 7 7)" \
+    CONNECT_PROVIDERS= CONNECT_GARMIN_USER_CAP=0 CONNECT_MIN_POLICY_VERSION=
   printf 'GCP_PROJECT_NUMBER=7%011d\nPUSH_SA_ID=1%020d\n' 0 0
   printf '%s\n' "SUPABASE_PROJECT_REF=$ref" SUPABASE_POOLER_HOST=aws-0-eu-central-1.pooler.supabase.com \
     "APPLE_KEY_ID=$akey" "APNS_KEY_ID=$nkey"
@@ -460,6 +471,148 @@ base_is off
 ok "off stays off"
 base=$tmp/nope.env
 bad "a base that cannot be read" "cannot read it"
+
+# Direct connections (D257, design §9): CONNECT_PROVIDERS from config.env's one line in api and ingest
+# (equal, never fake), Garmin's cap from config.env and the callback base in api only; the fake provider's
+# env never on Cloud Run; garmin served only with api's client-secret pin (by number, api alone reads it),
+# its client id and a cap above 0. Every case starts from fresh's dark state, so they hold after phase 2.
+providers() { baseline config.env '^CONNECT_PROVIDERS=' "CONNECT_PROVIDERS=$1"; }
+cap() { baseline config.env '^CONNECT_GARMIN_USER_CAP=' "CONNECT_GARMIN_USER_CAP=$1"; }
+# gsecret [<file> [<secret> [<version>]]], gid [<value>]: Garmin's phase-2 rows (after the callback base in api).
+gsecret() {
+  local f=${1:-api.yaml} at='name: CONNECT_CALLBACK_BASE,'
+  [ "$f" = api.yaml ] || at='name: CONNECT_PROVIDERS,'
+  add "$f" "$at" "- { name: CONNECT_GARMIN_CLIENT_SECRET, valueFrom: { secretKeyRef: { name: ${2:-connect-garmin-client-secret}, key: \"${3:-1}\" } } }"
+}
+gid() { add api.yaml 'name: CONNECT_CALLBACK_BASE,' "- { name: CONNECT_GARMIN_CLIENT_ID, value: \"${1-client-id-0}\" }"; }
+drop api.yaml 'name: CONNECT_PROVIDERS,'
+bad "api without the providers" "api.yaml env: CONNECT_PROVIDERS is missing"
+drop ingest.yaml 'name: CONNECT_PROVIDERS,'
+bad "ingest without the providers" "ingest.yaml env: CONNECT_PROVIDERS is missing"
+drop api.yaml 'name: CONNECT_GARMIN_USER_CAP,'
+bad "api without Garmin's cap" "api.yaml env: CONNECT_GARMIN_USER_CAP is missing"
+drop api.yaml 'name: CONNECT_CALLBACK_BASE,'
+bad "api without the callback base" "api.yaml env: CONNECT_CALLBACK_BASE is missing"
+edit api.yaml 'name: CONNECT_CALLBACK_BASE,' 'https://api.ryftlab.de' 'http://api.ryftlab.de'
+bad "a callback base over http" "CONNECT_CALLBACK_BASE='http://api.ryftlab.de', want 'https://api.ryftlab.de'"
+edit api.yaml 'name: CONNECT_CALLBACK_BASE,' 'https://api.ryftlab.de' 'https://api-123.europe-west1.run.app'
+bad "a callback base on run.app" "CONNECT_CALLBACK_BASE='https://api-123.europe-west1.run.app', want"
+edit ingest.yaml 'name: CONNECT_PROVIDERS,' '${CONNECT_PROVIDERS}' garmin
+bad "ingest serving another provider than api" "CONNECT_PROVIDERS is '' in api.yaml and 'garmin' in ingest.yaml: equal in both"
+edit api.yaml 'name: CONNECT_PROVIDERS,' '${CONNECT_PROVIDERS}' fake
+bad "the fake written into api's template" "api.yaml: CONNECT_PROVIDERS names fake"
+edit api.yaml 'name: CONNECT_GARMIN_USER_CAP,' '${CONNECT_GARMIN_USER_CAP}' 100
+bad "a cap written into the template" "CONNECT_GARMIN_USER_CAP='100', want '0'"
+add scoring.yaml 'name: LOG_LEVEL,' '- { name: CONNECT_PROVIDERS, value: "${CONNECT_PROVIDERS}" }'
+bad "scoring with the providers" "CONNECT_PROVIDERS is not in ticket-b.md's env table for scoring"
+add ingest.yaml 'name: CONNECT_PROVIDERS,' '- { name: CONNECT_GARMIN_USER_CAP, value: "${CONNECT_GARMIN_USER_CAP}" }'
+bad "ingest with Garmin's cap" "CONNECT_GARMIN_USER_CAP is not in ticket-b.md's env table for ingest"
+add ingest.yaml 'name: CONNECT_PROVIDERS,' '- { name: CONNECT_CALLBACK_BASE, value: "https://api.ryftlab.de" }'
+bad "ingest with the callback base" "CONNECT_CALLBACK_BASE is not in ticket-b.md's env table for ingest"
+# The fake provider is compose only: by name in every template and in config.env.
+add api.yaml 'name: CONNECT_PROVIDERS,' '- { name: CONNECT_FAKE, value: "on" }'
+bad "CONNECT_FAKE in api" "api.yaml env: CONNECT_FAKE is never set on Cloud Run: the fake provider is compose only" \
+  "CONNECT_FAKE is not in"
+add ingest.yaml 'name: CONNECT_PROVIDERS,' '- { name: CONNECT_FAKE_PUSH_SECRET, valueFrom: { secretKeyRef: { name: data-key, key: "1" } } }'
+bad "the fake's push secret in ingest" "ingest.yaml env: CONNECT_FAKE_PUSH_SECRET is never set on Cloud Run"
+add notify.yaml 'name: LOG_LEVEL,' '- { name: CONNECT_FAKE_USER_CAP, value: "5" }'
+bad "the fake's cap in notify" "notify.yaml env: CONNECT_FAKE_USER_CAP is never set on Cloud Run"
+printf 'CONNECT_FAKE=on\n' >> "$d/config.env"
+bad "CONNECT_FAKE in config.env" "CONNECT_FAKE is never set on Cloud Run: the fake provider is compose only"
+providers fake
+bad "the fake in config.env's providers" "CONNECT_PROVIDERS names fake: the fake provider is compose only"
+providers whoop
+bad "a provider Cloud Run does not serve" "CONNECT_PROVIDERS names whoop: Cloud Run serves only garmin"
+providers garmin,garmin
+bad "a provider twice" "CONNECT_PROVIDERS names a provider twice"
+providers 'garmin, fake'
+bad "a provider list with a space" "does not have the shape empty, or a comma list of provider ids"
+providers FILL_ME_IN
+bad "the providers left FILL_ME_IN" "CONNECT_PROVIDERS is FILL_ME_IN: leave it empty or set it"
+drop config.env 'CONNECT_PROVIDERS='
+bad "config.env without the providers line" "CONNECT_PROVIDERS is missing"
+drop config.env 'CONNECT_GARMIN_USER_CAP='
+bad "config.env without Garmin's cap" "CONNECT_GARMIN_USER_CAP is missing"
+cap ''
+bad "an empty cap" "CONNECT_GARMIN_USER_CAP is empty"
+for c in -1 01 1.5 10000000 ten; do
+  cap "$c"
+  bad "a cap of '$c'" "CONNECT_GARMIN_USER_CAP='$c' does not have the shape 0 or a whole number"
+done
+# Dark with Garmin's rows ahead of the switch (the secret's pin once it has a version): allowed.
+gsecret; gid; cap 500
+ok "garmin's id, pin and cap before garmin is served"
+# garmin served: only with all three (config refuses to start otherwise).
+providers garmin
+bad "garmin without its pin, id or cap" "api.yaml: garmin in CONNECT_PROVIDERS without CONNECT_GARMIN_CLIENT_SECRET pinned"
+providers garmin; gid; cap 500
+bad "garmin without the client secret" "garmin in CONNECT_PROVIDERS without CONNECT_GARMIN_CLIENT_SECRET pinned" \
+  "without CONNECT_GARMIN_CLIENT_ID"
+providers garmin; gsecret; cap 500
+bad "garmin without the client id" "api.yaml: garmin in CONNECT_PROVIDERS without CONNECT_GARMIN_CLIENT_ID" \
+  "CONNECT_GARMIN_CLIENT_SECRET pinned"
+providers garmin; gsecret; gid
+bad "garmin at cap 0" "config.env: garmin in CONNECT_PROVIDERS with CONNECT_GARMIN_USER_CAP=0: a cap above 0" \
+  "CLIENT_SECRET pinned"
+providers garmin; gsecret; gid; cap 500
+ok "garmin with its pin, id and cap"
+# P2-9: the templates' lists compare as config reads them (items stripped, empties dropped, sorted), so
+# a spaced fake is still the fake, spacing alone is no difference, and a spaced garmin is still garmin.
+edit api.yaml 'name: CONNECT_PROVIDERS,' '${CONNECT_PROVIDERS}' 'garmin, fake'
+edit ingest.yaml 'name: CONNECT_PROVIDERS,' '${CONNECT_PROVIDERS}' 'garmin, fake'
+bad "a spaced fake in the templates' providers" "api.yaml: CONNECT_PROVIDERS names fake" "equal in both"
+providers garmin; gsecret; gid; cap 500
+edit api.yaml 'name: CONNECT_PROVIDERS,' '${CONNECT_PROVIDERS}' ' garmin , '
+ok "api's providers differing from ingest's by spacing only"
+providers garmin
+edit api.yaml 'name: CONNECT_PROVIDERS,' '${CONNECT_PROVIDERS}' ' garmin '
+bad "a spaced garmin without its pin" "api.yaml: garmin in CONNECT_PROVIDERS without CONNECT_GARMIN_CLIENT_SECRET pinned" \
+  "equal in both"
+# The consent cutoff (D259): config.env's line, rendered into ingest only; empty (the policy in force) or a
+# calendar date not after PRIVACY_POLICY_VERSION; never in api (start and confirm keep the policy in force).
+cutoff() { baseline config.env '^CONNECT_MIN_POLICY_VERSION=' "CONNECT_MIN_POLICY_VERSION=$1"; }
+policy=$(sed -n 's/^PRIVACY_POLICY_VERSION=//p' "$HERE/deploy/run/config.env")
+cutoff ''
+ok "an empty cutoff (the policy in force)"
+cutoff 2000-01-01
+ok "a cutoff before the policy version"
+cutoff "$policy"
+ok "a cutoff at the policy version"
+cutoff 2999-12-31
+bad "a cutoff after the policy version" "CONNECT_MIN_POLICY_VERSION=2999-12-31 is after PRIVACY_POLICY_VERSION=$policy"
+for v in 2026-1-05 20260105 "$policy " yesterday; do
+  cutoff "$v"
+  bad "a cutoff of '$v'" "CONNECT_MIN_POLICY_VERSION='$v' does not have the shape empty, or a YYYY-MM-DD date"
+done
+cutoff 2026-02-30
+bad "a cutoff that is no calendar date" "CONNECT_MIN_POLICY_VERSION=2026-02-30 is not a calendar date"
+cutoff FILL_ME_IN
+bad "the cutoff left FILL_ME_IN" "CONNECT_MIN_POLICY_VERSION is FILL_ME_IN: leave it empty or set it"
+drop config.env 'CONNECT_MIN_POLICY_VERSION='
+bad "config.env without the cutoff line" "CONNECT_MIN_POLICY_VERSION is missing"
+drop ingest.yaml 'name: CONNECT_MIN_POLICY_VERSION,'
+bad "ingest without the cutoff" "ingest.yaml env: CONNECT_MIN_POLICY_VERSION is missing"
+add api.yaml 'name: CONNECT_PROVIDERS,' '- { name: CONNECT_MIN_POLICY_VERSION, value: "${CONNECT_MIN_POLICY_VERSION}" }'
+bad "api with the cutoff" "api.yaml: CONNECT_MIN_POLICY_VERSION is set: ingest only (D259)"
+add scoring.yaml 'name: LOG_LEVEL,' '- { name: CONNECT_MIN_POLICY_VERSION, value: "${CONNECT_MIN_POLICY_VERSION}" }'
+bad "scoring with the cutoff" "CONNECT_MIN_POLICY_VERSION is not in ticket-b.md's env table for scoring"
+edit ingest.yaml 'name: CONNECT_MIN_POLICY_VERSION,' '${CONNECT_MIN_POLICY_VERSION}' 2999-12-31
+bad "a later cutoff written into ingest's template" "ingest.yaml: CONNECT_MIN_POLICY_VERSION=2999-12-31 is after"
+edit ingest.yaml 'name: CONNECT_MIN_POLICY_VERSION,' '${CONNECT_MIN_POLICY_VERSION}' 2026-02-30
+bad "a malformed cutoff written into ingest's template" "ingest.yaml: CONNECT_MIN_POLICY_VERSION='2026-02-30': empty, or a YYYY-MM-DD calendar date"
+providers garmin; gsecret; gid ''; cap 500
+bad "an empty client id" "CONNECT_GARMIN_CLIENT_ID is empty"
+# The client secret: by number, from its secret, read by api alone; the id in api alone.
+gsecret api.yaml connect-garmin-client-secret latest
+bad "the client secret at latest" "pins connect-garmin-client-secret at 'latest'"
+gsecret api.yaml data-key
+bad "the client secret from another secret" "CONNECT_GARMIN_CLIENT_SECRET reads secret data-key, want connect-garmin-client-secret"
+gsecret ingest.yaml
+bad "ingest with the client secret" "CONNECT_GARMIN_CLIENT_SECRET from connect-garmin-client-secret is not in ticket-b.md's secret table for ingest"
+add ingest.yaml 'name: CONNECT_PROVIDERS,' '- { name: CONNECT_GARMIN_CLIENT_ID, value: "client-id-0" }'
+bad "ingest with the client id" "CONNECT_GARMIN_CLIENT_ID is not in ticket-b.md's env table for ingest"
+add api.yaml 'name: CONNECT_CALLBACK_BASE,' '- { name: CONNECT_GARMIN_CLIENT_SECRET, value: "inline" }'
+bad "the client secret as a plain value" "CONNECT_GARMIN_CLIENT_SECRET is not in ticket-b.md's env table for api"
 base_is warn; printf 'APP_ATTEST=on\n' >> "$base"
 bad "a base with the mode twice" "APP_ATTEST is set more than once there"
 # design §4: migrate's pin of a role equals the service's own.
@@ -522,4 +675,4 @@ bad "a placeholder outside the list" "placeholder(s) outside the fixed list: HOM
 add migrate.yaml 'name: LOG_LEVEL,' '- { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }'
 bad "migrate with an audience" "migrate is no push target"
 
-echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env (BETA_GATE, XFF_TRUSTED_HOPS, APP_ATTEST and APP_ATTEST_EXEMPT_USERS from config.env in api and ingest only, two hops only behind the load balancer), App Attest's ring pinned in api and ingest under warn and on and readable by them only, off -> on against a base refused (off -> warn, warn -> on and back pass), the load balancer's ingress only at edge live or locked and with more than one hop, locked only behind it, P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"
+echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env (BETA_GATE, XFF_TRUSTED_HOPS, APP_ATTEST and APP_ATTEST_EXEMPT_USERS from config.env in api and ingest only, two hops only behind the load balancer), App Attest's ring pinned in api and ingest under warn and on and readable by them only, CONNECT_PROVIDERS equal in api and ingest (items stripped) and never fake (also spaced), CONNECT_MIN_POLICY_VERSION in ingest only, empty or a date not after the policy version, Garmin's cap and the callback base in api only, CONNECT_FAKE* nowhere, garmin only with its client-secret pin (api alone), id and a cap above 0, off -> on against a base refused (off -> warn, warn -> on and back pass), the load balancer's ingress only at edge live or locked and with more than one hop, locked only behind it, P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"

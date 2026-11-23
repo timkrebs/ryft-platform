@@ -1,9 +1,9 @@
 # The edge (D242, edge.tf): each phase of var.edge set explicitly, so a flip of gates.auto.tfvars never
 # changes what these runs pin. Plan-only, every provider mocked: this machine has real gcloud
 # credentials, and a real provider here could create what it tests.
-#   off     as before D242: no edge resource, 16 APIs, the sink without exclusions, today's dashboard,
+#   off     as before D242: no edge resource, 16 APIs, the sink with connect-callback only, today's dashboard,
 #           api. and ingest. CNAMEs to the mappings
-#   built   the load balancer, Cloud Armor, the certificates, 18 APIs, the sink's two exclusions, the
+#   built   the load balancer, Cloud Armor, the certificates, 18 APIs, the sink's three exclusions, the
 #           metrics and tiles; DNS still CNAMEs, the mappings stay
 #   live    api. and ingest. A records at the address; the mappings stay
 #   locked  no mapping; the A records stay
@@ -104,8 +104,8 @@ run "off_is_as_before_the_edge" {
   }
 
   assert {
-    condition     = length(google_logging_project_sink.ryft_logs.exclusions) == 0 && google_logging_project_sink.ryft_logs.filter == null
-    error_message = "edge off: the sink takes everything, no exclusion"
+    condition     = [for e in google_logging_project_sink.ryft_logs.exclusions : e.name] == ["connect-callback"] && google_logging_project_sink.ryft_logs.filter == null
+    error_message = "edge off: the sink takes everything but the direct-connection callback (D257), no edge exclusion"
   }
 
   # Today's tiles, in today's order (tests/monitoring.tftest.hcl pins their positions).
@@ -141,7 +141,7 @@ run "off_is_as_before_the_edge" {
   }
 
   assert {
-    condition     = output.edge_ip == null && output.monitoring.log_metrics == tolist(["ryft_errors", "ryft_notices", "ryft_ticks"])
+    condition     = output.edge_ip == null && output.monitoring.log_metrics == tolist(["ryft_connect_pushes", "ryft_errors", "ryft_notices", "ryft_ticks"])
     error_message = "edge off: no address, and the log-based metrics of D236 and D244 only"
   }
 }
@@ -323,9 +323,9 @@ run "the_policy" {
       google_compute_security_policy.edge[0].name == "ryft-edge" &&
       google_compute_security_policy.edge[0].type == "CLOUD_ARMOR" &&
       [for a in google_compute_security_policy.edge[0].advanced_options_config : [a.json_parsing, a.log_level]] == [["STANDARD", "NORMAL"]] &&
-      length([for r in google_compute_security_policy.edge[0].rule : r.priority]) == 8
+      length([for r in google_compute_security_policy.edge[0].rule : r.priority]) == 9
     )
-    error_message = "the policy: Cloud Armor, JSON parsing STANDARD, log level NORMAL (never VERBOSE: body snippets), 8 rules"
+    error_message = "the policy: Cloud Armor, JSON parsing STANDARD, log level NORMAL (never VERBOSE: body snippets), 9 rules"
   }
 
   # The rate rule, enforced, keyed on the address the load balancer sees, exactly D242's values.
@@ -355,13 +355,14 @@ run "the_policy" {
     error_message = "no rate key from a header a client writes: edge.tf names XFF_IP only in the comment that rules it out"
   }
 
-  # The six WAF sets, one rule each, all in preview, each before the rate rule (whose allow ends the
-  # evaluation). An enforcement PR sets its set's line in edge.tf to false and its pin here.
+  # The six WAF sets, one rule each, all in preview, each before the hook's throttle and the rate rule
+  # (whose allow ends the evaluation). An enforcement PR sets its set's line in edge.tf to false and its
+  # pin here.
   assert {
     condition = tomap({
       for r in google_compute_security_policy.edge[0].rule :
-      regex("^evaluatePreconfiguredWaf\\('([a-z]+-v33-stable)', \\{'sensitivity': 1\\}\\)$", r.match[0].expr[0].expression)[0] => [r.action, r.preview, r.priority < 2000]
-      if length(r.match[0].expr) > 0
+      regex("^evaluatePreconfiguredWaf\\('([a-z]+-v33-stable)', \\{'sensitivity': 1\\}\\)", r.match[0].expr[0].expression)[0] => [r.action, r.preview, r.priority < 1900]
+      if length(r.match[0].expr) > 0 && startswith(try(r.match[0].expr[0].expression, ""), "evaluatePreconfiguredWaf(")
       }) == tomap({
       "sqli-v33-stable"             = ["deny(403)", true, true]
       "xss-v33-stable"              = ["deny(403)", true, true]
@@ -370,14 +371,58 @@ run "the_policy" {
       "scannerdetection-v33-stable" = ["deny(403)", true, true]
       "protocolattack-v33-stable"   = ["deny(403)", true, true]
     })
-    error_message = "the WAF: sqli, xss, lfi, rce, scannerdetection and protocolattack (v33-stable, sensitivity 1), one rule each, deny(403) in preview, each at a priority before the rate rule's 2000"
+    error_message = "the WAF: sqli, xss, lfi, rce, scannerdetection and protocolattack (v33-stable, sensitivity 1), one rule each, deny(403) in preview, each at a priority before the hook's 1900 and the rate rule's 2000"
   }
 
   assert {
     condition = length(distinct([
-      for r in google_compute_security_policy.edge[0].rule : r.priority if length(r.match[0].expr) > 0
+      for r in google_compute_security_policy.edge[0].rule : r.priority
+      if length(r.match[0].expr) > 0 && startswith(try(r.match[0].expr[0].expression, ""), "evaluatePreconfiguredWaf(")
     ])) == 6
     error_message = "the WAF rules have six priorities of their own"
+  }
+
+  # Review S4 (D257): every WAF set skips the callback (its query holds the OAuth state and code) and the
+  # hook (ingest's host, POST, the push path only: P2-5), by exactly these two conditions, so no preview match keeps either URL. Nothing else is skipped.
+  assert {
+    condition = toset([
+      for r in google_compute_security_policy.edge[0].rule : r.match[0].expr[0].expression
+      if length(r.match[0].expr) > 0 && startswith(try(r.match[0].expr[0].expression, ""), "evaluatePreconfiguredWaf(")
+      ]) == toset([
+      for k in ["sqli", "xss", "lfi", "rce", "scannerdetection", "protocolattack"] :
+      "evaluatePreconfiguredWaf('${k}-v33-stable', {'sensitivity': 1}) && !request.path.matches('^/v1/connect/[a-z0-9]+/callback$') && !(request.headers['host'] == 'ingest.ryftlab.de' && request.method == 'POST' && request.path.matches('^/connect/[a-z0-9]+/push$'))"
+    ])
+    error_message = "each WAF set's expression: evaluatePreconfiguredWaf(...) && not the callback && not ingest's POST push, nothing more (review S4, P2-5)"
+  }
+
+  # The hook's class at the edge (D257, design 7.5): a throttle at 1900, enforced, only for ingest.'s
+  # /connect/, keyed on the address, 6,000 per 60 s then 429, no ban.
+  assert {
+    condition = [
+      for r in google_compute_security_policy.edge[0].rule : [
+        r.priority, r.preview, r.match[0].expr[0].expression,
+        r.rate_limit_options[0].enforce_on_key, r.rate_limit_options[0].conform_action, r.rate_limit_options[0].exceed_action,
+        r.rate_limit_options[0].rate_limit_threshold[0].count, r.rate_limit_options[0].rate_limit_threshold[0].interval_sec,
+        length(r.rate_limit_options[0].ban_threshold), coalesce(r.rate_limit_options[0].ban_duration_sec, 0),
+      ] if r.action == "throttle"
+      ] == [[
+        1900, false, "request.headers['host'] == 'ingest.ryftlab.de' && request.path.startsWith('/connect/')",
+        "IP", "allow", "deny(429)",
+        6000, 60,
+        0, 0,
+    ]]
+    error_message = "the hook's throttle: one, at 1900, enforced, ingest.ryftlab.de and /connect/ only, key IP, conform allow, exceed deny(429), 6,000 per 60 s, no ban"
+  }
+
+  # Its host is the URL map's ingest host, so the throttle can't drift from where ingest is served; and
+  # it sits between the WAF rules and the rate rule, so hook traffic never counts toward the ban.
+  assert {
+    condition = (
+      contains([for h in google_compute_url_map.edge[0].host_rule : one(h.hosts) if h.path_matcher == "ingest"], "ingest.ryftlab.de") &&
+      alltrue([for r in google_compute_security_policy.edge[0].rule : r.priority < 1900 if r.action == "deny(403)"]) &&
+      [for r in google_compute_security_policy.edge[0].rule : r.priority if r.action == "rate_based_ban"] == [2000]
+    )
+    error_message = "the throttle names the host the URL map sends to ingest, and runs after every WAF rule and before the rate rule at 2000"
   }
 
   # No geo blocking: allow for everything else.
@@ -401,11 +446,20 @@ run "built_logs_keep_only_denials_and_preview_matches" {
 
   assert {
     condition = (
-      [for e in google_logging_project_sink.ryft_logs.exclusions : e.name] == ["lb-requests-unflagged", "run-requests"] &&
+      [for e in google_logging_project_sink.ryft_logs.exclusions : e.name] == ["connect-callback", "lb-requests-unflagged", "run-requests"] &&
       google_logging_project_sink.ryft_logs.filter == null &&
       google_logging_project_sink.ryft_logs.destination == "logging.googleapis.com/projects/ryftlab-prod/locations/europe-west1/buckets/ryft-logs"
     )
-    error_message = "edge built: everything into ryft-logs but exactly the two exclusions"
+    error_message = "edge built: everything into ryft-logs but exactly the three exclusions"
+  }
+
+  # Review S4 (D257): the callback's URL (OAuth state and code) is kept in no log, the load balancer's
+  # denials and preview matches and api's 5xx in Cloud Run's request log included.
+  assert {
+    condition = [
+      for e in google_logging_project_sink.ryft_logs.exclusions : e.filter if e.name == "connect-callback"
+    ] == ["httpRequest.requestUrl=~\"^https?://[^/]+/v1/connect/[a-z0-9]+/callback([?]|$)\""]
+    error_message = "connect-callback drops every entry whose httpRequest.requestUrl is a callback URL, anchored, in any log (review S4, P2-1)"
   }
 
   assert {
@@ -464,12 +518,70 @@ run "built_logs_keep_only_denials_and_preview_matches" {
   }
 
   assert {
-    condition     = output.monitoring.log_metrics == tolist(["ryft_edge_denials", "ryft_edge_preview_matches", "ryft_errors", "ryft_notices", "ryft_ticks"])
-    error_message = "the monitoring output lists the five log-based metrics"
+    condition     = output.monitoring.log_metrics == tolist(["ryft_connect_pushes", "ryft_edge_denials", "ryft_edge_preview_matches", "ryft_errors", "ryft_notices", "ryft_ticks"])
+    error_message = "the monitoring output lists the six log-based metrics"
   }
 }
 
 # ---- the dashboard's tiles, and no alert of the edge's own ----------------------------------------------------
+
+# Review P2-1 and P2-5 (D257): both exemptions are anchored. The patterns are taken from the rendered
+# filter and expressions and run through Terraform's regex (Go's RE2, the syntax Logging's =~ and Cloud
+# Armor's matches() take): a callback in either log's URL form is dropped, a probe that carries the
+# path elsewhere is not; the WAF skips only ingest's POST to the exact push path.
+run "built_connect_exemptions_are_anchored" {
+  command = plan
+
+  variables {
+    edge = "built"
+  }
+
+  assert {
+    condition = alltrue([
+      for e in google_logging_project_sink.ryft_logs.exclusions : (
+        !strcontains(e.filter, "\\") &&
+        alltrue([
+          for u in [
+            "https://api.ryftlab.de/v1/connect/garmin/callback?state=00ff&code=abc",
+            "https://api-abc123-ew.a.run.app/v1/connect/garmin/callback?code=abc&state=00ff",
+            "http://api.ryftlab.de/v1/connect/garmin/callback?state=00ff",
+            "https://api.ryftlab.de/v1/connect/p2/callback",
+          ] : can(regex(regex("^httpRequest\\.requestUrl=~\"(.*)\"$", e.filter)[0], u))
+        ]) &&
+        !anytrue([
+          for u in [
+            "https://api.ryftlab.de/v1/me?x=/v1/connect/",
+            "https://api.ryftlab.de/.env?x=/v1/connect/garmin/callback",
+            "https://ingest.ryftlab.de/connect/garmin/push?x=/v1/connect/garmin/callback",
+            "https://api.ryftlab.de/v1/connect/garmin/callbackx",
+            "https://api.ryftlab.de/v1/connect/garmin/callback/",
+            "https://api.ryftlab.de/x/v1/connect/garmin/callback",
+            "/v1/connect/garmin/callback?state=00ff",
+          ] : can(regex(regex("^httpRequest\\.requestUrl=~\"(.*)\"$", e.filter)[0], u))
+        ])
+      ) if e.name == "connect-callback"
+    ])
+    error_message = "connect-callback matches the callback's absolute URL (custom host or run.app, http or https, with or without a query) and nothing that only carries /v1/connect/ in its query or elsewhere (P2-1); no backslash to unescape"
+  }
+
+  # The hook's skip: one parenthesised conjunction, the ingest host and POST verbatim, its path pattern
+  # exact. The callback's pattern stays as before.
+  assert {
+    condition = alltrue([
+      for r in google_compute_security_policy.edge[0].rule : (
+        strcontains(r.match[0].expr[0].expression, " && !(request.headers['host'] == 'ingest.ryftlab.de' && request.method == 'POST' && request.path.matches(") &&
+        !strcontains(r.match[0].expr[0].expression, "startsWith") &&
+        length(regexall(" && | \\|\\| ", r.match[0].expr[0].expression)) == 4 &&
+        alltrue([for p in ["/connect/garmin/push", "/connect/p2/push"] : can(regex(regexall("matches\\('([^']*)'\\)", r.match[0].expr[0].expression)[1][0], p))]) &&
+        !anytrue([for p in ["/connect/garmin/push/", "/connect/garmin/pushx", "/connect/garmin", "/connect/", "/connect/a/b/push", "/x/connect/garmin/push", "/connect/Garmin/push"] : can(regex(regexall("matches\\('([^']*)'\\)", r.match[0].expr[0].expression)[1][0], p))]) &&
+        can(regex(regexall("matches\\('([^']*)'\\)", r.match[0].expr[0].expression)[0][0], "/v1/connect/garmin/callback")) &&
+        !can(regex(regexall("matches\\('([^']*)'\\)", r.match[0].expr[0].expression)[0][0], "/v1/connect/garmin/callback/"))
+      )
+      if length(r.match[0].expr) > 0 && startswith(try(r.match[0].expr[0].expression, ""), "evaluatePreconfiguredWaf(")
+    ])
+    error_message = "each WAF set skips only ingest.ryftlab.de's POST /connect/<provider>/push and the exact callback path, in 5 subexpressions (Cloud Armor's limit); every other host, method or /connect/ path is inspected (P2-5)"
+  }
+}
 
 run "built_dashboard_has_the_edge_tiles" {
   command = plan
@@ -608,7 +720,7 @@ run "locked_drops_the_mappings" {
       alltrue([for r in google_dns_record_set.host : r.type == "A" && r.ttl == 300 && r.rrdatas == tolist(["203.0.113.10"])]) &&
       length(google_compute_backend_service.edge) == 2 &&
       length(google_compute_global_forwarding_rule.edge_https) == 1 &&
-      length(google_logging_project_sink.ryft_logs.exclusions) == 2
+      length(google_logging_project_sink.ryft_logs.exclusions) == 3
     )
     error_message = "edge locked: the A records, the edge and the sink's exclusions stay"
   }
