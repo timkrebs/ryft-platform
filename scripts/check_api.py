@@ -1255,7 +1255,7 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
     # ---- account deletion: B leaves; A (same device ID, same workout UUID) keeps everything
     wk_a = get(f"/v1/workouts/{a_wk['id']}")
     # no Supabase auth user and no Apple token in apikey mode
-    gone = {"status": "deleted", "auth_user_deleted": False, "apple_token_revoked": None}
+    gone = {"status": "deleted", "auth_user_deleted": False, "apple_token_revoked": None, "connections_deregistered": None}
     status, _, body = raw("DELETE", "/v1/me", key=KEY_B)
     check(status == 200 and body == gone, f"DELETE /v1/me: {status} {body}")
     check(is_error(get("/v1/me", expect=401, key=KEY_B)), "a deleted account's token must get 401")
