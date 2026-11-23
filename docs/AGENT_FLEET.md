@@ -47,7 +47,7 @@ flowchart TB
 | `platform-lead` | Tech lead | glue | session's | any brief spanning > 1 specialist |
 | `platform-architect` | Staff engineer | `docs/work`, `DECISIONS.md` | opus | new service/event/table family, repo layout, failure modes |
 | `api-contract-owner` | API owner | `docs/API.md` | sonnet | app request, shape/code/header change |
-| `backend-engineer` | Go engineer | `backend/` (not scoring, not migrations) | session's | handlers, store, events, notify, admin |
+| `backend-engineer` | Go engineer | `backend/` (not scoring, not migrations) | sonnet | handlers, store, events, notify, admin |
 | `scoring-scientist` | Data scientist | `internal/scoring`, `insights`, `behavior`, `SCORING.md` | opus | anything that moves a number |
 | `database-engineer` | DBA | migrations, grants, RLS | sonnet | schema, slow query, retention |
 | `gitops-engineer` | Deployment engineer | `deploy/`, workflows | sonnet | Cloud Run templates (`deploy/run`), CI, `deploy.yml`, images |
@@ -93,11 +93,12 @@ These are configured in the local, untracked `.claude/settings.json` and `.claud
 checks (CI, `.githooks`) do not depend on them.
 
 - `pre-tool-guard.sh` (PreToolUse on Read/Edit/Write/Bash) blocks: reading or writing `terraform.tfvars`,
-  `*.tfstate`, `.terraform/`, `.env`, `secrets.yaml`; edits to generated `overlays/vault-namespaces/**` and RabbitMQ
-  topology outputs; writes into `../app`; new text with a denylisted brand name (except the brand check's own
-  files); `terraform apply|destroy|import|state …`; break-glass make targets; `helm install|upgrade`; mutating
-  `kubectl` against the production context (local clusters are fine).
+  `*.tfstate`, `.terraform/`, `.env`, `secrets.yaml`; hand edits of the generated Pub/Sub topology
+  outputs (`infra/gcp/pubsub.auto.tfvars.json`, `deploy/pubsub-emulator/init.sh`); writes into `../app`; new text
+  with a denylisted brand name (except the brand check's own files); `terraform apply|destroy|import|state …`;
+  production changes by hand (`gcloud run deploy`, `gcloud run services|jobs update|delete|…`, `firebase deploy`):
+  only a merge reaches production (D223, D233).
 - `post-edit-format.sh`: `gofmt` on Go, `terraform fmt` on HCL.
 - `settings.json`: no force-push or push to `main`, no `--no-verify`, no admin merges, no secrets/variables or
-  branch-protection changes from an agent; merges, workflow dispatches, repo edits, tags, `terraform plan` and
-  `argocd app sync` always ask.
+  branch-protection changes from an agent; merges, workflow dispatches, repo edits, tags, and `terraform plan`
+  always ask.
