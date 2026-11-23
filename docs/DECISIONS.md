@@ -6462,7 +6462,9 @@ _Numbered after D248, which PR #228 (C2, draft) holds._
      - `GET /v1/connect/{provider}/callback`: no bearer, no App Attest, no invite gate. It answers `302
        ryft://connect/{provider}?status=ok|denied|expired|error`;
      - `DELETE /v1/me/connections/{provider}`;
-     - `connections_deregistered` on `DELETE /v1/me`;
+     - `connections_deregistered` on `DELETE /v1/me` and `deregistered` on a disconnect, over every grant ended,
+       unconfirmed pending ones included: `null` none, `true` each deregistered or skipped as live elsewhere, `false`
+       retried in the background;
      - `origin` on `User.sources[]` and `coverage.sleep_origin`;
      - `coverage.hrv_metric`;
      - the sample type `hrv_rmssd` (ms).
@@ -6489,7 +6491,7 @@ _Numbered after D248, which PR #228 (C2, draft) holds._
        `TestDeregisterSkipsALiveGrant`.
   5. **OAuth:**
      - state: 32 random bytes as hex. Only its SHA-256 is stored. Single use, 10 minutes, bound to the account, at
-       most 3 open per account;
+       most 3 open per account and provider;
      - PKCE S256;
      - redirect URI `CONNECT_CALLBACK_BASE` + `/v1/connect/<provider>/callback`;
      - no state, code or ticket in any log line (a test).
@@ -6535,10 +6537,13 @@ _Numbered after D248, which PR #228 (C2, draft) holds._
       - prepared in Terraform, applied by the user;
       - the six WAF rules are scoped away from the callback and `/connect/` in the same change, so no preview match
         logs the callback's URL with its `state` and `code`;
-      - a third log exclusion, `connect-callback` (`logging.tf`), drops every load balancer and Cloud Run request-log
-        entry whose URL contains `/v1/connect/`. The api's own access line, which has no query, still records it.
+      - a third log exclusion, `connect-callback` (`logging.tf`), unconditional (not tied to the edge's phase),
+        drops every load balancer and Cloud Run request-log entry whose URL contains `/v1/connect/`. The api's own access line, which has no query, still records it.
   11. **Flag** `connect.garmin`: shipped dark (`enabled`, 0 %, allow-list), listed in `GET /v1/config`. It gates
-      start and `available`.
+      `available`, start and confirm: a confirm while it is off answers 404, and the pending grant is handled like an
+      expired one (deregistered unless a live connection elsewhere holds it). It never gates a disconnect, which also
+      skips App Attest and the invite gate.
+      - The cap never counts the caller's own connection, open states or pending grant.
       - `CONNECT_PROVIDERS` (in git, api and ingest equal) is the per-deploy switch, empty in phase 1.
       - The fake provider exists only under `CONNECT_FAKE=on`, which config refuses on Cloud Run.
   12. **Alerts within the cap of six (D244):**

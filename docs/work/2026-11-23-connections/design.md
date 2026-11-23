@@ -82,7 +82,8 @@ All routes are on **api** except the hook. New error codes: `connection_limit` (
 - `available`: the providers this account may connect now, connected or not. A provider is listed when it is in
   `CONNECT_PROVIDERS`, the account has its flag `connect.<provider>`, and its secrets are configured. `fake` is listed
   only under `CONNECT_FAKE=on`, which is compose only.
-- `accepting`: `false` at the user cap. A reconnect of an existing connection is always accepted.
+- `accepting`: `false` at the user cap, counted without the caller's own connection, open states and pending grant
+  (§6.1). So a reconnect, or a second start by the same account, is always accepted.
 
 ### 4.2 `POST /v1/me/connections/{provider}/start`
 No body. Answers `200 {"authorize_url": "https://…", "expires_at": "…"}` (10 min).
@@ -117,6 +118,9 @@ It is a one-time binding nonce, worthless without the bearer of the account that
 Body `{"ticket": "…"}`. Answers `200` with the `Connection` object above.
 
 Refusals:
+- `404 unknown_provider`: the provider is no longer served, or the flag `connect.<provider>` is off for this account
+  now (the flag gates `available`, start **and** confirm). The pending grant is then handled like an expired one:
+  queued for deregistration under the live-grant rule (§6.3, B2) and deleted.
 - `409 connect_ticket_invalid`: wrong account or unknown ticket. Nothing changes.
 - `410 connect_expired`: more than 10 min after the callback. The pending grant is dropped. It is deregistered only
   if no live connection holds that provider account (§6.3, B2).
@@ -128,17 +132,27 @@ connection again, until 10 min after the callback; after that it answers `410 co
 whose provider account is not the account's current one replaces that connection (§4.2).
 
 ### 4.5 `DELETE /v1/me/connections/{provider}`
+Bearer and the per-user limit only: **no App Attest, no invite gate, no flag check** (as `API.md` says). Ending a
+connection must never be harder than starting it. It works for a provider no longer in `CONNECT_PROVIDERS` too (the
+tokens then wait in the queue until an adapter can deregister them).
 ```json
 { "status": "disconnected", "deregistered": true, "data_deleted": true }
 ```
-- `deregistered`: `bool?`. `null` when there was nothing to deregister (no connection, or `revoked`). `false` when
-  the provider could not be reached; it is retried in the background for 30 days, and the app has nothing to do.
-- `data_deleted`: always `true` (§8).
+- `deregistered`: `bool?`, over every grant this call ends: the live connection's tokens **and** an unconfirmed
+  pending grant for the provider.
+  - `true`: each was deregistered at the provider, or skipped because a live connection of another account holds that
+    provider account (§6.3's rule; RYFT holds no token from this call any more, so nothing is left to do).
+  - `false`: at least one attempt failed and is retried in the background for 30 days; the app has nothing to do.
+  - `null`: there was nothing to deregister (no connection or a `revoked` one, and no unconfirmed pending grant).
+  - A pending grant alone (no connection) gives `true` or `false` by the same rules.
+- `data_deleted`: always `true` (§8), also when there was no data.
 - Idempotent: a second call answers the same shape with `deregistered: null`.
 
 ### 4.6 `DELETE /v1/me`
-Gains `"connections_deregistered": bool?`: `null` without connections, `false` while the background retry has work.
-Same semantics as `apple_token_revoked`.
+Gains `"connections_deregistered": bool?`, with the same rules as `deregistered` in §4.5 over all the account's
+grants (connections and unconfirmed pending grants, every provider): `null` when there were none, `true` when each
+was deregistered or skipped as live elsewhere, `false` while the background retry has work. Same spirit as
+`apple_token_revoked`.
 
 ### 4.7 Other additive fields
 - `User.sources[].origin`: `healthkit` or `direct` (closed). A direct source has `name` = the provider's display name
@@ -226,7 +240,8 @@ Index `connection_tokens_due` on `(refresh_due_at)` WHERE `refresh_due_at IS NOT
 | `created_at` | timestamptz | NOT NULL DEFAULT now() |
 | `expires_at` | timestamptz | NOT NULL: `created_at` + 10 min |
 
-Indexes: `(user_id, provider, created_at)` for the per-account cap of 3 open states (a fourth deletes the oldest),
+Indexes: `(user_id, provider, created_at)` for the cap of 3 open states per account **and provider** (a fourth
+deletes the oldest),
 `(provider, expires_at)` for the cap reservation, and `(expires_at)` for the purge. A callback consumes a state with
 `DELETE … WHERE state_hash = $1 AND provider = $2 RETURNING …`.
 
@@ -351,10 +366,12 @@ holds.
   - the provider's `connections` in `connected` or `needs_reauth`;
   - plus the distinct accounts without such a connection that hold an unexpired `connection_states` row or an
     unconfirmed, unexpired `connection_pending` row.
+  - **Never the caller's own:** its live connection, its open states and its pending grant are left out of the count
+    at start, callback, confirm and in `accepting` (code review (a)). Otherwise a user's second tap on "Connect", or
+    their own confirm, could hit `409` on the slot their first start reserved.
 - **Enforced** at `start`, and again at `callback` and `confirm`, in the writing transaction under
   `pg_advisory_xact_lock(7419009, hashtext(provider))`. Class **7419009** is new in `store/locks.go`. 7419008 belongs
   to open PR `push/activity-scored`.
-- The caller's own live connection never counts against them.
 - A callback that finds the cap full after the exchange queues the fresh grant (reason `cap`, under §6.3's live-grant
   rule) and answers `status=error`. This is rare, because start reserves a slot for 10 min.
 
@@ -384,8 +401,9 @@ sequenceDiagram
   - **A logging exclusion, `infra/gcp/logging.tf`:** a third entry of `log_exclusions`, `connect-callback`, drops every
     entry whose `httpRequest.requestUrl` contains `/v1/connect/`. That covers the load balancer's kept entries (a
     preview match or a denial, which keep the full URL with `state` and `code` for 14 days) and Cloud Run's request
-    log of api (whose 5xx entries are otherwise kept with the URL). It applies from `edge = built` on, like the other
-    two. The api's own access line, which has no query, still records the request and its status, and policy 2 reads
+    log of api (whose 5xx entries are otherwise kept with the URL). **It is unconditional**, not tied to `edge =
+    built` like the other two (code review (c)): api's Cloud Run request log keeps callback URLs with `state` and
+    `code` for 14 days whatever the edge's phase, so `logging.tf` puts it in the sink's exclusions in every phase. The api's own access line, which has no query, still records the request and its status, and policy 2 reads
     Cloud Run's request metrics, not logs. Pinned in `infra/gcp/tests/edge.tftest.hcl` (the exclusion's filter) and
     `tests/guards.tftest.hcl` (no sink keeps a `/v1/connect/` URL).
   - **A scope exclusion at the edge, `infra/gcp/edge.tf`, now:** the six preconfigured-WAF rules' expressions gain
@@ -457,7 +475,9 @@ sequenceDiagram
   Once a day (the tick that starts 06:00–06:14 UTC) it also writes the notice lines.
 
 ### 6.4 Disconnect (`DELETE /v1/me/connections/{provider}`, api)
-One transaction (`store.Disconnect`), in this order:
+Mounted on api's outer mux behind `auth.Middleware` (bearer, per-user limit, user lookup) **without** the App Attest
+and invite gates and without the flag check (§4.5), like `DELETE /v1/me`. One transaction (`store.Disconnect`), in
+this order:
 1. `lockApply` (7419005) on the user, so it serialises with ingest's consumer.
 2. Read the connection.
 3. Move its tokens to `connection_deregistrations` (reason `disconnect`), unless `revoked`.
@@ -473,7 +493,8 @@ One transaction (`store.Disconnect`), in this order:
 
 After the commit:
 - Flush the outbox (D219).
-- One `deregisterOne` attempt (the live-grant rule first), bounded at 5 s. On success, delete the queue row.
+- One `deregisterOne` attempt per queued grant (the live-grant rule first), 5 s in total. A success or a skip deletes
+  the queue row. `deregistered` follows §4.5.
 - Answer.
 
 The rescore makes every stored score reflect only what is left. The cost is a recompute of the days since the
@@ -483,7 +504,8 @@ connection started; there is no history, so that is never more than the connecti
 ### 6.5 `DELETE /v1/me`
 - The tokens move inside `DeleteUser` (§5.5).
 - After the commit, the handler runs one bounded attempt (5 s in total) over the account's queue rows. The answer's
-  `connections_deregistered` is `null` (none), `true`, or `false` (the tick retries).
+  `connections_deregistered` follows §4.6 (`null` none, `true` all done or skipped as live elsewhere, `false` the
+  tick retries).
 - The existing `account reconcile` step is untouched. `connect deregister` is its own step, because these rows outlive
   the tombstone's other columns.
 

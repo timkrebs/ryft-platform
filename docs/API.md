@@ -92,7 +92,7 @@ not on the message. Closed enum:
 
 | `code` | Status | Do |
 | --- | --- | --- |
-| `invite_required` | `403` | The beta is invite-only and this account has no access yet: show the invite screen, `POST /v1/me/invite`. Every `/v1/*` route answers it except `GET /v1/me`, `GET /v1/me/sync`, `GET /v1/config`, `GET /v1/model`, `POST /v1/me/invite`, `POST`/`DELETE /v1/me/consent`, `POST /v1/feedback`, `DELETE /v1/me`, `POST /v1/app-attest/challenge`, `POST /v1/app-attest/keys` and `POST /v1/app-attest/token`. |
+| `invite_required` | `403` | The beta is invite-only and this account has no access yet: show the invite screen, `POST /v1/me/invite`. Every `/v1/*` route answers it except `GET /v1/me`, `GET /v1/me/sync`, `GET /v1/config`, `GET /v1/model`, `POST /v1/me/invite`, `POST`/`DELETE /v1/me/consent`, `POST /v1/feedback`, `DELETE /v1/me`, `DELETE /v1/me/connections/{provider}` (Connections, not served yet), `POST /v1/app-attest/challenge`, `POST /v1/app-attest/keys` and `POST /v1/app-attest/token`. |
 | `consent_required` | `403` | `POST /v1/sync` or `POST /v1/train/import` without a consent to the current privacy policy (`GET /v1/config` → `privacy_policy_version`): show the consent screen, `POST /v1/me/consent`, then send again. Reads keep working. |
 | `import_in_progress` | `429` | `POST /v1/train/import` while another import of this account is still running (this device's earlier request, or another device): wait `Retry-After` (10) seconds and send the same request again. It is safe: nothing of this request was processed. |
 | `import_not_enabled` | `403` | `POST /v1/train/import` for an account the feature flag `train.import` is off for (`GET /v1/config` → `flags`): hide the import; it is not an error to retry. Nothing of the request was read. |
@@ -286,7 +286,8 @@ gates, the routing and the body.
   `https://ryftlab.de/admin` page calls them from a browser, and the operator's scripts with the key;
 - `POST /v1/app-attest/challenge`, `POST /v1/app-attest/keys`, `POST /v1/app-attest/token`;
 - `DELETE /v1/me` and `POST /v1/me/apple-authorization` (erasure, and its Apple half),
-  `DELETE /v1/me/consent` (withdrawal) and `DELETE /v1/devices/{id}/push` (sign-out's unregistering,
+  `DELETE /v1/me/consent` (withdrawal), `DELETE /v1/me/connections/{provider}` (ending a connection and
+  deleting its data; Connections, not served yet) and `DELETE /v1/devices/{id}/push` (sign-out's unregistering,
   so a device without a token stops getting pushes): they only remove, and work from any signed-in
   client;
 - `POST /v1/feedback`, so a tester can still report that the app cannot verify itself;
@@ -859,7 +860,7 @@ Supabase Auth account with its identities and sessions. Responds `200`:
 | `status` | string | Always `"deleted"`: the data is gone. |
 | `auth_user_deleted` | bool | `false` if Supabase could not be reached. The platform retries in the background (every 15 minutes), so the app has nothing to do. |
 | `apple_token_revoked` | bool? | `null` when no Apple token was stored (email accounts, or the app never sent a code). `false` if Apple could not be reached; retried in the background like `auth_user_deleted`. |
-| `connections_deregistered` | bool? | Connections (from the platform PR `connect/foundation`; absent before it, read absent as `null`). `null` when the account had no connection to end (none, or only `revoked` ones). `true` when every provider ended its grant in the one attempt (at most 5 seconds in all). `false` when one could not be reached: the platform retries in the background for up to 30 days, then gives up, so the app has nothing to do. The data the connections delivered is deleted either way, with the rest of the account. Same semantics as `apple_token_revoked`. |
+| `connections_deregistered` | bool? | Connections (from the platform PR `connect/foundation`; absent before it, read absent as `null`). `null` when the account had nothing to end (no connection and no grant waiting for its confirm, or only `revoked` connections). A grant waiting for its confirm counts as something to end. `true` when every provider ended its grant in the one attempt (at most 5 seconds in all). `false` when one was not ended: a provider could not be reached (the platform retries in the background for up to 30 days, then gives up), or another RYFT account holds that provider account live (ending the grant would end that account's connection, so only RYFT's copy is deleted; not retried). The app has nothing to do either way. The data the connections delivered is deleted either way, with the rest of the account. Same semantics as `apple_token_revoked`. |
 
 From then on, every request with that user's token gets `401`, including tokens that
 have not expired yet. The exception is `DELETE /v1/me` itself, which answers `200` again,
@@ -901,7 +902,7 @@ Never log the code; it is a credential until used.
 A **connection** links the account to a provider's own service, so that the provider delivers the user's
 data to RYFT directly instead of through Apple Health: data Apple Health does not carry (overnight HRV as
 RMSSD) and the provider's own sleep record. The provider is a path parameter, `{provider}`: an id
-`^[a-z][a-z0-9]{1,31}$`, an **open** set. The first is `garmin`. `fake` exists only in local compose
+`^[a-z][a-z0-9]{1,31}$`, an **open** set; `unknown` is reserved and never a provider id (the redirect uses it). The first is `garmin`. `fake` exists only in local compose
 (`CONNECT_FAKE=on`), for development and the smoke test; production never lists it. Apple Health stays the
 default source and the only one with history: a connection delivers data from the moment it is connected
 on, nothing from before (`history: "none"`).
@@ -972,7 +973,9 @@ through that connection, and rescores the days it touched.**
 **Answers common to the four bearer routes.** They are api routes under the Conventions: the bearer, the
 per-address and per-user limits, the App Attest check (`403 app_attest_required` under `on`), the beta gate
 (`403 invite_required`), 64 KiB bodies with unknown fields `400`, `X-Request-ID`, `401`, `503` with
-`Retry-After`. Their `error` texts never contain a ticket, a state, a URL or a provider value.
+`Retry-After`. **Except** `DELETE /v1/me/connections/{provider}`, which is exempt from the App Attest check
+and the beta gate, like `DELETE /v1/me/consent`: ending a connection and deleting its data works from any
+signed-in client, with or without beta access. Their `error` texts never contain a ticket, a state, a URL or a provider value.
 
 #### `GET /v1/me/connections` — connections and what can be connected
 
@@ -1038,7 +1041,7 @@ Production until phase 2, and every account the flag is off for: `{ "connections
 | Field | Type | Notes |
 | --- | --- | --- |
 | `provider`, `provides`, `history` | | As in `Connection`. |
-| `accepting` | bool | `false` while the provider's user cap is full: `start` would answer `409 connection_limit`. Always `true` for a provider this account has a `connected` or `needs_reauth` connection to (a reconnect never meets the cap). |
+| `accepting` | bool | `false` while the provider's user cap is full: `start` would answer `409 connection_limit`. The cap never counts this account's own open states, grant waiting for its confirm or connection, so its own flow never makes it `false`. Always `true` for a provider this account has a `connected` or `needs_reauth` connection to (a reconnect never meets the cap). |
 
 | Status | `code` | When | App should |
 | --- | --- | --- | --- |
@@ -1074,8 +1077,11 @@ x-request-id: 01a1502d-1f72-7b05-9d63-4a5b6c7d8e9f
 | `authorize_url` | string | `https://`, the provider's sign-in and consent page with RYFT's one-time `state` and PKCE challenge (the example's host and parameters are placeholders). **Opaque:** open it as it is, in `ASWebAuthenticationSession` (callback scheme `ryft`); never parse, show, log or store it. Single use. |
 | `expires_at` | timestamp | 10 minutes after the start. A callback after it is `status=expired`. Start again rather than reuse an old URL; don't compare it with the device's clock. |
 
-- Each start makes a new flow and reserves a place under the provider's cap for its 10 minutes. At most 3 are
-  open per account and provider: a fourth cancels the oldest, whose callback then answers `expired`.
+- Each start makes a new flow and reserves a place under the provider's cap for its 10 minutes. At most 3 open
+  states per account and provider: a fourth start cancels the oldest, whose callback then answers `expired`.
+- **The cap never counts the caller's own** open states, grant waiting for its confirm, or live connection: a
+  second start, the callback and the confirm of the account's own flow never meet the cap because of the
+  account's own reservation, and neither does `accepting`. Only other accounts fill it.
 - **A reconnect** (a start while `connected` or `needs_reauth`) is allowed and never meets the cap. Until its
   confirm, the live connection, its grant and its data stay exactly as they are, and `GET /v1/me/connections`
   shows no change. The confirm replaces it (below).
@@ -1086,7 +1092,7 @@ x-request-id: 01a1502d-1f72-7b05-9d63-4a5b6c7d8e9f
 | `403` | `consent_required` | no consent to the policy in force (`warn` acts as `on`) | the consent screen, `POST /v1/me/consent`, then start again |
 | `404` | `unknown_provider` | the provider is not served here, or not enabled for this account (it does not say which) | hide its Connect entry; refresh `GET /v1/me/connections` |
 | `404` | — | a server before `connect/foundation` | hide every Connect entry |
-| `409` | `connection_limit` | the provider's user cap is full | say the provider is full for now; no automatic retry; `available[].accepting` is `false` until there is room |
+| `409` | `connection_limit` | the provider's user cap is full (other accounts only: the caller's own open states and grants never count) | say the provider is full for now; no automatic retry; `available[].accepting` is `false` until there is room |
 | `429` | — | more than 5 starts in a burst, then one a minute per account (or the common limits) | wait `Retry-After` |
 | others | | the common answers above | as on every route |
 
@@ -1114,7 +1120,7 @@ The redirect:
 
 | Part | Rule |
 | --- | --- |
-| `ryft://connect/{provider}` | The path's provider id when it is a well-formed id (served or not); anything else is replaced by `unknown`, which is never a provider id. A provider the app did not start a flow for: treat it as `error`. |
+| `ryft://connect/{provider}` | The path's provider id when it is a well-formed id (served or not); anything else is replaced by `unknown`, which is reserved and never a provider id. A provider the app did not start a flow for: treat it as `error`. |
 | `status` | `ok`, `denied`, `expired` or `error` (**closed**). |
 | `ticket` | With `ok` only: 32 lowercase hex characters, single use, for `confirm` within 10 minutes. Worthless without the bearer of the account that started the flow; still, never log or store it beyond the confirm. |
 | anything else | Ignore query parameters you do not know. |
@@ -1130,8 +1136,8 @@ The URL never carries a token, the provider's code, the provider's user id or a 
 
 #### `POST /v1/me/connections/{provider}/confirm` — finish a connection
 
-After the common checks: consent to the policy in force (`warn` acts as `on`), the provider as for `start`,
-then the ticket. Request `ConnectConfirmPost`, response `200 Connection` (`status` `connected`). The exchange:
+After the common checks: consent to the policy in force (`warn` acts as `on`), the provider as for `start`
+(served, and its flag `connect.<provider>` on for the account), then the ticket. Request `ConnectConfirmPost`, response `200 Connection` (`status` `connected`). The exchange:
 
 ```http
 POST /v1/me/connections/garmin/confirm HTTP/2
@@ -1173,16 +1179,17 @@ x-request-id: 01a1502e-3a83-7c16-8e74-5b6c7d8e9fa0
 | `200` | — | connected, or a repeat within 10 minutes of the callback | show it connected |
 | `400` | — | `ticket` missing, or an unknown body field | a client bug: log `request_id`, don't resend unchanged |
 | `403` | `consent_required` | no consent to the policy in force (`warn` acts as `on`) | the consent screen, then confirm again with the same ticket within the 10 minutes, else start again |
-| `404` | `unknown_provider` | the provider is not served or no longer enabled for the account (as `start`) | not connected; hide its Connect entry |
+| `404` | `unknown_provider` | the provider is not served, or its flag is off for the account (turned off since `start`). The grant waiting for this confirm is then handled as an expired one: dropped, and ended at the provider unless another RYFT account holds that provider account live. Nothing of a live connection of this account changes. | not connected; hide its Connect entry |
 | `409` | `connect_ticket_invalid` | the ticket is unknown, another account's, or for another provider (also an expired ticket the server has already cleaned up). Nothing changes. | don't resend it; `GET /v1/me/connections`; not connected: start again |
-| `409` | `connection_limit` | the cap filled between `start` and `confirm` (rare) | as for `start` |
+| `409` | `connection_limit` | other accounts filled the cap between `start` and `confirm` (rare; the caller's own flow never counts) | as for `start` |
 | `410` | `connect_expired` | more than 10 minutes after the callback; the grant waiting for this confirm is dropped | `GET /v1/me/connections` (a repeat of a confirm that worked lands here too); not connected: start again |
 | others | | the common answers above | as on every route |
 
 #### `DELETE /v1/me/connections/{provider}` — disconnect
 
-No body; no consent needed (it only removes). It works for any well-formed provider id, whether or not the
-provider is served or enabled now, so a connection can always be ended. In one transaction it deletes the
+No body; no consent, no app token and no beta access needed (it only removes: App Attest → Exempt, and the
+`invite_required` row's exceptions). It works for any well-formed provider id, whether or not the provider is
+served or its flag is on now, so a connection can always be ended. In one transaction it deletes the
 connection and everything received through it (**What happens to stored data when a connection ends**,
 above), cancels a flow of this account for the provider that waits for its confirm, and queues the touched
 days for rescoring; then it asks the provider, once (at most 5 seconds), to end the grant. The exchange:
@@ -1200,13 +1207,21 @@ x-request-id: 01a1502f-4b94-7d27-8f85-6c7d8e9fa0b1
 { "status": "disconnected", "deregistered": true, "data_deleted": true }
 ```
 
-The provider could not be reached (retried in the background), and a second call (nothing left to end):
+The provider could not be reached (retried in the background):
 
 ```http
 HTTP/2 200
 content-type: application/json
 
 { "status": "disconnected", "deregistered": false, "data_deleted": true }
+```
+
+A second call (nothing left to end):
+
+```http
+HTTP/2 200
+content-type: application/json
+
 { "status": "disconnected", "deregistered": null, "data_deleted": true }
 ```
 
@@ -1215,7 +1230,7 @@ content-type: application/json
 | Field | Type | Notes |
 | --- | --- | --- |
 | `status` | string | Always `"disconnected"`. |
-| `deregistered` | bool? | `true`: the provider ended the grant (or no longer knew it). `false`: the provider could not be reached; RYFT retries in the background for up to 30 days; the app has nothing to do, and nothing more arrives in the meantime (a delivery for an ended connection is not stored). `null`: there was nothing to end (no connection, or `revoked`). |
+| `deregistered` | bool? | `true`: the provider ended the grant (or no longer knew it). `false`: the grant was not ended at the provider, for one of two reasons: the provider could not be reached (RYFT retries in the background for up to 30 days), or another RYFT account holds the same provider account live (ending the grant would end that account's connection, so RYFT only deletes its own copy; not retried). Either way the app has nothing to do, and nothing more is stored for this account (a delivery for an ended connection is dropped). `null`: there was nothing to end (no connection and no grant waiting for its confirm, or `revoked`). A grant waiting for its confirm (a flow at `status=ok`, not yet confirmed) counts as something to end, alone or next to a connection: `true` or `false` as above. |
 | `data_deleted` | bool | Always `true`: the data received through the connection is gone when this answers. |
 
 Idempotent: a second call answers the same shape with `deregistered: null`. Afterwards refresh the touched
@@ -1288,7 +1303,7 @@ user and flag, so raising a rollout only adds users. The operator sets flags
 
 `analytics.enabled` is the switch for the app's product analytics (`analytics` above). It ships dark the same way: testers by the allow-list, the kill switch by `enabled: false`. No endpoint checks it; the app does.
 
-`connect.garmin` (Connections, D257; from the platform PR `connect/foundation`) gates the direct connection to the provider `garmin`: `GET /v1/me/connections` → `available` lists the provider and `POST /v1/me/connections/{provider}/start` and `/confirm` accept it only while it is on for the account (`404 unknown_provider` otherwise). It ships dark (enabled, 0 %): testers by the allow-list first. One flag per provider, `connect.<provider>`; `fake` has none (compose only). **The flag on does not mean the provider is served:** in production no provider is served until phase 2, so decide what to show by `available`, not by the flag; the app may use the flag only to skip the `GET /v1/me/connections` call while it is off. Turning it off hides the provider from `available` and refuses new starts; existing connections stay, and `DELETE /v1/me/connections/{provider}` still ends them.
+`connect.garmin` (Connections, D257; from the platform PR `connect/foundation`) gates the direct connection to the provider `garmin`: `GET /v1/me/connections` → `available` lists the provider and `POST /v1/me/connections/{provider}/start` and `/confirm` accept it only while it is on for the account (`404 unknown_provider` otherwise). A confirm while it is off answers `404 unknown_provider`, and the grant waiting for that confirm is handled as an expired one: dropped, and ended at the provider unless another RYFT account holds that provider account live. It ships dark (enabled, 0 %): testers by the allow-list first. One flag per provider, `connect.<provider>`; `fake` has none (compose only). **The flag on does not mean the provider is served:** in production no provider is served until phase 2, so decide what to show by `available`, not by the flag; the app may use the flag only to skip the `GET /v1/me/connections` call while it is off. Turning it off hides the provider from `available` and refuses new starts; existing connections stay, and `DELETE /v1/me/connections/{provider}` still ends them.
 
 ### `PATCH /v1/me/notifications` — push preferences
 
@@ -1610,7 +1625,7 @@ The second is day one (`W = 0`, whatever empty days are stored before it). The t
 | `night_complete` | bool | The night is over: **wake evidence** (a sample of any type that starts at least 30 minutes after the winning sleep source's last segment ended, from that same source; for a source that wrote nothing but sleep in the last 7 days, a `steps` sample from any source counts) **or 10:00 local time on `day` has passed** (the ceiling; every earlier day is complete). It reflects the latest computation. |
 | `status` | string | `provisional` or `final` (closed enum). `final` once `night_complete` has held, or at the 10:00 ceiling. **Sticky:** once a day is `final` it stays `final`, even if a later sleep segment makes `night_complete` `false` again; its numbers still follow later scorings. So `final` with `night_complete: false` is possible, `provisional` with `night_complete: true` is not. |
 | `sleep_origin` | string? | Connections (D257). Where the winning night came from: `healthkit` or `direct` (closed, as `UserSource.origin`). `null` without a night. |
-| `hrv_metric` | string? | Connections (D257). The metric of `hrv_ms`, `hrv_baseline_ms` and `baseline_hrv_days`: `sdnn` (Apple Health) or `rmssd` (a direct connection), a **closed** enum. `null` without an HRV. Absent (a row scored before it, or a server before it) with an `hrv_ms`: read it as `sdnn`. |
+| `hrv_metric` | string? | Connections (D257). The metric of `hrv_ms`, `hrv_baseline_ms` and `baseline_hrv_days`: `sdnn` or `rmssd`, a **closed** enum. It names the metric, not the path: `rmssd` comes from a direct connection today, but a `hrv_rmssd` sample from `POST /v1/sync` counts too, so read the night's path from `sleep_origin` and the sources, not from this. `null` without an HRV. Absent (a row scored before it, or a server before it) with an `hrv_ms`: read it as `sdnn`. |
 
 **`sleep_origin` and `hrv_metric` arrive with `coverage` itself:** the platform PR `connect/scoring` builds
 `coverage` (until then the server does not send it, and `null` reads as final, nothing known, as above), with
@@ -1619,8 +1634,8 @@ these two keys in it. Rows scored before stay without them until rescored. The r
 - **Two HRV metrics, never mixed.** A night's HRV is the overnight mean of one metric. With both, the one with
   more days in the 30-day window wins (a tie: `rmssd`). The baseline is built only from days of the night's
   metric, so `hrv_ms` and `hrv_baseline_ms` are always the same metric, and so are Trends' `hrv` points (Trends).
-- **A change of metric recalibrates.** After a switch (SDNN from Apple Health, then RMSSD from a connection, or
-  back), `baseline_hrv_days` counts the new metric's nights only, so the day is `calibrating` with
+- **A change of metric recalibrates.** After a switch (SDNN, then RMSSD, or back; today SDNN comes from Apple Health and RMSSD
+  from a connection), `baseline_hrv_days` counts the new metric's nights only, so the day is `calibrating` with
   `calibrating_reason` `short_history` until 7 nights of it exist: waiting ends it, as that reason says. No new
   reason.
 - **One night, one record.** A direct connection's night beats the same vendor's night from Apple Health
@@ -3694,11 +3709,14 @@ struct ConnectCallback {   // the redirect ryft://connect/{provider}?status=…[
     init?(url: URL) {
         guard url.scheme == "ryft", url.host == "connect",
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
-        let provider = url.lastPathComponent
-        guard !provider.isEmpty, provider != "/" else { return nil }
-        self.provider = provider
+        // exactly one path component, a well-formed provider id ("unknown" included: reserved, read as an error)
+        let parts = url.path.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0].isEmpty,
+              String(parts[1]).range(of: "^[a-z][a-z0-9]{1,31}$", options: .regularExpression) != nil else { return nil }
+        self.provider = String(parts[1])
         // an unknown status is read as .error; other query items are ignored
-        status = items.first(where: { $0.name == "status" })?.value.flatMap(ConnectCallbackStatus.init(rawValue:)) ?? .error
+        let s = items.first(where: { $0.name == "status" })?.value.flatMap(ConnectCallbackStatus.init(rawValue:)) ?? .error
+        status = provider == "unknown" ? .error : s
         ticket = status == .ok ? items.first(where: { $0.name == "ticket" })?.value : nil
     }
 }
@@ -4005,7 +4023,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
-| 2026-11-23 | **Connections** (D257; platform PR `docs: the Connections contract`, branch `connect/contract`; head-architect's brief of 2026-11-23, no `API_REQUESTS.md` entry). Additive; docs only, so the app can build it before the server has it: no v1 field renamed, removed or retyped. **New:** [Connections](#connections--direct-sources-d257-not-served-yet), a direct link to a provider's own service (`{provider}` a path parameter, an open id `^[a-z][a-z0-9]{1,31}$`; the first is `garmin`, `fake` is compose only): `GET /v1/me/connections` (`{connections: [Connection], available: [AvailableConnection]}`; `Connection` = `provider`, `status` `connected` / `needs_reauth` / `revoked` (closed), `connected_at`, `last_data_at?`, `provides` (the `kinds` vocabulary), `history` (`none`, open: unknown reads as `none`), `provider_user_id?` and `permissions` (open, the provider's words; `null` and `[]` when `revoked`); `available[].accepting` `false` at the provider's user cap, always `true` for a reconnect; `available` is authoritative, not the flag); `POST /v1/me/connections/{provider}/start` (no body → `{authorize_url, expires_at}`, 10 minutes, opaque, opened in `ASWebAuthenticationSession` with the scheme `ryft`; consent with `warn` acting as `on`, then `404 unknown_provider`, then `409 connection_limit`; its own budget, bursts of 5 then one a minute; a reconnect changes nothing until its confirm); `GET /v1/connect/{provider}/callback` (the provider's redirect, no bearer, no App Attest, no gates; always `302` to `ryft://connect/{provider}?status=ok|denied|expired|error` (closed), `&ticket=<32 lowercase hex>` with `ok` only; no token, code, provider user id or health value in the URL); `POST /v1/me/connections/{provider}/confirm` (`{ticket}` → `200 Connection`; only the confirm connects; a repeat answers `200` until 10 minutes after the callback, then `410 connect_expired`; `409 connect_ticket_invalid`; a consent refusal leaves the ticket usable; a different provider account replaces the live connection and deletes its data; a provider account connected to another RYFT account moves here and ends there as `revoked`); `DELETE /v1/me/connections/{provider}` (`{status: "disconnected", deregistered: bool?, data_deleted: true}`; idempotent; works whether or not the provider is served or enabled). **Data when a connection ends** (disconnect, removed at the provider, moved to another RYFT account, replaced by another provider account, account deletion): everything received through it is deleted (samples, sleep, waiting records, the `direct` source entry; the tokens after the provider's deregistration, retried 30 days) and the touched days are rescored; the same vendor's Apple Health data and every other source stay; a `revoked` entry (no provider user id, no permissions) is listed 90 days. Deliveries while the consent is not to the policy in force are dropped, not stored. **Fields:** `DELETE /v1/me` → `connections_deregistered` (`bool?`: `null` none to end, `false` retried in the background); `User.sources[].origin` (`healthkit` | `direct`, closed; absent = `healthkit`; a direct source is named by the provider's display name, `bundle_id: null`); `Sample.type` `hrv_rmssd` (ms), also a new `samples_7d` key, accepted from `POST /v1/sync` too (an older server counts it `unknown_type`; Apple Health has no RMSSD, so the app sends none); `coverage.sleep_origin` (`healthkit` | `direct` | `null`) and `coverage.hrv_metric` (`sdnn` | `rmssd` | `null`; absent with an HRV = `sdnn`), both closed. **Flag:** `connect.garmin`, shipped enabled at 0 % (testers by the allow-list), gating `available`, start and confirm. **Codes** (Errors → Connections; not in the `code` table until the server sends them): `unknown_provider` (`404`), `connection_limit` (`409`), `connect_ticket_invalid` (`409`), `connect_expired` (`410`), and `merge_has_connections` (`409`, admin merge only); `consent_required` on start and confirm. **Behaviour:** none yet. With the platform PR `connect/foundation` the routes, `origin`, `hrv_rmssd`, `connections_deregistered`, the flag and the codes are served, and sync records whose `source` starts with the reserved `ryft-direct-` are counted `unknown_type`; production serves no provider until phase 2 (`available: []`, start `404 unknown_provider`). With the platform PR `connect/scoring` (a model version, a rescore) `coverage` is built for the first time with `sleep_origin` and `hrv_metric`; `hrv_ms`, `hrv_baseline_ms`, `baseline_hrv_days` and `hrv_readings` are in the day's metric, a baseline per metric (a change of metric is `short_history` for 7 nights), a direct night beats the same vendor's Apple Health night, and `GET /v1/trends?metric=hrv` serves only the newest day's metric. Conventions → Auth, Rate limits, Units and App Attest → Exempt name the new routes. **Old builds:** they ignore the new fields and never call the routes; a `hrv_ms` in RMSSD on a connected account reads as an HRV like any other (only allow-listed testers have one). **The app:** offer Connect from `available` only (an id this build knows; `404` without a `code`: hide every entry); data card, start, the sheet, confirm at once on `ok`; after a `409`/`410` on a repeated confirm read `GET /v1/me/connections`; show `needs_reauth` as Reconnect and `revoked` as removed at the provider; say on Disconnect that it deletes; ask for consent at once after a policy change (deliveries without it are lost); decode `origin`, `sleep_origin`, `hrv_metric`, `connections_deregistered` as optional and never compare HRV across metrics. **Swift:** `SourceOrigin`, `HRVMetric`, `ConnectionStatus`, `Connection`, `AvailableConnection`, `ConnectionsResponse`, `ConnectStart`, `ConnectConfirmPost`, `ConnectionDeleted`, `ConnectCallbackStatus`, `ConnectCallback` (parses the redirect); `UserSource.origin`, `ScoreCoverage.sleepOrigin` and `.hrvMetric`, `AccountDeleted.connectionsDeregistered`; `unknownProvider`, `connectionLimit`, `connectTicketInvalid`, `connectExpired`, `mergeHasConnections` join `APIErrorCode` with the server's PR (listed in a comment after it; the app may add them now). The examples are `http` blocks until the server has the model types (`model.ConnectionsResponse`, `Connection`, `AvailableConnection`, `ConnectStart`, `ConnectConfirmPost`, `ConnectionDeleted`). |
+| 2026-11-23 | **Connections** (D257; platform PR `docs: the Connections contract`, branch `connect/contract`; head-architect's brief of 2026-11-23, no `API_REQUESTS.md` entry). Additive; docs only, so the app can build it before the server has it: no v1 field renamed, removed or retyped. **New:** [Connections](#connections--direct-sources-d257-not-served-yet), a direct link to a provider's own service (`{provider}` a path parameter, an open id `^[a-z][a-z0-9]{1,31}$`; the first is `garmin`, `fake` is compose only): `GET /v1/me/connections` (`{connections: [Connection], available: [AvailableConnection]}`; `Connection` = `provider`, `status` `connected` / `needs_reauth` / `revoked` (closed), `connected_at`, `last_data_at?`, `provides` (the `kinds` vocabulary), `history` (`none`, open: unknown reads as `none`), `provider_user_id?` and `permissions` (open, the provider's words; `null` and `[]` when `revoked`); `available[].accepting` `false` at the provider's user cap, always `true` for a reconnect; `available` is authoritative, not the flag); `POST /v1/me/connections/{provider}/start` (no body → `{authorize_url, expires_at}`, 10 minutes, opaque, opened in `ASWebAuthenticationSession` with the scheme `ryft`; consent with `warn` acting as `on`, then `404 unknown_provider`, then `409 connection_limit`; its own budget, bursts of 5 then one a minute; a reconnect changes nothing until its confirm); `GET /v1/connect/{provider}/callback` (the provider's redirect, no bearer, no App Attest, no gates; always `302` to `ryft://connect/{provider}?status=ok|denied|expired|error` (closed), `&ticket=<32 lowercase hex>` with `ok` only; no token, code, provider user id or health value in the URL); `POST /v1/me/connections/{provider}/confirm` (`{ticket}` → `200 Connection`; only the confirm connects; a repeat answers `200` until 10 minutes after the callback, then `410 connect_expired`; `409 connect_ticket_invalid`; a consent refusal leaves the ticket usable; a different provider account replaces the live connection and deletes its data; a provider account connected to another RYFT account moves here and ends there as `revoked`); `DELETE /v1/me/connections/{provider}` (`{status: "disconnected", deregistered: bool?, data_deleted: true}`; idempotent; works whether or not the provider is served or its flag is on; exempt from App Attest and the beta gate, like `DELETE /v1/me/consent`; `deregistered`/`connections_deregistered` `false` also when another RYFT account holds that provider account live, a grant waiting for its confirm counts as something to end). **Cap:** never counts the caller's own open states (at most 3 per account and provider), pending grant or connection. **Flag off at confirm:** `404 unknown_provider`, the pending grant handled as an expired one; `unknown` is a reserved provider id. **Data when a connection ends** (disconnect, removed at the provider, moved to another RYFT account, replaced by another provider account, account deletion): everything received through it is deleted (samples, sleep, waiting records, the `direct` source entry; the tokens after the provider's deregistration, retried 30 days) and the touched days are rescored; the same vendor's Apple Health data and every other source stay; a `revoked` entry (no provider user id, no permissions) is listed 90 days. Deliveries while the consent is not to the policy in force are dropped, not stored. **Fields:** `DELETE /v1/me` → `connections_deregistered` (`bool?`: `null` none to end, `false` retried in the background); `User.sources[].origin` (`healthkit` | `direct`, closed; absent = `healthkit`; a direct source is named by the provider's display name, `bundle_id: null`); `Sample.type` `hrv_rmssd` (ms), also a new `samples_7d` key, accepted from `POST /v1/sync` too (an older server counts it `unknown_type`; Apple Health has no RMSSD, so the app sends none); `coverage.sleep_origin` (`healthkit` | `direct` | `null`) and `coverage.hrv_metric` (`sdnn` | `rmssd` | `null`; absent with an HRV = `sdnn`), both closed. **Flag:** `connect.garmin`, shipped enabled at 0 % (testers by the allow-list), gating `available`, start and confirm. **Codes** (Errors → Connections; not in the `code` table until the server sends them): `unknown_provider` (`404`), `connection_limit` (`409`), `connect_ticket_invalid` (`409`), `connect_expired` (`410`), and `merge_has_connections` (`409`, admin merge only); `consent_required` on start and confirm. **Behaviour:** none yet. With the platform PR `connect/foundation` the routes, `origin`, `hrv_rmssd`, `connections_deregistered`, the flag and the codes are served, and sync records whose `source` starts with the reserved `ryft-direct-` are counted `unknown_type`; production serves no provider until phase 2 (`available: []`, start `404 unknown_provider`). With the platform PR `connect/scoring` (a model version, a rescore) `coverage` is built for the first time with `sleep_origin` and `hrv_metric`; `hrv_ms`, `hrv_baseline_ms`, `baseline_hrv_days` and `hrv_readings` are in the day's metric, a baseline per metric (a change of metric is `short_history` for 7 nights), a direct night beats the same vendor's Apple Health night, and `GET /v1/trends?metric=hrv` serves only the newest day's metric. Conventions → Auth, Rate limits, Units and App Attest → Exempt name the new routes. **Old builds:** they ignore the new fields and never call the routes; a `hrv_ms` in RMSSD on a connected account reads as an HRV like any other (only allow-listed testers have one). **The app:** offer Connect from `available` only (an id this build knows; `404` without a `code`: hide every entry); data card, start, the sheet, confirm at once on `ok`; after a `409`/`410` on a repeated confirm read `GET /v1/me/connections`; show `needs_reauth` as Reconnect and `revoked` as removed at the provider; say on Disconnect that it deletes; ask for consent at once after a policy change (deliveries without it are lost); decode `origin`, `sleep_origin`, `hrv_metric`, `connections_deregistered` as optional and never compare HRV across metrics. **Swift:** `SourceOrigin`, `HRVMetric`, `ConnectionStatus`, `Connection`, `AvailableConnection`, `ConnectionsResponse`, `ConnectStart`, `ConnectConfirmPost`, `ConnectionDeleted`, `ConnectCallbackStatus`, `ConnectCallback` (parses the redirect); `UserSource.origin`, `ScoreCoverage.sleepOrigin` and `.hrvMetric`, `AccountDeleted.connectionsDeregistered`; `unknownProvider`, `connectionLimit`, `connectTicketInvalid`, `connectExpired`, `mergeHasConnections` join `APIErrorCode` with the server's PR (listed in a comment after it; the app may add them now). The examples are `http` blocks until the server has the model types (`model.ConnectionsResponse`, `Connection`, `AvailableConnection`, `ConnectStart`, `ConnectConfirmPost`, `ConnectionDeleted`). |
 | 2026-11-20 | **Admin only: an unbound invite code's `note` expires; a deleted account leaves the flags' allow-lists** (D249; platform PR `store: deletion removes allow-list entries; invite notes expire`). `GET /v1/admin/invites`: the `note` of an unbound code is now `""` 30 days after the code could no longer be redeemed (revoked, expired or used up), as a bound code's already was; its `status` and `revoked_at` don't change. `GET /v1/admin/flags`: `allow_user_ids` no longer holds the id of a deleted account (`DELETE /v1/me` and the admin deletion remove it; migration 0038 removed those of earlier deletions). **Fields:** none added, renamed or removed. **The app:** nothing; it never calls `/v1/admin/*`, and `GET /v1/config` answers as before. **Swift:** none. |
 | 2026-11-20 | **App Attest: the server (mode off)** (D247; platform PR `api: App Attest, the server (mode off)`; answers the app's `API_REQUESTS.md` → App Attest AA1–AA4). Additive; no v1 field renamed, removed or retyped. **Served:** `POST /v1/app-attest/challenge`, `POST /v1/app-attest/keys` and `POST /v1/app-attest/token` exist now, but answer only where the server has its token key; without it they answer `501`, which the app treats like the `404` without a `code` (not live, no header). Production ships in mode `off` without the token key, so it answers `501` until the `warn` PR sets it (after the privacy text names App Attest); local compose answers `501`. **Modes:** `off` doesn't read `X-RYFT-App-Token` and logs nothing; `warn` serves and logs a request without a valid token; `on` refuses it with `403 app_attest_required`; never `off` → `on`. **Codes:** `app_attest_required` (`403`), `app_attest_challenge_invalid` (`422`), `app_attest_invalid` (`422`), `app_attest_key_unknown` (`404`) join Errors' `code` table and the status table's `403`, `404` and `422` rows (they were a paragraph); the `invite_required` row's list of routes gains the three App Attest routes (outside the beta gate). **AA1:** Conventions → App build: the optional request header `X-RYFT-App-Build: <CFBundleVersion>`, `^[0-9]+(\.[0-9]+){0,3}$`, at most 24 characters; a missing or malformed value is ignored and never refused; written only into the App Attest warn line, never a metric label. **AA2:** `GET /v1/config` → `app_attest` (`"off"`, `"warn"` or `"on"`, closed, always present): the app may skip the challenge probe under `"off"`; a `501` or `404` from the challenge route stays authoritative; under `"on"` the config read itself needs a token. **AA3:** `ttl_sec` is 3600 today and never below 600; the app renews with under `min(300, ttl_sec / 2)` seconds left (it said 5 minutes). **AA4:** the three routes' `error` texts are fixed sentences and never echo `challenge`, `key_id`, `assertion`, `attestation` or a token. **Development attestations:** production only on every server (D247): `APP_ATTEST_ENVIRONMENTS` is gone from step 7, and a development attestation is `422 app_attest_invalid`. **Examples:** the three routes' bodies are type-checked `json` blocks now (`AppAttestChallenge`, `AppAttestKeyPost`, `AppAttestKey`, `AppAttestTokenPost`, `AppAttestToken`), the `http` exchanges keep the headers; a request with both headers is shown. **Behaviour:** none for the app in production until the token key is set; `GET /v1/config` gains a field. **Old builds:** they ignore `app_attest` and see `501` where they saw `404`, which D245 already told them to treat alike. **The app:** send `X-RYFT-App-Build` on every request; decode `app_attest` as optional (missing or unknown: probe as before); renew by `min(300, ttl_sec / 2)`. **Swift:** `RemoteConfig.appAttest: String`; `APIErrorCode` gains `appAttestRequired`, `appAttestChallengeInvalid`, `appAttestInvalid`, `appAttestKeyUnknown` (the comment after the enum is replaced); the `AppAttestToken.ttlSec` comment states the floor. |
 | 2026-11-19 | **Docs only: no Kubernetes stack any more** (D246; platform PR `remove: Kubernetes, Argo CD, Vault, admission, AWS (D3)`). Conventions → Base URLs loses its last sentence: the Kubernetes manifests, whose Ingress served both services on one host, are deleted. Production stays `https://api.ryftlab.de` and `https://ingest.ryftlab.de`, local compose `:8082` and `:8081`. **Behaviour:** none; no route, field, status or `code` changes. **The app:** nothing. **Swift:** none. |
