@@ -58,7 +58,7 @@ type connectStore interface {
 	OldestDeregistration(ctx context.Context) (time.Duration, error)
 
 	ClaimRefreshes(ctx context.Context, limit int) ([]store.RefreshDue, error)
-	SaveRefresh(ctx context.Context, user uuid.UUID, provider string, accessEnc, refreshEnc []byte, accessExp, due time.Time) (bool, error)
+	SaveRefresh(ctx context.Context, user uuid.UUID, provider string, claimedRefresh, accessEnc, refreshEnc []byte, accessExp, due time.Time) (bool, error)
 	RefreshFailed(ctx context.Context, user uuid.UUID, provider, code string, attempts int, next time.Time) error
 	NeedsReauth(ctx context.Context, user uuid.UUID, provider, code string) error
 
@@ -84,7 +84,7 @@ const (
 	// its own step and leaves the rest of the tick: the database-only steps (purge, the gauges and the daily notices)
 	// get dbStepBudget, the two that call a provider (refresh, deregister) providerStepBudget.
 	dbStepBudget       = 8 * time.Second
-	providerStepBudget = 12 * time.Second
+	providerStepBudget = 25 * time.Second // room for a refresh call (providerTimeout) and its save (persistBudget) at least once
 	// persistBudget is what saving a refreshed grant gets, on a context that outlives the step: the provider has
 	// already rotated its tokens, and a refresh token is single use.
 	persistBudget = 5 * time.Second
@@ -105,12 +105,12 @@ type connectAPI struct {
 	now    func() time.Time
 
 	// The deadlines of the tick's steps (the constants above; tests shorten them).
-	dbBudget, providerBudget, persist time.Duration
+	dbBudget, providerBudget, persist, callBudget time.Duration
 }
 
 func newConnectAPI(st connectStore, reg *connect.Registry, cfg config.Connect, key *sealed.Key, beta config.Beta, ob *outbox.Outbox, log *slog.Logger) *connectAPI {
 	c := &connectAPI{st: st, reg: reg, cfg: cfg, key: key, beta: beta, log: log, now: time.Now,
-		dbBudget: dbStepBudget, providerBudget: providerStepBudget, persist: persistBudget}
+		dbBudget: dbStepBudget, providerBudget: providerStepBudget, persist: persistBudget, callBudget: providerTimeout}
 	c.insert = func(ctx context.Context, tx pgx.Tx, m events.Message) error { return outbox.Insert(ctx, tx, "api", m) }
 	c.flush = func(ctx context.Context) {
 		if ob != nil {
@@ -466,9 +466,7 @@ func (c *connectAPI) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	if missing := slices.ContainsFunc(prov.Required(), func(p string) bool { return !slices.Contains(g.Permissions, p) }); missing {
 		// The grant lacks what RYFT needs: handed back (B2's rule decides at the attempt whether the provider is called).
-		if _, err := c.st.QueueDeregistration(ctx, flow.UserID, name, g.ProviderUserID, "missing_permission", access, refresh); err != nil {
-			c.log.ErrorContext(ctx, "connect callback queue", "err", err)
-		}
+		c.handBackAs(ctx, flow.UserID, name, g.ProviderUserID, "missing_permission", access, refresh)
 		status, reason = model.CallbackDenied, reasonMissingPerm
 		return
 	}
@@ -479,9 +477,7 @@ func (c *connectAPI) callback(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, store.ErrCapFull):
 		reason = reasonCap
-		if _, qerr := c.st.QueueDeregistration(ctx, flow.UserID, name, g.ProviderUserID, "cap", access, refresh); qerr != nil {
-			c.log.ErrorContext(ctx, "connect callback queue", "err", qerr)
-		}
+		c.handBackAs(ctx, flow.UserID, name, g.ProviderUserID, "cap", access, refresh)
 		return
 	case errors.Is(err, store.ErrConnectNoAccount):
 		reason = reasonNoAccount
@@ -499,9 +495,14 @@ func (c *connectAPI) callback(w http.ResponseWriter, r *http.Request) {
 // handBack queues a grant the exchange made but nothing holds (the pending row was not stored: the account is gone or
 // the database failed), so the provider is asked to end it (P2-15). The live-grant rule decides at the attempt.
 func (c *connectAPI) handBack(ctx context.Context, user uuid.UUID, provider, puid string, access, refresh []byte) {
+	c.handBackAs(ctx, user, provider, puid, "confirm_expired", access, refresh)
+}
+
+// handBackAs is handBack under a reason, on a context of its own: the browser leaving does not lose the grant (P2-29).
+func (c *connectAPI) handBackAs(ctx context.Context, user uuid.UUID, provider, puid, reason string, access, refresh []byte) {
 	qctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.persist)
 	defer cancel()
-	if _, err := c.st.QueueDeregistration(qctx, user, provider, puid, "confirm_expired", access, refresh); err != nil {
+	if _, err := c.st.QueueDeregistration(qctx, user, provider, puid, reason, access, refresh); err != nil {
 		c.log.ErrorContext(ctx, "connect callback queue", "provider", provider, "err", err)
 	}
 }
@@ -760,21 +761,34 @@ func (c *connectAPI) deregisterOne(ctx context.Context, d store.Dereg) string {
 	g := connect.Grant{ProviderUserID: d.ProviderUserID, Access: access, Refresh: refresh}
 	err = prov.Deregister(pctx, g)
 	if errors.Is(err, connect.ErrInvalidGrant) && refresh != "" {
-		// The access token has expired: refresh in memory (the new tokens are not kept: the grant ends now).
+		// The access token has expired: refresh in memory (the new tokens are not kept: the grant ends now). The
+		// refresh may rotate the token, and a call cut after that would read the next attempt's invalid_grant as "gone"
+		// while the grant lives. Where the step has the time (the tick), the refresh and the deregistration after it run
+		// past the step's cancel, on a context of their own (P2-24). The inline attempt (5 s in all, API.md) keeps its
+		// bound: its calls take a second or so, and a cut there is the same risk the first call already had.
+		rctx, rcancel := pctx, func() {}
+		if c.roomForRefresh(ctx) {
+			rctx, rcancel = context.WithTimeout(context.WithoutCancel(ctx), providerTimeout)
+		}
+		defer rcancel()
 		var ng connect.Grant
-		if ng, err = prov.Refresh(pctx, refresh); err == nil {
+		if ng, err = prov.Refresh(rctx, refresh); err == nil {
 			ng.ProviderUserID = d.ProviderUserID
-			err = prov.Deregister(pctx, ng)
+			err = prov.Deregister(rctx, ng)
 		}
 	}
+	// Once the provider has answered, the row is finished on a context of its own: a step cancelled meanwhile does
+	// not leave an ended grant in the queue.
+	fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), c.persist)
+	defer fcancel()
 	switch {
 	case err == nil:
-		if ferr := c.st.FinishDeregistration(ctx, d.ID); ferr != nil {
+		if ferr := c.st.FinishDeregistration(fctx, d.ID); ferr != nil {
 			return fail("database")
 		}
 		return count(depOK)
 	case errors.Is(err, connect.ErrGone), errors.Is(err, connect.ErrInvalidGrant):
-		if ferr := c.st.FinishDeregistration(ctx, d.ID); ferr != nil {
+		if ferr := c.st.FinishDeregistration(fctx, d.ID); ferr != nil {
 			return fail("database")
 		}
 		return count(depGone)
@@ -821,9 +835,20 @@ func (c *connectAPI) refreshStep(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if !c.roomForRefresh(ctx) {
+			// The rest were claimed ahead (ten minutes) and come again; a refresh the step cannot finish is not begun.
+			return fmt.Errorf("less than a refresh call and its save left in the step: %w", context.DeadlineExceeded)
+		}
 		c.refreshOne(ctx, d)
 	}
 	return nil
+}
+
+// roomForRefresh says whether ctx has at least one provider call and one save left (no deadline: yes). The refresh
+// call runs past the step's cancel, so it must be started only where it ends inside the step.
+func (c *connectAPI) roomForRefresh(ctx context.Context) bool {
+	dl, ok := ctx.Deadline()
+	return !ok || time.Until(dl) >= c.callBudget+c.persist
 }
 
 func (c *connectAPI) refreshOne(ctx context.Context, d store.RefreshDue) {
@@ -840,41 +865,46 @@ func (c *connectAPI) refreshOne(ctx context.Context, d store.RefreshDue) {
 		metrics.ConnectRefreshes.WithLabelValues(d.Provider, "error").Inc()
 		return
 	}
-	pctx, cancel := context.WithTimeout(ctx, providerTimeout)
+	// The call runs past the step's deadline and cancel: the provider may rotate the token while it is answering, and
+	// a call cut then leaves the new token nowhere (P2-24). roomForRefresh made sure it fits the step anyway.
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.callBudget)
 	defer cancel()
 	g, err := prov.Refresh(pctx, refresh)
+	// What the answer decides is written on a context of its own too: a refusal of the grant is final.
+	sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), c.persist)
+	defer scancel()
 	switch {
 	case errors.Is(err, connect.ErrInvalidGrant):
-		if err := c.st.NeedsReauth(ctx, d.UserID, d.Provider, "invalid_grant"); err != nil {
+		if err := c.st.NeedsReauth(sctx, d.UserID, d.Provider, "invalid_grant"); err != nil {
 			c.log.WarnContext(ctx, "connect refresh", "provider", c.label(d.Provider), "err", err)
 		}
 		metrics.ConnectRefreshes.WithLabelValues(d.Provider, "needs_reauth").Inc()
 		return
 	case err != nil:
-		_ = c.st.RefreshFailed(ctx, d.UserID, d.Provider, "unreachable", d.Attempts+1, c.now().Add(backoff(d.Attempts+1)))
+		_ = c.st.RefreshFailed(sctx, d.UserID, d.Provider, "unreachable", d.Attempts+1, c.now().Add(backoff(d.Attempts+1)))
 		metrics.ConnectRefreshes.WithLabelValues(d.Provider, "error").Inc()
 		return
 	}
 	access, err1 := c.seal(g.Access, adAccess(d.Provider, d.UserID))
 	newRefresh, err2 := c.seal(g.Refresh, adRefresh(d.Provider, d.UserID)) // nil keeps the stored one
 	if err1 != nil || err2 != nil || access == nil {
-		_ = c.st.RefreshFailed(ctx, d.UserID, d.Provider, "seal", d.Attempts+1, c.now().Add(backoff(d.Attempts+1)))
+		_ = c.st.RefreshFailed(sctx, d.UserID, d.Provider, "seal", d.Attempts+1, c.now().Add(backoff(d.Attempts+1)))
 		metrics.ConnectRefreshes.WithLabelValues(d.Provider, "error").Inc()
 		return
 	}
-	// The provider has rotated the tokens: save them even when the step's deadline or the tick's has passed.
-	sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), c.persist)
-	defer scancel()
-	saved, err := c.st.SaveRefresh(sctx, d.UserID, d.Provider, access, newRefresh, g.AccessExpires, g.RefreshDue)
+	// The provider has rotated the tokens: save them even when the step's deadline or the tick's has passed. Only if the
+	// row still holds the refresh token this refresh started from (P2-25).
+	saved, err := c.st.SaveRefresh(sctx, d.UserID, d.Provider, d.RefreshEnc, access, newRefresh, g.AccessExpires, g.RefreshDue)
 	if err != nil {
 		c.log.ErrorContext(ctx, "connect refresh: the refreshed grant was not saved", "provider", c.label(d.Provider), "err", err)
 		metrics.ConnectRefreshes.WithLabelValues(d.Provider, "error").Inc()
 		return
 	}
 	if !saved {
-		// A disconnect ran while the provider answered: the account's tokens are gone, and these are the ones the
-		// provider holds now (the old ones may have been rotated away). Queue them, so the grant is ended (P2-19);
-		// the refresh token the provider kept is the stored one when it sent none.
+		// A disconnect, a replace or a relink ran while the provider answered: the account's tokens are gone or are
+		// another grant's, and these are the ones the provider holds now (the old ones may have been rotated away).
+		// Queue them, so the grant is ended (P2-19, P2-25); the refresh token the provider kept is the one this refresh
+		// started from when it sent none.
 		if newRefresh == nil {
 			newRefresh = d.RefreshEnc
 		}

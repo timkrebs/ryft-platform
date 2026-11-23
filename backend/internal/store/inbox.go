@@ -331,7 +331,8 @@ func (s *Store) RepublishInbox(ctx context.Context, limit int, emit func(tx pgx.
 // ExpireInbox fails the pending rows older than InboxExpireAfter (code expired), at most limit.
 func (s *Store) ExpireInbox(ctx context.Context, limit int) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `UPDATE provider_inbox SET state='failed', error='expired', processed_at=now()
-		WHERE id IN (SELECT id FROM provider_inbox WHERE state='pending' AND received_at < now() - $1::interval LIMIT $2)`,
+		WHERE state='pending' AND received_at < now() - $1::interval
+		  AND id IN (SELECT id FROM provider_inbox WHERE state='pending' AND received_at < now() - $1::interval LIMIT $2)`,
 		fmt.Sprintf("%d seconds", int(InboxExpireAfter.Seconds())), limit)
 	return tag.RowsAffected(), err
 }
@@ -341,8 +342,10 @@ func (s *Store) ExpireInbox(ctx context.Context, limit int) (int64, error) {
 func (s *Store) PurgeInbox(ctx context.Context, limit int) (map[string]int64, error) {
 	out := map[string]int64{}
 	for state, keep := range map[string]time.Duration{"processed": InboxKeepDone, "dropped": InboxKeepDone, "failed": InboxKeepFailed} {
-		tag, err := s.pool.Exec(ctx, `DELETE FROM provider_inbox WHERE id IN (SELECT id FROM provider_inbox WHERE state=$1
-			AND processed_at < now() - $2::interval LIMIT $3)`, state, fmt.Sprintf("%d seconds", int(keep.Seconds())), limit)
+		// The outer statement re-checks state and age: a row that was processed or re-pushed while it waited for a lock
+		// is not the row the sub-select chose (P2-27).
+		tag, err := s.pool.Exec(ctx, `DELETE FROM provider_inbox WHERE state=$1 AND processed_at < now() - $2::interval
+			AND id IN (SELECT id FROM provider_inbox WHERE state=$1 AND processed_at < now() - $2::interval LIMIT $3)`, state, fmt.Sprintf("%d seconds", int(keep.Seconds())), limit)
 		if err != nil {
 			return out, err
 		}

@@ -1194,8 +1194,9 @@ func TestTickStepsHaveDeadlinesAndNoticesDoNotWaitForProviders(t *testing.T) {
 	hang := &hangingProvider{Provider: rg.fake}
 	reg, _ := connect.NewRegistry(hang)
 	rg.conn.reg = reg
-	rg.conn.dbBudget, rg.conn.providerBudget = 2*time.Second, 300*time.Millisecond
-	rg.now = time.Date(2026, 11, 24, 6, 5, 0, 0, time.UTC) // the day's notices
+	rg.conn.dbBudget, rg.conn.providerBudget = 2*time.Second, 800*time.Millisecond
+	rg.conn.callBudget, rg.conn.persist = 200*time.Millisecond, 100*time.Millisecond // a refresh needs 300 ms of its step
+	rg.now = time.Date(2026, 11, 24, 6, 5, 0, 0, time.UTC)                           // the day's notices
 	rg.logs.buf.Reset()
 
 	steps := rg.conn.ticks()
@@ -1223,8 +1224,8 @@ func TestTickStepsHaveDeadlinesAndNoticesDoNotWaitForProviders(t *testing.T) {
 			t.Errorf("%s took %v: a hanging provider held the step past its deadline", name, took[name])
 		}
 	}
-	if errs["connect refresh"] == nil || !errors.Is(errs["connect refresh"], context.DeadlineExceeded) {
-		t.Errorf("refresh: %v, want its deadline", errs["connect refresh"])
+	if err := errs["connect refresh"]; err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("refresh: %v", err)
 	}
 	if hang.calls.Load() == 0 {
 		t.Fatal("the provider was never called")
@@ -1280,6 +1281,171 @@ func TestRefreshedGrantIsSavedAfterTheStepDeadline(t *testing.T) {
 	}
 	if a, err := rg.conn.open(after, adAccess("fake", u)); err != nil || !strings.HasPrefix(a, "fake-access.") {
 		t.Fatalf("saved tokens do not open: %q %v", a, err)
+	}
+}
+
+// slowRotation rotates the token (the fake's Refresh), then takes its time: the provider's answer arrives after the
+// step's deadline. It gives up only when its own context ends.
+type slowRotation struct {
+	*fake.Provider
+	wait         time.Duration
+	invalidFirst atomic.Bool // Deregister answers invalid_grant once (the access token has expired)
+	deregistered atomic.Int32
+}
+
+func (s *slowRotation) Refresh(ctx context.Context, refresh string) (connect.Grant, error) {
+	g, err := s.Provider.Refresh(ctx, refresh)
+	select {
+	case <-ctx.Done():
+		return connect.Grant{}, ctx.Err()
+	case <-time.After(s.wait):
+	}
+	return g, err
+}
+
+func (s *slowRotation) Deregister(ctx context.Context, g connect.Grant) error {
+	if s.invalidFirst.CompareAndSwap(true, false) {
+		return connect.ErrInvalidGrant
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.deregistered.Add(1)
+	return s.Provider.Deregister(ctx, g)
+}
+
+// P2-24: the refresh call runs on a context of its own: a provider that rotates the token and answers after the
+// step's deadline still has its new token saved.
+func TestRefreshCallOutlivesTheStepDeadline(t *testing.T) {
+	rg := newConnRig(t)
+	ctx := context.Background()
+	u := rg.account()
+	rg.connectAccount(u, "fake")
+	var before []byte
+	rg.pool.QueryRow(ctx, `SELECT access_enc FROM connection_tokens WHERE user_id=$1`, u).Scan(&before)
+	rg.pool.Exec(ctx, `UPDATE connection_tokens SET refresh_due_at = now() - interval '1 minute'`)
+	reg, _ := connect.NewRegistry(&slowRotation{Provider: rg.fake, wait: 300 * time.Millisecond})
+	rg.conn.reg = reg
+	due, _ := rg.st.ClaimRefreshes(ctx, 10)
+	step, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	rg.conn.refreshOne(step, due[0])
+	var after []byte
+	rg.pool.QueryRow(ctx, `SELECT access_enc FROM connection_tokens WHERE user_id=$1`, u).Scan(&after)
+	if bytes.Equal(before, after) {
+		t.Fatal("a refresh cut by the step's deadline lost the token the provider rotated")
+	}
+	if rows, _ := rg.st.Connections(ctx, u); rows[0].Status != model.ConnectionConnected {
+		t.Fatalf("status %s: a cut refresh must not end the link", rows[0].Status)
+	}
+}
+
+// P2-24: a step with less than a call and its save left starts no refresh (the due rows come again), and an
+// unlimited context does.
+func TestRefreshStepStartsNoRefreshItCannotFinish(t *testing.T) {
+	rg := newConnRig(t)
+	ctx := context.Background()
+	rg.connectAccount(rg.account(), "fake")
+	rg.pool.Exec(ctx, `UPDATE connection_tokens SET refresh_due_at = now() - interval '1 minute'`)
+	short, cancel := context.WithTimeout(ctx, time.Second) // far under providerTimeout + persistBudget
+	defer cancel()
+	if err := rg.conn.refreshStep(short); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err %v", err)
+	}
+	if len(rg.fake.Calls()) != 1 { // the connect's exchange only
+		t.Fatalf("the provider was called: %+v", rg.fake.Calls())
+	}
+	if !rg.conn.roomForRefresh(ctx) {
+		t.Fatal("a context without a deadline has room")
+	}
+}
+
+// P2-24: deregisterOne's in-memory refresh runs past the step's cancel where the tick has the time, so the grant is
+// ended, not read as gone; the inline attempt (5 s) keeps its bound and still ends the grant when the calls are quick.
+func TestDeregisterRefreshOutlivesTheCancelAndInlineLeavesTheRow(t *testing.T) {
+	rg := newConnRig(t)
+	ctx := context.Background()
+	u := rg.account()
+	conn := rg.connectAccount(u, "fake")
+	prov := &slowRotation{Provider: rg.fake, wait: 200 * time.Millisecond}
+	reg, _ := connect.NewRegistry(prov)
+	rg.conn.reg = reg
+	out, err := rg.st.Disconnect(ctx, u, "fake", nil)
+	if err != nil || len(out.Queued) != 1 {
+		t.Fatalf("%+v %v", out, err)
+	}
+	d, _ := rg.st.Deregistration(ctx, out.Queued[0])
+	// Inline (5 s): bounded, as before; a context that ends during the refresh is a retry, never "gone".
+	prov.invalidFirst.Store(true)
+	cut, ccancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer ccancel()
+	if got := rg.conn.deregisterOne(cut, d); got != depRetry {
+		t.Fatalf("inline cut: %s, want %s", got, depRetry)
+	}
+	if _, err := rg.st.Deregistration(ctx, d.ID); err != nil {
+		t.Fatalf("the row is gone: %v", err)
+	}
+	// The tick: time enough, then the step's context ends during the refresh: the grant is still ended.
+	prov.invalidFirst.Store(true)
+	tick, tcancel := context.WithTimeout(ctx, time.Minute)
+	go func() { time.Sleep(50 * time.Millisecond); tcancel() }()
+	if got := rg.conn.deregisterOne(tick, d); got != depOK {
+		t.Fatalf("tick: %s, want %s", got, depOK)
+	}
+	if !rg.fake.Called("deregister", *conn.ProviderUserID) {
+		t.Fatal("the provider was never asked to end the grant")
+	}
+}
+
+// P2-25: the save is a compare-and-swap on the claimed refresh token: a replace between the claim and the save keeps
+// the new grant's tokens, and the old grant's rotated ones are queued for deregistration.
+func TestRefreshAfterAReplaceDoesNotOverwriteTheNewGrant(t *testing.T) {
+	rg := newConnRig(t)
+	ctx := context.Background()
+	u := rg.account()
+	first := rg.connectAccount(u, "fake")
+	rg.pool.Exec(ctx, `UPDATE connection_tokens SET refresh_due_at = now() - interval '1 minute'`)
+	due, err := rg.st.ClaimRefreshes(ctx, 10)
+	if err != nil || len(due) != 1 || due[0].ProviderUserID != *first.ProviderUserID {
+		t.Fatalf("%+v %v", due, err)
+	}
+	second := rg.connectAccount(u, "fake") // a replace: another provider account, other tokens
+	if *second.ProviderUserID == *first.ProviderUserID {
+		t.Fatal("the replace kept the provider account")
+	}
+	var live []byte
+	rg.pool.QueryRow(ctx, `SELECT access_enc FROM connection_tokens WHERE user_id=$1`, u).Scan(&live)
+	rg.conn.refreshOne(ctx, due[0])
+	var after []byte
+	rg.pool.QueryRow(ctx, `SELECT access_enc FROM connection_tokens WHERE user_id=$1`, u).Scan(&after)
+	if !bytes.Equal(live, after) {
+		t.Fatal("the old grant's refreshed tokens overwrote the new connection's")
+	}
+	if a, err := rg.conn.open(after, adAccess("fake", u)); err != nil || !strings.Contains(a, *second.ProviderUserID) {
+		t.Fatalf("the live tokens are not the new grant's: %q %v", a, err)
+	}
+	// The replace's own queue row was attempted at once and is gone; the refresh queued the rotated tokens for the old
+	// provider account.
+	rows, err := rg.st.UserDeregistrations(ctx, u)
+	if err != nil || len(rows) != 1 || rows[0].ProviderUserID != *first.ProviderUserID {
+		t.Fatalf("queue rows for the replaced grant: %+v %v", rows, err)
+	}
+	if a, err := rg.conn.open(rows[0].AccessEnc, adAccess("fake", u)); err != nil || !strings.Contains(a, *first.ProviderUserID) {
+		t.Fatalf("the queued tokens are not the old grant's: %q %v", a, err)
+	}
+}
+
+// P2-29: a grant handed back is queued even when the request that found it is gone.
+func TestHandBackSurvivesACancelledRequest(t *testing.T) {
+	rg := newConnRig(t)
+	u := rg.account()
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, reason := range []string{"cap", "missing_permission", "confirm_expired"} {
+		rg.conn.handBackAs(gone, u, "fake", "p-"+reason, reason, []byte("a"), []byte("r"))
+		if n := rowsOf(t, rg.pool, `SELECT count(*) FROM connection_deregistrations WHERE user_id=$1 AND reason=$2`, u, reason); n != 1 {
+			t.Fatalf("%s: %d rows queued", reason, n)
+		}
 	}
 }
 

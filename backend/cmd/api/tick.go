@@ -22,7 +22,7 @@ type tickSteps struct {
 	settings  func(context.Context)       // confirmGuard.Refresh: it logs and counts its own errors
 	purge     func(context.Context) error // purgeInviteEmails
 	attest    func(context.Context) error // purgeAppAttest
-	connect   []eventbus.Tick             // connectAPI.ticks (D257): purge, gauges (the daily notices), refresh, deregister; each under its own deadline (database steps 8 s, provider steps 12 s), the database ones first
+	connect   []eventbus.Tick             // connectAPI.ticks (D257): purge, gauges (the daily notices), refresh, deregister; each under its own deadline (database steps 8 s, provider steps 25 s), the database ones first
 }
 
 // ticks are the steps in order, under the names the tick logs.

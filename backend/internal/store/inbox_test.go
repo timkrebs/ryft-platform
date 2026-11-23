@@ -483,3 +483,58 @@ func TestStoreInboxConsentCutoff(t *testing.T) {
 		}
 	}
 }
+
+// P2-27: the sweeps re-check the row after a lock wait: a row that was processed (expire) or re-pushed (purge) while
+// the statement waited is left alone.
+func TestSweepsRecheckTheRowAfterALockWait(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+	u := newAccount(t, st)
+	connectAs(t, st, u, "sw-1")
+	store1(t, st, item("sleep", "old", "sw-1", 1, `{"a":1}`))
+	id := inboxID(t, pool, "sleep", "old")
+	if _, err := pool.Exec(ctx, `UPDATE provider_inbox SET received_at = now() - interval '8 days' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	hold := func(sql string, args ...any) (release func(), tx pgx.Tx) {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+		return func() {
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}, tx
+	}
+	// Expire waits for the row while another transaction processes it.
+	release, _ := hold(`UPDATE provider_inbox SET state='processed', payload=NULL, processed_at=now() WHERE id=$1`, id)
+	done := make(chan int64, 1)
+	go func() { n, _ := st.ExpireInbox(ctx, 10); done <- n }()
+	time.Sleep(400 * time.Millisecond)
+	release()
+	if n := <-done; n != 0 {
+		t.Fatalf("a row processed during the wait was expired (%d)", n)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM provider_inbox WHERE id=$1 AND state='processed'`, id); n != 1 {
+		t.Fatal("the row is no longer processed")
+	}
+	// Purge waits for the row while another transaction re-pushes it (pending again).
+	if _, err := pool.Exec(ctx, `UPDATE provider_inbox SET processed_at = now() - interval '31 days' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	release, _ = hold(`UPDATE provider_inbox SET state='pending', processed_at=NULL, received_at=now() WHERE id=$1`, id)
+	pdone := make(chan map[string]int64, 1)
+	go func() { m, _ := st.PurgeInbox(ctx, 10); pdone <- m }()
+	time.Sleep(400 * time.Millisecond)
+	release()
+	if m := <-pdone; m["processed"] != 0 {
+		t.Fatalf("a row re-pushed during the wait was purged: %v", m)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM provider_inbox WHERE id=$1`, id); n != 1 {
+		t.Fatal("the row is gone")
+	}
+}

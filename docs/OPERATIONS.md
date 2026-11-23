@@ -4302,8 +4302,9 @@ connection ends, **everything it brought is deleted and the touched days are res
 **api's tick, the connection steps** (every 15 minutes, after the other steps of `POST /internal/tick`,
 inside its 45 s). The order is `connect purge` → `connect gauges` (the gauges and the daily notices) →
 `connect refresh` → `connect deregister`, so the steps that use only the database never wait behind a
-provider. Each step has its own deadline: 8 s for purge and gauges, 12 s for refresh and deregister.
-A step that runs out logs `tick: step failed` (`err` `the step ran out of its 12s, the next tick goes
+provider. Each step has its own deadline: 8 s for purge and gauges, 25 s for refresh and deregister (inside the tick's 45 s, so deregister
+gets what refresh leaves; a refresh starts only with room for its call and its save).
+A step that runs out logs `tick: step failed` (`err` `the step ran out of its 25s, the next tick goes
 on: …`), and the next step starts. A refreshed grant is saved on a detached context of 5 s, so it is
 kept even when its step or the tick has run out: the provider has already rotated the tokens, and its
 refresh token is single use. If that save fails too (ERROR `connect refresh: the refreshed grant was

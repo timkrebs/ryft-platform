@@ -650,14 +650,22 @@ func TestRefreshClaimsAndFailures(t *testing.T) {
 	if held, _ := st.HoldsLiveGrant(ctx, testProvider, "r1"); !held {
 		t.Fatal("needs_reauth is live")
 	}
-	if saved, err := st.SaveRefresh(ctx, u, testProvider, []byte("a2"), nil, time.Now(), time.Time{}); err != nil || !saved {
+	var claimed []byte
+	if err := pool.QueryRow(ctx, `SELECT refresh_enc FROM connection_tokens WHERE user_id=$1`, u).Scan(&claimed); err != nil {
+		t.Fatal(err)
+	}
+	// P2-25: the save is a compare-and-swap on the refresh token the refresh started from.
+	if saved, err := st.SaveRefresh(ctx, u, testProvider, []byte("not the stored token"), []byte("a2"), nil, time.Now(), time.Time{}); err != nil || saved {
+		t.Fatalf("saved over other tokens: %v %v", saved, err)
+	}
+	if saved, err := st.SaveRefresh(ctx, u, testProvider, claimed, []byte("a2"), nil, time.Now(), time.Time{}); err != nil || !saved {
 		t.Fatalf("%v %v", saved, err)
 	}
 	// P2-19: after a disconnect there is no token row: nothing is saved, and the caller is told.
 	if _, err := st.Disconnect(ctx, u, testProvider, nil); err != nil {
 		t.Fatal(err)
 	}
-	if saved, err := st.SaveRefresh(ctx, u, testProvider, []byte("a3"), nil, time.Now(), time.Time{}); err != nil || saved {
+	if saved, err := st.SaveRefresh(ctx, u, testProvider, claimed, []byte("a3"), nil, time.Now(), time.Time{}); err != nil || saved {
 		t.Fatalf("saved after a disconnect: %v %v", saved, err)
 	}
 }
@@ -809,5 +817,51 @@ func TestDisconnectWithNothingToEndDeletesNothing(t *testing.T) {
 	}
 	if n := countRows(t, pool, `SELECT count(*) FROM samples WHERE user_id=$1 AND origin='direct'`, u); n != 1 {
 		t.Fatal("a disconnect with no connection scanned and deleted direct data")
+	}
+}
+
+// P2-26: the confirm takes both connection rows in user id order, as StoreInbox's FOR SHARE does: a hook holding the
+// lower id's row and then asking for the higher one meets no confirm that holds the higher one first.
+func TestConfirmLocksRowsInUserIDOrder(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+	var holder, newcomer uuid.UUID
+	for { // the holder has the lower id, the confirming account the higher: the old order locked the higher first
+		holder, newcomer = newAccount(t, st), newAccount(t, st)
+		if bytes.Compare(holder[:], newcomer[:]) < 0 {
+			break
+		}
+	}
+	connectAs(t, st, holder, "ord-shared")
+	connectAs(t, st, newcomer, "ord-old") // the confirming account has a link row of its own (a replace)
+	ticket := callback(t, st, newcomer, "ord-shared", 100)
+
+	tx, err := pool.Begin(ctx) // the hook: FOR SHARE on the lower id's row, then the higher one's
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM connections WHERE user_id=$1 FOR SHARE`, holder); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := confirm(st, newcomer, ticket, 100); done <- err }()
+	time.Sleep(500 * time.Millisecond) // the confirm waits for the lower row
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM connections WHERE user_id=$1 FOR SHARE`, newcomer); err != nil {
+		t.Fatalf("the confirm held the higher id's row while waiting for the lower one: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("confirm: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the confirm never finished")
+	}
+	if rows, _ := st.Connections(ctx, holder); len(rows) != 1 || rows[0].Status != model.ConnectionRevoked {
+		t.Fatalf("the holder was not relinked: %+v", rows)
 	}
 }

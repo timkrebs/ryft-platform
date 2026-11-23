@@ -1,10 +1,12 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -284,6 +286,10 @@ type ConfirmOut struct {
 	Relinked   bool    // another account lost the provider account (its days are queued, its event written)
 }
 
+// holderSQL finds, unlocked, the other account that holds a provider account live.
+const holderSQL = `SELECT user_id FROM connections WHERE provider=$1 AND provider_user_id=$2
+	AND status IN ('connected','needs_reauth') AND user_id <> $3`
+
 // ConfirmConnection makes the pending grant the account's connection (design 6.2): under the provider's cap lock
 // and the account's apply lock, the ticket must match this account's pending row; a repeat within the window
 // answers the connection again; one past it drops the grant (queued, reason confirm_expired) and answers
@@ -293,12 +299,37 @@ type ConfirmOut struct {
 func (s *Store) ConfirmConnection(ctx context.Context, in ConfirmIn) (ConfirmOut, error) {
 	var out ConfirmOut
 	expired := false
+	var other uuid.UUID // the account that holds the provider account live now, uuid.Nil when none (apply-locked)
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, lockConnectCap, in.Provider); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, lockApply, in.UserID); err != nil {
+		// The locks come in one order everywhere: the apply locks of the accounts involved by user id, then their
+		// connection rows by user id (StoreInbox's FOR SHARE takes rows in that order; the applies take the apply lock
+		// before the row). The other account is found unlocked first; the cap lock keeps other confirms out meanwhile
+		// (P2-26).
+		other = uuid.Nil
+		var puid string
+		err := tx.QueryRow(ctx, `SELECT provider_user_id FROM connection_pending WHERE user_id=$1 AND provider=$2`, in.UserID, in.Provider).Scan(&puid)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrTicketInvalid
+		}
+		if err != nil {
 			return err
+		}
+		err = tx.QueryRow(ctx, holderSQL, in.Provider, puid, in.UserID).Scan(&other)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		ids := []uuid.UUID{in.UserID}
+		if err == nil {
+			ids = append(ids, other)
+		}
+		slices.SortFunc(ids, func(a, b uuid.UUID) int { return bytes.Compare(a[:], b[:]) })
+		for _, id := range ids {
+			if _, err := tx.Exec(ctx, lockApply, id); err != nil {
+				return err
+			}
 		}
 		var p struct {
 			puid                  string
@@ -310,7 +341,7 @@ func (s *Store) ConfirmConnection(ctx context.Context, in ConfirmIn) (ConfirmOut
 			confirmed             *time.Time
 			over                  bool
 		}
-		err := tx.QueryRow(ctx, `SELECT provider_user_id, permissions, access_enc, refresh_enc, access_expires_at, refresh_due_at,
+		err = tx.QueryRow(ctx, `SELECT provider_user_id, permissions, access_enc, refresh_enc, access_expires_at, refresh_due_at,
 			  confirm_hash, confirm_expires_at, confirmed_at, confirm_expires_at <= now()
 			FROM connection_pending WHERE user_id=$1 AND provider=$2 FOR UPDATE`, in.UserID, in.Provider).
 			Scan(&p.puid, &p.perms, &p.accessEnc, &p.refreshEnc, &p.accessExp, &p.refreshDue, &p.hash, &p.expires, &p.confirmed, &p.over)
@@ -340,7 +371,10 @@ func (s *Store) ConfirmConnection(ctx context.Context, in ConfirmIn) (ConfirmOut
 			}
 			return err
 		}
-		return swap(ctx, tx, in, p.puid, p.perms, p.accessEnc, p.refreshEnc, p.accessExp, p.refreshDue, &out)
+		if p.puid != puid {
+			return ErrTicketInvalid // a newer grant replaced it meanwhile: another ticket
+		}
+		return swap(ctx, tx, in, other, p.puid, p.perms, p.accessEnc, p.refreshEnc, p.accessExp, p.refreshDue, &out)
 	})
 	if err != nil {
 		return ConfirmOut{}, err
@@ -352,13 +386,29 @@ func (s *Store) ConfirmConnection(ctx context.Context, in ConfirmIn) (ConfirmOut
 }
 
 // swap is the confirm's writes, in the order the unique index needs (design 6.2).
-func swap(ctx context.Context, tx pgx.Tx, in ConfirmIn, puid string, perms []string, accessEnc, refreshEnc []byte, accessExp, refreshDue *time.Time, out *ConfirmOut) error {
+func swap(ctx context.Context, tx pgx.Tx, in ConfirmIn, lockedOther uuid.UUID, puid string, perms []string, accessEnc, refreshEnc []byte, accessExp, refreshDue *time.Time, out *ConfirmOut) error {
+	// Both connection rows in one statement, by user id (P2-26).
 	var minePUID *string
 	var mineStatus string
-	err := tx.QueryRow(ctx, `SELECT provider_user_id, status FROM connections WHERE user_id=$1 AND provider=$2 FOR UPDATE`, in.UserID, in.Provider).
-		Scan(&minePUID, &mineStatus)
-	mine := err == nil
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	mine := false
+	var other uuid.UUID
+	rows, err := tx.Query(ctx, `SELECT user_id, provider_user_id, status FROM connections WHERE provider=$1
+		AND (user_id=$2 OR (provider_user_id=$3 AND status IN ('connected','needs_reauth') AND user_id <> $2)) ORDER BY user_id FOR UPDATE`,
+		in.Provider, in.UserID, puid)
+	if err != nil {
+		return err
+	}
+	var uid uuid.UUID
+	var rowPUID *string
+	var rowStatus string
+	if _, err := pgx.ForEachRow(rows, []any{&uid, &rowPUID, &rowStatus}, func() error {
+		if uid == in.UserID {
+			mine, minePUID, mineStatus = true, rowPUID, rowStatus
+		} else if other == uuid.Nil {
+			other = uid
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
 	live := mine && mineStatus != model.ConnectionRevoked
@@ -380,26 +430,17 @@ func swap(ctx context.Context, tx pgx.Tx, in ConfirmIn, puid string, perms []str
 		}
 	}
 	// Another account holds this provider account: it ends there, without a deregistration call (it would end the
-	// new grant too: same provider user, same app). Its apply lock comes before its row (ApplyDirect, Disconnect and
-	// the rest take the apply lock first): find it unlocked, take the lock, then read the row FOR UPDATE again (P2-14).
-	const holder = `SELECT user_id FROM connections WHERE provider=$1 AND provider_user_id=$2
-		AND status IN ('connected','needs_reauth') AND user_id <> $3`
-	var other uuid.UUID
-	err = tx.QueryRow(ctx, holder, in.Provider, puid, in.UserID).Scan(&other)
-	if err == nil {
-		if _, err := tx.Exec(ctx, lockApply, other); err != nil {
-			return err
+	// new grant too: same provider user, same app).
+	if other != uuid.Nil {
+		if other != lockedOther { // not the one found before the locks (cannot happen under the cap lock): take its lock now
+			if _, err := tx.Exec(ctx, lockApply, other); err != nil {
+				return err
+			}
 		}
-		err = tx.QueryRow(ctx, holder+` FOR UPDATE`, in.Provider, puid, in.UserID).Scan(&other)
-	}
-	switch {
-	case err == nil:
 		if _, err := endConnection(ctx, tx, other, in.Provider, endRelink, "", false, in.Emit); err != nil {
 			return err
 		}
 		out.Outcome, out.Relinked = ConfirmRelinked, true
-	case !errors.Is(err, pgx.ErrNoRows):
-		return err
 	}
 	// This account's live link to another provider account ends first, as a disconnect.
 	if live && (minePUID == nil || *minePUID != puid) {
@@ -739,13 +780,15 @@ func (s *Store) ClaimRefreshes(ctx context.Context, limit int) ([]RefreshDue, er
 	})
 }
 
-// SaveRefresh stores a refreshed grant's sealed tokens and the next due time (zero: never). saved is false when the
-// account's token row is gone (a disconnect ran during the refresh): the caller then holds tokens nothing stores
-// (P2-19).
-func (s *Store) SaveRefresh(ctx context.Context, user uuid.UUID, provider string, accessEnc, refreshEnc []byte, accessExp, due time.Time) (saved bool, err error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE connection_tokens SET access_enc=$3, refresh_enc=COALESCE($4, refresh_enc), access_expires_at=$5,
-		refresh_due_at=$6, refresh_attempts=0, last_error=NULL, updated_at=now() WHERE user_id=$1 AND provider=$2`,
-		user, provider, accessEnc, refreshEnc, nullTime(accessExp), nullTime(due))
+// SaveRefresh stores a refreshed grant's sealed tokens and the next due time (zero: never), if the account's token
+// row still holds claimedRefresh, the sealed refresh token the refresh started from: a compare-and-swap (P2-25), so a
+// relink or a replace that wrote another grant's tokens during the provider's answer is not overwritten with the
+// old grant's. saved is false when the row is gone or holds other tokens (a disconnect, a replace or a relink ran
+// during the refresh): the caller then holds tokens nothing stores (P2-19).
+func (s *Store) SaveRefresh(ctx context.Context, user uuid.UUID, provider string, claimedRefresh, accessEnc, refreshEnc []byte, accessExp, due time.Time) (saved bool, err error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE connection_tokens SET access_enc=$4, refresh_enc=COALESCE($5, refresh_enc), access_expires_at=$6,
+		refresh_due_at=$7, refresh_attempts=0, last_error=NULL, updated_at=now() WHERE user_id=$1 AND provider=$2 AND refresh_enc = $3`,
+		user, provider, claimedRefresh, accessEnc, refreshEnc, nullTime(accessExp), nullTime(due))
 	return tag.RowsAffected() == 1, err
 }
 

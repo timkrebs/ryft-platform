@@ -6697,8 +6697,14 @@ _Numbered after D248, which PR #228 (C2, draft) holds._
     records, 1500 rows) and emits one `ingested` event for the union of their days; a failing batch falls back to
     the row alone. Idempotency (D100) and the outbox (D101) hold per batch.
   - The api tick runs purge → gauges (the daily notices) → refresh → deregister, each under its own deadline
-    (8 s for a database step, 12 s for a provider step). A refreshed grant is saved on a context detached from the
+    (8 s for a database step, 25 s for a provider step, within the tick's 45 s). A refreshed grant is saved on a context detached from the
     step's deadline (5 s of its own).
+  - A provider call (refresh, deregister) runs on a context detached from its step, bounded by its own timeout, and
+    the step starts no refresh it has no room to finish; a rotated grant is never cut off mid-call. The one
+    exception is `DELETE`'s inline attempt, which keeps API.md's 5 s: a cut there leaves its queue row for the tick.
+  - `SaveRefresh` is a compare-and-swap on the claimed token, so a relink or replace meanwhile is never
+    overwritten; 0 rows queues the rotated tokens for deregistration. A relinking confirm takes both accounts'
+    apply locks, then both rows, in user-id order (the order `StoreInbox` locks in).
 - **Rejected:** raising ingest's concurrency for the hook (makes the slow-body case cheaper to mount); a separate
   topic for direct data (one more subscription and ordering scope for a dark feature; batching removes the
   backlog); one longer tick deadline (still lets a provider starve the notices).
