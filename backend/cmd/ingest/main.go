@@ -126,6 +126,7 @@ func newMux(h *handler, log *slog.Logger, verifier auth.Verifier, tick http.Hand
 	mux.Handle(http.MethodPost+" "+eventbus.PathTick, tick)
 	api := http.NewServeMux()
 	api.HandleFunc("POST /v1/sync", h.sync)
+	api.HandleFunc("POST /v1/wearables/healthkit/sync", h.sync)
 	api.HandleFunc("/v1/", httpx.NotFound)
 	limits := ratelimit.NewUserLimits()
 	load := h.loadUser
@@ -261,6 +262,12 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.Cursor != nil {
+		if err := h.st.RecordHealthKitCursor(ctx, userID, req.DeviceID, *req.Cursor); err != nil {
+			h.unavailable(w, r, fmt.Errorf("record HealthKit cursor: %w", err))
+			return
+		}
+	}
 	if applied.FoldSkipped {
 		h.log.WarnContext(ctx, "workout fold skipped, too many workouts in scope", "workouts", len(req.Workouts), "limit", store.FoldMaxRows)
 	}
@@ -309,6 +316,8 @@ func screen(req *model.SyncRequest, now time.Time) model.SyncIgnored {
 			ig.Samples.UnknownType++
 		case outside(s.Start, s.End):
 			ig.Samples.OutsideWindow++
+		case s.WasUserEntered && s.Type != model.SampleBodyMass:
+			ig.Samples.UnknownType++
 		default:
 			samples = append(samples, s)
 		}
@@ -371,6 +380,9 @@ func validate(req *model.SyncRequest) error {
 	if tooLong(req.AppVersion, maxVersionLen) || tooLong(req.OSVersion, maxVersionLen) {
 		return fmt.Errorf("app_version and os_version: at most %d characters", maxVersionLen)
 	}
+	if c := req.Cursor; c != nil && (len(c.Stream) == 0 || len(c.Stream) > 48 || c.Sequence < 0 || len(c.Value) > 4096) {
+		return fmt.Errorf("invalid HealthKit cursor")
+	}
 	if len(req.Deleted) > model.MaxDeleted {
 		return fmt.Errorf("deleted: at most %d entries per request", model.MaxDeleted)
 	}
@@ -379,6 +391,9 @@ func validate(req *model.SyncRequest) error {
 	}
 	for i := range req.Samples {
 		s := &req.Samples[i]
+		if s.Type == model.SampleBodyMass && (s.Unit != "kg" || s.Value < 25 || s.Value > 350) {
+			return fmt.Errorf("samples[%d]: body_mass must be in kg and in range", i)
+		}
 		if s.Start.IsZero() {
 			return fmt.Errorf("samples[%d]: start is required", i)
 		}
@@ -408,6 +423,9 @@ func validate(req *model.SyncRequest) error {
 		}
 		if tooLong(wk.SourceBundleID, maxBundleIDLen) {
 			return fmt.Errorf("workouts[%d]: source_bundle_id too long", i)
+		}
+		if wk.TZOffsetSec != nil && (*wk.TZOffsetSec < -64800 || *wk.TZOffsetSec > 64800) {
+			return fmt.Errorf("workouts[%d]: invalid timezone offset", i)
 		}
 		if wk.Activity == "" {
 			wk.Activity = "other"

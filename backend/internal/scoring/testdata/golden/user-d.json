@@ -2597,6 +2597,9 @@
     {
       "activity": "running",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-d",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-07T19:03:00+00:00",
@@ -2615,6 +2618,9 @@
     {
       "activity": "running",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-d",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-11T19:07:00+00:00",
@@ -2633,6 +2639,9 @@
     {
       "activity": "running",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-d",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-14T19:14:00+00:00",
@@ -2651,6 +2660,9 @@
     {
       "activity": "running",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-d",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-19T00:40:00+00:00",
@@ -2669,6 +2681,9 @@
     {
       "activity": "running",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-d",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-21T19:11:00+00:00",
@@ -2687,6 +2702,9 @@
     {
       "activity": "running",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-d",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-25T19:09:00+00:00",
@@ -2705,6 +2723,9 @@
     {
       "activity": "running",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-d",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-28T19:05:00+00:00",
@@ -2723,6 +2744,9 @@
     {
       "activity": "running",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-d",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-11-01T19:16:00+00:00",

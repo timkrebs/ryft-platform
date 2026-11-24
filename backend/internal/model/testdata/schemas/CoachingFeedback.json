@@ -1,0 +1,76 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "cycle_water_kg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "fatigue_0_10": {
+      "nullable": true,
+      "type": "number"
+    },
+    "fluid_during_workout_l": {
+      "nullable": true,
+      "type": "number"
+    },
+    "gi_distress_0_10": {
+      "nullable": true,
+      "type": "number"
+    },
+    "intake_complete": {
+      "type": "boolean"
+    },
+    "intra_workout_carbs_g": {
+      "nullable": true,
+      "type": "number"
+    },
+    "is_fasting_day": {
+      "type": "boolean"
+    },
+    "measured_rmr_kcal": {
+      "nullable": true,
+      "type": "number"
+    },
+    "planned_session": {
+      "$ref": "PlannedSession",
+      "nullable": true
+    },
+    "post_workout_mass_kg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "pre_workout_mass_kg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "reported_overnight_confounder": {
+      "nullable": true,
+      "type": "boolean"
+    },
+    "rpe_0_10": {
+      "nullable": true,
+      "type": "number"
+    },
+    "sweat_patch_na_mg_per_l": {
+      "nullable": true,
+      "type": "number"
+    },
+    "tracked_cycles": {
+      "type": "integer"
+    },
+    "urine_during_workout_l": {
+      "nullable": true,
+      "type": "number"
+    },
+    "workout_minutes": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [
+    "intake_complete",
+    "is_fasting_day"
+  ],
+  "title": "CoachingFeedback",
+  "type": "object"
+}

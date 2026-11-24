@@ -16,6 +16,7 @@ const (
 	SampleVO2Max          = "vo2max"           // ml/kg/min
 	SampleActiveEnergy    = "active_energy"    // kcal
 	SampleSteps           = "steps"            // count
+	SampleBodyMass        = "body_mass"        // kg
 )
 
 // KnownSampleTypes is the set of Sample.Type values ingest stores. Any other type is
@@ -24,7 +25,7 @@ const (
 var KnownSampleTypes = map[string]bool{
 	SampleHeartRate: true, SampleHRVSDNN: true, SampleRestingHR: true,
 	SampleRespiratoryRate: true, SampleSpO2: true, SampleVO2Max: true,
-	SampleActiveEnergy: true, SampleSteps: true,
+	SampleActiveEnergy: true, SampleSteps: true, SampleBodyMass: true,
 }
 
 // Sleep stages, mirroring HKCategoryValueSleepAnalysis.
@@ -55,7 +56,8 @@ type Sample struct {
 	// The HealthKit source's bundle identifier (input only, for User.sources).
 	SourceBundleID *string `json:"source_bundle_id,omitempty"`
 	// The HealthKit object's UUID (HKObject.uuid): the handle a deletion names. Optional.
-	ID *uuid.UUID `json:"id,omitempty"`
+	ID             *uuid.UUID `json:"id,omitempty"`
+	WasUserEntered bool       `json:"was_user_entered,omitempty"`
 }
 
 // SampleSpillsToNextDay says whether a sample of this type also changes the
@@ -129,18 +131,28 @@ type Workout struct {
 	DuplicateOf *uuid.UUID `json:"duplicate_of,omitempty"`
 	// Input only, as on Sample.
 	SourceBundleID *string `json:"source_bundle_id,omitempty"`
+	WasUserEntered bool    `json:"was_user_entered,omitempty"`
+	TZOffsetSec    *int    `json:"tz_offset_sec,omitempty"`
+}
+
+// HealthKitCursor is an opaque anchor scoped to the signed-in account and this device.
+type HealthKitCursor struct {
+	Stream   string `json:"stream"`
+	Sequence int64  `json:"sequence"`
+	Value    string `json:"value"`
 }
 
 // SyncRequest is the batch the iOS app POSTs to ingest /v1/sync.
 type SyncRequest struct {
-	DeviceID   uuid.UUID       `json:"device_id"`
-	DeviceName string          `json:"device_name,omitempty"`
-	AppVersion *string         `json:"app_version,omitempty"` // e.g. "0.9.0 (41)", kept on the device row
-	OSVersion  *string         `json:"os_version,omitempty"`  // e.g. "iOS 26.1"
-	Samples    []Sample        `json:"samples"`
-	Sleep      []SleepSegment  `json:"sleep"`
-	Workouts   []Workout       `json:"workouts"`
-	Deleted    []DeletedRecord `json:"deleted,omitempty"`
+	DeviceID   uuid.UUID        `json:"device_id"`
+	DeviceName string           `json:"device_name,omitempty"`
+	AppVersion *string          `json:"app_version,omitempty"` // e.g. "0.9.0 (41)", kept on the device row
+	OSVersion  *string          `json:"os_version,omitempty"`  // e.g. "iOS 26.1"
+	Samples    []Sample         `json:"samples"`
+	Sleep      []SleepSegment   `json:"sleep"`
+	Workouts   []Workout        `json:"workouts"`
+	Deleted    []DeletedRecord  `json:"deleted,omitempty"`
+	Cursor     *HealthKitCursor `json:"cursor,omitempty"`
 }
 
 // MaxWorkouts is the most entries of SyncRequest.Workouts (422 above). The app pages 20 000

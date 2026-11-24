@@ -1,0 +1,57 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "body_fat_pct": {
+      "nullable": true,
+      "type": "number"
+    },
+    "ftp_w": {
+      "nullable": true,
+      "type": "number"
+    },
+    "goal": {
+      "type": "string"
+    },
+    "goal_adjustment": {
+      "nullable": true,
+      "type": "number"
+    },
+    "gut_trained": {
+      "type": "boolean"
+    },
+    "height_cm": {
+      "type": "number"
+    },
+    "hr_max": {
+      "nullable": true,
+      "type": "number"
+    },
+    "hr_rest": {
+      "nullable": true,
+      "type": "number"
+    },
+    "race_date": {
+      "nullable": true,
+      "type": "string"
+    },
+    "recreational": {
+      "type": "boolean"
+    },
+    "sweat_na_mg_per_l": {
+      "nullable": true,
+      "type": "number"
+    },
+    "train_low": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "goal",
+    "gut_trained",
+    "height_cm",
+    "recreational",
+    "train_low"
+  ],
+  "title": "GoalProfile",
+  "type": "object"
+}

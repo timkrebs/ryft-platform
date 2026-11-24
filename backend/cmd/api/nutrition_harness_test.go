@@ -43,7 +43,7 @@ type nutritionRig struct {
 	logs *lockedBuffer
 }
 
-func newNutritionRig(t *testing.T) *nutritionRig {
+func newNutritionRig(t *testing.T, configure ...func(*handler)) *nutritionRig {
 	t.Helper()
 	pool := testPool(t)
 	rig := &nutritionRig{t: t, pool: pool, st: store.New(pool), logs: &lockedBuffer{}}
@@ -51,6 +51,9 @@ func newNutritionRig(t *testing.T) *nutritionRig {
 	beta := config.Beta{Gate: config.ModeOff, Consent: config.ModeOn, PrivacyPolicyVersion: nutritionPolicy}
 	attest := config.AppAttest{Mode: config.ModeOff}
 	h := &handler{st: rig.st, log: log, beta: beta, attestMode: attest.Mode, accounts: &accounts{st: rig.st, log: log}}
+	for _, fn := range configure {
+		fn(h)
+	}
 	mux := newMux(h, muxOptions{log: log, verifier: nutritionVerifier{}, ready: func(context.Context) error { return nil },
 		tick: http.NotFoundHandler(), gate: beta.Gate, attest: attest, authMode: config.AuthAPIKey, clients: httpx.NewClientKeys(1)})
 	rig.srv = httpx.Instrument(log, nil, httpx.Recover(httpx.SecurityHeaders(mux)))

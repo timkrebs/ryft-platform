@@ -1,0 +1,26 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "acute_7d": {
+      "type": "number"
+    },
+    "acwr": {
+      "nullable": true,
+      "type": "number"
+    },
+    "chronic_28d_weekly": {
+      "type": "number"
+    },
+    "tsb": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "acute_7d",
+    "acwr",
+    "chronic_28d_weekly",
+    "tsb"
+  ],
+  "title": "CoachingLoad",
+  "type": "object"
+}

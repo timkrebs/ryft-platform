@@ -2480,6 +2480,9 @@
     {
       "activity": "cycling",
       "avg_hr": 128,
+      "coaching_source_bundle_id": "com.garmin.connect.mobile",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-05T11:59:00+00:00",
@@ -2498,6 +2501,9 @@
     {
       "activity": "cycling",
       "avg_hr": 136,
+      "coaching_source_bundle_id": "com.garmin.connect.mobile",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-07T11:45:00+00:00",
@@ -2516,6 +2522,9 @@
     {
       "activity": "cycling",
       "avg_hr": 144,
+      "coaching_source_bundle_id": "com.garmin.connect.mobile",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-09T11:44:00+00:00",
@@ -2534,6 +2543,9 @@
     {
       "activity": "cycling",
       "avg_hr": 132,
+      "coaching_source_bundle_id": "com.garmin.connect.mobile",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-12T11:30:00+00:00",
@@ -2552,6 +2564,9 @@
     {
       "activity": "cycling",
       "avg_hr": 141,
+      "coaching_source_bundle_id": "com.garmin.connect.mobile",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-16T11:53:00+00:00",
@@ -2570,6 +2585,9 @@
     {
       "activity": "other",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.phone-b",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": "workout Garmin Connect 2026-10-18T00:01",
       "end_at": "2026-10-18T04:44:00+00:00",
@@ -2588,6 +2606,9 @@
     {
       "activity": "walking",
       "avg_hr": 108,
+      "coaching_source_bundle_id": "com.garmin.connect.mobile",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-18T04:45:00+00:00",
@@ -2606,6 +2627,9 @@
     {
       "activity": "cycling",
       "avg_hr": 141,
+      "coaching_source_bundle_id": "com.garmin.connect.mobile",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-19T12:16:00+00:00",
@@ -2624,6 +2648,9 @@
     {
       "activity": "cycling",
       "avg_hr": 135,
+      "coaching_source_bundle_id": "com.garmin.connect.mobile",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-21T12:00:30+00:00",
@@ -2642,6 +2669,9 @@
     {
       "activity": "cycling",
       "avg_hr": 148,
+      "coaching_source_bundle_id": "com.garmin.connect.mobile",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-23T11:38:00+00:00",
@@ -2660,6 +2690,9 @@
     {
       "activity": "cycling",
       "avg_hr": 133,
+      "coaching_source_bundle_id": "com.garmin.connect.mobile",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-26T12:29:00+00:00",
@@ -2678,6 +2711,9 @@
     {
       "activity": "cycling",
       "avg_hr": 148,
+      "coaching_source_bundle_id": "com.garmin.connect.mobile",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-28T11:47:00+00:00",
@@ -2696,6 +2732,9 @@
     {
       "activity": "cycling",
       "avg_hr": 138,
+      "coaching_source_bundle_id": "com.garmin.connect.mobile",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-30T12:19:00+00:00",
@@ -2714,6 +2753,9 @@
     {
       "activity": "cycling",
       "avg_hr": 149,
+      "coaching_source_bundle_id": "com.garmin.connect.mobile",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-11-02T13:24:00+00:00",

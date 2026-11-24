@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "sequence": {
+      "type": "integer"
+    },
+    "stream": {
+      "type": "string"
+    },
+    "value": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "sequence",
+    "stream",
+    "value"
+  ],
+  "title": "HealthKitCursor",
+  "type": "object"
+}

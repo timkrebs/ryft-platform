@@ -445,6 +445,7 @@ type adminRoute struct {
 func (a admin) routes() []adminRoute {
 	return []adminRoute{
 		{"GET /v1/admin/flags", true, a.flags},
+		{"GET /v1/admin/evaluation/metrics", false, a.evaluationMetrics},
 		{"PUT /v1/admin/flags/{key}", false, a.putFlag},
 		{"DELETE /v1/admin/flags/{key}", false, a.deleteFlag},
 		{"POST /v1/admin/invites", true, a.createInvite},

@@ -503,16 +503,22 @@ func (s *Store) UpsertWorkouts(ctx context.Context, userID uuid.UUID, in []model
 	})
 	b := &pgx.Batch{}
 	for _, w := range in {
-		b.Queue(`INSERT INTO workouts (id, user_id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m, source)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		b.Queue(`INSERT INTO workouts (id, user_id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m, source,
+			coaching_source_bundle_id,coaching_user_entered,coaching_tz_offset_sec)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 			ON CONFLICT (user_id, id) DO UPDATE SET activity=EXCLUDED.activity, start_at=EXCLUDED.start_at, end_at=EXCLUDED.end_at,
 			  avg_hr=EXCLUDED.avg_hr, max_hr=EXCLUDED.max_hr, energy_kcal=EXCLUDED.energy_kcal,
-			  distance_m=EXCLUDED.distance_m, source=EXCLUDED.source
+			  distance_m=EXCLUDED.distance_m, source=EXCLUDED.source,
+			  coaching_source_bundle_id=coalesce(EXCLUDED.coaching_source_bundle_id,workouts.coaching_source_bundle_id),
+			  coaching_user_entered=coalesce(EXCLUDED.coaching_user_entered,workouts.coaching_user_entered),
+			  coaching_tz_offset_sec=coalesce(EXCLUDED.coaching_tz_offset_sec,workouts.coaching_tz_offset_sec)
 			WHERE (workouts.activity, workouts.start_at, workouts.end_at, workouts.avg_hr, workouts.max_hr, workouts.energy_kcal,
-			  workouts.distance_m, workouts.source) IS DISTINCT FROM (EXCLUDED.activity, EXCLUDED.start_at, EXCLUDED.end_at,
-			  EXCLUDED.avg_hr, EXCLUDED.max_hr, EXCLUDED.energy_kcal, EXCLUDED.distance_m, EXCLUDED.source)
-			  AND workouts.source <> $11`,
-			w.ID, userID, w.Activity, w.Start, w.End, w.AvgHR, w.MaxHR, w.EnergyKcal, w.DistanceM, w.Source, model.SessionSource)
+			  workouts.distance_m, workouts.source,workouts.coaching_source_bundle_id,workouts.coaching_user_entered,workouts.coaching_tz_offset_sec)
+			  IS DISTINCT FROM (EXCLUDED.activity, EXCLUDED.start_at, EXCLUDED.end_at, EXCLUDED.avg_hr, EXCLUDED.max_hr, EXCLUDED.energy_kcal,
+			  EXCLUDED.distance_m, EXCLUDED.source,coalesce(EXCLUDED.coaching_source_bundle_id,workouts.coaching_source_bundle_id),
+			  coalesce(EXCLUDED.coaching_user_entered,workouts.coaching_user_entered),coalesce(EXCLUDED.coaching_tz_offset_sec,workouts.coaching_tz_offset_sec))
+			  AND workouts.source <> $14`,
+			w.ID, userID, w.Activity, w.Start, w.End, w.AvgHR, w.MaxHR, w.EnergyKcal, w.DistanceM, w.Source, w.SourceBundleID, w.WasUserEntered, w.TZOffsetSec, model.SessionSource)
 	}
 	return s.runBatch(ctx, b)
 }

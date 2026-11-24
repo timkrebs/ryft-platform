@@ -1,5 +1,19 @@
 # RYFT platform — status
 
+## Training-to-Nutrition coaching (2026-11-24)
+
+The branch adds opt-in coaching targets, HealthKit workout and body-mass evidence, signed partner
+delivery and FIT processing, briefing and nightly evaluation. The current iOS app can keep uploading
+through its usual ingest route. Coaching screens and collection of the optional HealthKit fields
+are a client follow-up.
+
+Local verification uses `make test check-api-doc cloudrun-check`. Run the partner-to-evaluation
+test with `cd backend && RYFT_TEST_POSTGRES_URL=<disposable database> go test ./cmd/api -run TestCoachingWebhookToBriefingAndEvaluation`.
+Ship through the existing PR and main deployment flow. The Go migrator applies 0047 before the
+Cloud Run service revisions. Production partner onboarding requires approved relay credentials,
+provider-account links and matching consent. The webhook routes default to disabled.
+
+
 ## Nutrition ETL USDA recovery (2026-11-24)
 
 The first bounded Cloud Run execution inserted 138 Open Food Facts rows. Its task retry found the same

@@ -535,6 +535,46 @@ When enrolled with current consent, `GET /v1/nutrition/daily` and each summary r
 }
 ```
 
+
+### Training-to-Nutrition coaching
+
+The signed-in, allow-listed Nutrition account uses the same v1 auth, App Attest and consent gates. Set a birth year first with `PATCH /v1/me`, then enroll through the N2R profile. Coaching requires a birth year that establishes adulthood, standing height in centimeters, and the N2R body mass. A later weigh-in updates the weight trend. Dates and session classification use the account timezone. A user may opt out with `DELETE /v1/users/goal-profile` (204) to remove the goal, partner links and coaching history.
+
+| Route | Request and response |
+| --- | --- |
+| `GET /v1/users/goal-profile` | 200 `GoalProfile` or JSON null |
+| `PUT /v1/users/goal-profile` | 200 `GoalProfile`; replaces prior settings. Invalid data or insufficient age evidence returns 422 |
+| `PUT /v1/coaching/feedback/{date}` | 200 `CoachingFeedback`; replaces feedback and the planned session for this local date |
+| `GET /v1/coaching/daily-briefing` | 200 `CoachingBriefing` with periodized targets, readiness, training load, N2R and guidance. With no coaching plan the `plan` field is null |
+| `POST /v1/wearables/healthkit/sync` | Alias on the ingest host for `POST /v1/sync` with the same request, auth and deletions |
+
+`PUT /v1/users/goal-profile`
+
+<!-- type: model.GoalProfile -->
+```json
+{"goal":"MARATHON","height_cm":178,"body_fat_pct":17,"race_date":"2027-04-25","hr_max":191,"hr_rest":53,"gut_trained":false,"recreational":true,"train_low":false}
+```
+
+`PUT /v1/coaching/feedback/2026-11-24`
+
+<!-- type: model.CoachingFeedback -->
+```json
+{"intake_complete":true,"is_fasting_day":false,"planned_session":{"start_at":"2026-11-24T18:00:00+01:00","sport_type":"running","duration_min":75,"class":"MODERATE"},"intra_workout_carbs_g":45,"gi_distress_0_10":1,"rpe_0_10":6}
+```
+
+`GET /v1/coaching/daily-briefing` on an account without enough information for coaching.
+
+<!-- type: model.CoachingBriefing -->
+```json
+{"local_date":"2026-11-24","plan":null,"readiness":"UNKNOWN","readiness_reasons":[],"training_load":{"acute_7d":0,"chronic_28d_weekly":0,"acwr":null,"tsb":0},"n2r":null,"yesterday_n2r":null,"morning_biometrics":null,"cards":[]}
+```
+
+The plan includes `energy_target_kcal`, `protein_target_g`, `carb_target_g`, `fat_target_g`, estimated `net_exercise_kcal`, `session_class`, `deficit_suspended`, `train_low`, availability evidence and optional fueling. Its energy and carb targets also feed `n2r.budget` in existing Nutrition routes. Availability can be `UNKNOWN`, `GREEN`, `YELLOW` or `RED`. The colors are product guardrails for calorie deficits. The probability used in the evaluation is a shadow score. Athlete-facing medical diagnosis and injury predictions are outside this contract.
+
+HealthKit accepts optional workout `tz_offset_sec`, `was_user_entered` and source bundle ID. Additional quantities use `body_mass` in kilograms. The app can send an optional `cursor` object with `stream`, `sequence` and opaque `value`. Cursor progress is monotonic per account, device and stream. HealthKit HRV keeps its SDNN units and metric identity. The app may continue using its existing sync endpoint and local anchors.
+
+Public partner callbacks are disabled by default. Configured `POST /v1/webhooks/garmin` and `POST /v1/webhooks/suunto` authenticate the original bytes with `X-HMAC-SHA256-Signature` before enqueuing them. The Garmin path expects the partner payload from an authenticated RYFT relay that signs it. Suunto accepts the `username` and `workoutid` notification. The queue handles linked users with current consent and removes raw payloads on completion. Files are fetched through a configured HTTPS partner bridge using the account and workout references. Client-supplied callback URLs are not fetched by the API.
+
 ## Endpoints
 
 | Method | Path | Service | Returns |
@@ -2404,6 +2444,7 @@ answer a token with `403` (no `code`); the attempt is audited.
 
 | Route | Key | Token | Used by the page |
 | --- | --- | --- | --- |
+| `GET /v1/admin/evaluation/metrics?since=YYYY-MM-DD` | yes | no | Anonymized coaching cohorts with at least ten accounts, up to 90 days |
 | `GET /v1/admin/flags` | yes | yes | Flags, read-only: the page shows key, on or off, rollout and only the **count** of allow-listed accounts. The answer itself has no projection for a token: it carries `allow_user_ids` (user ids) to either bearer |
 | `PUT`, `DELETE /v1/admin/flags/{key}` | yes | **403** | no |
 | `POST /v1/admin/invites`, `GET /v1/admin/invites[?emails=1]`, `DELETE /v1/admin/invites/{code}` | yes | yes | Invites (`?emails=1` only while the page's "Show email addresses" switch is on; off by default) |
@@ -3536,6 +3577,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-11-24 | **Training-to-Nutrition coaching** (D271). Signed-in goal profiles, planned sessions and feedback, daily briefing, additive HealthKit metadata and consent-scoped partner ingestion. Operator-only aggregate evaluation. |
 | 2026-11-24 | **[Nutrition-to-Recovery](#nutrition-to-recovery)** (D268). Adds account opt-in, contextual scoring in daily summaries and current guidance. |
 | 2026-11-24 | **Nutrition Score** (D266). Nutrition daily and range summaries report versioned quality and CGM subscores, ten components, per-meal impact and the optional timing penalty. Additive CGM upload/deletion and private food quality profiles. Examples in the [Nutrition contract](architecture/nutrition/04-api-contracts.md#nutrition-score). |
 | 2026-11-24 | **[Nutrition API](#nutrition)** (D265). Gated catalog, search, barcode, private foods, submissions, meals with historical snapshots, daily summaries and goals. Additive endpoints and the `nutrition.enabled` flag. |

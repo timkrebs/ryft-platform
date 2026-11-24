@@ -7,6 +7,16 @@ import "reflect"
 // TestContractTypesComplete fails when a struct is added to the package and not
 // here, so a new wire type cannot skip the snapshot.
 var contractTypes = map[string]reflect.Type{
+	"HealthKitCursor":        reflect.TypeOf(HealthKitCursor{}),
+	"GoalProfile":            reflect.TypeOf(GoalProfile{}),
+	"PlannedSession":         reflect.TypeOf(PlannedSession{}),
+	"CoachingFeedback":       reflect.TypeOf(CoachingFeedback{}),
+	"FuelingPlan":            reflect.TypeOf(FuelingPlan{}),
+	"Availability":           reflect.TypeOf(Availability{}),
+	"CoachingPlan":           reflect.TypeOf(CoachingPlan{}),
+	"CoachingLoad":           reflect.TypeOf(CoachingLoad{}),
+	"CoachingBriefing":       reflect.TypeOf(CoachingBriefing{}),
+	"EvaluationCohort":       reflect.TypeOf(EvaluationCohort{}),
 	"Sample":                 reflect.TypeOf(Sample{}),
 	"SleepSegment":           reflect.TypeOf(SleepSegment{}),
 	"UserSource":             reflect.TypeOf(UserSource{}),

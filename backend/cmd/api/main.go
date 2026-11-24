@@ -111,7 +111,11 @@ func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Bet
 	// A session's completion commits with its event, and the handler that wrote a row
 	// flushes it before it answers (D219); the tick's sweep sends what a flush could not.
 	ob := d.Outbox
-	h := &handler{st: st, bus: events.Publisher{Sender: ob}, outbox: ob, log: log, cache: newInsightCache(), accounts: acct,
+	partners, err := loadPartnerConfig()
+	if err != nil {
+		return app.Parts{}, err
+	}
+	h := &handler{partners: partners, st: st, bus: events.Publisher{Sender: ob}, outbox: ob, log: log, cache: newInsightCache(), accounts: acct,
 		engine: scoring.NewEngine(st, log), beta: beta,
 		emails: acct, webURL: adminCfg.PublicWebURL, analytics: analyticsConfig(analytics), attestMode: attest.Mode}
 	// The three /v1/app-attest routes are served only with the ring (D247); without it they answer 501.
@@ -144,6 +148,8 @@ func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Bet
 		purge:     func(ctx context.Context) error { return purgeInviteEmails(ctx, st, log) },
 		attest:    func(ctx context.Context) error { return purgeAppAttest(ctx, st, log) },
 		n2r:       h.refreshN2R,
+		coaching:  h.refreshCoaching,
+		wearables: h.processWearables,
 	}.ticks()...)
 	if err != nil {
 		return app.Parts{}, err
@@ -191,6 +197,8 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	mux := http.NewServeMux()
 	httpx.Health(mux, o.ready)
 	mux.Handle(http.MethodPost+" "+eventbus.PathTick, o.tick)
+	mux.HandleFunc("POST /v1/webhooks/garmin", h.partnerWebhook("garmin"))
+	mux.HandleFunc("POST /v1/webhooks/suunto", h.partnerWebhook("suunto"))
 
 	api := http.NewServeMux()
 	api.HandleFunc("GET /v1/config", h.remoteConfig)
@@ -244,6 +252,7 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	api.HandleFunc("POST /v1/app-attest/token", h.attest.token)
 	// Nutrition inherits the authenticated v1 chain and has its own rollout flag (D265, D266).
 	h.nutritionRoutes(api)
+	h.coachingRoutes(api)
 	api.HandleFunc("/v1/", httpx.NotFound)
 	limits := ratelimit.NewUserLimits()
 	authOpts := auth.Options{
@@ -317,14 +326,16 @@ type publisher interface {
 }
 
 type handler struct {
-	st       *store.Store
-	bus      publisher
-	outbox   *outbox.Outbox // nil in tests: a session's event then goes through bus
-	log      *slog.Logger
-	cache    *insightCache
-	accounts *accounts
-	engine   *scoring.Engine // pure scoring with store lookups, for session completion
-	beta     config.Beta
+	partners      partnerConfig
+	coachingClock func() time.Time
+	st            *store.Store
+	bus           publisher
+	outbox        *outbox.Outbox // nil in tests: a session's event then goes through bus
+	log           *slog.Logger
+	cache         *insightCache
+	accounts      *accounts
+	engine        *scoring.Engine // pure scoring with store lookups, for session completion
+	beta          config.Beta
 	// emails answers the confirmed email of an account, for a code bound to an email; nil: no code binds.
 	emails inviteEmails
 	// binding says whether email-bound invites work now (the Supabase project confirms emails); nil: they do not.

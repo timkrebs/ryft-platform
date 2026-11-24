@@ -3794,6 +3794,9 @@
     {
       "activity": "strength",
       "avg_hr": 125,
+      "coaching_source_bundle_id": "com.example.strap",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": "workout Apple Watch 2026-10-05T17:57",
       "end_at": "2026-10-05T19:06:00+00:00",
@@ -3812,6 +3815,9 @@
     {
       "activity": "strength",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-e",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-05T19:04:00+00:00",
@@ -3830,6 +3836,9 @@
     {
       "activity": "strength",
       "avg_hr": null,
+      "coaching_source_bundle_id": null,
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": null,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-07T18:55:00+00:00",
@@ -3848,6 +3857,9 @@
     {
       "activity": "strength",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-e",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-09T19:04:00+00:00",
@@ -3866,6 +3878,9 @@
     {
       "activity": "strength",
       "avg_hr": 112,
+      "coaching_source_bundle_id": "com.example.strap",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": "workout Apple Watch 2026-10-12T17:57",
       "end_at": "2026-10-12T19:06:00+00:00",
@@ -3884,6 +3899,9 @@
     {
       "activity": "strength",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-e",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-12T19:04:00+00:00",
@@ -3902,6 +3920,9 @@
     {
       "activity": "strength",
       "avg_hr": null,
+      "coaching_source_bundle_id": null,
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": null,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-14T19:02:00+00:00",
@@ -3920,6 +3941,9 @@
     {
       "activity": "strength",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-e",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-16T19:04:00+00:00",
@@ -3938,6 +3962,9 @@
     {
       "activity": "strength",
       "avg_hr": 116,
+      "coaching_source_bundle_id": "com.example.strap",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": "workout Apple Watch 2026-10-19T17:57",
       "end_at": "2026-10-19T19:06:00+00:00",
@@ -3956,6 +3983,9 @@
     {
       "activity": "strength",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-e",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-19T19:04:00+00:00",
@@ -3974,6 +4004,9 @@
     {
       "activity": "strength",
       "avg_hr": null,
+      "coaching_source_bundle_id": null,
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": null,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-21T19:12:00+00:00",
@@ -3992,6 +4025,9 @@
     {
       "activity": "strength",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-e",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-23T19:04:00+00:00",
@@ -4010,6 +4046,9 @@
     {
       "activity": "strength",
       "avg_hr": 120,
+      "coaching_source_bundle_id": "com.example.strap",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": "workout Apple Watch 2026-10-26T17:57",
       "end_at": "2026-10-26T19:06:00+00:00",
@@ -4028,6 +4067,9 @@
     {
       "activity": "strength",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-e",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-26T19:04:00+00:00",
@@ -4046,6 +4088,9 @@
     {
       "activity": "strength",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-e",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-28T19:04:00+00:00",
@@ -4064,6 +4109,9 @@
     {
       "activity": "strength",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-e",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-10-30T19:04:30+00:00",
@@ -4082,6 +4130,9 @@
     {
       "activity": "strength",
       "avg_hr": 127,
+      "coaching_source_bundle_id": "com.example.strap",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": "workout Apple Watch 2026-11-02T17:57",
       "end_at": "2026-11-02T19:06:00+00:00",
@@ -4100,6 +4151,9 @@
     {
       "activity": "strength",
       "avg_hr": null,
+      "coaching_source_bundle_id": "com.apple.health.watch-e",
+      "coaching_tz_offset_sec": null,
+      "coaching_user_entered": false,
       "distance_m": null,
       "duplicate_of": null,
       "end_at": "2026-11-02T19:04:00+00:00",

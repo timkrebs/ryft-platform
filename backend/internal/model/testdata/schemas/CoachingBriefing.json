@@ -1,0 +1,57 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "cards": {
+      "items": {
+        "$ref": "N2RGuidanceCard"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "local_date": {
+      "type": "string"
+    },
+    "morning_biometrics": {
+      "$ref": "N2RBiometrics",
+      "nullable": true
+    },
+    "n2r": {
+      "$ref": "N2RScore",
+      "nullable": true
+    },
+    "plan": {
+      "$ref": "CoachingPlan",
+      "nullable": true
+    },
+    "readiness": {
+      "type": "string"
+    },
+    "readiness_reasons": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "training_load": {
+      "$ref": "CoachingLoad"
+    },
+    "yesterday_n2r": {
+      "$ref": "N2RScore",
+      "nullable": true
+    }
+  },
+  "required": [
+    "cards",
+    "local_date",
+    "morning_biometrics",
+    "n2r",
+    "plan",
+    "readiness",
+    "readiness_reasons",
+    "training_load",
+    "yesterday_n2r"
+  ],
+  "title": "CoachingBriefing",
+  "type": "object"
+}

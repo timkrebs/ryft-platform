@@ -6454,3 +6454,18 @@ The failed production apply requested deletion of `ryft_notices` because Google 
 - The API and tick serve N2R. Reuse their existing GitHub deploy workflow and database migration job. Publish the catalog image on explicit dispatch through the existing Artifact Registry writer, with a scan before sign-in. Terraform owns and pins the ETL job image separately.
 - Run one Cloud Run task with bounded retries, temporary staging and project-local Scheduler OAuth. Start paused with a bounded import. The existing stop line pauses the schedule. Separate the invoker from the runtime and pin the catalog login's Secret Manager version.
 - Use the same Postgres as the API. An existing Cloud SQL instance can supply a native socket. Embeddings are an optional offline step. [Nutrition rollout](../infra/gcp/README.md#nutrition-on-cloud-run)
+
+## D271 — Training-to-Nutrition plans feed opt-in N2R (2026-11-24)
+
+The platform derives an adult coaching plan from account-scoped meals, body mass and reconciled
+workouts. Existing N2R accounts keep their current target path until they set a goal profile. HealthKit
+uses the existing anchored ingest route and keeps SDNN distinct from genuine RMSSD. New native partner
+records are normalized beside existing HealthKit workouts. The API verifies signatures and enqueues
+work on PostgreSQL. The existing Cloud Run tick fetches FIT using the configured partner bridge and
+applies records idempotently. No additional always-on worker is needed.
+
+Calorie reductions require sufficient availability evidence. Estimates use net modelled expenditure,
+with cycling mechanical work preferred where present. The guardrail thresholds are app decision rules.
+The IOC REDs CAT2 clinical assessment combines more evidence. The evaluation uses persisted forecasts,
+dated feedback and outcomes and bounds parameter changes. Athlete metrics stay account-scoped and
+operator cohorts suppress small groups. [IOC REDs consensus](https://bjsm.bmj.com/content/57/17/1073)

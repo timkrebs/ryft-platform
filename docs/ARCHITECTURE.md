@@ -191,7 +191,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 
 | Package | Owns | Depends on | Tested by |
 | --- | --- | --- | --- |
-| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, appattest, apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, nutrition, ratelimit, scoring, sealed, store, train | 42 files (Postgres) |
+| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, appattest, apple, auth, behavior, config, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, nutrition, ratelimit, scoring, sealed, store, train, wearables | 43 files (Postgres) |
 | `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | app, auth, config, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 9 files (Postgres) |
 | `cmd/migrate` | migrate applies the migrations as the schema owner, loads the built-in exercises and plans, and sets the service roles' passwords where they changed. | db, httpx, smoke | none |
 | `cmd/notify` | notify wires internal/notify to its push routes and the 15-minute tick. | apns, app, config, eventbus, events, logx, notify, store | 1 file |
@@ -207,6 +207,8 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/behavior` | owns the journal's arithmetic: the fixed ids of the built-in behaviors, what an entry may hold, and how a behavior changes the morning after. | model, train | 1 file |
 | `internal/config` | owns the services' environment configuration: what each variable means, its default and which combinations are refused. | appattest | 4 files |
 | `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 19 files (Postgres) |
+| `internal/energy` | models exercise expenditure, training load and energy balance. | model, wearables | 1 file |
+| `internal/evaluation` | computes forecast errors and bounded calibration updates. | energy, model | 1 file |
 | `internal/eventbus` | owns building a service's Pub/Sub transport from its configuration: the Bus, the push verifier, the push and tick handlers and the wait sender. | auth, config, events, events/pubsub | 1 file |
 | `internal/events` | owns the five trigger events the services exchange, their encoding, and what a handler's error means. | logx, metrics, model | 1 file |
 | `internal/events/outbox` | owns the outbox table's rows and the relay that moves them to the broker, so an event is never lost between a database write and a publish. | events, httpx, metrics | 1 file (Postgres) |
@@ -223,15 +225,17 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/nutrition` | validates catalog and meal inputs and computes food nutrient snapshots. | model | 1 file |
 | `internal/nutrition/importer` | streams and validates versioned food datasets for the Nutrition catalog. | model, nutrition | 1 file |
 | `internal/nutrition/score` | computes nutrition quality, glucose impact, contextual recovery and guidance from timestamped inputs. | model | 3 files |
+| `internal/periodization` | turns training and nutrition observations into bounded daily targets. | energy, model | 1 file |
 | `internal/ratelimit` | owns the in-memory token bucket per user and the platform's per-request-class limits. | none | 2 files |
 | `internal/retry` | owns start-up retry with backoff and jitter for dependencies that may not be up yet. | none | 1 file |
 | `internal/scoring` | owns the Recovery, Strain, Sleep and Readiness model and the Engine that applies it to stored data and writes the daily rows. | config, events, metrics, model, scoring/workoutdup, store, train | 25 files (Postgres) |
 | `internal/scoring/workoutdup` | owns the two rules that make one activity one workout: the same-source fold and the cross-source duplicate mark. | model | 1 file |
 | `internal/sealed` | encrypts the few secrets the platform stores (Apple refresh tokens) with AES-256-GCM. | none | 1 file |
 | `internal/smoke` | owns the Go end-to-end smoke against a running stack. | model | 1 file |
-| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, events, events/outbox, logx, metrics, model, nutrition, nutrition/score, scoring/workoutdup, train | 27 files (Postgres) |
+| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, energy, evaluation, events, events/outbox, logx, metrics, model, nutrition, nutrition/score, periodization, scoring/workoutdup, train, wearables | 27 files (Postgres) |
 | `internal/testsupport` | holds the helpers the Postgres-backed tests of several packages share. | none | via cmd/api, cmd/ingest, db, events/outbox, store |
 | `internal/train` | holds the pure rules of the Train feature that are not scoring. | model | 2 files |
+| `internal/wearables` | normalizes workout facts and resolves overlapping observations. | model | 1 file |
 
 Owns is the first sentence of the package's `doc.go`; Depends on lists the direct imports of this module
 (`internal/` left out). Tested by is the number of the package's own test files, with the services the

@@ -79,6 +79,13 @@
       "nullable": true,
       "type": "integer"
     },
+    "tz_offset_sec": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "was_user_entered": {
+      "type": "boolean"
+    },
     "zone_min": {
       "items": {
         "type": "integer"

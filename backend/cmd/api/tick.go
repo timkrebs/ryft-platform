@@ -22,6 +22,8 @@ type tickSteps struct {
 	settings  func(context.Context)       // confirmGuard.Refresh: it logs and counts its own errors
 	purge     func(context.Context) error // purgeInviteEmails
 	attest    func(context.Context) error // purgeAppAttest
+	coaching  func(context.Context) error
+	wearables func(context.Context) error
 	n2r       func(context.Context) error // bounded morning nutrition calibration (D268)
 }
 
@@ -43,8 +45,14 @@ func (s tickSteps) ticks() []eventbus.Tick {
 		{Name: "invite email purge", Run: s.purge},
 		{Name: "app attest purge", Run: s.attest},
 	}
+	if s.wearables != nil {
+		steps = append(steps, eventbus.Tick{Name: "wearable inbox", Run: s.wearables})
+	}
 	if s.n2r != nil {
 		steps = append(steps, eventbus.Tick{Name: "nutrition calibration", Run: s.n2r})
+	}
+	if s.coaching != nil {
+		steps = append(steps, eventbus.Tick{Name: "coaching evaluation", Run: s.coaching})
 	}
 	return steps
 }

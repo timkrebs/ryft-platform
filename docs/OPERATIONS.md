@@ -4257,6 +4257,25 @@ never a title, a value, an id list or the source app), then scoring's lines for 
 | `days_touched` stay pending | scoring is behind | as for a sync (above) |
 | sessions older than 400 days without strain | by design: stored for history and records, never scored (D128) | nothing |
 
+
+## Training-to-Nutrition partner pilot
+
+The client starts with an adult account on the `nutrition.enabled` allow-list and current consent.
+Deploy 0047 and the new API and ingest binaries through the normal main deployment before collecting
+coaching evidence. The API tick processes the inbox and captures model forecasts without a new service.
+
+The defaults leave both native callbacks disabled. A partner test environment needs
+`COACHING_GARMIN_WEBHOOK_SECRET` or `COACHING_SUUNTO_WEBHOOK_SECRET` for HMAC-SHA256 over the original
+request bytes, plus `COACHING_GARMIN_FETCH_URL` and/or `COACHING_SUUNTO_FETCH_URL` and
+`COACHING_PARTNER_FETCH_TOKEN` for an approved HTTPS connector. Inject the secrets through pinned
+Secret Manager versions. The connector authenticates to the provider for the linked account and
+accepts `provider_user` and `workout_id` query parameters. It returns the FIT artifact as
+`application/octet-stream`; Garmin Ping can also return its JSON envelope. An approved partner relay
+can authenticate Garmin's delivery and sign the original body for the API. The operator provisions
+each verified provider-account link in `nutrition.wearable_links` after consent and onboarding.
+Keep the enrollment dark until the signed delivery and provider artifact fetch pass in a partner test
+account. The provider-facing credential broker and iOS screens have their own release paths.
+
 ## Feature flags
 
 `GET /v1/config` serves the flags in table `feature_flags` (D69). Change them with the

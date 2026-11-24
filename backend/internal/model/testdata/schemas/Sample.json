@@ -29,6 +29,9 @@
     },
     "value": {
       "type": "number"
+    },
+    "was_user_entered": {
+      "type": "boolean"
     }
   },
   "required": [

@@ -9,11 +9,22 @@ import (
 
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/nutrition/score"
+	"github.com/timkrebs/ryft/internal/periodization"
 )
 
 // N2RGuidance evaluates the account's current waking day and finds matching foods.
 func (s *Store) N2RGuidance(ctx context.Context, user uuid.UUID, now time.Time) (model.N2RGuidance, error) {
-	out := model.N2RGuidance{Cards: []model.N2RGuidanceCard{}}
+	b, err := s.coachingBriefing(ctx, user, now, false)
+	return model.N2RGuidance{Date: b.Date, Score: b.N2R, Biometrics: b.Biometrics, Cards: b.Cards}, err
+}
+
+// CoachingBriefing reuses the existing score and food guidance transaction.
+func (s *Store) CoachingBriefing(ctx context.Context, user uuid.UUID, now time.Time) (model.CoachingBriefing, error) {
+	return s.coachingBriefing(ctx, user, now, true)
+}
+
+func (s *Store) coachingBriefing(ctx context.Context, user uuid.UUID, now time.Time, briefing bool) (model.CoachingBriefing, error) {
+	out := model.CoachingBriefing{Cards: []model.N2RGuidanceCard{}, Readiness: periodization.ReadinessUnknown, Reasons: []string{}}
 	err := s.nutritionTx(ctx, user, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		p, err := readN2RProfile(ctx, tx, user, false)
 		if err != nil || p == nil {
@@ -25,7 +36,11 @@ func (s *Store) N2RGuidance(ctx context.Context, user uuid.UUID, now time.Time) 
 		if bed := expectedBedtime(previous, *p); bed != nil && !now.After(*bed) {
 			out.Date = previous.Format(time.DateOnly)
 		}
-		h, err := readN2RHistory(ctx, tx, user, *p, out.Date, today, now)
+		fromDate := out.Date
+		if briefing {
+			fromDate = parseN2RDay(out.Date, p.Location).AddDate(0, 0, -1).Format(time.DateOnly)
+		}
+		h, err := readN2RHistory(ctx, tx, user, *p, fromDate, today, now)
 		if err != nil {
 			return err
 		}
@@ -35,7 +50,7 @@ func (s *Store) N2RGuidance(ctx context.Context, user uuid.UUID, now time.Time) 
 			in.Meals = append(in.Meals[:len(in.Meals):len(in.Meals)], h.Meals[today]...)
 		}
 		result := score.N2R(in)
-		out.Score = &result
+		out.N2R = &result
 		out.Biometrics, err = morningN2R(ctx, tx, user, in.Start, now)
 		if err != nil {
 			return err
@@ -54,8 +69,35 @@ func (s *Store) N2RGuidance(ctx context.Context, user uuid.UUID, now time.Time) 
 				todayWorkouts = append(todayWorkouts, w)
 			}
 		}
-		out.Cards = score.Guidance(score.GuidanceInput{Now: now, Score: result, Profile: p.N2RProfile,
+		out.Cards = score.Guidance(score.GuidanceInput{Now: now, Score: result, Profile: in.Profile,
 			Workouts: todayWorkouts, Meals: in.Meals, Morning: out.Biometrics, SleepLatencyMinutes: latency})
+		if state, ok := h.Coaching.plans[out.Date]; ok {
+			if fuel := state.Plan.Fuel; fuel != nil {
+				for i := range out.Cards {
+					if out.Cards[i].Code != score.GuideEndurance {
+						continue
+					}
+					targets := out.Cards[i].Targets
+					targets["post_workout_carb_budget_g"] = result.Budget.CarbAllowance
+					if fuel.RehydrateL != nil {
+						targets["post_workout_fluids_l"] = *fuel.RehydrateL
+					}
+					if fuel.SweatSodiumMg != nil {
+						targets["workout_sweat_sodium_mg"] = *fuel.SweatSodiumMg
+					}
+				}
+			}
+			out.Plan = &state.Plan
+			out.Readiness, out.Reasons, out.Load = state.Readiness, state.Reasons, state.Load
+			out.Cards = append(coachingCards(state, result, now, h.Coaching.days, h.Coaching.plans[previous.Format(time.DateOnly)].Plan), out.Cards...)
+			if briefing {
+				yesterday := parseN2RDay(out.Date, p.Location).AddDate(0, 0, -1).Format(time.DateOnly)
+				if yesterday >= fromDate {
+					r := score.N2R(h.input(yesterday, true))
+					out.Yesterday = &r
+				}
+			}
+		}
 		if len(out.Cards) == 0 {
 			return nil
 		}
@@ -94,7 +136,16 @@ var guidanceMatches = map[string]foodMatch{
 }
 
 func guidanceFoods(ctx context.Context, tx pgx.Tx, code string, vectorSchema *string) ([]model.FoodSummary, error) {
-	match := guidanceMatches[code]
+	if code == "PLANNED_SESSION_FUEL" {
+		code = score.GuideEndurance
+	}
+	if code == "EVENING_FUEL" {
+		code = score.GuideLate
+	}
+	match, ok := guidanceMatches[code]
+	if !ok {
+		return []model.FoodSummary{}, nil
+	}
 	base := `WITH candidates AS MATERIALIZED (
 		SELECT f.id,f.canonical_name,f.brand,f.food_type,f.quality,f.completeness,min(n.normalized) AS normalized
 		FROM nutrition.food_names n JOIN nutrition.foods f ON f.id=n.food_id

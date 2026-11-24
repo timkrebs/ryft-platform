@@ -1,0 +1,26 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "class": {
+      "type": "string"
+    },
+    "duration_min": {
+      "type": "number"
+    },
+    "sport_type": {
+      "type": "string"
+    },
+    "start_at": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "class",
+    "duration_min",
+    "sport_type",
+    "start_at"
+  ],
+  "title": "PlannedSession",
+  "type": "object"
+}
