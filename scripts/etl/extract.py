@@ -72,13 +72,17 @@ def csv_columns(db: duckdb.DuckDBPyConnection, path: Path) -> set[str]:
 
 
 def usda_rows(db: duckdb.DuckDBPyConnection, files: dict[str, Path],
-              limit: int | None, size: int) -> Iterator[list[dict]]:
+              limit: int | None, size: int, *, data_type: str) -> Iterator[list[dict]]:
     foods, values = files["food.csv"], files["food_nutrient.csv"]
     food_columns = csv_columns(db, foods)
     date_expr = "publication_date" if "publication_date" in food_columns else "NULL AS publication_date"
     has_categories = "food_category.csv" in files and "food_category_id" in food_columns
     category_id = ", food_category_id" if has_categories else ""
     params: list = [str(foods)]
+    data_type_filter = ""
+    if "data_type" in food_columns:
+        data_type_filter = "WHERE data_type = ?"
+        params.append(data_type)
     row_limit = ""
     if limit is not None:
         row_limit = "LIMIT ?"
@@ -99,7 +103,8 @@ def usda_rows(db: duckdb.DuckDBPyConnection, files: dict[str, Path],
         params.append(str(files["food_category.csv"]))
     sql = f"""
         WITH selected AS MATERIALIZED (
-            SELECT fdc_id, description, {date_expr}{category_id} FROM {CSV} {row_limit}
+            SELECT fdc_id, description, {date_expr}{category_id}
+            FROM {CSV} {data_type_filter} {row_limit}
         ), labels AS (
             SELECT n.fdc_id,
                    list(struct_pack(id := n.nutrient_id, amount := n.amount, unit := {unit_expr})

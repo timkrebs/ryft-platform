@@ -1,5 +1,23 @@
 # RYFT platform — status
 
+## Nutrition ETL USDA recovery (2026-11-24)
+
+The first bounded Cloud Run execution inserted 138 Open Food Facts rows. Its task retry found the same
+138 rows unchanged. USDA served a Foundation Foods ZIP without `food.csv` and `food_nutrient.csv` at
+the October release URL, which also serves a corrected ZIP. The importer now checks for these tables,
+retries the current release with a fresh URL and tries the previous official release if tables are still
+missing. It records the selected release and filters to the requested USDA food type before applying the
+row limit.
+
+After the hotfix merges, publish the new ETL image with
+`gh workflow run deploy.yml --ref main -f publish_nutrition_etl=true`. Pin the resulting digest in
+the production Terraform inputs with `schedule_enabled = false`. Review a fresh plan from
+`terraform -chdir=infra/gcp plan '-target=google_cloud_scheduler_job.nutrition_etl[0]' -out=nutrition-usda-fix.tfplan`.
+The plan should update only the ETL job image. Apply the reviewed plan with
+`terraform -chdir=infra/gcp apply nutrition-usda-fix.tfplan`, then run the bounded job with
+`gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --wait`.
+Check all three source summaries before enabling the schedule.
+
 **Now (2026-11-19, D246):** RYFT runs on GCP only: Cloud Run (`deploy/run`, deployed by `deploy.yml`), Pub/Sub,
 Cloud DNS, the edge, Cloud Monitoring, Supabase, and the site on Firebase Hosting. Nothing in AWS is RYFT's, and the
 old HCP org `tim-krebs-org` is deleted. The sections below run newest first. Everything in them about EKS, Argo CD,
