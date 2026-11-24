@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import subprocess
@@ -14,7 +15,7 @@ import httpx
 import psycopg
 
 from categorizer import classify
-from download import extract_usda, resolve_off, resolve_usda
+from download import MissingUSDATables, Release, extract_usda, resolve_off, resolve_usda, stage_usda
 from extract import connection, off_rows, usda_rows
 from generate_embeddings import DIMENSIONS, pending_batch, vectors
 from import_pg import IMPORT_NAMESPACE, load_batch
@@ -69,13 +70,58 @@ class PipelineTests(unittest.TestCase):
     def test_usda_join_and_reference_units(self):
         files = extract_usda(self.archive, self.directory)
         with connection(self.directory, 128) as db:
-            row = next(usda_rows(db, files, 10, 1))[0]
+            row = next(usda_rows(db, files, 10, 1, data_type="foundation_food"))[0]
         self.assertEqual(row["category"], "Fruits and Fruit Juices")
         food = usda_food(row, "v1")
         self.assertEqual(food.category.name, "whole_fruit")
         self.assertEqual(food.category.profile["whole_fruit_fraction"], 1)
         values = {n.code: n.amount for n in food.nutrients}
         self.assertEqual((values["carbohydrates_total"], values["sodium"]), (12, 3))
+
+    def test_usda_filters_supporting_foods_before_limit(self):
+        files = extract_usda(self.archive, self.directory)
+        files["food.csv"].write_text(
+            'fdc_id,data_type,description,food_category_id,publication_date\n'
+            '10001,sub_sample_food,Apple laboratory sample,9,2026-01-01\n'
+            '12345,foundation_food,"Apples, raw",9,2026-01-01\n',
+            encoding="utf-8",
+        )
+        with connection(self.directory, 128) as db:
+            row = next(usda_rows(db, files, 1, 1, data_type="foundation_food"))[0]
+        self.assertEqual(row["fdc_id"], "12345")
+
+    def test_usda_stale_archive_retry_and_previous_release(self):
+        good = self.archive.read_bytes()
+        with io.BytesIO() as buffer:
+            with zipfile.ZipFile(buffer, "w") as archive:
+                archive.writestr("release/foundation_food.csv", "fdc_id\n12345\n")
+            stale = buffer.getvalue()
+
+        latest = Release("https://fdc.nal.usda.gov/current.zip", "2026-10-29")
+        previous = Release("https://fdc.nal.usda.gov/previous.zip", "2026-04-30")
+        for retry_is_complete in (True, False):
+            with self.subTest(retry_is_complete=retry_is_complete):
+                requested = []
+
+                def handler(request):
+                    url = request.url
+                    requested.append(url)
+                    complete = url.path == "/previous.zip" or (url.query and retry_is_complete)
+                    return httpx.Response(200, content=good if complete else stale)
+
+                with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+                    archive, files, selected = stage_usda(client, [latest, previous], self.directory)
+                self.assertEqual(archive.read_bytes(), good)
+                self.assertIn(b"Apples, raw", files["food.csv"].read_bytes())
+                self.assertEqual(requested[0].query, b"")
+                self.assertEqual(requested[1].path, requested[0].path)
+                self.assertIn("ryft_retry", requested[1].params)
+                self.assertEqual([url.path for url in requested[2:]], [] if retry_is_complete else ["/previous.zip"])
+                self.assertEqual(selected.version, latest.version if retry_is_complete else previous.version)
+
+        with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, content=stale))) as client:
+            with self.assertRaisesRegex(MissingUSDATables, "2026-10-29.*food.csv, food_nutrient.csv"):
+                stage_usda(client, [latest], self.directory)
 
     def test_off_recovery_nutrients_keep_units_and_basis(self):
         with connection(self.directory, 128) as db:
@@ -148,11 +194,13 @@ class RulesTests(unittest.TestCase):
             return httpx.Response(200, text='''
                 <a href="/fdc-datasets/FoodData_Central_foundation_food_csv_2025-04-24.zip">old</a>
                 <a href="/fdc-datasets/FoodData_Central_foundation_food_csv_2026-10-29.zip">new</a>
+                <a href="/fdc-datasets/FoodData_Central_foundation_food_csv_2026-10-29.zip">duplicate</a>
                 <a href="https://example.com/fdc-datasets/FoodData_Central_foundation_food_csv_2029-02-01.zip">bad</a>
             ''')
         with httpx.Client(transport=httpx.MockTransport(handler)) as client:
             self.assertIn("a" * 40, resolve_off(client).location)
-            self.assertEqual(resolve_usda(client)["foundation_food"].version, "2026-10-29")
+            releases = resolve_usda(client)["foundation_food"]
+            self.assertEqual([release.version for release in releases], ["2026-10-29", "2025-04-24"])
 
     def test_embedding_batch_order_and_dimensions(self):
         def handler(request):

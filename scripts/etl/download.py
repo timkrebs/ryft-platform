@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
+import sys
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
+from uuid import uuid4
 
 import httpx
 
@@ -33,10 +35,14 @@ class Release:
     version: str
 
 
+class MissingUSDATables(ValueError):
+    """An official ZIP was downloaded but lacks tables required by the importer."""
+
+
 class ReleaseLinks(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
-        self.releases: dict[str, Release] = {}
+        self.releases: dict[str, dict[str, Release]] = {}
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag != "a":
@@ -50,17 +56,18 @@ class ReleaseLinks(HTMLParser):
         if parsed.scheme != "https" or parsed.netloc != urlparse(FDC).netloc or not found:
             return
         kind, day = found.groups()
-        previous = self.releases.get(kind)
-        if previous is None or day > previous.version:
-            self.releases[kind] = Release(url, day)
+        self.releases.setdefault(kind, {}).setdefault(day, Release(url, day))
 
 
-def resolve_usda(client: httpx.Client) -> dict[str, Release]:
+def resolve_usda(client: httpx.Client) -> dict[str, list[Release]]:
     response = client.get(FDC_RELEASES)
     response.raise_for_status()
     page = ReleaseLinks()
     page.feed(response.text)
-    return page.releases
+    return {
+        kind: sorted(releases.values(), key=lambda release: release.version, reverse=True)
+        for kind, releases in page.releases.items()
+    }
 
 
 def resolve_off(client: httpx.Client, local: Path | None = None) -> Release:
@@ -96,6 +103,26 @@ def download_usda(client: httpx.Client, release: Release, directory: Path) -> Pa
     return archive
 
 
+def stage_usda(client: httpx.Client, releases: list[Release], directory: Path) -> tuple[Path, dict[str, Path], Release]:
+    """Prefer the latest complete archive, retrying stale content before trying the previous release."""
+    latest = releases[0]
+    # USDA can replace the bytes at an existing release URL while caches still serve its old ZIP.
+    refresh_url = httpx.URL(latest.location).copy_merge_params({"ryft_retry": uuid4().hex})
+    candidates = [latest, replace(latest, location=str(refresh_url)), *releases[1:2]]
+    for index, release in enumerate(candidates):
+        archive = download_usda(client, release, directory)
+        try:
+            files = extract_usda(archive, directory)
+        except MissingUSDATables as error:
+            if index == len(candidates) - 1:
+                raise MissingUSDATables(f"USDA release {release.version}: {error}") from error
+            action = "retrying with a fresh URL" if index == 0 else f"trying previous release {candidates[-1].version}"
+            print(f"USDA release {release.version}: {error}; {action}", file=sys.stderr, flush=True)
+        else:
+            return archive, files, release
+    raise AssertionError("USDA candidates exhausted")
+
+
 def extract_usda(archive: Path, directory: Path) -> dict[str, Path]:
     """Extract selected CSVs to fixed destinations, validating sizes and normalizing text."""
     with zipfile.ZipFile(archive) as source:
@@ -109,7 +136,7 @@ def extract_usda(archive: Path, directory: Path) -> dict[str, Path]:
             members[name] = member
         missing = REQUIRED_USDA_TABLES - members.keys()
         if missing:
-            raise ValueError(f"missing USDA CSV tables: {', '.join(sorted(missing))}")
+            raise MissingUSDATables(f"missing USDA CSV tables: {', '.join(sorted(missing))}")
         if sum(m.file_size for m in members.values()) > CSV_LIMIT:
             raise ValueError("USDA CSV tables exceed the extraction limit")
         output = {}

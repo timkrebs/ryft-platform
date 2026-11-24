@@ -17,7 +17,7 @@ import httpx
 import psycopg
 from tqdm import tqdm
 
-from download import CLIENT_HEADERS, download_usda, extract_usda, file_sha256, resolve_off, resolve_usda
+from download import CLIENT_HEADERS, extract_usda, file_sha256, resolve_off, resolve_usda, stage_usda
 from extract import connection, off_rows, usda_rows
 from import_pg import connect, load_batch
 from transform import Reject, off_food, usda_food
@@ -103,15 +103,20 @@ def run(args: argparse.Namespace) -> None:
                 if archive is None:
                     if kind not in official:
                         raise ValueError(f"USDA did not publish a matching CSV release for {kind}")
-                    archive = download_usda(client, official[kind], directory)
+                    archive, files, release = stage_usda(client, official[kind], directory)
+                    result_metadata = {"source_release": release.version}
+                else:
+                    files = extract_usda(archive, directory)
+                    result_metadata = {}
                 digest = file_sha256(archive)
-                files = extract_usda(archive, directory)
                 tag = "foundation" if kind == "foundation_food" else "sr-legacy"
                 version = f"{PIPELINE_VERSION}:{tag}:{digest}"
                 with connection(directory, args.memory_mb) as db:
-                    result = process(usda_rows(db, files, limit, args.batch_size), usda_food, version, conn, kind)
+                    rows = usda_rows(db, files, limit, args.batch_size, data_type=kind)
+                    result = process(rows, usda_food, version, conn, kind)
                 print(json.dumps({"mode": "write" if args.write else "dry-run", "sha256": digest,
-                                  "has_category_table": "food_category.csv" in files, **result}, sort_keys=True), flush=True)
+                                  "has_category_table": "food_category.csv" in files,
+                                  **result_metadata, **result}, sort_keys=True), flush=True)
 
 
 def main() -> int:
