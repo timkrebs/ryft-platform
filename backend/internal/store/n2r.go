@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/timkrebs/ryft/internal/energy"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/nutrition"
 	"github.com/timkrebs/ryft/internal/nutrition/score"
@@ -107,6 +108,7 @@ type n2rHistory struct {
 	Omega    map[string]float64
 	Glucose  map[uuid.UUID]model.NutritionMealGlucoseScore
 	BaseKcal float64
+	Coaching coachingData
 }
 
 func parseN2RDay(date string, loc *time.Location) time.Time {
@@ -164,13 +166,46 @@ func readN2RHistory(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile
 		return h, err
 	}
 	h.Workouts = slices.DeleteFunc(h.Workouts, func(w model.Workout) bool { return w.End.After(asOf) })
+	coaching, err := readCoachingProfile(ctx, tx, user, false)
+	if err != nil {
+		return h, err
+	}
+	h.Coaching, err = loadCoaching(ctx, tx, user, p, history, last, asOf, coaching)
+	if err != nil {
+		return h, err
+	}
+	if coaching != nil {
+		if coaching.SweatRate != nil {
+			h.Profile.SweatRateLPH = coaching.SweatRate
+		}
+		if coaching.Parameters.SweatSodium != nil {
+			h.Profile.SweatSodiumMgL = coaching.Parameters.SweatSodium
+		} else if coaching.GoalProfile.SweatSodium != nil {
+			h.Profile.SweatSodiumMgL = coaching.GoalProfile.SweatSodium
+		}
+		h.Workouts = nil
+		for _, w := range h.Coaching.workouts {
+			if w.End.After(start) {
+				m := w.Model()
+				if state, ok := h.Coaching.plans[w.Start.In(p.Location).Format(time.DateOnly)]; ok {
+					net := energy.Workout(w, state.Physiology).NetKcal
+					m.EnergyKcal = &net
+				}
+				h.Workouts = append(h.Workouts, m)
+			}
+		}
+	}
 	h.Bedtimes, err = nutritionBedtimes(ctx, tx, user, from, to)
 	if err != nil {
 		return h, err
 	}
 	for d := history; !d.After(last); d = d.AddDate(0, 0, 1) {
 		key := d.Format(time.DateOnly)
-		if v := score.EPAIntake(h.Meals[key], score.EnergyTarget(h.BaseKcal, h.Workouts, d, d.AddDate(0, 0, 1))); v != nil {
+		target := score.EnergyTarget(h.BaseKcal, h.Workouts, d, d.AddDate(0, 0, 1))
+		if state, ok := h.Coaching.plans[key]; ok {
+			target = state.Plan.EnergyKcal
+		}
+		if v := score.EPAIntake(h.Meals[key], target); v != nil {
 			h.Omega[key] = *v
 		}
 	}
@@ -199,9 +234,16 @@ func (h n2rHistory) input(date string, measuredBed bool) score.N2RInput {
 			history = append(history, score.OmegaDay{Age: age, Mg: mg})
 		}
 	}
-	return score.N2RInput{Profile: h.Profile.N2RProfile, BaseKcal: h.BaseKcal, Start: day, End: day.AddDate(0, 0, 1),
+	input := score.N2RInput{Profile: h.Profile.N2RProfile, BaseKcal: h.BaseKcal, Start: day, End: day.AddDate(0, 0, 1),
 		Bedtime: bed, Meals: h.Meals[date], PriorMeals: h.Meals[day.AddDate(0, 0, -1).Format(time.DateOnly)],
 		Workouts: h.Workouts, Glucose: h.Glucose, Omega: history, CalibratedHalfH: h.Profile.Calibrated}
+	if state, ok := h.Coaching.plans[date]; ok {
+		input.Coaching = &state.Plan
+		input.AlcoholSensitivity = h.Coaching.profile.Alcohol
+		input.CoachingHalfH = &h.Coaching.profile.Caffeine
+		input.Profile.BodyMassKG = state.Physiology.MassKG
+	}
+	return input
 }
 
 func addN2RDays(ctx context.Context, tx pgx.Tx, user uuid.UUID, days []model.NutritionDaily, now time.Time) error {

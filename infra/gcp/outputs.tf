@@ -53,7 +53,7 @@ output "gates" {
 }
 
 output "monitoring" {
-  description = "Cloud Monitoring (D236): whether alerting is on, its policies, the uptime checks and the log-based metrics, by name (runbook step 11)"
+  description = "Cloud Monitoring (D236): whether alerting is on, its policies, the uptime checks, the log-based metrics and the two dashboards, by name (runbook step 11)"
   value = {
     alerting = local.alerting
     policies = sort(concat(
@@ -64,9 +64,11 @@ output "monitoring" {
     uptime_checks = sort(keys(google_monitoring_uptime_check_config.this))
     log_metrics = sort(concat(
       [google_logging_metric.ticks.name, google_logging_metric.errors.name, google_logging_metric.notices.name],
+      [google_logging_metric.connect_pushes.name],
       [for m in google_logging_metric.edge : m.name],
     ))
-    dashboard = local.dashboard_name
+    dashboard             = local.dashboard_name
+    connections_dashboard = local.connect_dashboard_name
   }
 }
 

@@ -48,8 +48,9 @@ func TestIngestRoleDeletesOnlyRawData(t *testing.T) {
 		}
 	}
 	rows.Close()
-	if want := []string{"outbox", "samples", "sleep_segments", "workouts"}; !slices.Equal(canDelete, want) {
-		t.Fatalf("ryft_ingest can DELETE on %v, want exactly %v (outbox: the relay, 0026)", canDelete, want)
+	if want := []string{"outbox", "provider_inbox", "samples", "sleep_segments", "user_sources", "workouts"}; !slices.Equal(canDelete, want) {
+		t.Fatalf("ryft_ingest can DELETE on %v, want exactly %v (outbox: the relay, 0026; provider_inbox: its own, user_sources: "+
+			"a deregistration notice deletes the direct source, 0042)", canDelete, want)
 	}
 
 	st := New(pool)

@@ -18,7 +18,9 @@ change what is deployed. Derived values:
   IMAGE          europe-west1-docker.pkg.dev/ryftlab-prod/ryft/<svc>@sha256:<digest>
 Fails closed: a FILL_ME_IN left in config.env (the config PR before the first deploy), a value of the
 wrong shape, a missing, unknown or repeated key (OTLP_ENDPOINT and OTLP_USER among the unknown since
-D236), an account twice in APP_ATTEST_EXEMPT_USERS (the one key whose value may be empty). --lint checks the same but lets FILL_ME_IN pass (and names what is left), so CI catches a typo
+D236), an account twice in APP_ATTEST_EXEMPT_USERS, a provider in CONNECT_PROVIDERS twice, fake or not
+one Cloud Run serves (D257; those two keys' values may be empty), a CONNECT_MIN_POLICY_VERSION that is no
+calendar date or is after PRIVACY_POLICY_VERSION (D259; empty is the policy in force). --lint checks the same but lets FILL_ME_IN pass (and names what is left), so CI catches a typo
 in a config PR before the deploy does.
 Exit 0 rendered (or linted), 1 a finding, 2 usage.
 """
@@ -56,6 +58,17 @@ KEYS = {
     # The X-Forwarded-For entries our proxies append (D53, D240), api and ingest only: the edge limit's
     # client is that many entries from the right. Required, so the count in force is the one in git.
     "XFF_TRUSTED_HOPS": (True, r"[1-8]", "1 to 8, the proxies in front of api and ingest"),
+    # Direct connections (D257, design §9): the providers api and ingest serve (the line required, its value
+    # may be empty: phase 1), and Garmin's user cap (required, 0 until phase 2). Only CONNECT_ON_CLOUD_RUN
+    # may be listed, each once; fake is compose only and refused by name below. check_cloudrun.py holds
+    # the rules between keys and files (garmin only with its secret pin, its client id and a cap above 0).
+    "CONNECT_PROVIDERS": (False, r"[a-z][a-z0-9]*(?:,[a-z][a-z0-9]*)*",
+                          "empty, or a comma list of provider ids (garmin), each once, no spaces"),
+    "CONNECT_GARMIN_USER_CAP": (True, r"0|[1-9][0-9]{0,6}", "0 or a whole number of accounts, no leading zero"),
+    # The consent cutoff (D259), ingest only: the line required, its value empty (the policy in force) or a
+    # calendar date not after PRIVACY_POLICY_VERSION (checked below, after every key's shape).
+    "CONNECT_MIN_POLICY_VERSION": (False, r"[0-9]{4}-[0-9]{2}-[0-9]{2}",
+                                   "empty, or a YYYY-MM-DD date not after PRIVACY_POLICY_VERSION"),
     "GCP_PROJECT_NUMBER": (True, r"[1-9][0-9]{5,19}", "the project number, digits only"),
     "PUSH_SA_ID": (True, r"[1-9][0-9]{11,24}", "ryft-push's unique ID, digits only"),
     "SUPABASE_PROJECT_REF": (True, r"[a-z]{20}", "the Supabase project ref, 20 lower-case letters"),
@@ -64,10 +77,12 @@ KEYS = {
     "APPLE_KEY_ID": (True, r"[A-Z0-9]{10}", "10 upper-case letters or digits"),
     "APNS_KEY_ID": (True, r"[A-Z0-9]{10}", "10 upper-case letters or digits"),
 }
+# The providers Cloud Run may serve (D257). fake is the compose-only test provider (CONNECT_FAKE=on).
+CONNECT_ON_CLOUD_RUN = ("garmin",)
 # The template placeholders, the only names ever substituted.
 VARS = ("IMAGE", "DATABASE_URL", "PUSH_AUDIENCE", "PRIVACY_POLICY_VERSION", "LOG_LEVEL", "SUPABASE_PROJECT_REF",
         "PUSH_SA_ID", "APPLE_KEY_ID", "APNS_KEY_ID", "BETA_GATE", "XFF_TRUSTED_HOPS", "APP_ATTEST",
-        "APP_ATTEST_EXEMPT_USERS")
+        "APP_ATTEST_EXEMPT_USERS", "CONNECT_PROVIDERS", "CONNECT_GARMIN_USER_CAP", "CONNECT_MIN_POLICY_VERSION")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=(.*)")
 PLACE = re.compile(r"\$\{([A-Za-z0-9_]*)\}")
@@ -125,11 +140,26 @@ def read_config(path, lint):
             errs.append(f"{path}: {k}={v!r} does not have the shape {what}")
         elif k == "APP_ATTEST_EXEMPT_USERS" and len(set(v.split(","))) != v.count(",") + 1:
             errs.append(f"{path}: APP_ATTEST_EXEMPT_USERS names an account twice: each id once")
-        elif k == "PRIVACY_POLICY_VERSION":
+        elif k == "CONNECT_PROVIDERS" and "fake" in v.split(","):
+            errs.append(f"{path}: CONNECT_PROVIDERS names fake: the fake provider is compose only (CONNECT_FAKE=on, "
+                        "which the services refuse on Cloud Run, D257)")
+        elif k == "CONNECT_PROVIDERS" and set(v.split(",")) - set(CONNECT_ON_CLOUD_RUN):
+            unknown = sorted(set(v.split(",")) - set(CONNECT_ON_CLOUD_RUN))
+            errs.append(f"{path}: CONNECT_PROVIDERS names {', '.join(unknown)}: Cloud Run serves only "
+                        f"{', '.join(CONNECT_ON_CLOUD_RUN)} (D257)")
+        elif k == "CONNECT_PROVIDERS" and len(set(v.split(","))) != v.count(",") + 1:
+            errs.append(f"{path}: CONNECT_PROVIDERS names a provider twice: each id once")
+        elif k in ("PRIVACY_POLICY_VERSION", "CONNECT_MIN_POLICY_VERSION"):
             try:
                 datetime.date.fromisoformat(v)
             except ValueError:
-                errs.append(f"{path}: PRIVACY_POLICY_VERSION={v} is not a calendar date (the services refuse it)")
+                errs.append(f"{path}: {k}={v} is not a calendar date (the services refuse it)")
+    # D259: the cutoff never after the policy in force (ISO dates compare as strings); only when both are dates.
+    cut, pol = vals.get("CONNECT_MIN_POLICY_VERSION", ""), vals.get("PRIVACY_POLICY_VERSION", "")
+    date = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+    if date.fullmatch(cut) and date.fullmatch(pol) and cut > pol:
+        errs.append(f"{path}: CONNECT_MIN_POLICY_VERSION={cut} is after PRIVACY_POLICY_VERSION={pol}: the cutoff is "
+                    "the oldest consent version still accepted, never a later one (D259)")
     if errs:
         raise Finding("\n".join(errs))
     return vals, left

@@ -13,15 +13,18 @@ const n2rVersion = "1.0.0"
 
 // N2RInput groups one intake day's evidence and relevant training and diet history.
 type N2RInput struct {
-	Profile           model.N2RProfile
-	BaseKcal          float64
-	Start, End        time.Time
-	Bedtime           *time.Time
-	Meals, PriorMeals []model.NutritionMeal
-	Workouts          []model.Workout
-	Glucose           map[uuid.UUID]model.NutritionMealGlucoseScore
-	Omega             []OmegaDay
-	CalibratedHalfH   float64
+	Profile            model.N2RProfile
+	BaseKcal           float64
+	Start, End         time.Time
+	Bedtime            *time.Time
+	Meals, PriorMeals  []model.NutritionMeal
+	Workouts           []model.Workout
+	Glucose            map[uuid.UUID]model.NutritionMealGlucoseScore
+	Omega              []OmegaDay
+	CalibratedHalfH    float64
+	Coaching           *model.CoachingPlan
+	AlcoholSensitivity float64
+	CoachingHalfH      *float64
 }
 
 func numberPtr(v float64) *float64 { return &v }
@@ -34,8 +37,16 @@ func unlock(kcal, target float64) bool {
 func N2R(in N2RInput) model.N2RScore {
 	p := in.Profile
 	b, windows, strengthDay := workoutBudget(p, in.BaseKcal, in.Workouts, in.Start, in.End)
+	if in.Coaching != nil && in.Coaching.EnergyKcal > 0 {
+		b.EnergyTarget = in.Coaching.EnergyKcal
+		b.CarbTarget = in.Coaching.CarbsG
+		b.WorkoutEnergy = in.Coaching.NetExercise
+	}
 	out := model.N2RScore{Version: n2rVersion, Budget: b, Bedtime: in.Bedtime,
 		CaffeineHalfH: max(orDefault(p.CaffeineHalfH, DefaultCaffeineHalfH), in.CalibratedHalfH), Tags: []string{}}
+	if in.CoachingHalfH != nil && p.CaffeineHalfH == nil {
+		out.CaffeineHalfH = *in.CoachingHalfH
+	}
 	meals := slices.Clone(in.Meals)
 	slices.SortFunc(meals, compareMeals)
 	var quality qualityTotals
@@ -67,7 +78,7 @@ func N2R(in N2RInput) model.N2RScore {
 	}
 	out.OmegaDepot = omegaEWMA(omega)
 	out.Glucose = contextualGlucose(meals, in.Glucose, windows, in.Bedtime)
-	autonomic(&out, meals, p, strengthDay)
+	autonomic(&out, meals, p, strengthDay, in.AlcoholSensitivity)
 	if !unlock(out.LoggedKcal, b.EnergyTarget) {
 		return out
 	}

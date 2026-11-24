@@ -1,0 +1,13 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "ticket": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "ticket"
+  ],
+  "title": "ConnectConfirmPost",
+  "type": "object"
+}

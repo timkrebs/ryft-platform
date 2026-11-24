@@ -27,7 +27,10 @@ down:
 logs:
 	$(COMPOSE) logs -f ingest scoring api
 
-# Push a synthetic night + workout through the stack and read the score back.
+# Push a synthetic night + workout through the stack and read the score back. In apikey mode it then
+# connects the fake provider as a throwaway account (start, callback, confirm, a signed push and its
+# duplicate, the night scored, User.sources, disconnect deletes it; D257). CONNECT_SMOKE=off skips that
+# pass; CONNECT_COVERAGE=on adds its coverage checks (on by default from the PR connect/scoring).
 smoke:
 	./scripts/smoke.sh
 

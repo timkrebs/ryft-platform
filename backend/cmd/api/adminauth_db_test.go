@@ -100,6 +100,7 @@ func (d *adminDB) calls() []adminRouteCall {
 	u8 := d.target.ID.String()[:8]
 	return []adminRouteCall{
 		{"GET", "/v1/admin/flags", "", false},
+		{"GET", "/v1/admin/evaluation/metrics", "", true},
 		{"PUT", "/v1/admin/flags/zz.matrix", `{"enabled": false, "rollout_pct": 0}`, true},
 		{"DELETE", "/v1/admin/flags/zz.matrix", "", true},
 		{"POST", "/v1/admin/invites", `{"note": "matrix"}`, false},
@@ -121,7 +122,8 @@ func (d *adminDB) calls() []adminRouteCall {
 // reach what it needs and nothing destructive. Adding a route without saying who may call it fails here.
 func TestAdminRoutesAreClassified(t *testing.T) {
 	want := map[string]bool{ // pattern -> key-only
-		"GET /v1/admin/flags": false, "PUT /v1/admin/flags/{key}": true, "DELETE /v1/admin/flags/{key}": true,
+		"GET /v1/admin/evaluation/metrics": true,
+		"GET /v1/admin/flags":              false, "PUT /v1/admin/flags/{key}": true, "DELETE /v1/admin/flags/{key}": true,
 		"POST /v1/admin/invites": false, "GET /v1/admin/invites": false, "DELETE /v1/admin/invites/{code}": false,
 		"GET /v1/admin/feedback": false, "POST /v1/admin/feedback/{id}/resolve": false,
 		"GET /v1/admin/users": false, "GET /v1/admin/users/{id}": true,

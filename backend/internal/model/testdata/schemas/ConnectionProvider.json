@@ -1,0 +1,17 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "availability": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "availability",
+    "provider"
+  ],
+  "title": "ConnectionProvider",
+  "type": "object"
+}

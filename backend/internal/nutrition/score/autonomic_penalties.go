@@ -74,7 +74,7 @@ func lateMeal(m model.NutritionMeal, hours, target float64, strengthDay bool) (p
 	return latePenaltyScale * math.Pow((lateWindowH-hours)/lateWindowH, lateTimingExponent) * (adjusted / target) * (1 + lateSaturatedFatWeight*fatFraction + lateSugarWeight*sugarFraction), fatFraction >= lateSaturatedFatTagFraction
 }
 
-func autonomic(out *model.N2RScore, meals []model.NutritionMeal, p model.N2RProfile, strengthDay bool) {
+func autonomic(out *model.N2RScore, meals []model.NutritionMeal, p model.N2RProfile, strengthDay bool, alcoholSensitivity float64) {
 	var lastAlcohol time.Time
 	var alcoholG, residual float64
 	var caffeineObserved, lateSat bool
@@ -104,7 +104,10 @@ func autonomic(out *model.N2RScore, meals []model.NutritionMeal, p model.N2RProf
 		out.Tags = append(out.Tags, "alcohol_above_035gkg")
 	}
 	if out.Bedtime != nil && !lastAlcohol.IsZero() {
-		out.AlcoholPenalty = alcoholPenalty(out.AlcoholGKG, hoursToBed(*out.Bedtime, lastAlcohol), p.Sex)
+		if alcoholSensitivity < .8 || alcoholSensitivity > 1.5 {
+			alcoholSensitivity = 1
+		}
+		out.AlcoholPenalty = clamp(alcoholPenalty(out.AlcoholGKG, hoursToBed(*out.Bedtime, lastAlcohol), p.Sex)*alcoholSensitivity, maxAlcoholPenalty)
 	}
 	if caffeineObserved {
 		out.CaffeineBedMg = numberPtr(residual)

@@ -5,6 +5,10 @@
       "nullable": true,
       "type": "string"
     },
+    "cursor": {
+      "$ref": "HealthKitCursor",
+      "nullable": true
+    },
     "deleted": {
       "items": {
         "$ref": "DeletedRecord"

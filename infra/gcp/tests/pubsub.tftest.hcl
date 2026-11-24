@@ -48,13 +48,13 @@ run "publisher_matrix_per_topic" {
   command = plan
 
   assert {
-    condition     = length(google_pubsub_topic.this) == 9 && length(google_pubsub_subscription.push) == 10 && length(google_pubsub_subscription.hold) == 2
-    error_message = "the committed topology has 9 topics, 10 push and 2 hold subscriptions"
+    condition     = length(google_pubsub_topic.this) == 11 && length(google_pubsub_subscription.push) == 11 && length(google_pubsub_subscription.hold) == 3
+    error_message = "the committed topology has 11 topics, 11 push and 3 hold subscriptions (D257: ryft-inbox-received and ryft-dlq-ingest, ingest-inbox-received, dlq-ingest-hold)"
   }
 
   assert {
     condition = (
-      length(google_pubsub_topic_iam_binding.publisher) == 9 &&
+      length(google_pubsub_topic_iam_binding.publisher) == 11 &&
       alltrue([for b in google_pubsub_topic_iam_binding.publisher : b.role == "roles/pubsub.publisher"])
     )
     error_message = "one authoritative publisher binding per topic"
@@ -92,6 +92,11 @@ run "publisher_matrix_per_topic" {
   }
 
   assert {
+    condition     = google_pubsub_topic_iam_binding.publisher["ryft-inbox-received"].members == toset(["serviceAccount:ryft-ingest@ryftlab-prod.iam.gserviceaccount.com"])
+    error_message = "ryft-inbox-received: ingest alone publishes (its hook's inbox rows, D257)"
+  }
+
+  assert {
     condition     = google_pubsub_topic_iam_binding.publisher["ryft-tick"].members == toset(["serviceAccount:service-123456789012@gcp-sa-cloudscheduler.iam.gserviceaccount.com"])
     error_message = "ryft-tick: only the Cloud Scheduler service agent publishes"
   }
@@ -104,6 +109,10 @@ run "publisher_matrix_per_topic" {
       ]) &&
       google_pubsub_topic_iam_binding.publisher["ryft-dlq-notify"].members == toset([
         "serviceAccount:ryft-notify@ryftlab-prod.iam.gserviceaccount.com",
+        "serviceAccount:service-123456789012@gcp-sa-pubsub.iam.gserviceaccount.com",
+      ]) &&
+      google_pubsub_topic_iam_binding.publisher["ryft-dlq-ingest"].members == toset([
+        "serviceAccount:ryft-ingest@ryftlab-prod.iam.gserviceaccount.com",
         "serviceAccount:service-123456789012@gcp-sa-pubsub.iam.gserviceaccount.com",
       ])
     )
@@ -144,7 +153,9 @@ run "push_subscriptions" {
       google_pubsub_subscription.push["scoring-ingested"].push_config[0].push_endpoint == "https://scoring-123456789012.europe-west1.run.app/push/ingested" &&
       google_pubsub_subscription.push["scoring-ingested"].push_config[0].oidc_token[0].audience == "https://scoring-123456789012.europe-west1.run.app" &&
       google_pubsub_subscription.push["notify-session-scored"].push_config[0].push_endpoint == "https://notify-123456789012.europe-west1.run.app/push/session.scored" &&
-      google_pubsub_subscription.push["tick-api"].push_config[0].push_endpoint == "https://api-123456789012.europe-west1.run.app/internal/tick"
+      google_pubsub_subscription.push["tick-api"].push_config[0].push_endpoint == "https://api-123456789012.europe-west1.run.app/internal/tick" &&
+      google_pubsub_subscription.push["ingest-inbox-received"].push_config[0].push_endpoint == "https://ingest-123456789012.europe-west1.run.app/push/inbox.received" &&
+      google_pubsub_subscription.push["ingest-inbox-received"].push_config[0].oidc_token[0].audience == "https://ingest-123456789012.europe-west1.run.app"
     )
     error_message = "the endpoints and audience as ticket B's interfaces name them"
   }
@@ -195,9 +206,12 @@ run "push_subscriptions" {
   assert {
     condition = (
       google_pubsub_subscription.push["scoring-ingested"].ack_deadline_seconds == 300 &&
-      google_pubsub_subscription.push["notify-scored"].ack_deadline_seconds == 60
+      google_pubsub_subscription.push["notify-scored"].ack_deadline_seconds == 60 &&
+      google_pubsub_subscription.push["ingest-inbox-received"].ack_deadline_seconds == 60 &&
+      google_pubsub_subscription.push["ingest-inbox-received"].message_retention_duration == "604800s" &&
+      google_pubsub_subscription.push["ingest-inbox-received"].topic == "ryft-inbox-received"
     )
-    error_message = "ack deadlines: scoring 300 s, notify 60 s (design 2.2)"
+    error_message = "ack deadlines: scoring 300 s, notify 60 s (design 2.2), ingest's inbox 60 s with 7 days' retention (D257)"
   }
 
   assert {
@@ -212,6 +226,7 @@ run "push_subscriptions" {
     condition = (
       google_pubsub_subscription.hold["dlq-scoring-hold"].topic == "ryft-dlq-scoring" &&
       google_pubsub_subscription.hold["dlq-notify-hold"].topic == "ryft-dlq-notify" &&
+      google_pubsub_subscription.hold["dlq-ingest-hold"].topic == "ryft-dlq-ingest" &&
       alltrue([for s in google_pubsub_subscription.hold : s.message_retention_duration == "1209600s" && length(s.push_config) == 0])
     )
     error_message = "the DLQs' hold subscriptions are pull and keep letters 14 days"
@@ -220,7 +235,7 @@ run "push_subscriptions" {
   assert {
     condition = (
       toset(keys(google_pubsub_subscription_iam_binding.dead_letter_source)) == toset([
-        "notify-refresh", "notify-scored", "notify-session-scored", "notify-wait", "scoring-ingested", "scoring-session-completed",
+        "ingest-inbox-received", "notify-refresh", "notify-scored", "notify-session-scored", "notify-wait", "scoring-ingested", "scoring-session-completed",
       ]) &&
       alltrue([
         for b in google_pubsub_subscription_iam_binding.dead_letter_source :

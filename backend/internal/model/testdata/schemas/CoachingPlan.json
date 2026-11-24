@@ -1,0 +1,49 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "availability": {
+      "$ref": "Availability"
+    },
+    "carb_target_g": {
+      "type": "number"
+    },
+    "deficit_suspended": {
+      "type": "boolean"
+    },
+    "energy_target_kcal": {
+      "type": "number"
+    },
+    "fat_target_g": {
+      "type": "number"
+    },
+    "fueling": {
+      "$ref": "FuelingPlan",
+      "nullable": true
+    },
+    "net_exercise_kcal": {
+      "type": "number"
+    },
+    "protein_target_g": {
+      "type": "number"
+    },
+    "session_class": {
+      "type": "string"
+    },
+    "train_low": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "availability",
+    "carb_target_g",
+    "deficit_suspended",
+    "energy_target_kcal",
+    "fat_target_g",
+    "net_exercise_kcal",
+    "protein_target_g",
+    "session_class",
+    "train_low"
+  ],
+  "title": "CoachingPlan",
+  "type": "object"
+}

@@ -136,7 +136,7 @@ func TestSpecValidates(t *testing.T) {
 func TestNames(t *testing.T) {
 	for key, topic := range map[string]string{
 		events.KeyIngested: TopicIngested, events.KeySessionCompleted: TopicSessionCompleted, events.KeyScored: TopicScored,
-		events.KeySessionScored: TopicSessionScored, events.KeyRefresh: TopicRefresh,
+		events.KeySessionScored: TopicSessionScored, events.KeyRefresh: TopicRefresh, events.KeyInboxReceived: TopicInboxReceived,
 	} {
 		if got, ok := TopicFor(key); !ok || got != topic {
 			t.Errorf("TopicFor(%s) = %s %v, want %s", key, got, ok, topic)
@@ -179,7 +179,13 @@ func TestNames(t *testing.T) {
 	if got := strings.Join(PushPaths(ServiceNotify), " "); got != "/push/scored /push/session.scored /push/refresh /push/wait" {
 		t.Errorf("notify serves %s", got)
 	}
-	if len(PushPaths(ServiceAPI)) != 0 || len(PushPaths(ServiceIngest)) != 0 {
-		t.Error("api and ingest serve the tick only")
+	if got := strings.Join(PushPaths(ServiceIngest), " "); got != "/push/inbox.received" {
+		t.Errorf("ingest serves %s", got)
+	}
+	if len(PushPaths(ServiceAPI)) != 0 {
+		t.Error("api serves the tick only")
+	}
+	if d, _ := DLQTopic(events.ConsumerIngest); d != TopicDLQIngest {
+		t.Error(d)
 	}
 }

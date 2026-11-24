@@ -464,7 +464,8 @@ me_c = get("/v1/me")
 KINDS = ["energy", "hr", "hrv", "resp", "sleep", "spo2", "steps", "workout"]
 ts = lambda s: datetime.fromisoformat(s.replace("Z", "+00:00"))
 check(isinstance(me_c["sources"], list) and me_c["sources"]
-      and all(set(s) == {"name", "bundle_id", "kinds", "last_seen"} and s["kinds"] and set(s["kinds"]) <= set(KINDS)
+      and all(set(s) == {"name", "bundle_id", "kinds", "last_seen", "origin"} and s["origin"] == "healthkit"
+              and s["kinds"] and set(s["kinds"]) <= set(KINDS)
               and s["kinds"] == sorted(s["kinds"]) for s in me_c["sources"])
       and [ts(s["last_seen"]) for s in me_c["sources"]] == sorted((ts(s["last_seen"]) for s in me_c["sources"]), reverse=True),
       f"User.sources of the smoke user: {me_c['sources']}")
@@ -1254,7 +1255,7 @@ if os.environ.get("AUTH_MODE", "apikey") == "apikey":
     # ---- account deletion: B leaves; A (same device ID, same workout UUID) keeps everything
     wk_a = get(f"/v1/workouts/{a_wk['id']}")
     # no Supabase auth user and no Apple token in apikey mode
-    gone = {"status": "deleted", "auth_user_deleted": False, "apple_token_revoked": None}
+    gone = {"status": "deleted", "auth_user_deleted": False, "apple_token_revoked": None, "connections_deregistered": None}
     status, _, body = raw("DELETE", "/v1/me", key=KEY_B)
     check(status == 200 and body == gone, f"DELETE /v1/me: {status} {body}")
     check(is_error(get("/v1/me", expect=401, key=KEY_B)), "a deleted account's token must get 401")

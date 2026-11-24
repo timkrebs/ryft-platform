@@ -76,6 +76,23 @@ func TestUserLimitsClassifiesSync(t *testing.T) {
 	if _, ok, _ := u.Allow(httptest.NewRequest(http.MethodGet, "/v1/days", nil), "imp"); !ok {
 		t.Fatal("the import's budget is its own")
 	}
+	// A connection start (D257): bursts of 5, then one a minute, its own budget; the other connection routes are default.
+	start := func() (string, bool, time.Duration) {
+		return u.Allow(httptest.NewRequest(http.MethodPost, "/v1/me/connections/garmin/start", nil), "con")
+	}
+	for k := 0; k < 5; k++ {
+		if class, ok, _ := start(); class != "connect" || !ok {
+			t.Fatalf("start %d: class %s ok %v", k, class, ok)
+		}
+	}
+	if _, ok, wait := start(); ok || wait < 59*time.Second || wait > 61*time.Second {
+		t.Fatalf("the sixth start waits about a minute: ok %v wait %v", ok, wait)
+	}
+	for _, c := range []struct{ method, path string }{{"GET", "/v1/me/connections"}, {"POST", "/v1/me/connections/garmin/confirm"}, {"DELETE", "/v1/me/connections/garmin"}} {
+		if class, ok, _ := u.Allow(httptest.NewRequest(c.method, c.path, nil), "con"); class != "default" || !ok {
+			t.Fatalf("%s %s: class %s ok %v, want default", c.method, c.path, class, ok)
+		}
+	}
 	// A backfill: 60 pages back to back must all pass.
 	for k := 0; k < 60; k++ {
 		if _, ok, _ := u.Allow(httptest.NewRequest(http.MethodPost, "/v1/sync", nil), "b"); !ok {

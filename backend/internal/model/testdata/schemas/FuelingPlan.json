@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "carbs_max_g_per_h": {
+      "type": "number"
+    },
+    "carbs_min_g_per_h": {
+      "type": "number"
+    },
+    "glucose_fructose_ratio": {
+      "type": "string"
+    },
+    "post_workout_fluids_l": {
+      "nullable": true,
+      "type": "number"
+    },
+    "pre_race_max_g": {
+      "nullable": true,
+      "type": "number"
+    },
+    "pre_race_min_g": {
+      "nullable": true,
+      "type": "number"
+    },
+    "sweat_sodium_mg": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [
+    "carbs_max_g_per_h",
+    "carbs_min_g_per_h"
+  ],
+  "title": "FuelingPlan",
+  "type": "object"
+}

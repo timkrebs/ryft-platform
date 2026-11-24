@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "inbox_id": {
+      "type": "integer"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "revision": {
+      "type": "integer"
+    },
+    "user_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "inbox_id",
+    "kind",
+    "provider",
+    "revision",
+    "user_id"
+  ],
+  "title": "InboxReceivedEvent",
+  "type": "object"
+}

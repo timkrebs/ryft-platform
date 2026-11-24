@@ -69,8 +69,9 @@ func spec() app.Spec {
 //
 //   - a completed session (session.completed carries its id): session.scored, its load
 //     is final, notify may announce it;
-//   - a sync's or an import's days (D92, D125): refresh with the newest, the silent push
-//     that lets the app refetch.
+//   - a sync's or an import's days (D92, D125), or the days of a direct connection's record or
+//     of its end (reasons connect and disconnect, D257): refresh with the newest, the silent
+//     push that lets the app refetch.
 //
 // An import's event never carries a session id, so it never leads to SESSION_SCORED or
 // PR; notify refuses an imported session as well.
@@ -80,7 +81,7 @@ func announce(ev model.IngestedEvent) (*model.SessionScoredEvent, *model.Refresh
 	if ev.SessionID != nil && len(ev.Days) == 1 {
 		session = &model.SessionScoredEvent{UserID: ev.UserID, SessionID: *ev.SessionID, Day: ev.Days[0], RequestID: ev.RequestID}
 	}
-	if (ev.Reason == model.ReasonSync || ev.Reason == model.ReasonImport) && len(ev.Days) > 0 {
+	if (ev.Reason == model.ReasonSync || ev.Reason == model.ReasonImport || ev.Reason == model.ReasonConnect || ev.Reason == model.ReasonDisconnect) && len(ev.Days) > 0 {
 		refresh = &model.RefreshEvent{UserID: ev.UserID, Day: slices.Max(ev.Days), RequestID: ev.RequestID}
 	}
 	return session, refresh

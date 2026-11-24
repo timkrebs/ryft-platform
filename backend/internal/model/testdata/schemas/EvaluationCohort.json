@@ -1,0 +1,60 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "accounts": {
+      "type": "integer"
+    },
+    "cohort": {
+      "type": "string"
+    },
+    "confounder_precision": {
+      "nullable": true,
+      "type": "number"
+    },
+    "dimension": {
+      "type": "string"
+    },
+    "lea_intervention_recovery_rate": {
+      "nullable": true,
+      "type": "number"
+    },
+    "n2r_to_hrv_correlation": {
+      "nullable": true,
+      "type": "number"
+    },
+    "predictions": {
+      "type": "integer"
+    },
+    "red_recovery_brier": {
+      "nullable": true,
+      "type": "number"
+    },
+    "tdee_bias_kcal_per_day": {
+      "nullable": true,
+      "type": "number"
+    },
+    "tdee_mae_kcal_per_day": {
+      "nullable": true,
+      "type": "number"
+    },
+    "weight_change_mape_pct": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [
+    "accounts",
+    "cohort",
+    "confounder_precision",
+    "dimension",
+    "lea_intervention_recovery_rate",
+    "n2r_to_hrv_correlation",
+    "predictions",
+    "red_recovery_brier",
+    "tdee_bias_kcal_per_day",
+    "tdee_mae_kcal_per_day",
+    "weight_change_mape_pct"
+  ],
+  "title": "EvaluationCohort",
+  "type": "object"
+}

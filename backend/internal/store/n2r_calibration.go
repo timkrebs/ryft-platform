@@ -16,9 +16,17 @@ import (
 
 func morningN2R(ctx context.Context, tx pgx.Tx, user uuid.UUID, wake time.Time, asOf time.Time) (*model.N2RBiometrics, error) {
 	key := wake.Format(time.DateOnly)
-	rows, err := tx.Query(ctx, `SELECT day::text, CASE WHEN to_jsonb(d)->>'hrv_metric'='rmssd' THEN hrv_ms END, rhr
-		FROM daily_scores d WHERE user_id=$1 AND day BETWEEN $2::date-7 AND $2::date
-		AND (sleep_end IS NULL OR sleep_end <= $3) ORDER BY day`, user, key, asOf)
+	rows, err := tx.Query(ctx, `SELECT calendar.day::date::text,
+		coalesce(native.rmssd,CASE WHEN to_jsonb(d)->>'hrv_metric'='rmssd' THEN d.hrv_ms END),
+		coalesce(native.rhr,d.rhr)
+		FROM generate_series($2::date-7,$2::date,interval '1 day') calendar(day)
+		LEFT JOIN daily_scores d ON d.user_id=$1 AND d.day=calendar.day::date AND (d.sleep_end IS NULL OR d.sleep_end<=$3)
+		LEFT JOIN LATERAL (SELECT
+			(array_agg(n.rmssd_ms ORDER BY n.wake_at DESC,n.provider) FILTER(WHERE n.rmssd_ms IS NOT NULL))[1] AS rmssd,
+			(array_agg(n.rhr ORDER BY n.wake_at DESC,n.provider) FILTER(WHERE n.rhr IS NOT NULL))[1] AS rhr
+			FROM nutrition.wearable_nights n WHERE n.user_id=$1 AND n.wake_at >= (calendar.day::date::timestamp AT TIME ZONE $4)
+			AND n.wake_at < ((calendar.day::date+1)::timestamp AT TIME ZONE $4) AND n.wake_at<=$3) native ON true
+		WHERE d.day IS NOT NULL OR native.rmssd IS NOT NULL OR native.rhr IS NOT NULL ORDER BY calendar.day`, user, key, asOf, wake.Location().String())
 	if err != nil {
 		return nil, err
 	}
@@ -127,6 +135,8 @@ func (s *Store) refreshN2RNight(ctx context.Context, night dueNight, now time.Ti
 		// Use a fixed five-hour exposure scale across nights, including settings changes.
 		input.CalibratedHalfH = 0
 		input.Profile.CaffeineHalfH = nil
+		input.CoachingHalfH = nil
+		input.AlcoholSensitivity = 1
 		comparison := score.N2R(input)
 		_, err = tx.Exec(ctx, `INSERT INTO nutrition.daily_biometric_baselines AS baseline
 			(user_id,wake_date,ln_rmssd_7d_mean,ln_rmssd_7d_sd,ln_rmssd_7d_cv,swc,ln_rmssd_delta,rhr_delta,change,
@@ -147,6 +157,9 @@ func (s *Store) refreshN2RNight(ctx context.Context, night dueNight, now time.Ti
 			return nil
 		}
 		if comparison.CaffeineBedMg == nil || b.RMSSDDelta == nil && b.RHRDelta == nil {
+			return nil
+		}
+		if input.Coaching != nil {
 			return nil
 		}
 		return tuneN2R(ctx, tx, user, *p, wake)

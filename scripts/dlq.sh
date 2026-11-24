@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The dead letters on Pub/Sub (design 2.2, D218; docs/OPERATIONS.md → GCP → Dead letters and the outbox):
-# the hold subscriptions dlq-scoring-hold and dlq-notify-hold keep for 14 days what ryft-dlq-scoring and
-# ryft-dlq-notify receive. Through gcloud, as you, in the project you name (there is no default):
+# the hold subscriptions dlq-scoring-hold, dlq-notify-hold and dlq-ingest-hold keep for 14 days what
+# ryft-dlq-scoring, ryft-dlq-notify and ryft-dlq-ingest receive (ingest's: the inbox's inbox.received,
+# D257). Through gcloud, as you, in the project you name (there is no default):
 #
 #   scripts/dlq.sh --project <id> list                     per hold subscription the letters pulled, one
 #                                                          line each (nothing acked)
@@ -14,13 +15,14 @@
 #   scripts/dlq.sh --project <id> purge <consumer>         every letter of the consumer's hold subscription
 #                                                          published until now (asks first)
 #
-# <consumer> is scoring or notify (or dlq-scoring-hold / dlq-notify-hold); n is 1 to 1000, all is 1000.
+# <consumer> is scoring, notify or ingest (or dlq-scoring-hold / dlq-notify-hold / dlq-ingest-hold); n is
+# 1 to 1000, all is 1000.
 # list and show pull without --auto-ack and hand the letters back at once; one pass returns at most 1000
 # and may return fewer than a subscription holds (Monitoring's num_undelivered_messages is the count).
 #
 # A replay republishes only the keys the consumer handles (scoring: ingested, session.completed; notify:
-# scored, session.scored, refresh), read from infra/gcp/pubsub.auto.tfvars.json, which cmd/pubsub-topology
-# writes from topology.go. The key is read where a publisher cannot write it (D150):
+# scored, session.scored, refresh; ingest: inbox.received), read from infra/gcp/pubsub.auto.tfvars.json,
+# which cmd/pubsub-topology writes from topology.go. The key is read where a publisher cannot write it (D150):
 #   - a letter Pub/Sub dead-lettered (attribute CloudPubSubDeadLetterSourceSubscription) is filed under its
 #     source subscription's key (scoring-ingested: ingested); its ryft-key must be absent or that key; from
 #     notify-wait the key is its ryft-key, one of notify's. It goes back to that subscription's topic.
@@ -38,7 +40,8 @@
 # (ordering keys hold per region). With PUBSUB_EMULATOR_HOST set (compose's: localhost:8085, project
 # ryft-local) they go to the emulator, without credentials. A letter's data is its event's JSON: the user id,
 # the day or days, and where the event has them a session id, the reason and the request id (scored: user_id,
-# day and request_id only); no scores or other health values. Its ryft-message-id names the user and day too
+# day and request_id only; inbox.received: inbox_id, user_id, provider, kind, revision, request_id); no
+# scores or other health values. Its ryft-message-id names the user and day too
 # (scored:<user_id>:<day>). So a replay hands gcloud the data, the attributes and the ordering key in a flags
 # file (--flags-file, mode 600 in the script's private temporary directory, deleted after each call): `ps`
 # shows the topic and the file's name, not the letter. gcloud's own file log, which records the arguments, is off.
@@ -72,7 +75,8 @@ consumer_of() {
   case "$1" in
     scoring|dlq-scoring-hold) echo scoring ;;
     notify|dlq-notify-hold) echo notify ;;
-    *) refuse "the consumer is scoring or notify (dlq-scoring-hold, dlq-notify-hold), not $1" ;;
+    ingest|dlq-ingest-hold) echo ingest ;;
+    *) refuse "the consumer is scoring, notify or ingest (dlq-scoring-hold, dlq-notify-hold, dlq-ingest-hold), not $1" ;;
   esac
 }
 count_of() { # n|all → 1..MAX
@@ -270,7 +274,7 @@ extend() { # HOLD FILE: the leases of FILE's letters to LEASE seconds
 
 case "$cmd" in
   list)
-    for c in scoring notify; do
+    for c in scoring notify ingest; do
       h=$(hold_of "$c")
       pull_all "$h" $MAX "$tmp/$c.json"
       echo "$h: $(jq length "$tmp/$c.json")"

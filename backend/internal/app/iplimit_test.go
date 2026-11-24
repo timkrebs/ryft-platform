@@ -477,3 +477,61 @@ func TestEdgeLimitLogsNoAddress(t *testing.T) {
 		t.Errorf("client address lines: %v, want the one sample of the minute", out["client address"])
 	}
 }
+
+func hookLimited() float64 { return testutil.ToFloat64(metrics.RateLimited.WithLabelValues(hookClass)) }
+
+// The hook class (D257) is its own bucket: a provider's burst of 200 pushes is served, the 201st is the plain-text
+// 429 under class hook with the access code hook_limit, and none of it takes a token from the ip class of the same
+// address (nor does the ip class's drain take any from the hook's).
+func TestHookClassHasItsOwnBucket(t *testing.T) {
+	if hookPerSecond != 50 || hookBurst != 200 || hookMaxKeys != 4096 || hookIdle != time.Minute {
+		t.Fatalf("hook class %v/s, burst %v, %d keys, idle %v: want 50/s, 200, 4096, 1m (D257)", hookPerSecond, hookBurst, hookMaxKeys, hookIdle)
+	}
+	h := edgeOf(quietLog, 1, nil, newFakeClock(), served)
+	xff := []string{"X-Forwarded-For", "198.51.100.9"}
+	before, ipBefore := hookLimited(), ipLimited()
+	for i := range hookBurst {
+		if w := call(h, http.MethodPost, "/connect/fake/push", xff...); w.Code != http.StatusNoContent {
+			t.Fatalf("push %d of the burst: %d", i+1, w.Code)
+		}
+	}
+	w := call(h, http.MethodPost, "/connect/fake/push", xff...)
+	if w.Code != http.StatusTooManyRequests || w.Body.String() != tooManyRequests || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("the 201st push: %d %q", w.Code, w.Body.String())
+	}
+	if hookLimited()-before != 1 || ipLimited() != ipBefore {
+		t.Fatalf("counted hook %v, ip %v", hookLimited()-before, ipLimited()-ipBefore)
+	}
+	// The same address still has its whole ip burst.
+	drain(t, h, xff...)
+	// And a drained ip bucket leaves the hook's bucket alone.
+	other := []string{"X-Forwarded-For", "198.51.100.10"}
+	drain(t, h, other...)
+	if c := from(h, "198.51.100.10"); c != http.StatusTooManyRequests {
+		t.Fatalf("ip class not drained: %d", c)
+	}
+	if w := call(h, http.MethodPost, "/connect/fake/push", other...); w.Code != http.StatusNoContent {
+		t.Fatalf("a drained ip bucket refused a push: %d", w.Code)
+	}
+	// A GET under /connect/ is no push: the ip class's.
+	if w := call(h, http.MethodGet, "/connect/fake/push", "X-Forwarded-For", "198.51.100.11"); w.Code != http.StatusNoContent {
+		t.Fatal(w.Code)
+	}
+}
+
+// Ingest's /push/inbox.received comes from Google's push servers, a few addresses: never limited.
+func TestEdgeLimitExemptsInboxPush(t *testing.T) {
+	h := edgeOf(quietLog, 1, nil, newFakeClock(), served)
+	for i := 0; i < ipBurst*3; i++ {
+		if w := call(h, http.MethodPost, "/push/inbox.received", "X-Forwarded-For", "203.0.113.50"); w.Code != http.StatusNoContent {
+			t.Fatalf("push %d: %d", i+1, w.Code)
+		}
+	}
+	// Only the routes the topology gives api and ingest, and only as a POST.
+	if w := call(h, http.MethodPost, "/push/other", "X-Forwarded-For", "203.0.113.51"); w.Code != http.StatusNoContent {
+		t.Fatal(w.Code) // served by the stub, and counted: the 51st would be refused
+	}
+	if limitExempt(httptest.NewRequest(http.MethodPost, "/push/other", nil)) || limitExempt(httptest.NewRequest(http.MethodGet, "/push/inbox.received", nil)) {
+		t.Fatal("limitExempt exempts more than ingest's push")
+	}
+}

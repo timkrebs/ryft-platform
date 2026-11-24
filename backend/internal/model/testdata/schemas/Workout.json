@@ -67,6 +67,13 @@
     "strain": {
       "nullable": true,
       "type": "number"
+    },
+    "tz_offset_sec": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "was_user_entered": {
+      "type": "boolean"
     }
   },
   "required": [

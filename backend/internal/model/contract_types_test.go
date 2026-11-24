@@ -7,6 +7,16 @@ import "reflect"
 // TestContractTypesComplete fails when a struct is added to the package and not
 // here, so a new wire type cannot skip the snapshot.
 var contractTypes = map[string]reflect.Type{
+	"HealthKitCursor":        reflect.TypeOf(HealthKitCursor{}),
+	"GoalProfile":            reflect.TypeOf(GoalProfile{}),
+	"PlannedSession":         reflect.TypeOf(PlannedSession{}),
+	"CoachingFeedback":       reflect.TypeOf(CoachingFeedback{}),
+	"FuelingPlan":            reflect.TypeOf(FuelingPlan{}),
+	"Availability":           reflect.TypeOf(Availability{}),
+	"CoachingPlan":           reflect.TypeOf(CoachingPlan{}),
+	"CoachingLoad":           reflect.TypeOf(CoachingLoad{}),
+	"CoachingBriefing":       reflect.TypeOf(CoachingBriefing{}),
+	"EvaluationCohort":       reflect.TypeOf(EvaluationCohort{}),
 	"Sample":                 reflect.TypeOf(Sample{}),
 	"SleepSegment":           reflect.TypeOf(SleepSegment{}),
 	"UserSource":             reflect.TypeOf(UserSource{}),
@@ -161,4 +171,13 @@ var contractTypes = map[string]reflect.Type{
 	"N2RBiometrics":             reflect.TypeOf(N2RBiometrics{}),
 	"N2RGuidanceCard":           reflect.TypeOf(N2RGuidanceCard{}),
 	"N2RGuidance":               reflect.TypeOf(N2RGuidance{}),
+
+	"Connection":          reflect.TypeOf(Connection{}),
+	"AvailableConnection": reflect.TypeOf(AvailableConnection{}),
+	"ConnectionProvider":  reflect.TypeOf(ConnectionProvider{}),
+	"ConnectionsResponse": reflect.TypeOf(ConnectionsResponse{}),
+	"ConnectStart":        reflect.TypeOf(ConnectStart{}),
+	"ConnectConfirmPost":  reflect.TypeOf(ConnectConfirmPost{}),
+	"ConnectionDeleted":   reflect.TypeOf(ConnectionDeleted{}),
+	"InboxReceivedEvent":  reflect.TypeOf(InboxReceivedEvent{}),
 }

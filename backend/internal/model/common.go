@@ -27,3 +27,18 @@ const (
 	// account's keys.
 	CodeAppAttestKeyUnknown = "app_attest_key_unknown"
 )
+
+// Direct connections (D257; docs/API.md → Connections).
+const (
+	// CodeUnknownProvider: 404 on the Connections routes: the provider is not served here, or its flag is off for the
+	// account (it does not say which).
+	CodeUnknownProvider = "unknown_provider"
+	// CodeConnectionLimit: 409 on start (and confirm): the provider's user cap is full.
+	CodeConnectionLimit = "connection_limit"
+	// CodeConnectTicketInvalid: 409 on confirm: the ticket is unknown, another account's or for another provider.
+	CodeConnectTicketInvalid = "connect_ticket_invalid"
+	// CodeConnectExpired: 410 on confirm: more than 10 minutes after the callback.
+	CodeConnectExpired = "connect_expired"
+	// CodeMergeHasConnections: 409 on the admin merge: the source account still holds a connection.
+	CodeMergeHasConnections = "merge_has_connections"
+)

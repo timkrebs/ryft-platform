@@ -343,3 +343,63 @@ var (
 		Help: "Outbox events sent by flush or sweep, by result: ok, error (refused: a sweep's counts an attempt, a rejection sets the row aside).",
 	}, []string{"publisher", "result"})
 )
+
+// Direct connections (D257). Every label is a closed set: provider is a served provider's id, kind one of the four
+// inbox kinds, the rest are the outcomes named in each Help. The hook's per-request line is also a log-based
+// counter in Cloud Monitoring (ryft_connect_pushes).
+var (
+	ConnectPushes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_connect_pushes_total",
+		Help: "Provider pushes to ingest's hook, by provider, kind (the records' kind when all items share one: sleep, hrv, deregistration, permissions; mixed; unknown; none for a push refused before its body was parsed) and outcome: " +
+			"accepted (200), rejected (401 or 503 from the provider's verification), too_large (413), bad_body (400), busy (503: the hook's in-flight cap, nothing read), timeout (408: the body did not arrive in time), error (503).",
+	}, []string{"provider", "kind", "outcome"})
+	ConnectPushItems = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_connect_push_items_total",
+		Help: "Items of accepted pushes, by provider, kind (sleep, hrv, deregistration, permissions) and outcome: stored, updated, duplicate, stale, unknown_user, no_consent, id_collision, over_cap, bad_item.",
+	}, []string{"provider", "kind", "outcome"})
+	ConnectInboxProcessed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_connect_inbox_processed_total",
+		Help: "Inbox rows ingest's consumer handled, by provider, kind and outcome: processed, no_consent, no_connection, stale, failed, retry (a transient error: Pub/Sub delivers again).",
+	}, []string{"provider", "kind", "outcome"})
+	ConnectInboxOldest = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ryft_connect_inbox_oldest_seconds",
+		Help: "Age of the oldest inbox row by state (pending, failed); 0 when none. Set by ingest's tick.",
+	}, []string{"state"})
+	ConnectInboxPurged = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_connect_inbox_purged_total",
+		Help: "Inbox rows deleted by ingest's tick, by state (processed and dropped after 30 days, failed after 7).",
+	}, []string{"state"})
+	ConnectConnections = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ryft_connect_connections",
+		Help: "Connections by provider and status (connected, needs_reauth, revoked). Set by the api's tick.",
+	}, []string{"provider", "status"})
+	ConnectCapacity = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ryft_connect_capacity_ratio",
+		Help: "What a provider's user cap counts divided by the cap (above 1 is possible after the cap was lowered; a cap of 0 reads 1). Set by the api's tick.",
+	}, []string{"provider"})
+	ConnectStale = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ryft_connect_stale_connections",
+		Help: "Connected links that were connected over 36 hours ago and have stored nothing for 36 hours, by provider. Set by the api's tick.",
+	}, []string{"provider"})
+	ConnectStarts = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_connect_starts_total",
+		Help: "POST /v1/me/connections/{provider}/start, by provider and outcome: ok, consent_required, connection_limit, unknown_provider.",
+	}, []string{"provider", "outcome"})
+	ConnectCallbacks = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_connect_callbacks_total",
+		Help: "GET /v1/connect/{provider}/callback, by provider (a served one, else unknown) and the redirect's status (ok, denied, expired, error).",
+	}, []string{"provider", "status"})
+	ConnectConfirms = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_connect_confirms_total",
+		Help: "POST /v1/me/connections/{provider}/confirm, by provider and outcome: ok, repeat, invalid (an unknown or foreign ticket), expired, replaced, relinked.",
+	}, []string{"provider", "outcome"})
+	ConnectRefreshes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_connect_token_refreshes_total",
+		Help: "Token refreshes by the api's tick, by provider and outcome: ok, needs_reauth (the provider refused the grant), error (transient; retried with backoff).",
+	}, []string{"provider", "outcome"})
+	ConnectDeregistrations = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_connect_deregistrations_total",
+		Help: "Attempts to end a grant at the provider, by provider, reason (disconnect, account_deleted, confirm_expired, cap, missing_permission, replaced) and outcome: " +
+			"ok, gone (the provider no longer knew it), retry, given_up (30 days), skipped_live (another account holds that provider account live: nothing called).",
+	}, []string{"provider", "reason", "outcome"})
+)

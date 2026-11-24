@@ -29,6 +29,13 @@ renderer deploy.yml uses), parses the result with yq (mikefarah v4) and asserts,
     or on without it; and, given --base-config, never on while the base is off (or has no APP_ATTEST
     line, the services' default off): off -> warn -> on (D238's order, checked since D245). Without
     --base-config the order rule is skipped with a note (a push to main, a local run);
+  - direct connections (D257, design §9): CONNECT_PROVIDERS (from config.env) in api and ingest, equal in
+    both, never fake; CONNECT_GARMIN_USER_CAP (config.env) and CONNECT_CALLBACK_BASE (https://api.ryftlab.de)
+    in api; garmin in CONNECT_PROVIDERS only with api pinning CONNECT_GARMIN_CLIENT_SECRET
+    (connect-garmin-client-secret, by version), setting CONNECT_GARMIN_CLIENT_ID and a cap above 0; the
+    fake provider's CONNECT_FAKE* never in a template or config.env (compose only); the consent cutoff
+    CONNECT_MIN_POLICY_VERSION (D259, config.env) in ingest only, empty or a calendar date not after
+    PRIVACY_POLICY_VERSION, never in api (api's start and confirm require the policy in force);
   - the env exactly as ticket-b.md's tables (names and the values the renderer builds; api may add the
     pin of posthog-project-key, D231; api and ingest may add the ring's pin and carry BETA_GATE, D238,
     XFF_TRUSTED_HOPS, D240, APP_ATTEST and APP_ATTEST_EXEMPT_USERS, D245, from config.env), every
@@ -43,6 +50,7 @@ Exit 0 clean, 1 a finding, 2 it cannot run (no yq, no python3 renderer). The fak
 here at run time; none of them is a credential.
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -85,10 +93,19 @@ GATES = ROOT / "infra/gcp/gates.auto.tfvars"
 EDGE_PHASES = ("off", "built", "live", "locked")
 EDGE_LIVE = ("live", "locked")
 EDGE_LINE = re.compile(r'\s*edge\s*=\s*"([^"]*)"\s*(?:(?:#|//).*)?')
+# Direct connections (D257, design §9): the providers served, one config.env line for both public services
+# (check_connect compares the rendered pair as well), and in api the Garmin cap and the redirect URI's base.
+CONNECT_PUBLIC = {"CONNECT_PROVIDERS": None}
+# The consent cutoff (D259): ingest only (the hook and the consumer); api's start and confirm keep requiring
+# consent to the policy in force, so api never reads it (check_cutoff names it there).
+CUTOFF_ENV = "CONNECT_MIN_POLICY_VERSION"
+CONNECT_INGEST = {CUTOFF_ENV: None}
+CALLBACK_BASE = "https://api.ryftlab.de"
+CONNECT_API = {"CONNECT_GARMIN_USER_CAP": None, "CONNECT_CALLBACK_BASE": CALLBACK_BASE}
 PLAIN = {
-    "api": {**SHARED, **PUBLIC, "ADMIN_WEB_ORIGINS": "https://ryftlab.de", "APPLE_TEAM_ID": "M77SKHKG63",
-            "APPLE_KEY_ID": None, "APPLE_CLIENT_ID": "dev.timkrebs.ryft"},
-    "ingest": {**SHARED, **PUBLIC},
+    "api": {**SHARED, **PUBLIC, **CONNECT_PUBLIC, **CONNECT_API, "ADMIN_WEB_ORIGINS": "https://ryftlab.de",
+            "APPLE_TEAM_ID": "M77SKHKG63", "APPLE_KEY_ID": None, "APPLE_CLIENT_ID": "dev.timkrebs.ryft"},
+    "ingest": {**SHARED, **PUBLIC, **CONNECT_PUBLIC, **CONNECT_INGEST},
     "scoring": dict(SHARED),
     "notify": {**SHARED, "APNS_TOPIC": "dev.timkrebs.ryft", "APNS_KEY_ID": None, "APNS_TEAM_ID": "M77SKHKG63"},
     "migrate": {"DATABASE_URL": None, "LOG_LEVEL": None},
@@ -110,14 +127,23 @@ SECRET_ENV = {
 # under APP_ATTEST=off (without it the routes answer 501), required under warn and on (check_app_attest).
 RING_ENV, RING = "APP_ATTEST_TOKEN_KEYS", "app-attest-token-key"
 RING_SERVICES = ("api", "ingest")
-OPTIONAL_SECRET_ENV = {"api": {"POSTHOG_PROJECT_KEY": "posthog-project-key", RING_ENV: RING},
+# CONNECT_GARMIN_CLIENT_SECRET (D257), phase 2: pinned once connect-garmin-client-secret has a version (a pin
+# to a missing version keeps the revision from starting), required while garmin is served (check_connect).
+GARMIN_SECRET_ENV, GARMIN_SECRET = "CONNECT_GARMIN_CLIENT_SECRET", "connect-garmin-client-secret"
+OPTIONAL_SECRET_ENV = {"api": {"POSTHOG_PROJECT_KEY": "posthog-project-key", RING_ENV: RING,
+                               GARMIN_SECRET_ENV: GARMIN_SECRET},
                        "ingest": {RING_ENV: RING}}
+# Plain env a file may hold or leave out, any non-empty value: Garmin's client id (phase 2, with the pin).
+GARMIN_ID_ENV = "CONNECT_GARMIN_CLIENT_ID"
+OPTIONAL_PLAIN = {"api": (GARMIN_ID_ENV,)}
+# The fake provider's env (CONNECT_FAKE, CONNECT_FAKE_USER_CAP, CONNECT_FAKE_PUSH_SECRET): compose only.
+FAKE_RE = re.compile(r"CONNECT_FAKE(?:_[A-Z0-9_]*)?")
 # The only service accounts that can access each secret (ticket-b.md, the accessor table; infra/gcp/secrets.tf).
 # otlp-token stays until its own removal PR (docs/OPERATIONS.md → GCP, step 11.6): unread, still bound.
 ACCESSORS = {**{f"db-password-{s}": {s, "migrate"} for s in SERVICES}, "db-password-owner": {"migrate"},
              "supabase-secret-key": {"api"}, "admin-api-key": {"api"}, "apple-key-p8": {"api"},
              "apns-key-p8": {"notify"}, "data-key": {"api"}, "otlp-token": set(SERVICES),
-             "posthog-project-key": {"api"}, RING: set(RING_SERVICES)}
+             "posthog-project-key": {"api"}, RING: set(RING_SERVICES), GARMIN_SECRET: {"api"}}
 P5 = ("ALLOW_INSECURE_APIKEY_AUTH", "API_KEY", "USER_ID", "ALLOW_INSECURE_PUSH", "PORT")
 P5_RE = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(P5) + r")(?![A-Za-z0-9_])")
 VERSION = re.compile(r"[1-9][0-9]*")
@@ -129,6 +155,8 @@ PROBE_KEYS = {"httpGet", "initialDelaySeconds", "periodSeconds", "timeoutSeconds
 STARTUP_BUDGET = 30
 
 errs = []
+# The plain env of each rendered file, as check_env read it (check_connect compares api's and ingest's).
+plains = {}
 
 
 def fail(where, msg):
@@ -168,6 +196,14 @@ def fakes(committed):
     v["APP_ATTEST"] = m.group(1) if m else "off"
     m = re.search(r"^APP_ATTEST_EXEMPT_USERS=(.*)$", committed, re.M)
     v["APP_ATTEST_EXEMPT_USERS"] = m.group(1) if m else ""
+    # The connection switch and the cap likewise: check_connect reads both, and neither is a secret.
+    m = re.search(r"^CONNECT_PROVIDERS=(.*)$", committed, re.M)
+    v["CONNECT_PROVIDERS"] = m.group(1) if m else ""
+    m = re.search(r"^CONNECT_GARMIN_USER_CAP=(.*)$", committed, re.M)
+    v["CONNECT_GARMIN_USER_CAP"] = m.group(1) if m else "0"
+    # The consent cutoff likewise (D259): check_cutoff compares it with the policy version, no secret.
+    m = re.search(rf"^{CUTOFF_ENV}=(.*)$", committed, re.M)
+    v[CUTOFF_ENV] = m.group(1) if m else ""
     return v
 
 
@@ -210,6 +246,60 @@ def check_app_attest(mode, pins, base):
         fail("config.env", f"APP_ATTEST=on with the base at {base!r}: off -> warn -> on, never straight to on "
              "(D238/D245); this PR sets warn, and on follows after warn's stop rule (docs/OPERATIONS.md -> GCP -> "
              "App Attest)")
+
+
+def provider_ids(v):
+    """CONNECT_PROVIDERS as config reads it (internal/config/connect.go): split on commas, each item stripped,
+    sorted; empty items dropped here (config refuses them, the renderer's shape too). None stays None."""
+    return None if v is None else tuple(sorted(p.strip() for p in v.split(",") if p.strip()))
+
+
+def check_connect(cfg, pins):
+    """D257, design §9: api and ingest serve the same providers, never the fake, and garmin only with its
+    client secret pinned in api, its client id set and a cap above 0 (config refuses to start without them).
+    Every comparison is on provider_ids, so "garmin, fake" names fake and " garmin " equals "garmin" (P2-9)."""
+    raw = {s: plains[s].get("CONNECT_PROVIDERS") for s in ("api", "ingest") if s in plains}
+    served = {s: provider_ids(v) for s, v in raw.items()}
+    if len(served) == 2 and served["api"] != served["ingest"]:
+        fail("api.yaml / ingest.yaml", f"CONNECT_PROVIDERS is {raw['api']!r} in api.yaml and {raw['ingest']!r} in "
+             "ingest.yaml: equal in both (api connects what ingest takes pushes for); both read config.env's one line")
+    for s, ids in served.items():
+        if ids is not None and "fake" in ids:
+            fail(f"{s}.yaml", "CONNECT_PROVIDERS names fake: the fake provider is compose only (CONNECT_FAKE=on, which "
+                 "the services refuse on Cloud Run, D257)")
+    if "api" not in plains or "garmin" not in {p for ids in served.values() if ids for p in ids}:
+        return
+    api = plains["api"]
+    if GARMIN_SECRET_ENV not in pins.get("api", {}):
+        fail("api.yaml", f"garmin in CONNECT_PROVIDERS without {GARMIN_SECRET_ENV} pinned ({GARMIN_SECRET}, by version "
+             "number): api refuses to start without it (D257), so the deploy goes red; pin it in the same PR")
+    if not api.get(GARMIN_ID_ENV):
+        fail("api.yaml", f"garmin in CONNECT_PROVIDERS without {GARMIN_ID_ENV}: api refuses to start without it (D257)")
+    cap = api.get("CONNECT_GARMIN_USER_CAP", cfg.get("CONNECT_GARMIN_USER_CAP", "0"))
+    if not cap.isdigit() or int(cap) < 1:
+        fail("config.env", f"garmin in CONNECT_PROVIDERS with CONNECT_GARMIN_USER_CAP={cap}: a cap above 0 (the "
+             "programme's number, design §6.1) in the same PR; at 0 api refuses to start (D257)")
+
+
+def check_cutoff():
+    """D259: the consent cutoff as rendered, in ingest only: empty (the policy in force) or a calendar date not
+    after ingest's PRIVACY_POLICY_VERSION (ISO dates compare as strings); never in api."""
+    if CUTOFF_ENV in plains.get("api", {}):
+        fail("api.yaml", f"{CUTOFF_ENV} is set: ingest only (D259); api's start and confirm keep requiring consent "
+             "to the policy in force (PRIVACY_POLICY_VERSION)")
+    ingest = plains.get("ingest", {})
+    cut, pol = ingest.get(CUTOFF_ENV), ingest.get("PRIVACY_POLICY_VERSION", "")
+    if not cut:
+        return
+    try:
+        ok = re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", cut) and datetime.date.fromisoformat(cut)
+    except ValueError:
+        ok = False
+    if not ok:
+        fail("ingest.yaml", f"{CUTOFF_ENV}={cut!r}: empty, or a YYYY-MM-DD calendar date (D259)")
+    elif cut > pol:
+        fail("ingest.yaml", f"{CUTOFF_ENV}={cut} is after PRIVACY_POLICY_VERSION={pol}: the cutoff is the oldest "
+             "consent version still accepted, never a later one (D259)")
 
 
 def edge_phase(path):
@@ -353,6 +443,8 @@ def check_env(name, env, want_plain, cfg):
         seen.add(n)
         if P5_RE.fullmatch(n):
             fail(where, f"{n} is never set on Cloud Run (P5, design §5.1; PORT is Cloud Run's own)")
+        if FAKE_RE.fullmatch(n):
+            fail(where, f"{n} is never set on Cloud Run: the fake provider is compose only (D257, design §9)")
         if "value" in e and "valueFrom" not in e and set(e) == {"name", "value"}:
             if not isinstance(e["value"], str):
                 fail(where, f"{n}: the value must be a string, not {type(e['value']).__name__}")
@@ -369,14 +461,22 @@ def check_env(name, env, want_plain, cfg):
             fail(where, f"{n}: only {{name, value}} or {{name, valueFrom: {{secretKeyRef: {{name, key}}}}}}")
     if plain.get("AUTH_MODE", "supabase") != "supabase":
         fail(where, f"AUTH_MODE={plain['AUTH_MODE']}: on Cloud Run only supabase (P5)")
-    for n in sorted(set(plain) - set(want_plain)):
-        fail(where, f"{n} is not in ticket-b.md's env table for {name}")
+    plains[name] = plain
+    may_plain = OPTIONAL_PLAIN.get(name, ())
+    for n in sorted(set(plain) - set(want_plain) - set(may_plain)):
+        if not FAKE_RE.fullmatch(n):
+            fail(where, f"{n} is not in ticket-b.md's env table for {name}")
+    for n in may_plain:
+        if n in plain and not plain[n]:
+            fail(where, f"{n} is empty: set it or leave the row out")
     for n in sorted(set(want_plain) - set(plain)):
         fail(where, f"{n} is missing (ticket-b.md's env table)")
     for n, want in want_plain.items():
         if n in plain:
             exp = want if want is not None else cfg[n]
-            if plain[n] != exp:
+            # The provider list compares as config reads it (provider_ids, P2-9); every other value exactly.
+            same = provider_ids(plain[n]) == provider_ids(exp) if n == "CONNECT_PROVIDERS" else plain[n] == exp
+            if not same:
                 fail(where, f"{n}={plain[n]!r}, want {exp!r}")
     want_sec, may_sec = SECRET_ENV[name], OPTIONAL_SECRET_ENV.get(name, {})
     known = {**may_sec, **want_sec}
@@ -543,6 +643,9 @@ def main(argv):
     for n, line in enumerate((d / "config.env").read_text(encoding="utf-8").split("\n"), 1):
         if not line.startswith("#") and (P5_RE.search(line.split("=", 1)[0]) or re.match(r"AUTH_MODE=", line)):
             fail(f"config.env:{n}", f"{line.split('=', 1)[0]} is never set on Cloud Run (P5, design §5.1)")
+        if not line.startswith("#") and FAKE_RE.fullmatch(line.split("=", 1)[0]):
+            fail(f"config.env:{n}", f"{line.split('=', 1)[0]} is never set on Cloud Run: the fake provider is compose "
+                 "only (D257, design §9)")
     lint = subprocess.run([sys.executable, "-I", str(RENDER), "--lint", "--config", str(d / "config.env"),
                            "--templates", str(d)], capture_output=True, text=True)
     if lint.returncode != 0:
@@ -583,6 +686,8 @@ def main(argv):
             fail(f"{s}.yaml / migrate.yaml", f"db-password-{s} is pinned at {mine[1]} in {s}.yaml and at {theirs[1]} in "
                  f"migrate.yaml: move both in one commit (scripts/rotate_db_password.sh {s} <version>)")
     check_app_attest(cfg["APP_ATTEST"], pins, base)
+    check_connect(cfg, pins)
+    check_cutoff()
     if not a.base_config:
         print("check_cloudrun: no --base-config, so the APP_ATTEST order against a base (off -> warn -> on, D245) "
               "is skipped (CI passes the base on a pull request)")
@@ -597,8 +702,10 @@ def report(based=False):
         return 1
     order = ", APP_ATTEST's order against the base" if based else ""
     print("check_cloudrun: api, ingest, scoring, notify and migrate render; limits, ingress (against the gate edge), "
-          "accounts, h2c, probes, env, secret pins (by number, migrate = the services), accessors, P5 and App "
-          f"Attest's ring under warn and on{order} hold")
+          "accounts, h2c, probes, env, secret pins (by number, migrate = the services), accessors, P5, the "
+          "connection switch (api = ingest, no fake, garmin only with its pin, id and cap), the consent cutoff "
+          "(ingest only, not after the policy version) and App Attest's ring "
+          f"under warn and on{order} hold")
     return 0
 
 

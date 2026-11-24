@@ -169,6 +169,57 @@ token, and the `.p8` key must not ship in the app, so the api does it:
 Without the `APPLE_*` values the endpoint answers `501` and deletion skips this step;
 on Cloud Run `scripts/check_cloudrun.py` requires them in `deploy/run/api.yaml`.
 
+## Direct connections (migration 0042, D257)
+
+A provider (Garmin first, phase 2; a fake in compose) links an account by OAuth on the api and pushes
+records to ingest (`docs/work/2026-11-23-connections/design.md` §5). Six tables. Each has RLS on and
+`REVOKE ALL` from `anon`, `authenticated` and `service_role` (sequences too), and each has one
+`<table>_services` policy:
+
+| Table | Holds | Roles (policy) |
+| --- | --- | --- |
+| `connections` | one row per account and provider: status, the provider's user id, permissions, times; no secret | `ryft_api` all; `ryft_ingest` reads `user_id`, `provider`, `provider_user_id`, `status`, `status_reason` and updates only the status columns, `last_data_at` and (to clear them on a revocation) `provider_user_id`, `permissions`; the trigger `connections_ingest_puid_guard` refuses ingest any `provider_user_id` other than NULL or unchanged (42501) |
+| `connection_tokens` | the live link's tokens, sealed with `DATA_ENCRYPTION_KEY` | `ryft_api` |
+| `connection_pending` | a grant between the callback and its confirm (sealed tokens, the ticket's SHA-256) | `ryft_api` |
+| `connection_states` | open OAuth flows, 10 minutes: the state's SHA-256 and the sealed PKCE verifier | `ryft_api` (never updated) |
+| `connection_deregistrations` | the retry queue for deregistrations at the provider, sealed tokens; **no FK to `users`**, it outlives the account for up to 30 days | `ryft_api` |
+| `provider_inbox` | one row per pushed record; the payload only while `pending` or `failed` | `ryft_ingest` all; `ryft_api` reads `id`, `user_id`, `provider`, `state` and deletes |
+
+What the database itself enforces:
+- one live link per provider account: a partial unique index on `(provider, provider_user_id)` over
+  `connected` and `needs_reauth`;
+- a `revoked` row keeps no provider user id and no permissions;
+- a confirmed pending grant holds no token;
+- a processed or dropped inbox row holds no payload;
+- every error column holds a code (`^[a-z_]{1,64}$`), never a provider's or a payload's text.
+
+Existing tables gain:
+- `origin` (`healthkit` by default, or `direct`) and `vendor` on `samples` and `sleep_segments`, plus
+  `record_id`, and `record_state` on the sleep;
+- `origin` on `user_sources`;
+- `hrv_metric`, `coverage`, `score_status`, `final_at` and `first_recovery_at` on `daily_scores`.
+
+Their CHECKs are `NOT VALID`: new rows are checked, old rows pass by construction, and nothing was
+scanned. Leave them that way. A `VALIDATE CONSTRAINT` on `samples` would scan the table, and it is
+not needed. `ryft_ingest` also gains `DELETE` on `user_sources`, for a deregistration notice's
+direct source. `ryft_notify`'s column lists are unchanged, so it sees none of the new columns.
+
+Account deletion: `store.DeleteUser` moves every unrevoked connection's tokens, and every
+unconfirmed pending grant's, to `connection_deregistrations`. Then it deletes the five per-account
+tables. Their foreign keys also cascade from `users`, so an image from before 0042 leaves nothing
+behind. The tokens then go without a deregistration call. Export: `GET /v1/me/connections`
+carries the connection metadata. Tokens, states, pending grants, the inbox and the queue are
+credentials or transient, and are not exported.
+
+Check after the deploy:
+
+```sql
+SELECT tablename, rowsecurity FROM pg_tables WHERE schemaname = 'public'
+  AND (tablename LIKE 'connection%' OR tablename = 'provider_inbox');            -- all true
+SELECT has_table_privilege('anon', 'public.connection_tokens', 'SELECT');        -- false
+SELECT key, enabled, rollout_pct FROM feature_flags WHERE key = 'connect.garmin'; -- true, 0
+```
+
 ## Signing-key rotation
 
 The services re-read the JWKS every **10 minutes** — Supabase's edge caches it for 10
