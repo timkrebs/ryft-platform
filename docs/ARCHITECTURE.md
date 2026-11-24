@@ -242,7 +242,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/connect/fake` | is the one provider adapter of phase 1 (D257), a provider with no network, for tests, compose and make smoke. | connect, model | 1 file |
 | `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 20 files (Postgres) |
 | `internal/energy` | models exercise expenditure, training load and energy balance. | model, wearables | 1 file |
-| `internal/evaluation` | computes forecast errors and bounded calibration updates. | energy, model | 1 file |
+| `internal/evaluation` | computes forecast errors and bounded calibration updates. | energy, model | 2 files |
 | `internal/eventbus` | owns building a service's Pub/Sub transport from its configuration: the Bus, the push verifier, the push and tick handlers and the wait sender. | auth, config, events, events/pubsub | 1 file |
 | `internal/events` | owns the five trigger events the services exchange, their encoding, and what a handler's error means. | logx, metrics, model | 1 file |
 | `internal/events/outbox` | owns the outbox table's rows and the relay that moves them to the broker, so an event is never lost between a database write and a publish. | events, httpx, metrics | 1 file (Postgres) |
@@ -266,10 +266,10 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/scoring/workoutdup` | owns the two rules that make one activity one workout: the same-source fold and the cross-source duplicate mark. | model | 1 file |
 | `internal/sealed` | encrypts the few secrets the platform stores (Apple refresh tokens, direct connections' tokens and PKCE verifiers) with AES-256-GCM. | none | 1 file |
 | `internal/smoke` | owns the Go end-to-end smoke against a running stack. | model | 1 file |
-| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, connect, energy, evaluation, events, events/outbox, logx, metrics, model, nutrition, nutrition/score, periodization, scoring/workoutdup, train, wearables | 30 files (Postgres) |
+| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, connect, energy, evaluation, events, events/outbox, logx, metrics, model, nutrition, nutrition/score, periodization, scoring/workoutdup, train, wearables | 31 files (Postgres) |
 | `internal/testsupport` | holds the helpers the Postgres-backed tests of several packages share. | none | via cmd/api, cmd/ingest, db, events/outbox, store |
 | `internal/train` | holds the pure rules of the Train feature that are not scoring. | model | 2 files |
-| `internal/wearables` | normalizes workout facts and resolves overlapping observations. | model | 1 file |
+| `internal/wearables` | normalizes workout facts and resolves overlapping observations. | model | 2 files |
 
 Owns is the first sentence of the package's `doc.go`; Depends on lists the direct imports of this module
 (`internal/` left out). Tested by is the number of the package's own test files, with the services the
