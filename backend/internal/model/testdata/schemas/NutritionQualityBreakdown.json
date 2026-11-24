@@ -1,0 +1,59 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "added_sugar_g": {
+      "nullable": true,
+      "type": "number"
+    },
+    "fiber_g": {
+      "nullable": true,
+      "type": "number"
+    },
+    "non_starchy_veg_g": {
+      "nullable": true,
+      "type": "number"
+    },
+    "nuts_legumes_g": {
+      "nullable": true,
+      "type": "number"
+    },
+    "omega3_epa_dha_mg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "red_processed_meat_g": {
+      "nullable": true,
+      "type": "number"
+    },
+    "sodium_mg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "trans_fat_kcal_pct": {
+      "nullable": true,
+      "type": "number"
+    },
+    "unsaturated_fat_kcal_pct": {
+      "nullable": true,
+      "type": "number"
+    },
+    "whole_fruit_g": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [
+    "added_sugar_g",
+    "fiber_g",
+    "non_starchy_veg_g",
+    "nuts_legumes_g",
+    "omega3_epa_dha_mg",
+    "red_processed_meat_g",
+    "sodium_mg",
+    "trans_fat_kcal_pct",
+    "unsaturated_fat_kcal_pct",
+    "whole_fruit_g"
+  ],
+  "title": "NutritionQualityBreakdown",
+  "type": "object"
+}

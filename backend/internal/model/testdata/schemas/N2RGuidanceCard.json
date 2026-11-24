@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "actions": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "code": {
+      "type": "string"
+    },
+    "foods": {
+      "items": {
+        "$ref": "FoodSummary"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "targets": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "nullable": true,
+      "type": "object"
+    }
+  },
+  "required": [
+    "actions",
+    "code",
+    "foods"
+  ],
+  "title": "N2RGuidanceCard",
+  "type": "object"
+}

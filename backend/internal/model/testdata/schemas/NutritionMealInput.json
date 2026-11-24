@@ -1,0 +1,45 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "client_request_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "consumed_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "input_method": {
+      "type": "string"
+    },
+    "items": {
+      "items": {
+        "$ref": "NutritionMealItemInput"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "meal_type": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "timezone": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "client_request_id",
+    "consumed_at",
+    "input_method",
+    "items",
+    "meal_type",
+    "timezone"
+  ],
+  "title": "NutritionMealInput",
+  "type": "object"
+}

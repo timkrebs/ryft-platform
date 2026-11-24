@@ -1,0 +1,41 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "carb_target_g": {
+      "type": "number"
+    },
+    "energy_target_kcal": {
+      "type": "number"
+    },
+    "post_workout_carb_budget_g": {
+      "type": "number"
+    },
+    "sodium_exemption_mg": {
+      "type": "number"
+    },
+    "strain": {
+      "type": "string"
+    },
+    "sweat_sodium_mg": {
+      "type": "number"
+    },
+    "workout_energy_kcal": {
+      "type": "number"
+    },
+    "workout_minutes": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "carb_target_g",
+    "energy_target_kcal",
+    "post_workout_carb_budget_g",
+    "sodium_exemption_mg",
+    "strain",
+    "sweat_sodium_mg",
+    "workout_energy_kcal",
+    "workout_minutes"
+  ],
+  "title": "N2RBudget",
+  "type": "object"
+}

@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Offline validation or explicit bulk import of OFF and FDC releases."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import zipfile
+from collections import Counter
+from contextlib import ExitStack
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import duckdb
+import httpx
+import psycopg
+from tqdm import tqdm
+
+from download import CLIENT_HEADERS, download_usda, extract_usda, file_sha256, resolve_off, resolve_usda
+from extract import connection, off_rows, usda_rows
+from import_pg import connect, load_batch
+from transform import Reject, off_food, usda_food
+
+PIPELINE_VERSION = "py-etl2"
+USDA_KINDS = ("foundation_food", "sr_legacy_food")
+
+
+def bounded_int(low: int, high: int):
+    def parse(value: str) -> int:
+        result = int(value)
+        if not low <= result <= high:
+            raise argparse.ArgumentTypeError(f"expected an integer from {low} to {high}")
+        return result
+    return parse
+
+
+def arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", choices=("all", "off", "usda", "foundation", "sr-legacy"), default="all")
+    size = parser.add_mutually_exclusive_group()
+    size.add_argument("--limit", type=bounded_int(1, 5_000_000), default=10_000,
+                      help="raw rows per release after source pushdowns (default 10000)")
+    size.add_argument("--full", action="store_true", help="scan all matched rows in the selected releases")
+    parser.add_argument("--batch-size", type=bounded_int(1, 5_000), default=2_000)
+    parser.add_argument("--memory-mb", type=bounded_int(128, 2_048), default=768)
+    parser.add_argument("--off-parquet", type=Path, help="local parquet artifact")
+    parser.add_argument("--foundation-zip", type=Path, help="local Foundation Foods CSV archive")
+    parser.add_argument("--sr-legacy-zip", type=Path, help="local SR Legacy CSV archive")
+    parser.add_argument("--write", action="store_true", help="merge results into PostgreSQL")
+    return parser.parse_args()
+
+
+def process(rows, normalize_row, version: str, conn, label: str) -> dict:
+    outcomes: Counter = Counter()
+    categories: Counter = Counter()
+    rejects: Counter = Counter()
+    warnings: Counter = Counter()
+    with tqdm(desc=label, unit="rows", disable=not sys.stderr.isatty(), file=sys.stderr) as progress:
+        for batch in rows:
+            foods = []
+            for row in batch:
+                outcomes["processed"] += 1
+                try:
+                    food = normalize_row(row, version)
+                except Reject as invalid:
+                    rejects[str(invalid)] += 1
+                    outcomes["rejected"] += 1
+                    continue
+                foods.append(food)
+                outcomes["accepted"] += 1
+                categories[food.category.name] += 1
+                warnings.update(food.warnings)
+            if conn is not None:
+                outcomes.update(load_batch(conn, foods))
+            progress.update(len(batch))
+    for name in ("processed", "accepted", "rejected", "inserted", "updated", "unchanged", "conflict", "duplicates"):
+        outcomes.setdefault(name, 0)
+    return {"release": label, "version": version, "counts": dict(outcomes),
+            "categories": dict(categories), "reject_reasons": dict(rejects), "warnings": dict(warnings)}
+
+
+def run(args: argparse.Namespace) -> None:
+    limit = None if args.full else args.limit
+    with ExitStack() as stack:
+        conn = stack.enter_context(connect()) if args.write else None
+        client = stack.enter_context(httpx.Client(headers=CLIENT_HEADERS, timeout=45, follow_redirects=True, max_redirects=4))
+        if args.source in ("all", "off"):
+            release = resolve_off(client, args.off_parquet)
+            with TemporaryDirectory(prefix="ryft-off-", dir="/tmp") as path, connection(Path(path), args.memory_mb) as db:
+                result = process(off_rows(db, release.location, limit, args.batch_size), off_food,
+                                 f"{PIPELINE_VERSION}:off:{release.version}", conn, "off")
+                print(json.dumps({"mode": "write" if args.write else "dry-run", **result}, sort_keys=True), flush=True)
+        kinds = {
+            "all": USDA_KINDS, "usda": USDA_KINDS, "foundation": USDA_KINDS[:1], "sr-legacy": USDA_KINDS[1:],
+        }.get(args.source, ())
+        local = dict(zip(USDA_KINDS, (args.foundation_zip, args.sr_legacy_zip), strict=True))
+        official = resolve_usda(client) if any(not local[kind] for kind in kinds) else {}
+        for kind in kinds:
+            with TemporaryDirectory(prefix=f"ryft-{kind}-", dir="/tmp") as path:
+                directory = Path(path)
+                archive = local[kind]
+                if archive is None:
+                    if kind not in official:
+                        raise ValueError(f"USDA did not publish a matching CSV release for {kind}")
+                    archive = download_usda(client, official[kind], directory)
+                digest = file_sha256(archive)
+                files = extract_usda(archive, directory)
+                tag = "foundation" if kind == "foundation_food" else "sr-legacy"
+                version = f"{PIPELINE_VERSION}:{tag}:{digest}"
+                with connection(directory, args.memory_mb) as db:
+                    result = process(usda_rows(db, files, limit, args.batch_size), usda_food, version, conn, kind)
+                print(json.dumps({"mode": "write" if args.write else "dry-run", "sha256": digest,
+                                  "has_category_table": "food_category.csv" in files, **result}, sort_keys=True), flush=True)
+
+
+def main() -> int:
+    args = arguments()
+    try:
+        run(args)
+    except httpx.HTTPStatusError as error:
+        print(f"ETL failed: release request returned HTTP {error.response.status_code}", file=sys.stderr)
+    except httpx.HTTPError:
+        print("ETL failed: unable to read official release metadata or artifact", file=sys.stderr)
+    except psycopg.Error as error:
+        print(f"ETL failed: database error ({error.sqlstate or 'connection'}). Check migration and import role.", file=sys.stderr)
+    except duckdb.Error as error:
+        print(f"ETL failed: DuckDB {type(error).__name__}. Check the artifact schema, HTTP range access or temporary memory limits.", file=sys.stderr)
+    except ValueError as error:
+        print(f"ETL failed: {error}", file=sys.stderr)
+    except (OSError, zipfile.BadZipFile):
+        print("ETL failed: could not read or stage an artifact", file=sys.stderr)
+    else:
+        return 0
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,22 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "foods": {
+      "items": {
+        "$ref": "FoodSummary"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "next_offset": {
+      "nullable": true,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "foods",
+    "next_offset"
+  ],
+  "title": "FoodSearchPage",
+  "type": "object"
+}

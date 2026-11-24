@@ -143,6 +143,7 @@ func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Bet
 		settings:  guard.Refresh,
 		purge:     func(ctx context.Context) error { return purgeInviteEmails(ctx, st, log) },
 		attest:    func(ctx context.Context) error { return purgeAppAttest(ctx, st, log) },
+		n2r:       h.refreshN2R,
 	}.ticks()...)
 	if err != nil {
 		return app.Parts{}, err
@@ -241,6 +242,8 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	api.HandleFunc("POST /v1/app-attest/challenge", h.attest.challenge)
 	api.HandleFunc("POST /v1/app-attest/keys", h.attest.keys)
 	api.HandleFunc("POST /v1/app-attest/token", h.attest.token)
+	// Nutrition inherits the authenticated v1 chain and has its own rollout flag (D265, D266).
+	h.nutritionRoutes(api)
 	api.HandleFunc("/v1/", httpx.NotFound)
 	limits := ratelimit.NewUserLimits()
 	authOpts := auth.Options{
@@ -265,7 +268,7 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	// app token, the beta gate, then the routes. DELETE /v1/me above and /v1/admin/* below are not
 	// wrapped: they never need an app token.
 	attest := appAttestGate(o.attest, log)
-	mux.Handle("/v1/", auth.Middleware(authOpts, attest(betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api))))))
+	mux.Handle("/v1/", redactNutritionPath(auth.Middleware(authOpts, attest(betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))))
 	// The training import gets 50 s instead of readTimeout, like a sync (D129).
 	mux.Handle("POST /v1/train/import", importRoute(authOpts, o.gate, attest, h.trainImport))
 	// The operator's routes: ADMIN_API_KEY, or an allow-listed operator's Supabase token (only with

@@ -1,0 +1,55 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "auc_score": {
+      "type": "number"
+    },
+    "baseline_mg_dl": {
+      "type": "number"
+    },
+    "end_delta_mg_dl": {
+      "type": "number"
+    },
+    "glucose_score": {
+      "type": "number"
+    },
+    "iauc_mg_dl_min": {
+      "type": "number"
+    },
+    "meal_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "peak_delta_mg_dl": {
+      "type": "number"
+    },
+    "peak_score": {
+      "type": "number"
+    },
+    "recovery_score": {
+      "type": "number"
+    },
+    "sample_count": {
+      "type": "integer"
+    },
+    "window_end": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "auc_score",
+    "baseline_mg_dl",
+    "end_delta_mg_dl",
+    "glucose_score",
+    "iauc_mg_dl_min",
+    "meal_id",
+    "peak_delta_mg_dl",
+    "peak_score",
+    "recovery_score",
+    "sample_count",
+    "window_end"
+  ],
+  "title": "NutritionMealGlucoseScore",
+  "type": "object"
+}

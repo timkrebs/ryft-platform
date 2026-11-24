@@ -1,0 +1,113 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "alcohol_g_kg": {
+      "type": "number"
+    },
+    "alcohol_penalty": {
+      "type": "number"
+    },
+    "autonomic_penalty": {
+      "type": "number"
+    },
+    "bedtime": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "budget": {
+      "$ref": "N2RBudget"
+    },
+    "caffeine_bed_mg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "caffeine_penalty": {
+      "type": "number"
+    },
+    "components": {
+      "$ref": "NutritionQualityBreakdown"
+    },
+    "covered_added_sugar_g": {
+      "type": "number"
+    },
+    "covered_carb_g": {
+      "type": "number"
+    },
+    "effective_caffeine_half_life_h": {
+      "type": "number"
+    },
+    "fuel_multiplier": {
+      "type": "number"
+    },
+    "glucose_score": {
+      "nullable": true,
+      "type": "number"
+    },
+    "late_meal_penalty": {
+      "type": "number"
+    },
+    "logged_carb_complete": {
+      "type": "boolean"
+    },
+    "logged_carb_g": {
+      "type": "number"
+    },
+    "logged_kcal": {
+      "type": "number"
+    },
+    "n2r_score": {
+      "nullable": true,
+      "type": "number"
+    },
+    "net_added_sugar_g": {
+      "nullable": true,
+      "type": "number"
+    },
+    "omega_3_depot_mg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "quality_score": {
+      "nullable": true,
+      "type": "number"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "alcohol_g_kg",
+    "alcohol_penalty",
+    "autonomic_penalty",
+    "bedtime",
+    "budget",
+    "caffeine_bed_mg",
+    "caffeine_penalty",
+    "components",
+    "covered_added_sugar_g",
+    "covered_carb_g",
+    "effective_caffeine_half_life_h",
+    "fuel_multiplier",
+    "glucose_score",
+    "late_meal_penalty",
+    "logged_carb_complete",
+    "logged_carb_g",
+    "logged_kcal",
+    "n2r_score",
+    "net_added_sugar_g",
+    "omega_3_depot_mg",
+    "quality_score",
+    "tags",
+    "version"
+  ],
+  "title": "N2RScore",
+  "type": "object"
+}

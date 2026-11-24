@@ -500,6 +500,41 @@ environment and when it was attested and last used, until the account is deleted
 90 days after the key's last use; open challenges for 5 minutes; tokens nowhere. `DELETE /v1/me` deletes
 the keys and challenges. No receipt, no device model, no address.
 
+## Nutrition
+
+The gated `/v1/nutrition` contract covers food search, barcode lookup, portions, owner-private custom foods and submissions, meal logging, daily summaries and user-configured goals. See [Nutrition endpoints and wire examples](architecture/nutrition/04-api-contracts.md). `GET /v1/config` publishes `nutrition.enabled`, default dark. Nutrition data writes use current consent under `CONSENT_ENFORCE=on` or `warn`.
+
+### Nutrition-to-Recovery
+
+`PUT /v1/nutrition/n2r/profile` opts into contextual scoring and returns the same settings shape. `GET /v1/nutrition/n2r/profile` returns the caller's settings or JSON `null`. `DELETE /v1/nutrition/n2r/profile` removes the settings and their derived night records and returns 204. The calorie target is configured through the existing Nutrition goals endpoint.
+
+<!-- type: model.N2RProfile -->
+```json
+{
+  "body_mass_kg": 70,
+  "sex": "unspecified",
+  "sweat_rate_l_per_h": null,
+  "sweat_na_mg_per_l": null,
+  "caffeine_half_life_h": null,
+  "expected_bedtime": "23:00",
+  "next_workout_start_at": null
+}
+```
+
+When enrolled with current consent, `GET /v1/nutrition/daily` and each summary row include `n2r`, a versioned `model.N2RScore` object. Its `n2r_score` is nullable until logging reaches the calorie threshold and all quality components can be scored. `quality_score`, `glucose_score` and individual components can be nullable depending on coverage.
+
+`GET /v1/nutrition/guidance/current` includes the current waking day's N2R breakdown, morning biometrics when available and prioritized cards. Live guidance uses the account timezone and expected bedtime, including the previous waking day before an early-morning bedtime. Food suggestions may be empty when the catalog lacks a match. An unenrolled account receives empty cards and a null score.
+
+<!-- type: model.N2RGuidance shape -->
+```json
+{
+  "local_date": "2026-11-24",
+  "score": {"version": "1.0.0", "n2r_score": null, "quality_score": null, "budget": {"energy_target_kcal": 2400, "strain": "high", "carb_target_g": 560}, "fuel_multiplier": 0.85, "tags": ["underfueled_high_strain"]},
+  "morning_biometrics": {"wake_date": "2026-11-24", "ln_rmssd_7d_mean": 3.9, "ln_rmssd_7d_sd": 0.16, "ln_rmssd_7d_cv": 4.10, "swc": 0.032, "ln_rmssd_delta": -0.17, "rhr_delta": 3.0, "change": "moderate"},
+  "cards": [{"code": "POST_WORKOUT_ENDURANCE_REFEED", "actions": ["Refuel with fast-digesting carbohydrates."], "targets": {"carb_min_g": 56, "carb_max_g": 84}, "foods": []}]
+}
+```
+
 ## Endpoints
 
 | Method | Path | Service | Returns |
@@ -3501,6 +3536,9 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-11-24 | **[Nutrition-to-Recovery](#nutrition-to-recovery)** (D268). Adds account opt-in, contextual scoring in daily summaries and current guidance. |
+| 2026-11-24 | **Nutrition Score** (D266). Nutrition daily and range summaries report versioned quality and CGM subscores, ten components, per-meal impact and the optional timing penalty. Additive CGM upload/deletion and private food quality profiles. Examples in the [Nutrition contract](architecture/nutrition/04-api-contracts.md#nutrition-score). |
+| 2026-11-24 | **[Nutrition API](#nutrition)** (D265). Gated catalog, search, barcode, private foods, submissions, meals with historical snapshots, daily summaries and goals. Additive endpoints and the `nutrition.enabled` flag. |
 | 2026-11-20 | **Admin only: an unbound invite code's `note` expires; a deleted account leaves the flags' allow-lists** (D249; platform PR `store: deletion removes allow-list entries; invite notes expire`). `GET /v1/admin/invites`: the `note` of an unbound code is now `""` 30 days after the code could no longer be redeemed (revoked, expired or used up), as a bound code's already was; its `status` and `revoked_at` don't change. `GET /v1/admin/flags`: `allow_user_ids` no longer holds the id of a deleted account (`DELETE /v1/me` and the admin deletion remove it; migration 0038 removed those of earlier deletions). **Fields:** none added, renamed or removed. **The app:** nothing; it never calls `/v1/admin/*`, and `GET /v1/config` answers as before. **Swift:** none. |
 | 2026-11-20 | **App Attest: the server (mode off)** (D247; platform PR `api: App Attest, the server (mode off)`; answers the app's `API_REQUESTS.md` → App Attest AA1–AA4). Additive; no v1 field renamed, removed or retyped. **Served:** `POST /v1/app-attest/challenge`, `POST /v1/app-attest/keys` and `POST /v1/app-attest/token` exist now, but answer only where the server has its token key; without it they answer `501`, which the app treats like the `404` without a `code` (not live, no header). Production ships in mode `off` without the token key, so it answers `501` until the `warn` PR sets it (after the privacy text names App Attest); local compose answers `501`. **Modes:** `off` doesn't read `X-RYFT-App-Token` and logs nothing; `warn` serves and logs a request without a valid token; `on` refuses it with `403 app_attest_required`; never `off` → `on`. **Codes:** `app_attest_required` (`403`), `app_attest_challenge_invalid` (`422`), `app_attest_invalid` (`422`), `app_attest_key_unknown` (`404`) join Errors' `code` table and the status table's `403`, `404` and `422` rows (they were a paragraph); the `invite_required` row's list of routes gains the three App Attest routes (outside the beta gate). **AA1:** Conventions → App build: the optional request header `X-RYFT-App-Build: <CFBundleVersion>`, `^[0-9]+(\.[0-9]+){0,3}$`, at most 24 characters; a missing or malformed value is ignored and never refused; written only into the App Attest warn line, never a metric label. **AA2:** `GET /v1/config` → `app_attest` (`"off"`, `"warn"` or `"on"`, closed, always present): the app may skip the challenge probe under `"off"`; a `501` or `404` from the challenge route stays authoritative; under `"on"` the config read itself needs a token. **AA3:** `ttl_sec` is 3600 today and never below 600; the app renews with under `min(300, ttl_sec / 2)` seconds left (it said 5 minutes). **AA4:** the three routes' `error` texts are fixed sentences and never echo `challenge`, `key_id`, `assertion`, `attestation` or a token. **Development attestations:** production only on every server (D247): `APP_ATTEST_ENVIRONMENTS` is gone from step 7, and a development attestation is `422 app_attest_invalid`. **Examples:** the three routes' bodies are type-checked `json` blocks now (`AppAttestChallenge`, `AppAttestKeyPost`, `AppAttestKey`, `AppAttestTokenPost`, `AppAttestToken`), the `http` exchanges keep the headers; a request with both headers is shown. **Behaviour:** none for the app in production until the token key is set; `GET /v1/config` gains a field. **Old builds:** they ignore `app_attest` and see `501` where they saw `404`, which D245 already told them to treat alike. **The app:** send `X-RYFT-App-Build` on every request; decode `app_attest` as optional (missing or unknown: probe as before); renew by `min(300, ttl_sec / 2)`. **Swift:** `RemoteConfig.appAttest: String`; `APIErrorCode` gains `appAttestRequired`, `appAttestChallengeInvalid`, `appAttestInvalid`, `appAttestKeyUnknown` (the comment after the enum is replaced); the `AppAttestToken.ttlSec` comment states the floor. |
 | 2026-11-19 | **Docs only: no Kubernetes stack any more** (D246; platform PR `remove: Kubernetes, Argo CD, Vault, admission, AWS (D3)`). Conventions → Base URLs loses its last sentence: the Kubernetes manifests, whose Ingress served both services on one host, are deleted. Production stays `https://api.ryftlab.de` and `https://ingest.ryftlab.de`, local compose `:8082` and `:8081`. **Behaviour:** none; no route, field, status or `code` changes. **The app:** nothing. **Swift:** none. |

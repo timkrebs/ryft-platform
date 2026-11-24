@@ -1,0 +1,3 @@
+fdc_id,portion_description,gram_weight,amount,modifier,measure_unit_id
+900001,1 medium fruit,150,1,,40
+900002,,80,2,level,40

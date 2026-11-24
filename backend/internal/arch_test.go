@@ -92,7 +92,7 @@ var denyRules = []denyRule{
 		ID: "R4", Why: "every rule is a pure function: no network, file, database, broker or metrics code, and no internal package but model and train (CLAUDE.md: every rule is a pure function; D146 for workoutdup)",
 		From: []string{
 			"internal/model", "internal/flags", "internal/insights", "internal/behavior", "internal/train",
-			"internal/scoring/workoutdup",
+			"internal/scoring/workoutdup", "internal/nutrition/score",
 		},
 		Deny: []string{
 			"net", "net/...", "os", "os/...", "io/fs", "syscall", "embed", "log", "log/...", "database/...",

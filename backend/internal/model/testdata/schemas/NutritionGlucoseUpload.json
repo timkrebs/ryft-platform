@@ -1,0 +1,17 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "samples": {
+      "items": {
+        "$ref": "NutritionGlucoseSample"
+      },
+      "nullable": true,
+      "type": "array"
+    }
+  },
+  "required": [
+    "samples"
+  ],
+  "title": "NutritionGlucoseUpload",
+  "type": "object"
+}

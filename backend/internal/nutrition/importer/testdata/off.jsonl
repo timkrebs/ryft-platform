@@ -1,0 +1,5 @@
+{"code":"012345678905","lc":"de","countries_tags":["en:germany","en:switzerland"],"product_name":"Test-Müsli","product_name_de":"Test-Müsli","product_name_en":"Test cereal","brands":"Example, Secondary","nutrition_data_per":"100g","serving_quantity":40,"serving_quantity_unit":"g","last_modified_t":1793030000,"nutriments":{"energy-kcal_100g":351,"energy-kj_100g":1468,"proteins_100g":10,"carbohydrates_100g":55,"fat_100g":11,"sodium_100g":"0.12","fiber_100g":null,"sugars_100g":0}}
+{"code":"4006381333931","countries_tags":["en:austria"],"product_name":"Fixture Juice","lc":"en","nutrition_data_per":"serving","serving_quantity":"200","serving_quantity_unit":"ml","nutriments":{"proteins_100g":1,"energy-kcal_serving":64,"carbohydrates_serving":12}}
+{"code":"0012345678905","product_name":"Another product with this GTIN","lc":"en","countries_tags":["en:switzerland"],"nutrition_data_per":"100g","serving_quantity_unit":"ml","nutriments":{"energy-kcal_100g":25}}
+{"code":"012345678904","product_name":"Fixture checksum failure","countries_tags":["en:germany"]}
+{"code":"012345678905","product_name":"Fixture market filter","countries_tags":["en:united-states"]}

@@ -688,6 +688,10 @@ the fields are found by `baseline_hrv_days IS NULL`, not by their version.
 the Today screen has the reason within a pass of the deploy. Older days keep `null` until a rescore (`OPERATIONS.md` → Rescoring)
 (optional; it moves no stored number, it fills the three fields).
 
+## Nutrition-to-Recovery
+
+N2R v1.0.0 combines dynamic food quality, CGM impact, fuel adequacy and dose- and timing-dependent penalties. Account profiles opt into N2R through the Nutrition API. Nighttime observations calibrate the N2R caffeine model. See [calibration and context rules](architecture/nutrition/10-nutrition-to-recovery.md).
+
 ## Model version
 
 `internal/scoring/version.go` names the model, `ModelVersion = "2026.10.3"`

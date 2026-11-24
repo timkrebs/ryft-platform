@@ -1,0 +1,42 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "body_mass_kg": {
+      "type": "number"
+    },
+    "caffeine_half_life_h": {
+      "nullable": true,
+      "type": "number"
+    },
+    "expected_bedtime": {
+      "type": "string"
+    },
+    "next_workout_start_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "sex": {
+      "type": "string"
+    },
+    "sweat_na_mg_per_l": {
+      "nullable": true,
+      "type": "number"
+    },
+    "sweat_rate_l_per_h": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [
+    "body_mass_kg",
+    "caffeine_half_life_h",
+    "expected_bedtime",
+    "next_workout_start_at",
+    "sex",
+    "sweat_na_mg_per_l",
+    "sweat_rate_l_per_h"
+  ],
+  "title": "N2RProfile",
+  "type": "object"
+}

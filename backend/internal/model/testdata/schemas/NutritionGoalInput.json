@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "revision": {
+      "type": "integer"
+    },
+    "targets": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "nullable": true,
+      "type": "object"
+    }
+  },
+  "required": [
+    "revision",
+    "targets"
+  ],
+  "title": "NutritionGoalInput",
+  "type": "object"
+}

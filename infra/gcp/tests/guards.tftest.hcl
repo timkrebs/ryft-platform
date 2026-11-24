@@ -94,11 +94,19 @@ run "prevent_destroy_and_delayed_destruction" {
     error_message = "google_secret_manager_secret.this (secrets.tf) needs lifecycle { prevent_destroy = true }: the data key's container is among them"
   }
 
-  # Two blocks until step 11.6's PR 2 (docs/OPERATIONS.md -> GCP): `this`, with prevent_destroy, and
-  # `retired`, without, for otlp-token alone. Nothing else may sit in the one without.
+  # The Nutrition login has its own protected container and the same version restore window.
   assert {
-    condition     = length(regexall("(?m)^\\s*resource\\s+\"google_secret_manager_secret\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 2
-    error_message = "two google_secret_manager_secret blocks: this (prevent_destroy) and retired (step 11.6)"
+    condition = (
+      length(regexall("(?m)^\\s*resource\\s+\"google_secret_manager_secret\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 3 &&
+      alltrue([
+        for c in split("\nresource \"", file("${path.module}/nutrition.tf")) :
+        can(regex("(?m)lifecycle\\s*\\{[^}]*^[ \\t]*prevent_destroy\\s*=\\s*true$", c)) &&
+        can(regex("(?m)^\\s*version_destroy_ttl\\s*=\\s*\"2592000s\"", c))
+        if startswith(c, "google_secret_manager_secret\" \"nutrition_etl_db\" {")
+      ]) &&
+      strcontains(file("${path.module}/nutrition.tf"), "resource \"google_secret_manager_secret\" \"nutrition_etl_db\"")
+    )
+    error_message = "The existing and Nutrition secret containers have prevent_destroy and delayed version destruction. The retired block holds otlp-token alone."
   }
 
   assert {

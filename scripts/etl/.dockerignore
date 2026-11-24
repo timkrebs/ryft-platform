@@ -1,0 +1,10 @@
+*
+!Dockerfile
+!requirements.txt
+!run_etl.py
+!download.py
+!extract.py
+!transform.py
+!categorizer.py
+!import_pg.py
+!merge_catalog.sql

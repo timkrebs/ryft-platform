@@ -1,0 +1,70 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "client_request_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "consumed_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "input_method": {
+      "type": "string"
+    },
+    "items": {
+      "items": {
+        "$ref": "NutritionMealItem"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "local_date": {
+      "type": "string"
+    },
+    "meal_type": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "revision": {
+      "type": "integer"
+    },
+    "timezone": {
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "client_request_id",
+    "consumed_at",
+    "created_at",
+    "id",
+    "input_method",
+    "items",
+    "local_date",
+    "meal_type",
+    "name",
+    "notes",
+    "revision",
+    "timezone",
+    "updated_at"
+  ],
+  "title": "NutritionMeal",
+  "type": "object"
+}

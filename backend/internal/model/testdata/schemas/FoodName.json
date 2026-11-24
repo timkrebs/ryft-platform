@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "alias": {
+      "type": "boolean"
+    },
+    "label": {
+      "type": "string"
+    },
+    "language": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "alias",
+    "label",
+    "language"
+  ],
+  "title": "FoodName",
+  "type": "object"
+}

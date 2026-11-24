@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -108,12 +109,29 @@ func Fail(w http.ResponseWriter, r *http.Request, err error) {
 // (ErrNUL: Postgres cannot store it); json.RawMessage fields come out
 // re-encoded (raw.go). Answer its error with WriteDecodeError.
 func ReadJSON(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
+	return readJSON(w, r, v, limit, false)
+}
+
+// ReadSingleJSON enforces a single JSON value and checks the full body size.
+func ReadSingleJSON(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
+	return readJSON(w, r, v, limit, true)
+}
+
+func readJSON(w http.ResponseWriter, r *http.Request, v any, limit int64, single bool) error {
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	scan := newNULScanner(r.Body)
 	dec := json.NewDecoder(scan)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return err
+	}
+	if single {
+		var extra json.RawMessage
+		if err := dec.Decode(&extra); err == nil {
+			return errors.New("expected a single JSON value")
+		} else if !errors.Is(err, io.EOF) {
+			return err
+		}
 	}
 	// Within the value only: the decoder may have read past its end, and
 	// whatever follows it is ignored.

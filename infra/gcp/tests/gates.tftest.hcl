@@ -265,10 +265,11 @@ run "invokers_only_through_the_binding" {
 
   assert {
     condition = (
-      length(regexall("(?m)^[^#\\n]*\"roles/run\\.invoker\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      length(regexall("(?m)^[^#\\n]*\"roles/run\\.invoker\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 2 &&
       length(regexall("(?m)^\\s*resource\\s+\"google_cloud_run_v2_service_iam_binding\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1 &&
+      can(regex("(?m)^resource \"google_cloud_run_v2_job_iam_member\" \"nutrition_scheduler\" \\{[^}]*role\\s*=\\s*\"roles/run\\.invoker\"", file("${path.module}/nutrition.tf"))) &&
       length(regexall("(?m)^\\s*(resource|data)\\s+\"(google_cloud_run_(v2_)?(service|job)_iam_policy|google_cloud_run_service_iam_)", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
     )
-    error_message = "run.invoker only in google_cloud_run_v2_service_iam_binding.invoker; no Cloud Run IAM policy resource, no v1 Cloud Run IAM resource"
+    error_message = "Run Invoker is scoped to the existing service binding and the Nutrition Job scheduler member. The root has no Cloud Run IAM policy or v1 Cloud Run IAM resource."
   }
 }

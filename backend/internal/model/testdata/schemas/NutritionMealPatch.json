@@ -1,0 +1,45 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "consumed_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "input_method": {
+      "nullable": true,
+      "type": "string"
+    },
+    "items": {
+      "items": {
+        "$ref": "NutritionMealItemInput"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "meal_type": {
+      "nullable": true,
+      "type": "string"
+    },
+    "name": {
+      "nullable": true,
+      "type": "string"
+    },
+    "notes": {
+      "nullable": true,
+      "type": "string"
+    },
+    "revision": {
+      "type": "integer"
+    },
+    "timezone": {
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "revision"
+  ],
+  "title": "NutritionMealPatch",
+  "type": "object"
+}

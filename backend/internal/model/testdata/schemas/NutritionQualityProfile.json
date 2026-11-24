@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "non_starchy_vegetable_fraction": {
+      "nullable": true,
+      "type": "number"
+    },
+    "nuts_legumes_fraction": {
+      "nullable": true,
+      "type": "number"
+    },
+    "red_processed_meat_fraction": {
+      "nullable": true,
+      "type": "number"
+    },
+    "sugary_drink": {
+      "nullable": true,
+      "type": "boolean"
+    },
+    "whole_fruit_fraction": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [],
+  "title": "NutritionQualityProfile",
+  "type": "object"
+}

@@ -1,0 +1,10 @@
+id,name,unit_name
+1003,Protein,G
+1004,Total lipid,G
+1005,Carbohydrate by difference,G
+1008,Energy,KCAL
+2048,Energy Atwater specific,KCAL
+1093,Sodium,MG
+1106,Vitamin A RAE,UG
+1190,Folate DFE,UG
+1186,Folic acid,UG

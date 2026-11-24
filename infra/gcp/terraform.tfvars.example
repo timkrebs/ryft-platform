@@ -18,3 +18,7 @@ google_site_verification = "google-site-verification=<value from Search Console>
 # Defaults, change only with a reason:
 # project_id = "ryftlab-prod"
 # region     = "europe-west1"
+
+# Nutrition ETL, opt-in HCP Terraform variable (HCL on). Bootstrap with an empty object.
+# nutrition_etl = {}
+# Pin the scanned Job image digest and Secret Manager version before creating the paused import job.

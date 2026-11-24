@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "complete_for_logged_items": {
+      "type": "boolean"
+    },
+    "known_items": {
+      "type": "integer"
+    },
+    "known_subtotal": {
+      "type": "number"
+    },
+    "unit": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "complete_for_logged_items",
+    "known_items",
+    "known_subtotal",
+    "unit"
+  ],
+  "title": "NutritionTotal",
+  "type": "object"
+}

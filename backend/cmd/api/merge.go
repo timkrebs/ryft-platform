@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/timkrebs/ryft/internal/flags"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
@@ -81,6 +82,23 @@ func (a admin) merge(w http.ResponseWriter, r *http.Request) {
 		metrics.AdminRequests.WithLabelValues("invalid").Inc()
 		httpx.WriteError(w, http.StatusConflict, fmt.Sprintf("%s has %d scored days and %s %d: that looks like the wrong way round "+
 			"(merge the smaller into the larger), or add force=1", ans.From.ShortID, ans.From.DaysScored, ans.To.ShortID, ans.To.DaysScored))
+		return
+	}
+	// Nutrition is still dark. A merge would otherwise delete data that
+	// has no transfer policy, including private catalog and goal history.
+	allFlags, err := a.h.st.Flags(ctx)
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
+	hasNutrition, err := a.h.st.HasNutritionData(ctx, from)
+	if err != nil {
+		nutritionAnswer(w, r, 0, nil, err)
+		return
+	}
+	if hasNutrition || flags.Enabled(allFlags, model.FlagNutrition, from) {
+		metrics.AdminRequests.WithLabelValues("invalid").Inc()
+		httpx.WriteError(w, http.StatusConflict, "merge is unavailable for the source account while it has Nutrition access or records")
 		return
 	}
 	// The move, the rescore and the deletion run to the end even if the client hangs up

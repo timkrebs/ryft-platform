@@ -1,0 +1,70 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "brand": {
+      "type": "string"
+    },
+    "density_g_ml": {
+      "nullable": true,
+      "type": "number"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "names": {
+      "items": {
+        "$ref": "FoodName"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "nutrients": {
+      "items": {
+        "$ref": "FoodNutrient"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "portions": {
+      "items": {
+        "$ref": "FoodPortion"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "quality": {
+      "type": "string"
+    },
+    "quality_profile": {
+      "$ref": "NutritionQualityProfile",
+      "nullable": true
+    },
+    "sources": {
+      "items": {
+        "$ref": "FoodSource"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "type": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "brand",
+    "id",
+    "name",
+    "names",
+    "nutrients",
+    "portions",
+    "quality",
+    "sources",
+    "type"
+  ],
+  "title": "FoodDetail",
+  "type": "object"
+}
