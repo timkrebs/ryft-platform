@@ -223,7 +223,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 
 | Package | Owns | Depends on | Tested by |
 | --- | --- | --- | --- |
-| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, appattest, apple, auth, behavior, config, connect, connect/fake, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, nutrition, ratelimit, scoring, sealed, store, train, wearables | 44 files (Postgres) |
+| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, appattest, apple, auth, behavior, config, connect, connect/fake, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, nutrition, ratelimit, scoring, sealed, store, train, wearables | 45 files (Postgres) |
 | `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | app, auth, config, connect, connect/fake, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 11 files (Postgres) |
 | `cmd/migrate` | migrate applies the migrations as the schema owner, loads the built-in exercises and plans, and sets the service roles' passwords where they changed. | db, httpx, smoke | none |
 | `cmd/notify` | notify wires internal/notify to its push routes and the 15-minute tick. | apns, app, config, eventbus, events, logx, notify, store | 1 file |
