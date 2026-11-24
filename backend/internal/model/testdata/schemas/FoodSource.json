@@ -1,0 +1,39 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "dataset_version": {
+      "type": "string"
+    },
+    "external_id": {
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "license_identifier": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "source_updated_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "source_url": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "dataset_version",
+    "external_id",
+    "id",
+    "license_identifier",
+    "provider",
+    "source_url"
+  ],
+  "title": "FoodSource",
+  "type": "object"
+}

@@ -1,7 +1,8 @@
 # The deploy to Cloud Run (design §9, ticket B2) and of the site to Firebase Hosting (design §8, C1).
 # A push to main, once ci.yml's own run on that commit has a green `ci-ok` job, builds the five images
 # (linux/amd64, one single-arch manifest each, with the runner's own Docker) and scans each saved
-# image. Only when all five pass does it sign in to Google Cloud and push those same images to
+# image. A manual dispatch can include the Nutrition ETL image in the same scan. After the scan it
+# signs in to Google Cloud and pushes those same images to
 # Artifact Registry, tagged with the short SHA. It renders deploy/run with their digests, checks that
 # main is still at this commit, runs the migrate job and stops when it fails (nothing rolls, as with
 # the old PreSync), then replaces the services in the order scoring, notify, ingest, api, and runs
@@ -47,6 +48,10 @@ on:
         description: Run make smoke-prod after the deploy (off only for the first deploy, before infra/gcp's apply 2)
         type: boolean
         default: true
+      publish_nutrition_etl:
+        description: Also publish a scanned Nutrition ETL image for the Terraform-managed job
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -175,6 +180,7 @@ jobs:
       REGION: europe-west1
       REGISTRY: europe-west1-docker.pkg.dev/ryftlab-prod/ryft
       DEPLOYER: ryft-deployer@ryftlab-prod.iam.gserviceaccount.com
+      PUBLISH_NUTRITION_ETL: ${{ inputs.publish_nutrition_etl && 'true' || 'false' }}
       # The Trivy image of ci.yml, by digest.
       TRIVY: aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222
     steps:
@@ -200,16 +206,24 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/images"
           : > "$RUNNER_TEMP/ids"
-          for s in api ingest scoring notify migrate; do
+          images=(api ingest scoring notify migrate)
+          for s in "${images[@]}"; do
             docker build --platform linux/amd64 --provenance=false --sbom=false --build-arg "SERVICE=$s" -t "ryft-$s:$GITHUB_SHA" backend
             echo "$s $(docker image inspect --format '{{.Id}}' "ryft-$s:$GITHUB_SHA")" >> "$RUNNER_TEMP/ids"
             docker save -o "$RUNNER_TEMP/images/$s.tar" "ryft-$s:$GITHUB_SHA"
           done
-          for s in api ingest scoring notify migrate; do
+          if [[ $PUBLISH_NUTRITION_ETL == true ]]; then
+            s=nutrition-etl-job
+            docker build --platform linux/amd64 --provenance=false --sbom=false -t "ryft-$s:$GITHUB_SHA" scripts/etl
+            echo "$s $(docker image inspect --format '{{.Id}}' "ryft-$s:$GITHUB_SHA")" >> "$RUNNER_TEMP/ids"
+            docker save -o "$RUNNER_TEMP/images/$s.tar" "ryft-$s:$GITHUB_SHA"
+            images+=("$s")
+          fi
+          for s in "${images[@]}"; do
             docker run --rm -v "$RUNNER_TEMP/images:/in:ro" -v ryft-trivy-cache:/cache "$TRIVY" image --cache-dir /cache --input "/in/$s.tar" --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress
           done
           rm -rf "$RUNNER_TEMP/images"
-      # Only now, with all five scanned: Workload Identity Federation with gcloud as the runner image
+      # With every selected image scanned: Workload Identity Federation with gcloud as the runner image
       # ships it. No service account key, and no third-party action holds the token. The credential
       # config (the external_account file google-github-actions/auth writes, built here from the
       # environment, so the request token is in no command line) makes gcloud fetch a fresh GitHub OIDC
@@ -263,7 +277,11 @@ jobs:
             rd=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" | grep -F "$REGISTRY/$s@" | head -n 1 || true)
             d=${rd#"$REGISTRY/$s@"}
             [[ $d =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error title=deploy::no registry digest for $s (RepoDigests: '$rd')"; exit 1; }
-            echo "--digest=$s=$d" >> "$RUNNER_TEMP/digests"
+            if [[ $s == nutrition-etl-job ]]; then
+              printf '### Nutrition ETL image\n\n%s@%s\n' "$REGISTRY/$s" "$d" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "--digest=$s=$d" >> "$RUNNER_TEMP/digests"
+            fi
           done < "$RUNNER_TEMP/ids"
           [ "$(wc -l < "$RUNNER_TEMP/digests")" -eq 5 ] || { echo "::error title=deploy::five digests expected"; cat "$RUNNER_TEMP/digests"; exit 1; }
           { echo "### Images ($tag)"; echo '```'; sed 's/^--digest=//' "$RUNNER_TEMP/digests"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

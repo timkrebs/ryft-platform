@@ -108,9 +108,10 @@ resource "google_logging_metric" "errors" {
 # kind is the line's message, a closed set of three by the filter; the lines' ids (feedback_id, user_id,
 # request_id, admin_actor) stay in the log and never become a label.
 resource "google_logging_metric" "notices" {
-  project     = var.project_id
-  name        = "ryft_notices"
-  description = "api's feedback received, admin signed in and admin auth rejected lines (not for reason missing or expired), by kind (infra/gcp, D244)"
+  project         = var.project_id
+  name            = "ryft_notices"
+  deletion_policy = "PREVENT"
+  description     = "api's feedback received, admin signed in and admin auth rejected lines (not for reason missing or expired), by kind (infra/gcp, D244)"
   filter = join("\n", [
     "resource.type=\"cloud_run_revision\"",
     "resource.labels.service_name=\"api\"",
@@ -125,8 +126,9 @@ resource "google_logging_metric" "notices" {
     display_name = "RYFT notices"
 
     labels {
-      key         = "kind"
-      value_type  = "STRING"
+      key        = "kind"
+      value_type = "STRING"
+      # D269: keep the live descriptor so future filter edits update in place.
       description = "The line's message: feedback received, admin signed in or admin auth rejected"
     }
   }
@@ -134,7 +136,11 @@ resource "google_logging_metric" "notices" {
   label_extractors = {
     "kind" = "EXTRACT(jsonPayload.message)"
   }
+  lifecycle {
+    prevent_destroy = true
+  }
 }
+
 
 # The edge's (D242), from edge = built on: Cloud Armor's denials and preview matches, by the rule's
 # priority (edge.tf: 1000 to 1005 the WAF sets, 2000 the rate rule; a closed set). Counted from the

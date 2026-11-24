@@ -51,14 +51,13 @@ run "the_accounts" {
     error_message = "five runtime accounts, ryft-push and ryft-deployer, nothing else (grafana-reader went with Grafana Cloud, D236)"
   }
 
-  # No account for anything outside Google, and no project-level role for anyone but the deployer before
-  # apply 2 (code lines; a comment may name grafana-reader to say it is gone).
+  # The deployer bootstrap and the optional Cloud SQL client are the two project-level members.
   assert {
     condition = (
       length(regexall("(?m)^[^#\\n]*grafana", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0 &&
-      length(regexall("(?m)^\\s*resource\\s+\"google_project_iam_member\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 1
+      toset([for match in regexall("(?m)^\\s*resource\\s+\"google_project_iam_member\"\\s+\"([^\"]+)\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")])) : match[0]]) == toset(["deployer_run_developer", "nutrition_cloud_sql"])
     )
-    error_message = "no grafana in any code line, and one project-level member resource (the deployer's run.developer before apply 2)"
+    error_message = "The only project-level member resources are the deployer bootstrap and the conditional Nutrition Cloud SQL client."
   }
 
   assert {
@@ -171,7 +170,8 @@ run "secret_accessors_exactly" {
   # exists (it would also wipe the bootstrap's bindings).
   assert {
     condition = (
-      length(regexall("(?m)^[^#\\n]*secretmanager\\.secretAccessor", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 2 &&
+      length(regexall("(?m)^[^#\\n]*secretmanager\\.secretAccessor", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 3 &&
+      can(regex("(?m)^resource \"google_secret_manager_secret_iam_binding\" \"nutrition_etl_db\" \\{[^}]*role\\s*=\\s*\"roles/secretmanager\\.secretAccessor\"", file("${path.module}/nutrition.tf"))) &&
       length(regexall("(?m)^\\s*resource\\s+\"google_project_iam_(binding|policy)\"", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0 &&
       length(regexall("(?m)^\\s*(resource|data)\\s+\"google_secret_manager_secret_iam_(member|policy)", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 0
     )

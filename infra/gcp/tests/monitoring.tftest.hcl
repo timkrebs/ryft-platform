@@ -603,8 +603,9 @@ run "the_log_based_metrics" {
   assert {
     condition = (
       google_logging_metric.notices.label_extractors == tomap({ kind = "EXTRACT(jsonPayload.message)" }) &&
+      google_logging_metric.notices.deletion_policy == "PREVENT" &&
       [for d in google_logging_metric.notices.metric_descriptor : [d.metric_kind, d.value_type]] == [["DELTA", "INT64"]] &&
-      [for l in google_logging_metric.notices.metric_descriptor[0].labels : l.key] == ["kind"]
+      [for l in google_logging_metric.notices.metric_descriptor[0].labels : [l.key, l.value_type, l.description]] == [["kind", "STRING", "The line's message: feedback received, admin signed in or admin auth rejected"]]
     )
     error_message = "ryft_notices has one label, kind, the line's message (a closed set of three by the filter)"
   }

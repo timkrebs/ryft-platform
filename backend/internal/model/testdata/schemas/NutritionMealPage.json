@@ -1,0 +1,22 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "meals": {
+      "items": {
+        "$ref": "NutritionMeal"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "next_offset": {
+      "nullable": true,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "meals",
+    "next_offset"
+  ],
+  "title": "NutritionMealPage",
+  "type": "object"
+}

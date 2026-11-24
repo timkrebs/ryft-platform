@@ -1,0 +1,18 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "food_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "food_id",
+    "status"
+  ],
+  "title": "FoodSubmissionInput",
+  "type": "object"
+}

@@ -1,0 +1,30 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "brand": {
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "quality": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "brand",
+    "id",
+    "name",
+    "quality",
+    "type"
+  ],
+  "title": "FoodSummary",
+  "type": "object"
+}

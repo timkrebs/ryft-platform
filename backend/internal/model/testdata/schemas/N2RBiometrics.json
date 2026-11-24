@@ -1,0 +1,47 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "change": {
+      "type": "string"
+    },
+    "ln_rmssd_7d_cv": {
+      "nullable": true,
+      "type": "number"
+    },
+    "ln_rmssd_7d_mean": {
+      "nullable": true,
+      "type": "number"
+    },
+    "ln_rmssd_7d_sd": {
+      "nullable": true,
+      "type": "number"
+    },
+    "ln_rmssd_delta": {
+      "nullable": true,
+      "type": "number"
+    },
+    "rhr_delta": {
+      "nullable": true,
+      "type": "number"
+    },
+    "swc": {
+      "nullable": true,
+      "type": "number"
+    },
+    "wake_date": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "change",
+    "ln_rmssd_7d_cv",
+    "ln_rmssd_7d_mean",
+    "ln_rmssd_7d_sd",
+    "ln_rmssd_delta",
+    "rhr_delta",
+    "swc",
+    "wake_date"
+  ],
+  "title": "N2RBiometrics",
+  "type": "object"
+}

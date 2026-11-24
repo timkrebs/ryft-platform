@@ -472,3 +472,13 @@ gcloud logging read "resource.type=\"cloud_run_revision\" AND jsonPayload.reques
 Reading it takes a Logging read role on `ryftlab-prod`; treat every such grant as access to the
 users' personal data (OPERATIONS → Data protection (logs)). The runbook is OPERATIONS → Beta →
 Admin sign-in → Tracing a request.
+
+## Nutrition
+
+The existing route histograms and counters cover Nutrition requests, including daily summary failures.
+`ryft_nutrition_db_duration_seconds` tracks the database path for `search`, `barcode` and `daily`.
+`ryft_nutrition_search_results` records result counts and `ryft_nutrition_barcode_lookups_total` records hit,
+miss and conflict outcomes. The one-shot import emits duration, reason counts and checkpointed outcomes and
+supports a catalog source count with `-stats`. Application telemetry omits query terms, barcodes, notes,
+photos and individual nutrient snapshots. Managed dashboards and hosted access-log retention are rollout
+checks. See [Nutrition security and privacy](architecture/nutrition/05-security-and-privacy.md).

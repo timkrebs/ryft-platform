@@ -15,6 +15,7 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 | `secrets.tf` | the 12 secret containers in use (ticket B's 10, `posthog-project-key`, D231, and App Attest's token ring `app-attest-token-key`, api and ingest, D247), `prevent_destroy`, 30-day delayed destruction, accessors on each secret; `retired`: `otlp-token` and its accessor without `prevent_destroy`, on their way out (OPERATIONS → GCP 11.6). **No values**: they never pass through state |
 | `pubsub.tf`, `pubsub.auto.tfvars.json` | topics (messages stored in `europe-west1` only; `enforce_in_transit` stays off, so the Scheduler's publish and an operator's `gcloud pubsub` through the global endpoint still work), push and hold subscriptions, publisher bindings per topic, the agents' bindings. The JSON is written by `go run ./cmd/pubsub-topology` (PR A); do not edit it by hand once that exists |
 | `scheduler.tf` | the job `ryft-tick` (every 15 minutes) |
+| `nutrition.tf` | optional monthly `nutrition-etl-job`, its dedicated runtime and scheduler identities, and a pinned database secret reference (D270) |
 | `registry.tf` | Artifact Registry `ryft`: the 5 newest versions of each image kept, every other version deleted after 30 days (tagged or not); scanning off |
 | `run.tf` | who invokes the four services (one authoritative `run.invoker` binding each), and the domain mappings `api.` and `ingest.ryftlab.de` (only with `serve = true`, and gone at `edge = "locked"`) |
 | `dns.tf` | the zone `ryftlab.de` (`prevent_destroy`, DNSSEC off) with every record the Route 53 zone held (deleted 2026-11-19, D246), CAA with `pki.goog`, Search Console's TXT, and `api.`'s and `ingest.`'s record sets (`google_dns_record_set.host`): CNAMEs to the mappings, A records at the edge's address from `edge = "live"` on |
@@ -40,6 +41,108 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
   Only the site's DNS records come here, with C1.
 - **The `_Default` log sink**: switched off once by hand after apply 1 (`checks.tf` warns until then).
 - **The secret values**: `gcloud secrets versions add` (step 5).
+
+## Recover the `ryft_notices` plan
+
+The failed plan requested replacement of `google_logging_metric.notices` because the provider treats a change to the label descriptor set as a replacement. D269 pins the live `kind` descriptor and protects the metric from deletion. Terraform can then update the filter and the alert policy in place. Start a new plan after a partial apply so Terraform refreshes the Cloud Armor change that already succeeded. [Google Cloud Logging metrics](https://docs.cloud.google.com/logging/docs/logs-based-metrics/counter-metrics)
+
+From the `plattform` repository root, with the corrected code and `nutrition_etl` unset for this recovery step:
+
+```bash
+terraform -chdir=infra/gcp plan -out=notices-recovery.tfplan
+terraform -chdir=infra/gcp show -no-color notices-recovery.tfplan
+```
+
+Expect `google_logging_metric.notices` and its alert policy to update in place or show no change. Check for any deletion or replacement before applying. This guard reads only the action metadata from the plan.
+
+```bash
+set -o pipefail
+terraform -chdir=infra/gcp show -json notices-recovery.tfplan | jq -e '
+  any(.resource_changes[]; .address == "google_logging_metric.notices" and
+      (.change.actions == ["update"] or .change.actions == ["no-op"])) and
+  all(.resource_changes[]; (.change.actions | index("delete")) == null)
+'
+```
+
+Review the rest of the plan before applying the fresh file. When recovering a plan from the Connections stack, generate its replacement with that stack’s resource definitions and the D269 fix so the full plan reflects the resources already applied. Keep the existing metric and dependent alert policies in place throughout the recovery.
+
+## Nutrition on Cloud Run
+
+The existing API serves the scores and guidance and its 15-minute tick runs the morning calibration. The separate Cloud Run Job imports the public food catalog once a month. It runs one task with 2 vCPU, 4 GiB, one retry and an 1800-second task timeout. The scheduler uses OAuth with a job-scoped invoker. The job uses the existing PostgreSQL database and registry. DuckDB reads OFF with HTTP ranges and uses ephemeral storage. The runtime starts only for executions. [Cloud Run scheduled jobs](https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule) · [Cloud Run pricing](https://cloud.google.com/run/pricing)
+
+Merge the Nutrition backend and infrastructure through the normal review and CI flow. Run the following from `plattform` on green `main` after hosted validation and sign-off on the catalog sources and health-data consent.
+
+1. In HCP workspace `ryft-gcp`, set the Terraform variable `nutrition_etl` with **HCL** enabled and value `{}`. Plan the dedicated service accounts, the `nutrition-etl-db` secret container and its one accessor.
+
+   ```bash
+   terraform -chdir=infra/gcp plan -out=nutrition-bootstrap.tfplan
+   terraform -chdir=infra/gcp show -no-color nutrition-bootstrap.tfplan
+   ```
+
+   Apply the reviewed bootstrap plan. The image and secret version pins are needed in the next phase.
+
+2. Publish the ETL image and deploy the API through the existing workflow. The `migrate` job applies migrations through `0046` before services roll. Read the full image reference from the workflow's **Nutrition ETL image** summary.
+
+   ```bash
+   gh workflow run deploy.yml --ref main -f publish_nutrition_etl=true
+   gh run list --workflow deploy.yml --commit "$(git rev-parse HEAD)" --event workflow_dispatch --limit 1
+   ```
+
+   The normal deploy gates and production smoke also apply to this dispatch. Image publication reuses the same registry writer and vulnerability scan. Terraform owns the ETL Job itself.
+
+3. Once the catalog migration is installed, create a dedicated PostgreSQL login. Run the following in `psql` as the existing database operator. `\password` prompts for the ETL password.
+
+   ```sql
+   CREATE ROLE nutrition_etl_login LOGIN;
+   \password nutrition_etl_login
+   GRANT ryft_nutrition_etl TO nutrition_etl_login;
+   ```
+
+   Use the login's TLS PostgreSQL DSN for the same database the API reads. On Supabase use the session pooler connection and append the project ref to the login name as Supavisor expects. The role also needs database `TEMP` access for COPY staging. Store the DSN as a new secret version. The command prints the version identifier.
+
+   ```bash
+   printf 'Nutrition ETL PostgreSQL DSN: '
+   IFS= read -r -s nutrition_dsn
+   printf '\n'
+   printf '%s' "$nutrition_dsn" | gcloud secrets versions add nutrition-etl-db \
+     --project=ryftlab-prod --data-file=- --format='value(name)'
+   unset nutrition_dsn
+   ```
+
+4. Set `nutrition_etl` in HCP with the actual image digest and numeric secret version. Start with a bounded import and paused schedule.
+
+   ```hcl
+   {
+     image_digest            = "sha256:<digest shown in the GitHub Actions summary>"
+     database_secret_version = 1
+     row_limit               = 1000
+     schedule_enabled        = false
+   }
+   ```
+
+   ```bash
+   terraform -chdir=infra/gcp plan -out=nutrition-job.tfplan
+   terraform -chdir=infra/gcp show -no-color nutrition-job.tfplan
+   ```
+
+   After reviewing and applying the job plan, run one bounded import and check its completion and aggregates.
+
+   ```bash
+   gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --wait
+   gcloud run jobs executions list --job=nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --limit=3
+   gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="nutrition-etl-job"' \
+     --project=ryftlab-prod --freshness=1h --limit=20
+   ```
+
+5. Set `schedule_enabled = true` in the reviewed configuration after the bounded validation. The schedule is 04:00 UTC on the first day of each month. Keep `row_limit` until database load, runtime and source volume have been measured for the intended scope. Use `full_import = true` when ready for unbounded provider scans. `schedule_enabled = false` pauses future launches, and the global stop line also pauses them.
+
+6. Enable `nutrition.enabled` for a tester at 0% rollout with the existing admin workflow. Read the existing flag and include its allow-list in the replacement request. The tester can then configure a profile and call the guidance endpoint with their own current consent. See the [feature flag commands](../../docs/OPERATIONS.md#feature-flags) and the [Nutrition API](../../docs/API.md#nutrition-to-recovery).
+
+### Existing Cloud SQL and optional vectors
+
+To use Cloud SQL, point both the API and ETL at the intended existing catalog database. Set `cloud_sql = { instance_connection_name = "ryftlab-prod:europe-west1:existing-db", database = "ryft", user = "nutrition_etl_login" }` in `nutrition_etl`. Pin a secret version containing the password for this mode. Terraform enables the SQL Admin API, grants the ETL identity Cloud SQL Client and mounts `/cloudsql`. This socket configuration uses an instance reachable via the public-IP Auth Proxy path. A private-IP-only instance needs a separate network path. [Cloud SQL connections from Cloud Run](https://docs.cloud.google.com/sql/docs/postgres/connect-instance-cloud-run)
+
+The API can use pgvector after applying the optional extension, index and embeddings schema to the same database. Embedding generation is run separately and can incur API charges. See the [ETL runbook](../../scripts/etl/README.md#optionale-embeddings).
 
 ## The gates
 

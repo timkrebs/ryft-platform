@@ -6412,3 +6412,45 @@ _Numbered after D248, which PR #228 (C2, draft) holds._
   the import's rate class and the per-account lease (D129, D132), the per-IP limit (D240), the invite gate and
   App Attest as on every route (both `off` today).
 - **Consequences:** STATUS, API.md (the flag's paragraph), OPERATIONS (the import's table, `import_not_enabled`).
+
+## D265 — Nutrition uses the API, PostgreSQL and an isolated catalog importer (2026-11-24)
+
+- **Storage.** Structured food and meal data belongs in a dedicated schema in the current Supabase PostgreSQL database. Joins, constraints, transactions and indexes support its access patterns; reserve private Supabase Storage for binary assets when their workflow ships.
+- **Nutrients.** Registry codes fix canonical units and distinguish materially different measurements. Sparse rows retain source and basis. Missing measurements remain unknown.
+- **Meal snapshots.** Calculation versions and selected source evidence travel with each item. PostgreSQL commits each meal and its items atomically. Date-scoped aggregates read snapshots on demand. Edits preserve explicitly retained items.
+- **Provenance.** Provider and external ID identify a source. Multiple sources and conflicting barcodes remain distinguishable. Promotion of future moderated submissions requires an explicit operator process with its own lineage.
+- **Search.** Use PostgreSQL prefix, full-text and pg_trgm indexes, with Unicode-normalized names. Order exact matches before fuzzy candidates. Keep queries and barcode text in request bodies.
+- **Authorization.** Reuse the App’s existing identity, admission and consent gates. Bind the verified account to the transaction, enforce repository predicates and RLS, and leave Food Data API roles without grants. Gate release with `nutrition.enabled`.
+- **Imports.** Use a one-shot Go command with finite, checksum-pinned staging, set-based child writes and transactional checkpoints. Require explicit writes. Plan a dedicated writer role and production import schedule only after licensing and throughput are validated.
+- **Recognition.** Keep provider extraction, candidate matching, review and deterministic nutrient computation as separate responsibilities. A provider cannot write a meal or supply its authoritative nutrients.
+
+## D266 — Nutrition Score uses meal snapshots, current calorie goals and account-scoped CGM (2026-11-24)
+
+- Compute on demand beside Nutrition totals. Save food classification with each new meal snapshot. Keep unknown contributions and measurements nullable. Use the current calorie goal and publish the calculation version.
+- Apply the explicit positive formula at all unsaturated fat percentages. Use 9 kcal/g for both fat indicators and one combined class for red or processed meat.
+- Store CGM in Nutrition because the existing ingestion contract has no glucose sample type. Use authenticated, consent-gated batch upserts and the Nutrition account isolation controls. Use inclusive measurement windows and the last available in-window measurement for recovery.
+- Make the timing penalty an opt-in query option. Use the following wake day's known sleep onset when available and the saved meal timezone for the 21:00 fallback.
+
+## D267 — Scheduled catalog imports use a standalone Python ETL (2026-11-24)
+
+- Stream the official OFF Parquet release with DuckDB HTTP ranges and stage only the selected USDA tables under `/tmp`. Apply per-100-g validation before writes and report source-specific rejects.
+- Keep the Go catalog schema, stable source identities and transaction lock. Use PostgreSQL COPY and merge source records in bounded transactions. Preserve manual classifications and snapshots. Grant the scheduled importer a catalog-only role.
+- Deploy the import as an opt-in Cloud Run Job with separate scheduler identity. Install pgvector and run the public-catalog embedding worker separately. See the [ETL runbook](../scripts/etl/README.md).
+
+## D268 — Nutrition-to-Recovery is an opt-in, versioned model (2026-11-24)
+
+- Add N2R as a versioned object after account setup and current consent. The existing `nutrition.enabled` rollout covers N2R. Treat the entered calorie goal as a base energy target and add reported workout energy once. Keep unknown AHEI measurements nullable and expose the inputs used by each adjustment.
+- Attribute meal intake to its captured day, workouts to the account timezone and next-morning outcomes to `wake_date`. Classify duration with the 30/75/150 minute boundaries. Use 12 on either recorded workout strain or muscular load as the high-intensity proxy. A recorded next session or explicit planned start can extend the window. Use expected bedtime for live advice and measured sleep onset when available for completed days.
+- Preserve source units and nullable evidence. Store labeled OFF beverages per 100 mL when volume is supported. Derive ethanol grams from documented ABV on that basis. Keep GI dimensionless across portion sizes and outside summed daily totals. Reserve known glucose-context exceptions for recorded qualifying sessions.
+- Use seven preceding calendar days of RMSSD for the sample SD, CV and SWC. The bounded morning step runs on the existing API tick and pairs the previous intake day with the wake day. Step the model's caffeine decay parameter only with repeated, newly observed associations. No separate Cloud Run service or per-request embedding calls are required.
+- Retrieve suggestions from a bounded public catalog shortlist with nutrient constraints. Rank eligible foods by cosine similarity to an eligible catalog anchor when its current embedding exists. The catalog filters also support installations without pgvector. See the [N2R model and use cases](architecture/nutrition/10-nutrition-to-recovery.md).
+
+## D269 — Update the notices metric in place (2026-11-24)
+
+The failed production apply requested deletion of `ryft_notices` because Google provider 8.11 marked the `metric_descriptor[0].labels` change for replacement. The dependent alert policy kept the metric in use. Keep the existing label descriptor and add deletion protection so filter expansions can update the metric in place. Resume from a fresh plan after partial applies. [Recovery runbook](../infra/gcp/README.md#recover-the-ryft_notices-plan)
+
+## D270 — Deploy Nutrition through the existing API and a Terraform-owned monthly job (2026-11-24)
+
+- The API and tick serve N2R. Reuse their existing GitHub deploy workflow and database migration job. Publish the catalog image on explicit dispatch through the existing Artifact Registry writer, with a scan before sign-in. Terraform owns and pins the ETL job image separately.
+- Run one Cloud Run task with bounded retries, temporary staging and project-local Scheduler OAuth. Start paused with a bounded import. The existing stop line pauses the schedule. Separate the invoker from the runtime and pin the catalog login's Secret Manager version.
+- Use the same Postgres as the API. An existing Cloud SQL instance can supply a native socket. Embeddings are an optional offline step. [Nutrition rollout](../infra/gcp/README.md#nutrition-on-cloud-run)

@@ -1,0 +1,80 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "brand": {
+      "type": "string"
+    },
+    "calculation_version": {
+      "type": "integer"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "food_id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "food_name": {
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "nutrients": {
+      "additionalProperties": {
+        "$ref": "NutritionSnapValue"
+      },
+      "nullable": true,
+      "type": "object"
+    },
+    "portion_id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "quality_profile": {
+      "$ref": "NutritionQualityProfile",
+      "nullable": true
+    },
+    "quantity": {
+      "type": "number"
+    },
+    "sources": {
+      "items": {
+        "$ref": "FoodSource"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "unit": {
+      "type": "string"
+    },
+    "volume_ml": {
+      "nullable": true,
+      "type": "number"
+    },
+    "weight_g": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [
+    "brand",
+    "calculation_version",
+    "created_at",
+    "food_id",
+    "food_name",
+    "id",
+    "nutrients",
+    "quantity",
+    "sources",
+    "unit",
+    "volume_ml",
+    "weight_g"
+  ],
+  "title": "NutritionMealItem",
+  "type": "object"
+}

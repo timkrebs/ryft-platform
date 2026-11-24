@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "cards": {
+      "items": {
+        "$ref": "N2RGuidanceCard"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "local_date": {
+      "type": "string"
+    },
+    "morning_biometrics": {
+      "$ref": "N2RBiometrics",
+      "nullable": true
+    },
+    "score": {
+      "$ref": "N2RScore",
+      "nullable": true
+    }
+  },
+  "required": [
+    "cards",
+    "local_date",
+    "morning_biometrics",
+    "score"
+  ],
+  "title": "N2RGuidance",
+  "type": "object"
+}

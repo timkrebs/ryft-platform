@@ -89,6 +89,7 @@ KEEP=(artifactregistry.googleapis.com billingbudgets.googleapis.com cloudbilling
 # Once the edge is built (step 16, edge = built or later), two more stay on: without them the loop below would
 # try to switch off the load balancer's APIs. The line reads the committed gate (run from the repository root).
 grep -qx 'edge = "off"' infra/gcp/gates.auto.tfvars || KEEP+=(certificatemanager.googleapis.com compute.googleapis.com)
+# Include sqladmin.googleapis.com in KEEP when the Nutrition ETL uses an existing Cloud SQL socket (D270).
 gcloud services enable "${KEEP[@]}" --project="$P"
 for s in $(gcloud services list --enabled --project="$P" --format='value(config.name)'); do
   case " ${KEEP[*]} " in *" $s "*) continue ;; esac

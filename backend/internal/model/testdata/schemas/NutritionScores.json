@@ -1,0 +1,44 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "breakdown": {
+      "$ref": "NutritionQualityBreakdown"
+    },
+    "chrononutrition_penalty": {
+      "type": "number"
+    },
+    "glucose_score": {
+      "nullable": true,
+      "type": "number"
+    },
+    "meal_glucose_scores": {
+      "items": {
+        "$ref": "NutritionMealGlucoseScore"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "nutrition_score": {
+      "nullable": true,
+      "type": "number"
+    },
+    "quality_score": {
+      "nullable": true,
+      "type": "number"
+    },
+    "score_version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "breakdown",
+    "chrononutrition_penalty",
+    "glucose_score",
+    "meal_glucose_scores",
+    "nutrition_score",
+    "quality_score",
+    "score_version"
+  ],
+  "title": "NutritionScores",
+  "type": "object"
+}

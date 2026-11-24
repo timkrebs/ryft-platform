@@ -627,7 +627,11 @@ func (s *Store) VisibleWorkoutsBetween(ctx context.Context, userID uuid.UUID, fr
 // of the duplicates pointing at it. The primary lookup is the primary key; the duplicates
 // are read once through workouts_user_start, the range padded by two days.
 func (s *Store) ListWorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to time.Time, includeHidden bool) ([]model.Workout, error) {
-	rows, err := s.pool.Query(ctx, `WITH dups AS (
+	return listWorkoutsBetween(ctx, s.pool, userID, from, to, includeHidden)
+}
+
+func listWorkoutsBetween(ctx context.Context, q querier, userID uuid.UUID, from, to time.Time, includeHidden bool) ([]model.Workout, error) {
+	rows, err := q.Query(ctx, `WITH dups AS (
 		  SELECT d.duplicate_of AS id, array_agg(DISTINCT d.source ORDER BY d.source) AS sources
 		  FROM workouts d WHERE d.user_id=$1 AND d.duplicate_of IS NOT NULL AND d.source <> '' AND d.source <> $4
 		    AND d.start_at >= $2::timestamptz - interval '2 days' AND d.start_at < $3::timestamptz + interval '2 days'

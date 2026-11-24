@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "language": {
+      "type": "string"
+    },
+    "limit": {
+      "type": "integer"
+    },
+    "market": {
+      "type": "string"
+    },
+    "offset": {
+      "type": "integer"
+    },
+    "query": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "title": "FoodSearch",
+  "type": "object"
+}

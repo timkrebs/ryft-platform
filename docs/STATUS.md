@@ -80,6 +80,44 @@ Contract:
 [`API.md`](API.md). Design: [`ARCHITECTURE.md`](ARCHITECTURE.md). Judgement calls and
 deviations from the brief: [`DECISIONS.md`](DECISIONS.md).
 
+## Nutrition infrastructure and notices recovery (2026-11-24, D269–D270)
+
+The failed plan tried to replace `ryft_notices` over label prose. The Terraform update keeps the live descriptor and protects the metric from deletion. The Nutrition rollout adds a paused, bounded Cloud Run Job and reuses the existing API, database and image registry. See the [fresh recovery plan and phased Nutrition rollout](../infra/gcp/README.md#recover-the-ryft_notices-plan).
+
+An isolated read-only plan against the live metric with Google provider 8.11 planned one in-place update and no replacement. All 81 mocked Terraform runs passed on the release branch with the committed configuration. Terraform validation, TFLint and the deploy workflow checks passed. The recovery apply and first hosted Nutrition import remain operator rollout steps.
+
+## Nutrition-to-Recovery (2026-11-24, D268)
+
+Migration 0046 adds the opt-in profile, dimensionless glycemic index and nightly observations. The daily Nutrition response carries the contextual score, and the current guidance route uses the public food catalog with optional pgvector ranking. Ethanol, caffeine, EPA, DHA and added-sugar provenance flow through the ETL and existing meal snapshots. Hosted rollout remains gated by `nutrition.enabled`. See the [N2R validation and rollout notes](architecture/nutrition/10-nutrition-to-recovery.md).
+
+The full Go suite passed against disposable PostgreSQL with pgvector. The focused N2R integration tests cover profile consent, overnight persistence, account isolation, catalog filtering and guidance across midnight. All ten ETL tests, `go vet`, `make lint` and the API documentation checks passed locally.
+
+## Nutrition catalog ETL (2026-11-24, D267)
+
+The [Python ETL](../scripts/etl/README.md) adds bounded OFF and USDA extraction, quality rules, rule-based AHEI tags and a COPY merge into the existing catalog. Migration 0045 adds import provenance and a catalog writer role. Cloud Run deployment, production-volume validation and pgvector provisioning are explicit rollout steps.
+
+## Nutrition Scoring (2026-11-24, D266)
+
+Nutrition daily summaries now include the versioned Quality Score, meal and day CGM
+impact, the final score and the opt-in timing penalty. Migration 0044 stores account-owned
+CGM readings and captures food classifications in meal snapshots. See the
+[API examples](architecture/nutrition/04-api-contracts.md#nutrition-score) and
+[calibration](architecture/nutrition/09-nutrition-intelligence.md#score-architecture).
+Curated catalog classifications, approved hosted validation and the App's CGM source
+integration remain rollout work.
+
+## Nutrition backend foundation (2026-11-24, D265)
+
+Migration 0043, the gated v1 API and the one-shot USDA/Open Food Facts importer were implemented
+and tested locally. `nutrition.enabled` starts at 0%. See [Nutrition rollout](architecture/nutrition/07-implementation-roadmap.md)
+for the capacity measurements and App sequence, [API contracts](architecture/nutrition/04-api-contracts.md)
+for requests and response types, and [import commands](architecture/nutrition/03-data-ingestion.md)
+for local fixtures and checkpoint behavior.
+
+Hosted release needs approved staging verification, privacy and licensing review, and an approved
+catalog acquisition plan. Private Supabase Storage, recognition, moderation and health integrations
+are later phases.
+
 ## The training import is on for everyone (2026-11-22, D250)
 
 **The user's decision:** every account can import. The flag `train.import` goes from dark (`enabled: true,

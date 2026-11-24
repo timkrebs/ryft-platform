@@ -1,0 +1,16 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "barcode": {
+      "type": "string"
+    },
+    "market": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "barcode"
+  ],
+  "title": "FoodBarcodeQuery",
+  "type": "object"
+}

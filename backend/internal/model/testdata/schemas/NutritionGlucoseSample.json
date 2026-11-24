@@ -1,0 +1,18 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "glucose_mg_dl": {
+      "type": "number"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "glucose_mg_dl",
+    "timestamp"
+  ],
+  "title": "NutritionGlucoseSample",
+  "type": "object"
+}

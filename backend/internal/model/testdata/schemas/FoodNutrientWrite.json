@@ -1,0 +1,30 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "amount": {
+      "nullable": true,
+      "type": "number"
+    },
+    "code": {
+      "type": "string"
+    },
+    "reference_amount": {
+      "type": "number"
+    },
+    "reference_unit": {
+      "type": "string"
+    },
+    "unit": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "amount",
+    "code",
+    "reference_amount",
+    "reference_unit",
+    "unit"
+  ],
+  "title": "FoodNutrientWrite",
+  "type": "object"
+}

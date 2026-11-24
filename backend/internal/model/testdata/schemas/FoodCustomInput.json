@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "brand": {
+      "type": "string"
+    },
+    "client_request_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "names": {
+      "items": {
+        "$ref": "FoodName"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "nutrients": {
+      "items": {
+        "$ref": "FoodNutrientWrite"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "portions": {
+      "items": {
+        "$ref": "FoodPortionInput"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "quality_profile": {
+      "$ref": "NutritionQualityProfile",
+      "nullable": true
+    }
+  },
+  "required": [
+    "client_request_id",
+    "name"
+  ],
+  "title": "FoodCustomInput",
+  "type": "object"
+}

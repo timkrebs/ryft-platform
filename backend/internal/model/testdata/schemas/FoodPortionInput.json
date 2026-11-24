@@ -1,0 +1,40 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "estimated": {
+      "type": "boolean"
+    },
+    "label": {
+      "type": "string"
+    },
+    "labels": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "object"
+    },
+    "quantity": {
+      "type": "number"
+    },
+    "unit": {
+      "type": "string"
+    },
+    "volume_ml": {
+      "nullable": true,
+      "type": "number"
+    },
+    "weight_g": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [
+    "estimated",
+    "label",
+    "quantity",
+    "unit"
+  ],
+  "title": "FoodPortionInput",
+  "type": "object"
+}

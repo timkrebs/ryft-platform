@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "food_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "item_id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "portion_id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "quantity": {
+      "type": "number"
+    },
+    "unit": {
+      "type": "string"
+    }
+  },
+  "required": [],
+  "title": "NutritionMealItemInput",
+  "type": "object"
+}

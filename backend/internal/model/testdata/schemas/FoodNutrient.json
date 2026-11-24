@@ -1,0 +1,42 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "amount": {
+      "type": "number"
+    },
+    "code": {
+      "type": "string"
+    },
+    "method": {
+      "type": "string"
+    },
+    "quality": {
+      "type": "string"
+    },
+    "reference_amount": {
+      "type": "number"
+    },
+    "reference_unit": {
+      "type": "string"
+    },
+    "source_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "unit": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "amount",
+    "code",
+    "method",
+    "quality",
+    "reference_amount",
+    "reference_unit",
+    "source_id",
+    "unit"
+  ],
+  "title": "FoodNutrient",
+  "type": "object"
+}

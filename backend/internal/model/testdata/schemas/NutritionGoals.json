@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "revision": {
+      "type": "integer"
+    },
+    "targets": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "nullable": true,
+      "type": "object"
+    }
+  },
+  "required": [
+    "created_at",
+    "revision",
+    "targets"
+  ],
+  "title": "NutritionGoals",
+  "type": "object"
+}

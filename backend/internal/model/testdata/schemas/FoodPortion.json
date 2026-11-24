@@ -1,0 +1,50 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "estimated": {
+      "type": "boolean"
+    },
+    "id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "label": {
+      "type": "string"
+    },
+    "labels": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "object"
+    },
+    "quantity": {
+      "type": "number"
+    },
+    "source_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "unit": {
+      "type": "string"
+    },
+    "volume_ml": {
+      "nullable": true,
+      "type": "number"
+    },
+    "weight_g": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [
+    "estimated",
+    "id",
+    "label",
+    "quantity",
+    "source_id",
+    "unit"
+  ],
+  "title": "FoodPortion",
+  "type": "object"
+}
