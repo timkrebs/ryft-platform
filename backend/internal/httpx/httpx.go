@@ -220,6 +220,9 @@ type statusWriter struct {
 	wrote  bool
 }
 
+// Unwrap lets http.ResponseController reach the connection (read deadlines, flush) through the wrapper.
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 func (s *statusWriter) WriteHeader(c int) {
 	if !s.wrote {
 		s.status, s.wrote = c, true

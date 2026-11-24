@@ -26,6 +26,9 @@ attest=warn
 # uid <n>: a lower-case UUID built from <n> (test accounts, no secrets).
 uid() { printf '%08x-0000-4000-8000-%012x' "$1" "$1"; }
 exempt="$(uid 1),$(uid 2)"
+providers=garmin
+gcap=250
+cutoff=2026-10-01  # the consent cutoff (D259), before $policy
 dg() { local s; printf -v s '%64s' ''; printf 'sha256:%s' "${s// /$1}"; }  # 64 times one hex digit
 D=(--digest "api=$(dg a)" --digest "ingest=$(dg b)" --digest "scoring=$(dg c)" --digest "notify=$(dg d)" --digest "migrate=$(dg e)")
 cfg=$tmp/config.env
@@ -33,7 +36,7 @@ tpl=$tmp/tpl
 out=$tmp/out
 fresh() {
   printf '%s\n' "# a fake, of the right shape" "PRIVACY_POLICY_VERSION=$policy" LOG_LEVEL=info "BETA_GATE=$gate" "XFF_TRUSTED_HOPS=$hops" \
-    "APP_ATTEST=$attest" "APP_ATTEST_EXEMPT_USERS=$exempt" "GCP_PROJECT_NUMBER=$pn" "PUSH_SA_ID=$said" "SUPABASE_PROJECT_REF=$ref" "SUPABASE_POOLER_HOST=$host" "APPLE_KEY_ID=$akey" \
+    "APP_ATTEST=$attest" "APP_ATTEST_EXEMPT_USERS=$exempt" "CONNECT_PROVIDERS=$providers" "CONNECT_GARMIN_USER_CAP=$gcap" "CONNECT_MIN_POLICY_VERSION=$cutoff" "GCP_PROJECT_NUMBER=$pn" "PUSH_SA_ID=$said" "SUPABASE_PROJECT_REF=$ref" "SUPABASE_POOLER_HOST=$host" "APPLE_KEY_ID=$akey" \
     "APNS_KEY_ID=$nkey" > "$cfg"
   rm -rf "$tpl" "$out"
   mkdir "$tpl"
@@ -95,6 +98,8 @@ for s in api ingest; do
   has "$s.yaml" "name: XFF_TRUSTED_HOPS, value: \"$hops\" }"
   has "$s.yaml" "name: APP_ATTEST, value: \"$attest\" }"
   has "$s.yaml" "name: APP_ATTEST_EXEMPT_USERS, value: \"$exempt\" }"
+  # Direct connections (D257): one config.env line, so api and ingest serve the same providers.
+  has "$s.yaml" "name: CONNECT_PROVIDERS, value: \"$providers\" }"
   # The ring's pin comes with the warn flip PR (D247), never from the renderer: no placeholder makes it.
   if grep -q '^ *- { name: APP_ATTEST_TOKEN_KEYS,.*\${' "$tpl/$s.yaml"; then fail "$s.yaml: the ring's pin from a placeholder"; fi
 done
@@ -105,13 +110,25 @@ for f in scoring notify migrate; do
   if grep -q 'XFF_TRUSTED_HOPS' "$out/$f.yaml"; then fail "$f.yaml has XFF_TRUSTED_HOPS: only api and ingest run the edge limit"; fi
   # App Attest likewise (D245): only the app's requests to api and ingest carry a token.
   if grep -q 'APP_ATTEST' "$out/$f.yaml"; then fail "$f.yaml has APP_ATTEST: only api and ingest check App Attest"; fi
+  # Direct connections likewise (D257, design §9): scoring, notify and migrate have no connection env.
+  if grep -q 'CONNECT_' "$out/$f.yaml"; then fail "$f.yaml has a CONNECT_ variable: only api and ingest serve connections"; fi
+done
+# Garmin's cap and the callback base in api only; the fake provider's env in no template (compose only).
+has api.yaml "name: CONNECT_GARMIN_USER_CAP, value: \"$gcap\" }"
+has api.yaml 'name: CONNECT_CALLBACK_BASE, value: "https://api.ryftlab.de" }'
+if grep -q 'CONNECT_GARMIN_USER_CAP\|CONNECT_CALLBACK_BASE' "$out/ingest.yaml"; then fail "ingest.yaml has api's connection env"; fi
+# The consent cutoff (D259) in ingest only: api's start and confirm keep requiring the policy in force.
+has ingest.yaml "name: CONNECT_MIN_POLICY_VERSION, value: \"$cutoff\" }"
+if grep -q 'CONNECT_MIN_POLICY_VERSION' "$out/api.yaml"; then fail "api.yaml has the consent cutoff: ingest only (D259)"; fi
+for f in api ingest scoring notify migrate; do
+  if grep -q '^ *- { name: CONNECT_FAKE' "$tpl/$f.yaml"; then fail "$f.yaml sets the fake provider's env (compose only)"; fi
 done
 has api.yaml "name: APPLE_KEY_ID, value: \"$akey\" }"
 has notify.yaml "name: APNS_KEY_ID, value: \"$nkey\" }"
 
 # No environment variable reaches the output: the same render with the placeholders' names set.
 IMAGE=x DATABASE_URL=y PUSH_AUDIENCE=z LOG_LEVEL=debug PRIVACY_POLICY_VERSION=1999-01-01 BETA_GATE=off XFF_TRUSTED_HOPS=7 \
-  APP_ATTEST=on APP_ATTEST_EXEMPT_USERS="$(uid 9)" render "${R[@]}" --out "$tmp/again" "${D[@]}" >/dev/null 2>&1 || fail "the second render failed"
+  APP_ATTEST=on APP_ATTEST_EXEMPT_USERS="$(uid 9)" CONNECT_PROVIDERS=fake CONNECT_GARMIN_USER_CAP=9 CONNECT_MIN_POLICY_VERSION=1999-01-01 CONNECT_FAKE=on render "${R[@]}" --out "$tmp/again" "${D[@]}" >/dev/null 2>&1 || fail "the second render failed"
 diff -r "$out" "$tmp/again" >/dev/null || fail "the environment changed the output: $(diff -r "$out" "$tmp/again")"
 
 # The OTLP pair went with Grafana Cloud (D236): its keys are unknown in config.env, its placeholders
@@ -227,6 +244,71 @@ setcfg APP_ATTEST_EXEMPT_USERS FILL_ME_IN
 bad "the exempt list left FILL_ME_IN" "APP_ATTEST_EXEMPT_USERS is FILL_ME_IN: leave it empty or set it" "${R[@]}" --lint
 setcfg APP_ATTEST_EXEMPT_USERS -
 bad "no exempt line" "APP_ATTEST_EXEMPT_USERS is missing" "${R[@]}" --out "$out" "${D[@]}"
+# CONNECT_PROVIDERS (D257): the line required, its value empty (phase 1) or garmin, each once, never fake.
+setcfg CONNECT_PROVIDERS ''
+o=$(render "${R[@]}" --out "$out" "${D[@]}" 2>&1) || fail "no provider does not render: $o"
+has api.yaml 'name: CONNECT_PROVIDERS, value: "" }'
+has ingest.yaml 'name: CONNECT_PROVIDERS, value: "" }'
+rm -rf "$out"; fresh
+setcfg CONNECT_PROVIDERS fake
+bad "the fake provider" "CONNECT_PROVIDERS names fake: the fake provider is compose only" "${R[@]}" --out "$out" "${D[@]}"
+setcfg CONNECT_PROVIDERS garmin,fake
+bad "the fake provider, linted" "CONNECT_PROVIDERS names fake" "${R[@]}" --lint
+setcfg CONNECT_PROVIDERS oura
+bad "a provider Cloud Run does not serve" "CONNECT_PROVIDERS names oura: Cloud Run serves only garmin" "${R[@]}" --out "$out" "${D[@]}"
+setcfg CONNECT_PROVIDERS garmin,garmin
+bad "a provider twice" "CONNECT_PROVIDERS names a provider twice" "${R[@]}" --out "$out" "${D[@]}"
+for v in Garmin 'garmin, garmin' garmin, ,garmin 'garmin;x' '"garmin"' all-of-them; do
+  setcfg CONNECT_PROVIDERS "$v"
+  bad "a provider list '$v'" "CONNECT_PROVIDERS='$v' does not have the shape empty, or a comma list of provider ids" \
+    "${R[@]}" --out "$out" "${D[@]}"
+done
+setcfg CONNECT_PROVIDERS FILL_ME_IN
+bad "the providers left FILL_ME_IN" "CONNECT_PROVIDERS is FILL_ME_IN: leave it empty or set it" "${R[@]}" --lint
+setcfg CONNECT_PROVIDERS -
+bad "no providers line" "CONNECT_PROVIDERS is missing" "${R[@]}" --out "$out" "${D[@]}"
+# CONNECT_GARMIN_USER_CAP (design §6.1): required, 0 or a whole number without a leading zero.
+for c in 0 1 9999999; do
+  setcfg CONNECT_GARMIN_USER_CAP "$c"
+  o=$(render "${R[@]}" --out "$out" "${D[@]}" 2>&1) || fail "CONNECT_GARMIN_USER_CAP=$c does not render: $o"
+  has api.yaml "name: CONNECT_GARMIN_USER_CAP, value: \"$c\" }"
+  rm -rf "$out"; fresh
+done
+for c in -1 01 1.5 10000000 ' 5' ten; do
+  setcfg CONNECT_GARMIN_USER_CAP "$c"
+  bad "a cap of '$c'" "CONNECT_GARMIN_USER_CAP='$c' does not have the shape 0 or a whole number" "${R[@]}" --out "$out" "${D[@]}"
+done
+setcfg CONNECT_GARMIN_USER_CAP ''
+bad "an empty cap" "CONNECT_GARMIN_USER_CAP is empty" "${R[@]}" --out "$out" "${D[@]}"
+setcfg CONNECT_GARMIN_USER_CAP FILL_ME_IN
+bad "the cap left FILL_ME_IN" "CONNECT_GARMIN_USER_CAP is still FILL_ME_IN" "${R[@]}" --out "$out" "${D[@]}"
+setcfg CONNECT_GARMIN_USER_CAP -
+bad "no cap" "CONNECT_GARMIN_USER_CAP is missing" "${R[@]}" --lint
+# CONNECT_MIN_POLICY_VERSION (D259): the line required, its value empty or a calendar date not after the policy.
+for v in '' "$policy"; do
+  setcfg CONNECT_MIN_POLICY_VERSION "$v"
+  o=$(render "${R[@]}" --out "$out" "${D[@]}" 2>&1) || fail "a cutoff of '$v' does not render: $o"
+  has ingest.yaml "name: CONNECT_MIN_POLICY_VERSION, value: \"$v\" }"
+  rm -rf "$out"; fresh
+done
+setcfg CONNECT_MIN_POLICY_VERSION 2026-10-27
+bad "a cutoff after the policy" "CONNECT_MIN_POLICY_VERSION=2026-10-27 is after PRIVACY_POLICY_VERSION=$policy" "${R[@]}" --out "$out" "${D[@]}"
+setcfg CONNECT_MIN_POLICY_VERSION 2027-01-01
+bad "a cutoff after the policy, linted" "is after PRIVACY_POLICY_VERSION" "${R[@]}" --lint
+for v in 2026-1-01 20261001 ' 2026-10-01' 2026-10-01T00:00 latest; do
+  setcfg CONNECT_MIN_POLICY_VERSION "$v"
+  bad "a cutoff '$v'" "CONNECT_MIN_POLICY_VERSION='$v' does not have the shape empty, or a YYYY-MM-DD date" "${R[@]}" --out "$out" "${D[@]}"
+done
+setcfg CONNECT_MIN_POLICY_VERSION 2026-02-30
+bad "a cutoff that is no calendar date" "CONNECT_MIN_POLICY_VERSION=2026-02-30 is not a calendar date" "${R[@]}" --out "$out" "${D[@]}"
+setcfg CONNECT_MIN_POLICY_VERSION FILL_ME_IN
+bad "the cutoff left FILL_ME_IN" "CONNECT_MIN_POLICY_VERSION is FILL_ME_IN: leave it empty or set it" "${R[@]}" --lint
+setcfg CONNECT_MIN_POLICY_VERSION -
+bad "no cutoff line" "CONNECT_MIN_POLICY_VERSION is missing" "${R[@]}" --out "$out" "${D[@]}"
+printf 'CONNECT_FAKE=on\n' >> "$cfg"
+bad "the fake's switch in config.env" "CONNECT_FAKE is not a key of deploy/run/config.env" "${R[@]}" --out "$out" "${D[@]}"
+printf '# ${CONNECT_FAKE_USER_CAP}\n' >> "$tpl/api.yaml"
+bad "a fake placeholder" "placeholder(s) outside the fixed list: CONNECT_FAKE_USER_CAP" "${R[@]}" --out "$out" "${D[@]}"
 setcfg PRIVACY_POLICY_VERSION 2026-02-30
 bad "no calendar date" "PRIVACY_POLICY_VERSION=2026-02-30 is not a calendar date" "${R[@]}" --out "$out" "${D[@]}"
 setcfg GCP_PROJECT_NUMBER "0$pn"
@@ -271,4 +353,4 @@ usage "${R[@]}" --lint "${D[@]}"
 usage "${R[@]}" --out "$out" "${D[@]}" --force
 [ ! -e "$out" ] || fail "a usage error wrote $out"
 
-echo "✓ cloudrun_render_test: the derived values render by digest, BETA_GATE, XFF_TRUSTED_HOPS, APP_ATTEST and APP_ATTEST_EXEMPT_USERS only into api and ingest, the environment changes nothing, FILL_ME_IN passes --lint and fails a render, and every wrong shape, key, digest, placeholder and \$ fails closed"
+echo "✓ cloudrun_render_test: the derived values render by digest, BETA_GATE, XFF_TRUSTED_HOPS, APP_ATTEST, APP_ATTEST_EXEMPT_USERS and CONNECT_PROVIDERS only into api and ingest, CONNECT_GARMIN_USER_CAP and the callback base into api only, CONNECT_MIN_POLICY_VERSION into ingest only (empty or a date not after the policy), no fake provider anywhere, the environment changes nothing, FILL_ME_IN passes --lint and fails a render, and every wrong shape, key, digest, placeholder and \$ fails closed"

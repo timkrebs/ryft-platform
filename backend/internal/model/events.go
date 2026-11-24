@@ -39,6 +39,11 @@ type SessionScoredEvent struct {
 const (
 	ReasonSync   = "sync"
 	ReasonImport = "import"
+	// ReasonConnect is an ingested event of a direct connection's record (ingest's inbox consumer, D257);
+	// ReasonDisconnect one of a connection's end, whose days lost their direct data. Both are explicit lists
+	// of days and end in the refresh push like a sync.
+	ReasonConnect    = "connect"
+	ReasonDisconnect = "disconnect"
 )
 
 // IngestedEvent is published (routing key ingested) after a successful sync.

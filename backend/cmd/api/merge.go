@@ -28,6 +28,9 @@ type MergeAnswer struct {
 	BetaAccess string             `json:"beta_access"` // copied, kept, none
 	Rescore    *dayRange          `json:"rescore"`     // to's days rescored after the move
 	Deleted    *AccountDeleted    `json:"deleted"`     // from, through the account deletion path
+	// Connections is how many connections from still holds: the merge refuses (409 merge_has_connections) while it
+	// is above 0, force or not; the dry run reports it (D257).
+	Connections int `json:"connections"`
 }
 
 type mergeSide struct {
@@ -76,6 +79,17 @@ func (a admin) merge(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		metrics.AdminRequests.WithLabelValues("error").Inc()
 		httpx.Fail(w, r, err)
+		return
+	}
+	if ans.Connections, err = a.h.st.LiveConnectionCount(ctx, from); err != nil {
+		metrics.AdminRequests.WithLabelValues("error").Inc()
+		httpx.Fail(w, r, err)
+		return
+	}
+	if ans.Connections > 0 && !dryRun {
+		metrics.AdminRequests.WithLabelValues("invalid").Inc()
+		httpx.WriteCodedError(w, r, http.StatusConflict, model.CodeMergeHasConnections, fmt.Sprintf("%s still holds %d connection(s): ask the user to disconnect first",
+			ans.From.ShortID, ans.Connections))
 		return
 	}
 	if ans.From.DaysScored > ans.To.DaysScored && !force {

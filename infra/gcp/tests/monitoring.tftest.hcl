@@ -92,17 +92,20 @@ run "alerting_off_while_the_app_channel_is_unset" {
       google_logging_metric.ticks.name == "ryft_ticks" &&
       google_logging_metric.errors.name == "ryft_errors" &&
       google_logging_metric.notices.name == "ryft_notices" &&
-      jsondecode(google_monitoring_dashboard.overview.dashboard_json).displayName == "RYFT · Overview"
+      google_logging_metric.connect_pushes.name == "ryft_connect_pushes" &&
+      jsondecode(google_monitoring_dashboard.overview.dashboard_json).displayName == "RYFT · Overview" &&
+      jsondecode(google_monitoring_dashboard.connections.dashboard_json).displayName == "RYFT · Connections"
     )
-    error_message = "gate off: the five uptime checks, the three log-based metrics (ryft_notices too) and the dashboard exist anyway"
+    error_message = "gate off: the five uptime checks, the four log-based metrics (ryft_notices and ryft_connect_pushes too) and both dashboards exist anyway"
   }
 
   assert {
     condition = (
       output.monitoring.alerting == false && length(output.monitoring.policies) == 0 &&
-      output.monitoring.log_metrics == tolist(["ryft_errors", "ryft_notices", "ryft_ticks"])
+      output.monitoring.log_metrics == tolist(["ryft_connect_pushes", "ryft_errors", "ryft_notices", "ryft_ticks"]) &&
+      output.monitoring.dashboard == "RYFT · Overview" && output.monitoring.connections_dashboard == "RYFT · Connections"
     )
-    error_message = "the monitoring output says alerting is off, lists no policy, and the three log-based metrics"
+    error_message = "the monitoring output says alerting is off, lists no policy, the four log-based metrics and both dashboards"
   }
 }
 
@@ -165,7 +168,7 @@ run "alerting_on_once_the_app_channel_is_set" {
       output.monitoring.alerting == true &&
       length(output.monitoring.policies) == 6 &&
       length(distinct(output.monitoring.policies)) == 6 &&
-      contains(output.monitoring.policies, "RYFT · Feedback and admin access")
+      contains(output.monitoring.policies, "RYFT · Notices: feedback, admin access, connections")
     )
     error_message = "the monitoring output lists the six policies, each its own name, the notices policy among them"
   }
@@ -173,7 +176,8 @@ run "alerting_on_once_the_app_channel_is_set" {
 
 # The price is per condition (D236 -> Cost, D244 -> The price): six at most, with everything on, in three
 # resource blocks. Five until the user's decision of 2026-11-19 (D244): feedback and admin access had no
-# alert since D236, and the sixth is the notices policy. A seventh is a decision again, not a line.
+# alert since D236, and the sixth is the notices policy. A seventh is a decision again, not a line: the
+# direct connections' four notices joined the sixth instead (D257).
 run "six_conditions_at_most" {
   command = plan
 
@@ -264,7 +268,7 @@ run "the_conditions" {
     condition = alltrue([
       for c in google_monitoring_alert_policy.promql["dead-letters"].conditions[0].condition_prometheus_query_language : (
         strcontains(c.query, "subscription_num_undelivered_messages{") &&
-        strcontains(c.query, "subscription_id=~\"dlq-notify-hold|dlq-scoring-hold\"") &&
+        strcontains(c.query, "subscription_id=~\"dlq-ingest-hold|dlq-notify-hold|dlq-scoring-hold\"") &&
         endswith(c.query, "> 0")
       )
     ])
@@ -275,7 +279,7 @@ run "the_conditions" {
     condition = alltrue([
       for c in google_monitoring_alert_policy.promql["push-backlog"].conditions[0].condition_prometheus_query_language : (
         strcontains(c.query, "subscription_oldest_unacked_message_age{") &&
-        strcontains(c.query, "subscription_id=~\"notify-refresh|notify-scored|notify-session-scored|notify-wait|scoring-ingested|scoring-session-completed\"") &&
+        strcontains(c.query, "subscription_id=~\"ingest-inbox-received|notify-refresh|notify-scored|notify-session-scored|notify-wait|scoring-ingested|scoring-session-completed\"") &&
         !strcontains(c.query, "tick-") && !strcontains(c.query, "-hold") &&
         endswith(c.query, "> 900")
       )
@@ -305,7 +309,7 @@ run "the_conditions" {
 
   assert {
     condition = (
-      google_monitoring_alert_policy.notices[0].display_name == "RYFT · Feedback and admin access" &&
+      google_monitoring_alert_policy.notices[0].display_name == "RYFT · Notices: feedback, admin access, connections" &&
       google_monitoring_alert_policy.notices[0].severity == "WARNING" &&
       [for s in google_monitoring_alert_policy.notices[0].alert_strategy : s.notification_prompts] == [tolist(["OPENED"])]
     )
@@ -318,7 +322,9 @@ run "the_conditions" {
     condition = length(google_monitoring_alert_policy.notices[0].documentation) == 1 && alltrue([
       for d in google_monitoring_alert_policy.notices[0].documentation : (
         strcontains(d.subject, "$${metric.label.kind}") && strcontains(d.content, "$${metric.label.kind}") &&
-        alltrue([for k in ["feedback received", "admin signed in", "admin auth rejected"] : strcontains(d.content, "**${k}**")]) &&
+        alltrue([for k in ["feedback received", "admin signed in", "admin auth rejected", "connect capacity", "connect no data", "connect deregistration stuck", "connect inbox failed"] : strcontains(d.content, "**${k}**")]) &&
+        alltrue([for r in ["The cap", "Connected but no data", "The deregistration queue", "Failed inbox rows"] : strcontains(d.content, "docs/OPERATIONS.md -> Direct connections -> ${r}")]) &&
+        strcontains(d.content, "RYFT · Connections") &&
         strcontains(d.content, "/admin -> Feedback") && strcontains(d.content, "scripts/beta_report.sh feedback") &&
         strcontains(d.content, "Lost phone, or any doubt about the admin account") && strcontains(d.content, "/admin -> Audit") &&
         strcontains(d.content, "jsonPayload.message=\"admin auth rejected\"") &&
@@ -326,7 +332,7 @@ run "the_conditions" {
         !strcontains("${d.subject} ${d.content}", "$${log.")
       )
     ])
-    error_message = "the notices policy's documentation: the kind, the three kinds with /admin, the script, the lost-phone runbook and the reject line; no identifier, no $${log.*} variable"
+    error_message = "the notices policy's documentation: the kind, the seven kinds (/admin, the script, the lost-phone runbook, the reject line, the four Direct connections runbooks and their dashboard); no identifier, no $${log.*} variable"
   }
 }
 
@@ -582,22 +588,26 @@ run "the_log_based_metrics" {
     error_message = "ryft_errors counts the services' own ERROR lines (not Cloud Run's request log), without a label"
   }
 
-  # D244: api's stdout only, the three messages, and the reject line but for reasons missing and expired
-  # (a negative list: a new reason counts). Every OR group in parentheses: in Logging's query language OR
-  # binds tighter than AND.
+  # D244: stdout only; api's three messages, the reject line but for reasons missing and expired (a
+  # negative list: a new reason counts). D257: api's three connection notices, and ingest's one, each on
+  # the service that writes it. Every OR group in parentheses: in Logging's query language OR binds
+  # tighter than AND.
   assert {
     condition = (
       google_logging_metric.notices.filter == join("\n", [
         "resource.type=\"cloud_run_revision\"",
-        "resource.labels.service_name=\"api\"",
         "logName=\"projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout\"",
-        "(jsonPayload.message=\"feedback received\" OR jsonPayload.message=\"admin signed in\" OR (jsonPayload.message=\"admin auth rejected\" AND NOT jsonPayload.reason=\"missing\" AND NOT jsonPayload.reason=\"expired\"))",
+        join("", [
+          "((resource.labels.service_name=\"api\" AND (jsonPayload.message=\"feedback received\" OR jsonPayload.message=\"admin signed in\" OR (jsonPayload.message=\"admin auth rejected\" AND NOT jsonPayload.reason=\"missing\" AND NOT jsonPayload.reason=\"expired\")",
+          " OR jsonPayload.message=\"connect capacity\" OR jsonPayload.message=\"connect no data\" OR jsonPayload.message=\"connect deregistration stuck\"))",
+          " OR (resource.labels.service_name=\"ingest\" AND jsonPayload.message=\"connect inbox failed\"))",
+        ]),
       ]) &&
       !strcontains(google_logging_metric.notices.filter, "%2Fstderr") &&
       !strcontains(google_logging_metric.notices.filter, "run.googleapis.com%2Frequests") &&
       !strcontains(google_logging_metric.notices.filter, "admin second factor required")
     )
-    error_message = "ryft_notices counts api's stdout lines feedback received, admin signed in and admin auth rejected (not for reason missing or expired), nothing else"
+    error_message = "ryft_notices counts api's stdout lines feedback received, admin signed in, admin auth rejected (not for reason missing or expired), connect capacity, connect no data and connect deregistration stuck, and ingest's connect inbox failed, nothing else"
   }
 
   assert {
@@ -607,7 +617,33 @@ run "the_log_based_metrics" {
       [for d in google_logging_metric.notices.metric_descriptor : [d.metric_kind, d.value_type]] == [["DELTA", "INT64"]] &&
       [for l in google_logging_metric.notices.metric_descriptor[0].labels : [l.key, l.value_type, l.description]] == [["kind", "STRING", "The line's message: feedback received, admin signed in or admin auth rejected"]]
     )
-    error_message = "ryft_notices has one label, kind, the line's message (a closed set of three by the filter)"
+    error_message = "ryft_notices has one label, kind, the line's message (a closed set of seven by the filter)"
+  }
+
+  # D257: ingest's hook line, one per request to a served provider, by provider and outcome (both closed:
+  # the registry and the request's seven outcomes, design 7.2; busy and timeout since P2-2). Not the access line, not Cloud Run's
+  # request log, and no per-item count or kind as a label.
+  assert {
+    condition = (
+      google_logging_metric.connect_pushes.filter == join("\n", [
+        "resource.type=\"cloud_run_revision\"",
+        "resource.labels.service_name=\"ingest\"",
+        "logName=\"projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout\"",
+        "jsonPayload.message=\"connect push\"",
+      ]) &&
+      google_logging_metric.connect_pushes.label_extractors == tomap({ provider = "EXTRACT(jsonPayload.provider)", kind = "EXTRACT(jsonPayload.kind)", outcome = "EXTRACT(jsonPayload.outcome)" }) &&
+      [for d in google_logging_metric.connect_pushes.metric_descriptor : [d.metric_kind, d.value_type]] == [["DELTA", "INT64"]] &&
+      [for l in google_logging_metric.connect_pushes.metric_descriptor[0].labels : l.key] == ["provider", "kind", "outcome"]
+    )
+    error_message = "ryft_connect_pushes counts ingest's stdout lines connect push, by provider, kind and outcome, its three labels (D258)"
+  }
+
+  # The outcome label's description is the operator's list of what the hook writes: the seven, no more.
+  assert {
+    condition = [
+      for l in google_logging_metric.connect_pushes.metric_descriptor[0].labels : l.description if l.key == "outcome"
+    ] == ["The request's outcome: accepted, rejected, too_large, bad_body, error, busy or timeout"]
+    error_message = "ryft_connect_pushes' outcome label lists the hook's seven outcomes (accepted, rejected, too_large, bad_body, error, busy, timeout)"
   }
 
   assert {
@@ -616,6 +652,7 @@ run "the_log_based_metrics" {
       join(" ", concat(
         keys(google_logging_metric.ticks.label_extractors), values(google_logging_metric.ticks.label_extractors),
         keys(google_logging_metric.notices.label_extractors), values(google_logging_metric.notices.label_extractors),
+        keys(google_logging_metric.connect_pushes.label_extractors), values(google_logging_metric.connect_pushes.label_extractors),
       )),
     )) == 0
     error_message = "no label extracts an IP, a user, an email, a message id, a device or a token"
@@ -632,6 +669,42 @@ run "the_log_based_metrics" {
       strcontains(file("${path.module}/../../backend/internal/auth/supabase.go"), "Unauthorized(\"expired\",")
     )
     error_message = "ryft_notices' messages and excluded reasons are the ones the api writes (feedback.go, adminauth.go, internal/auth/supabase.go)"
+  }
+}
+
+# D257: the lines ryft_notices' four connection kinds and ryft_connect_pushes count are the ones api and
+# ingest write: a message renamed in Go would silence the notice or the tile with no other test failing.
+# Matched in the services' non-test Go files, wherever backend puts them (design 6.3, 7.2, 7.4); the hook
+# line's two label keys next to it.
+run "the_connect_lines_are_written" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for m in ["connect capacity", "connect no data", "connect deregistration stuck"] :
+      strcontains(join("\n", [for f in fileset("${path.module}/../../backend/cmd/api", "*.go") : file("${path.module}/../../backend/cmd/api/${f}") if !endswith(f, "_test.go")]), "\"${m}\"")
+    ])
+    error_message = "api writes the lines connect capacity, connect no data and connect deregistration stuck (backend/cmd/api, design 6.3)"
+  }
+
+  assert {
+    condition = alltrue([
+      for m in ["connect inbox failed", "connect push"] :
+      strcontains(join("\n", [for f in fileset("${path.module}/../../backend/cmd/ingest", "*.go") : file("${path.module}/../../backend/cmd/ingest/${f}") if !endswith(f, "_test.go")]), "\"${m}\"")
+    ])
+    error_message = "ingest writes the lines connect inbox failed and connect push (backend/cmd/ingest, design 7.2, 7.4)"
+  }
+
+  # The hook's outcomes as connect.go writes them (its default "error", the rest assigned) are the seven
+  # the metric's label and docs/OBSERVABILITY.md list; "failed" is the consumer's, not the hook's. A new
+  # outcome in Go fails here until the label description and the docs name it.
+  assert {
+    condition = (
+      strcontains(file("${path.module}/../../backend/cmd/ingest/connect.go"), "outcome, kind, counts := \"error\", \"none\"") &&
+      sort(tolist(setsubtract(toset(concat(["error"], flatten(regexall("outcome = \"([a-z_]+)\"", file("${path.module}/../../backend/cmd/ingest/connect.go"))))), ["failed"])))
+      == sort(["accepted", "bad_body", "busy", "error", "rejected", "timeout", "too_large"])
+    )
+    error_message = "connect.go's hook writes exactly accepted, rejected, too_large, bad_body, error, busy and timeout: update ryft_connect_pushes' outcome description, docs/OBSERVABILITY.md and this list together"
   }
 }
 
@@ -702,6 +775,59 @@ run "the_dashboard" {
       ] : strcontains(google_monitoring_dashboard.overview.dashboard_json, m)
     ])
     error_message = "the panels: requests, 5xx, latency, instances, backlog, DLQ holds, ticks, error lines, uptime and certificates"
+  }
+}
+
+# D257: the connections' own board, apart from the overview (whose tiles tests/edge.tftest.hcl pins).
+run "the_connections_dashboard" {
+  command = plan
+
+  variables {
+    serve           = true
+    public_invokers = true
+  }
+
+  assert {
+    condition = (
+      jsondecode(google_monitoring_dashboard.connections.dashboard_json).mosaicLayout.columns == 48 &&
+      [for t in jsondecode(google_monitoring_dashboard.connections.dashboard_json).mosaicLayout.tiles : [try(t.xPos, 0), try(t.yPos, 0), t.width]]
+      == [[0, 0, 24], [24, 0, 24], [0, 16, 24], [24, 16, 24], [0, 32, 48]] &&
+      alltrue([for t in jsondecode(google_monitoring_dashboard.connections.dashboard_json).mosaicLayout.tiles : try(t.xPos, 1) != 0 && try(t.yPos, 1) != 0])
+    )
+    error_message = "the connections dashboard: four tiles two a row, the logs panel across the row below; no tile writes xPos or yPos 0"
+  }
+
+  assert {
+    condition = (
+      [for t in jsondecode(google_monitoring_dashboard.connections.dashboard_json).mosaicLayout.tiles : t.widget.xyChart.dataSets[0].timeSeriesQuery.prometheusQuery if can(t.widget.xyChart)] == [
+        "sum by (provider, outcome) (increase(logging_googleapis_com:user_ryft_connect_pushes{monitored_resource=\"cloud_run_revision\"}[1h]))",
+        "sum by (service_name) (rate(run_googleapis_com:request_count{monitored_resource=\"cloud_run_revision\", service_name=\"ingest\", response_code=\"429\"}[5m]))",
+        "max by (subscription_id) (pubsub_googleapis_com:subscription_oldest_unacked_message_age{monitored_resource=\"pubsub_subscription\", subscription_id=~\"ingest-inbox-received\"})",
+        "max by (subscription_id) (pubsub_googleapis_com:subscription_num_undelivered_messages{monitored_resource=\"pubsub_subscription\", subscription_id=~\"dlq-ingest-hold\"})",
+      ]
+    )
+    error_message = "the connections tiles: the hook's requests by provider and outcome, ingest's 429s, the inbox subscription's oldest unacked event and its hold (from the topology)"
+  }
+
+  # The logs panel: ingest's own stdout, the hook's line and the access lines of its hook_limit refusals
+  # (no address, no query on them), from ryft-logs; never Cloud Run's request log.
+  assert {
+    condition = (
+      [
+        for t in jsondecode(google_monitoring_dashboard.connections.dashboard_json).mosaicLayout.tiles :
+        [t.widget.logsPanel.filter, t.widget.logsPanel.resourceNames] if can(t.widget.logsPanel)
+        ] == [[
+          "resource.type=\"cloud_run_revision\"\nresource.labels.service_name=\"ingest\"\nlogName=\"projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout\"\n(jsonPayload.message=\"connect push\" OR (jsonPayload.message=\"http\" AND jsonPayload.code=\"hook_limit\"))",
+          ["projects/ryftlab-prod/locations/europe-west1/buckets/ryft-logs/views/_AllLogs"],
+      ]]
+    )
+    error_message = "one logs panel of ingest's connect push lines and hook_limit refusals, read from ryft-logs"
+  }
+
+  # Its tiles are its own: the overview has none of them.
+  assert {
+    condition     = !strcontains(google_monitoring_dashboard.overview.dashboard_json, "ryft_connect_pushes") && !strcontains(google_monitoring_dashboard.overview.dashboard_json, "hook_limit")
+    error_message = "the overview is unchanged by D257: the connection tiles are on RYFT · Connections only"
   }
 }
 

@@ -150,6 +150,48 @@ Hosted release needs approved staging verification, privacy and licensing review
 catalog acquisition plan. Private Supabase Storage, recognition, moderation and health integrations
 are later phases.
 
+## Direct connections, phase 1: the contract and the foundation, dark (2026-11-23, D257–D260; #234, #235)
+
+**What:** three stacked PRs, provider-agnostic, built against a fake provider (`docs/work/2026-11-23-connections/`:
+plan, design, reviews).
+- **#234 `connect/contract`** (docs): D257 and `API.md` → Connections. CI green; not merged.
+- **#235 `connect/foundation`** (on #234): everything else.
+  - Migration 0042, `internal/connect`, the api routes and tick, the ingest hook, inbox and consumer.
+  - The topology, the Cloud Run templates and the smoke against the fake.
+  - Terraform prepared: the client secret, edge rule 1900, anchored WAF and logging exclusions, the Connections
+    dashboard.
+  - Reviews (code, security, SRE): no blocker; P2-1…P2-22 fixed.
+- **PR 3 `connect/scoring`:** not started. The scoring agent's first files are in `git stash` ("pr3-wip"; apply on a
+  branch cut from #235).
+- **Phase 2 (Garmin):** waits for the programme's documentation and credentials.
+
+**The user's decisions (D259):**
+- pushes follow the consent cutoff `CONNECT_MIN_POLICY_VERSION=2026-10-26` (ingest), not a drop at every policy
+  version;
+- a revocation in Garmin Connect deletes like a disconnect;
+- the notices stay in policy 6.
+
+**Your steps, in order:**
+1. `gh pr checks 235` green.
+2. Terraform from #235's head (`infra/gcp/README.md` step 9: 9 to add, 5 to change, 0 to destroy, plus the
+   monitoring part; stop if a secret, another subscription, a record set, a backend service or a mapping changes,
+   or anything is destroyed). Check first that Cloud Armor still allows five sub-expressions per rule: every WAF
+   expression is now at five.
+   ```bash
+   git switch connect/foundation && git pull && cd infra/gcp
+   terraform plan -out=gcp.tfplan && terraform apply gcp.tfplan && rm gcp.tfplan
+   ```
+3. Merge #234. Then update #235 from `main` (after the squash) and merge it once green. `deploy.yml` runs 0042
+   (additive) and deploys; production answers `available: []` and `404 unknown_provider`. Then run `make smoke-prod`.
+4. Before phase 2's first real connection: the C2 lawyer review (#228) confirms D259's consent reading, and the
+   privacy text names Garmin, the 30-day deregistration rows and the inbox retention.
+
+**Open:**
+- P2-23: notify's per-user refresh throttle can swallow a sync refresh after a connect refresh.
+- PR 3.
+- Phase 2.
+- D257 Q4: Garmin's agreement (deletion deadline, derived scores, brand rules, the cap).
+
 ## The training import is on for everyone (2026-11-22, D250)
 
 **The user's decision:** every account can import. The flag `train.import` goes from dark (`enabled: true,

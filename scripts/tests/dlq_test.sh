@@ -9,7 +9,8 @@
 # its own attributes minus Pub/Sub's and ryft-error, the ordering key on an ordered topic and the data as it
 # was (those three in a mode-600 flags file, never on argv, with gcloud's file log off), acks each letter only
 # after its publish, and refuses a foreign key and leaves the letter; a failed
-# publish or ack stops the run and acks nothing; notify's letters need --force; purge asks, then seeks.
+# publish or ack stops the run and acks nothing; notify's letters need --force; ingest's (the inbox's
+# inbox.received, D257) replay to their unordered topic; purge asks, then seeks.
 # The keys and topics come from infra/gcp/pubsub.auto.tfvars.json, so this also pins dlq.sh to topology.go.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -106,11 +107,15 @@ chmod +x "$t/bin/gcloud" "$t/bin/kubectl"
 # its subscription's (L4), a key scoring does not handle (L5), another consumer's subscription (L6),
 # neither Pub/Sub's nor the consumer's (L7), an ordered topic's event without a user_id (L8), another
 # project (L9). notify's hold: two to replay (N1 from notify-wait, N2 from notify-refresh), two to refuse.
+# ingest's hold (D257): two to replay (I1 dead-lettered from ingest-inbox-received, I2 filed by the consumer)
+# and three to refuse: a ryft-key that is not its subscription's (I3), another consumer's subscription
+# (I4), and a key ingest has no event subscription for (I5: its tick's, which has no dead-letter topic).
 jq -n --arg u1 "$U1" --arg u2 "$U2" '
 def body($u): {user_id: $u, days: ["2026-11-14"], reason: "sync"} | tojson;
 def src($s): {CloudPubSubDeadLetterSourceSubscription: $s, CloudPubSubDeadLetterSourceSubscriptionProject: "ryft-test-proj",
               CloudPubSubDeadLetterSourceDeliveryCount: "20", CloudPubSubDeadLetterSourceTopicPublishTime: "2026-11-15T07:00:00Z"};
 def letter($id; $a; $d): {message: {messageId: $id, publishTime: "2026-11-15T08:00:00Z", attributes: $a, data: ($d | @base64)}};
+def inbox($u): {inbox_id: 42, user_id: $u, provider: "fake", kind: "sleep", revision: 2, request_id: "r1"} | tojson;
 {scoring: [
    letter("L1"; src("scoring-ingested") + {"ryft-key": "ingested", "ryft-message-id": "m1", "ryft-reason": "sync",
      "ryft-error": "forged by the publisher", trace: "kept"}; body($u1)),
@@ -126,14 +131,21 @@ def letter($id; $a; $d): {message: {messageId: $id, publishTime: "2026-11-15T08:
    letter("N1"; src("notify-wait") + {"ryft-key": "scored", "ryft-message-id": "n1", "ryft-reason": "sync"}; ({user_id: $u1, day: "2026-11-14"} | tojson)),
    letter("N2"; src("notify-refresh") + {"ryft-message-id": "n2"}; ({user_id: $u1} | tojson)),
    letter("N3"; src("notify-wait") + {"ryft-key": "ingested", "ryft-message-id": "n3"}; body($u1)),
-   letter("N4"; {"ryft-message-id": "n4", "ryft-error": "no ryft-key on /push/wait"}; body($u1))]}' > "$t/fixtures/all.json"
+   letter("N4"; {"ryft-message-id": "n4", "ryft-error": "no ryft-key on /push/wait"}; body($u1))],
+ ingest: [
+   letter("I1"; src("ingest-inbox-received") + {"ryft-key": "inbox.received", "ryft-message-id": "inbox:42:2", "ryft-reason": "inbox"}; inbox($u1)),
+   letter("I2"; {"ryft-key": "inbox.received", "ryft-message-id": "inbox:43:1", "ryft-error": "decode: unexpected end of JSON input"}; inbox($u2)),
+   letter("I3"; src("ingest-inbox-received") + {"ryft-key": "ingested", "ryft-message-id": "i3"}; inbox($u1)),
+   letter("I4"; src("scoring-ingested") + {"ryft-message-id": "i4"}; body($u1)),
+   letter("I5"; {"ryft-key": "tick", "ryft-message-id": "i5", "ryft-error": "bad"}; inbox($u1))]}' > "$t/fixtures/all.json"
 jq '.scoring' "$t/fixtures/all.json" > "$t/fixtures/dlq-scoring-hold.json"
 jq '.notify' "$t/fixtures/all.json" > "$t/fixtures/dlq-notify-hold.json"
+jq '.ingest' "$t/fixtures/all.json" > "$t/fixtures/dlq-ingest-hold.json"
 
 reset() { # the fixtures back in the store, no leases, no calls
   [ ! -s "$t/calls.jsonl" ] || cat "$t/calls.jsonl" >> "$t/all-calls.jsonl"
   rm -f "$t/store/"* "$t/n"; : > "$t/calls.jsonl"
-  cp "$t/fixtures/dlq-scoring-hold.json" "$t/fixtures/dlq-notify-hold.json" "$t/store/"
+  cp "$t/fixtures/dlq-scoring-hold.json" "$t/fixtures/dlq-notify-hold.json" "$t/fixtures/dlq-ingest-hold.json" "$t/store/"
 }
 run() { PATH="$t/bin:$PATH" bash "$ROOT/scripts/dlq.sh" "$@"; }
 # calls <jq condition> <what>: the condition over the run's calls (an array), with the helpers below and
@@ -179,6 +191,7 @@ refused --project "$P" show scoring x; refused --project "$P" show scoring 0; re
 refused --project "$P" show scoring 1001; refused --project "$P" show scoring al; refused --project "$P" replay scoring -1
 refused --project "$P" replay scoring 5O; refused --project "$P" replay scoring all --dry-run; refused --project "$P" replay scoring 1 2
 refused --project "$P" purge; refused --project "$P" purge scoring 5; refused --project "$P" purge dlq-other-hold
+refused --project "$P" show api; refused --project "$P" replay ingest 0; refused --project "$P" purge ingest 1
 refused --project "$P" --force list; refused --project; refused --project= list; refused --context ryft-prod-euc1 list
 refused --project Ryft-Prod list; refused --project 'ryft-test-proj;id' list; refused --project "$P" replay dlq.scoring
 PUBSUB_EMULATOR_HOST=localhost refused --project "$P" list
@@ -197,7 +210,7 @@ if grep -q '^#' "$t/out" || grep -q '^set -euo' "$t/out"; then fail "usage print
 run --help > "$t/out" 2>&1 || fail "--help must exit 0"
 grep -qF '  scripts/dlq.sh --project <id> list' "$t/out" || fail "--help: $(cat "$t/out")"
 
-# 2. list: both hold subscriptions, a line per letter with its verdict; nothing acked, no --auto-ack,
+# 2. list: the three hold subscriptions, a line per letter with its verdict; nothing acked, no --auto-ack,
 # every letter handed back; the project and the regional endpoint on every call.
 reset
 out=$(run --project "$P" list 2>"$t/err") || fail "list: $(cat "$t/err")"
@@ -213,12 +226,20 @@ sed -n '2,10p' <<<"$out" | jq -e -s '
   and all(.[]; .replayed_before == false and (has("data") | not))' >/dev/null || fail "list's scoring lines: $out"
 sed -n '12,15p' <<<"$out" | jq -e -s '[.[].verdict] == ["replay","replay","refused","refused"] and [.[].key] == ["scored","refresh","ingested",null]' >/dev/null \
   || fail "list's notify lines: $out"
+[ "$(sed -n 16p <<<"$out")" = "dlq-ingest-hold: 5" ] && [ "$(wc -l <<<"$out" | tr -d ' ')" = 21 ] || fail "list printed (ingest): $out"
+sed -n '17,21p' <<<"$out" | jq -e -s '
+  [.[].letter_id] == ["I1","I2","I3","I4","I5"]
+  and [.[].verdict] == ["replay","replay","refused","refused","refused"]
+  and [.[].by] == ["pubsub","consumer","pubsub","pubsub","consumer"]
+  and [.[].key] == ["inbox.received","inbox.received","ingested",null,"tick"]
+  and .[0].source == "ingest-inbox-received" and .[0].message_id == "inbox:42:2" and .[1].error == "decode: unexpected end of JSON input"' >/dev/null \
+  || fail "list's ingest lines: $out"
 calls 'all(.[]; .argv[-2:] == ["--project=" + $p, "--quiet"] and .endpoint == "https://europe-west1-pubsub.googleapis.com/" and .nocred == "")
-  and ([.[] | select(cmd == "pubsub subscriptions pull") | .argv[3]] | unique) == ["dlq-notify-hold", "dlq-scoring-hold"]
+  and ([.[] | select(cmd == "pubsub subscriptions pull") | .argv[3]] | unique) == ["dlq-ingest-hold", "dlq-notify-hold", "dlq-scoring-hold"]
   and all(.[] | select(cmd == "pubsub subscriptions pull"); flag("format") == "json" and (has_flag("auto-ack") | not))
   and acks == [] and pubs == [] and ([.[] | select(cmd == "pubsub subscriptions seek")] == [])
-  and (released | sort) == ["L1","L2","L3","L4","L5","L6","L7","L8","L9","N1","N2","N3","N4"]' "list acks nothing and hands every letter back"
-left dlq-scoring-hold L1 L2 L3 L4 L5 L6 L7 L8 L9; left dlq-notify-hold N1 N2 N3 N4; clean list
+  and (released | sort) == ["I1","I2","I3","I4","I5","L1","L2","L3","L4","L5","L6","L7","L8","L9","N1","N2","N3","N4"]' "list acks nothing and hands every letter back"
+left dlq-scoring-hold L1 L2 L3 L4 L5 L6 L7 L8 L9; left dlq-notify-hold N1 N2 N3 N4; left dlq-ingest-hold I1 I2 I3 I4 I5; clean list
 # An operator's CLOUDSDK_AUTH_DISABLE_CREDENTIALS never reaches a production call.
 reset; CLOUDSDK_AUTH_DISABLE_CREDENTIALS=true run --project "$P" list >/dev/null 2>&1 || fail "list with credentials disabled"
 calls 'all(.[]; .nocred == "")' "CLOUDSDK_AUTH_DISABLE_CREDENTIALS reached gcloud without the emulator"
@@ -288,6 +309,29 @@ done
 reset; run --project "$P" replay notify --force 1 >/dev/null 2>&1 || fail "replay notify --force 1"
 calls '[.[] | select(cmd == "pubsub subscriptions pull") | flag("limit")] == ["1"]' "--force taken as the count"
 
+# 5b. ingest (D257), without --force: I1 and I2 back to ryft-inbox-received (unordered: no ordering key)
+# under inbox.received, marked, with their own attributes and data; I3 to I5 refused, named and left.
+for args in "replay ingest" "replay dlq-ingest-hold all"; do
+  read -ra words <<< "$args"
+  reset; rc=0
+  out=$(run --project "$P" "${words[@]}" 2>"$t/err") || rc=$?
+  [ "$rc" = 1 ] && [ "$out" = "replayed 2, refused 3" ] || fail "'$args': $rc $out $(cat "$t/err")"
+  for want in \
+    'message_id "i3" (letter I3), key "ingested", dead-lettered by Pub/Sub from ingest-inbox-received: its ryft-key "ingested" is not the key of ingest-inbox-received (inbox.received)' \
+    "message_id \"i4\" (letter I4), key null, dead-lettered by Pub/Sub from scoring-ingested: dead-lettered from \"scoring-ingested\", which is not one of ingest's subscriptions" \
+    'message_id "i5" (letter I5), key "tick", filed by the consumer: its ryft-key "tick" is not a key ingest handles'; do
+    grep -qF -- "! not replayed, left in dlq-ingest-hold: $want" "$t/err" || fail "'$args': not named: $want
+in: $(cat "$t/err")"
+  done
+  calls '[pubs[] | .argv[3]] == ["ryft-inbox-received", "ryft-inbox-received"]
+    and (pubs[0] | attrs) == {"ryft-key": "inbox.received", "ryft-message-id": "inbox:42:2", "ryft-reason": "inbox", "ryft-replayed": "true"}
+    and (pubs[1] | attrs) == {"ryft-key": "inbox.received", "ryft-message-id": "inbox:43:1", "ryft-replayed": "true"}
+    and [pubs[] | has_flag("ordering-key")] == [false, false]
+    and [pubs[] | flag("message")] == [body("ingest"; 0), body("ingest"; 1)]
+    and acks == ["I1", "I2"] and (released | sort) == ["I3", "I4", "I5"] and letter_off_argv' "'$args'"
+  left dlq-ingest-hold I3 I4 I5; clean "'$args'"
+done
+
 # 6. A publish that fails stops the run: nothing acked, every letter handed back. An ack that fails
 # after its publish: the letter stays (a later replay sends it again), the run stops.
 reset; rc=0
@@ -334,4 +378,4 @@ jq -e -s 'length > 0 and all(.[]; (.argv | index("--auto-ack") | not) and any(.a
   "$t/all-calls.jsonl" >/dev/null || fail "a call acked on pull, named no project or had gcloud's file log on"
 [ ! -e "$t/kubectl.calls" ] || fail "kubectl was called: $(cat "$t/kubectl.calls")"
 
-echo "✓ dlq_test: arguments before any call, --project on every call, the regional endpoint (the emulator's without credentials), list and show without ack, a replay of only the handled keys under the key its source gives, marked, with its attributes, data and ordering key (in a private flags file, never on argv), acked after its publish, foreign keys refused and left, a failed publish or ack stops, notify needs --force, purge asks"
+echo "✓ dlq_test: arguments before any call, --project on every call, the regional endpoint (the emulator's without credentials), list and show without ack, a replay of only the handled keys under the key its source gives, marked, with its attributes, data and ordering key (in a private flags file, never on argv), acked after its publish, foreign keys refused and left, a failed publish or ack stops, notify needs --force, ingest's inbox.received replays, purge asks"

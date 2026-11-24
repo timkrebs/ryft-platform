@@ -49,7 +49,8 @@ var crud = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
 var (
 	journalTables = []string{"behaviors", "user_behaviors", "journal_days", "journal_entries"}
 	betaTables    = []string{"consents", "beta_invite_codes", "user_sources", "feedback", "admin_audit", "score_queue", "outbox", "admin_accounts", "beta_invite_uses",
-		"app_attest_keys", "app_attest_challenges"}
+		"app_attest_keys", "app_attest_challenges",
+		"connections", "connection_tokens", "connection_pending", "connection_states", "connection_deregistrations", "provider_inbox"}
 )
 
 // trainTables are migration 0011's.
@@ -61,9 +62,12 @@ var grants = map[string]map[string][]string{
 		"users": {"SELECT", "INSERT", "UPDATE"}, "devices": {"SELECT", "INSERT", "UPDATE"},
 		"samples": {"SELECT", "INSERT", "UPDATE", "DELETE"}, "sleep_segments": {"SELECT", "INSERT", "UPDATE", "DELETE"}, // DELETE: 0029, the app's deletions
 		"workouts": {"SELECT", "INSERT", "UPDATE", "DELETE"}, "schema_migrations": {"SELECT"}, "consents": {"SELECT"},
-		"user_sources": {"SELECT", "INSERT", "UPDATE"}, "score_queue": {"SELECT", "INSERT", "UPDATE"},
-		"outbox": {"SELECT", "INSERT", "DELETE"}, // and UPDATE of the relay's columns only (below)
+		"user_sources": {"SELECT", "INSERT", "UPDATE", "DELETE"}, // DELETE: 0042, a deregistration notice's direct source (S2)
+		"score_queue":  {"SELECT", "INSERT", "UPDATE"},
+		"outbox":       {"SELECT", "INSERT", "DELETE"}, // and UPDATE of the relay's columns only (below)
 		// deleted_users: only the id column (below), never the stored Apple token
+		// 0042: the inbox is ingest's; connections only by column (below), never a token, pending grant or state.
+		"provider_inbox": crud,
 	},
 	"ryft_scoring": {
 		"users": {"SELECT"}, "devices": {"SELECT"}, "samples": {"SELECT"}, "sleep_segments": {"SELECT"},
@@ -89,6 +93,9 @@ var grants = map[string]map[string][]string{
 		"beta_invite_uses": crud,       // 0033: UPDATE because a merge moves rows
 		// 0037: the api alone; a key's counter and last use are updated, a challenge never is.
 		"app_attest_keys": crud, "app_attest_challenges": {"SELECT", "INSERT", "DELETE"},
+		// 0042: the api alone holds the OAuth side; a state is never updated; the inbox only by column (below).
+		"connections": crud, "connection_tokens": crud, "connection_pending": crud, "connection_deregistrations": crud,
+		"connection_states": {"SELECT", "INSERT", "DELETE"}, "provider_inbox": {"DELETE"},
 		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
@@ -264,6 +271,62 @@ func TestServiceRoleGrants(t *testing.T) {
 		}
 		if has != want {
 			t.Errorf("ryft_scoring UPDATE users.%s: %v, want %v", col, has, want)
+		}
+	}
+	// 0042 (D257): ingest reads the provider-user lookup of a connection and marks its status and last data,
+	// never its consent version or times; the api reads the inbox's bookkeeping, never a payload; scoring
+	// reads the new raw and score columns through its table grants and notify sees none of them. ingest's
+	// UPDATE on provider_user_id stays granted; the trigger connections_ingest_puid_guard lets it only clear
+	// the column (review P2-8, pinned in migrate_connections_test.go).
+	for _, c := range []struct {
+		role, table, col, priv string
+		want                   bool
+	}{
+		{"ryft_ingest", "connections", "user_id", "SELECT", true}, {"ryft_ingest", "connections", "provider", "SELECT", true},
+		{"ryft_ingest", "connections", "provider_user_id", "SELECT", true}, {"ryft_ingest", "connections", "status", "SELECT", true},
+		{"ryft_ingest", "connections", "status_reason", "SELECT", true},
+		{"ryft_ingest", "connections", "permissions", "SELECT", false}, {"ryft_ingest", "connections", "policy_version", "SELECT", false},
+		{"ryft_ingest", "connections", "connected_at", "SELECT", false}, {"ryft_ingest", "connections", "last_data_at", "SELECT", false},
+		{"ryft_ingest", "connections", "status", "UPDATE", true}, {"ryft_ingest", "connections", "status_reason", "UPDATE", true},
+		{"ryft_ingest", "connections", "status_at", "UPDATE", true}, {"ryft_ingest", "connections", "last_data_at", "UPDATE", true},
+		{"ryft_ingest", "connections", "provider_user_id", "UPDATE", true}, {"ryft_ingest", "connections", "permissions", "UPDATE", true},
+		{"ryft_ingest", "connections", "user_id", "UPDATE", false}, {"ryft_ingest", "connections", "provider", "UPDATE", false},
+		{"ryft_ingest", "connections", "policy_version", "UPDATE", false}, {"ryft_ingest", "connections", "connected_at", "UPDATE", false},
+		{"ryft_ingest", "connections", "user_id", "INSERT", false},
+		{"ryft_api", "provider_inbox", "id", "SELECT", true}, {"ryft_api", "provider_inbox", "user_id", "SELECT", true},
+		{"ryft_api", "provider_inbox", "provider", "SELECT", true}, {"ryft_api", "provider_inbox", "state", "SELECT", true},
+		{"ryft_api", "provider_inbox", "payload", "SELECT", false}, {"ryft_api", "provider_inbox", "record_id", "SELECT", false},
+		{"ryft_api", "provider_inbox", "state", "UPDATE", false},
+		{"ryft_scoring", "samples", "origin", "SELECT", true}, {"ryft_scoring", "samples", "vendor", "SELECT", true},
+		{"ryft_scoring", "sleep_segments", "record_state", "SELECT", true}, {"ryft_scoring", "samples", "origin", "UPDATE", false},
+		{"ryft_scoring", "daily_scores", "hrv_metric", "UPDATE", true}, {"ryft_scoring", "daily_scores", "coverage", "INSERT", true},
+		{"ryft_scoring", "daily_scores", "score_status", "UPDATE", true}, {"ryft_scoring", "connections", "status", "SELECT", false},
+		{"ryft_api", "daily_scores", "hrv_metric", "SELECT", true}, {"ryft_api", "daily_scores", "coverage", "UPDATE", false},
+		{"ryft_api", "samples", "origin", "UPDATE", false}, {"ryft_api", "samples", "vendor", "SELECT", true},
+		{"ryft_notify", "samples", "origin", "SELECT", false}, {"ryft_notify", "samples", "vendor", "SELECT", false},
+		{"ryft_notify", "daily_scores", "hrv_metric", "SELECT", false}, {"ryft_notify", "daily_scores", "coverage", "SELECT", false},
+		{"ryft_notify", "connections", "status", "SELECT", false},
+		{"ryft_ingest", "daily_scores", "hrv_metric", "SELECT", false},
+	} {
+		var has bool
+		if err := pool.QueryRow(ctx, `SELECT has_column_privilege($1, $2, $3, $4)`, c.role, "public."+c.table, c.col, c.priv).Scan(&has); err != nil {
+			t.Fatal(err)
+		}
+		if has != c.want {
+			t.Errorf("%s %s %s.%s: %v, want %v", c.role, c.priv, c.table, c.col, has, c.want)
+		}
+	}
+	// 0042: each queue's sequence belongs to its one writer.
+	for _, c := range []struct {
+		role, seq string
+		want      bool
+	}{
+		{"ryft_api", "connection_deregistrations_id_seq", true}, {"ryft_ingest", "connection_deregistrations_id_seq", false},
+		{"ryft_ingest", "provider_inbox_id_seq", true}, {"ryft_api", "provider_inbox_id_seq", false},
+		{"ryft_scoring", "provider_inbox_id_seq", false}, {"ryft_notify", "connection_deregistrations_id_seq", false},
+	} {
+		if has := scalar[bool](t, pool, `SELECT has_sequence_privilege($1, $2, 'USAGE')`, c.role, "public."+c.seq); has != c.want {
+			t.Errorf("%s USAGE %s: %v, want %v", c.role, c.seq, has, c.want)
 		}
 	}
 }

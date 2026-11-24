@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/timkrebs/ryft/internal/connect"
 	"github.com/timkrebs/ryft/internal/logx"
 	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
@@ -158,6 +159,19 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 			FROM apple_tokens t WHERE t.user_id = $1 AND d.id = $1`, id); err != nil {
 			return fmt.Errorf("keep apple token: %w", err)
 		}
+		// A connection's tokens move, still sealed, to the deregistration queue until the provider confirms the end of
+		// the grant (design 5.5, D257): every live connection, and a grant waiting for its confirm. The queue has no
+		// foreign key, so its rows outlive the account; the live-grant rule decides at the attempt whether the provider
+		// is called.
+		if _, err := tx.Exec(ctx, `INSERT INTO connection_deregistrations (user_id, provider, provider_user_id, reason, access_enc, refresh_enc)
+			SELECT c.user_id, c.provider, c.provider_user_id, 'account_deleted', t.access_enc, t.refresh_enc FROM connections c
+			JOIN connection_tokens t ON t.user_id = c.user_id AND t.provider = c.provider
+			WHERE c.user_id=$1 AND c.status <> 'revoked' AND c.provider_user_id IS NOT NULL
+			UNION ALL
+			SELECT user_id, provider, provider_user_id, 'account_deleted', access_enc, refresh_enc FROM connection_pending
+			WHERE user_id=$1 AND confirmed_at IS NULL AND access_enc IS NOT NULL`, id); err != nil {
+			return fmt.Errorf("queue connection tokens: %w", err)
+		}
 		for _, q := range []string{
 			`DELETE FROM apple_tokens WHERE user_id=$1`,
 			`DELETE FROM push_tokens WHERE user_id=$1`,
@@ -169,6 +183,12 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 			// A code bound to this account's email and the note that may name them go with the account (D159).
 			`UPDATE beta_invite_codes SET email = NULL, note = '' WHERE email IS NOT NULL AND code IN (SELECT code FROM beta_invite_uses WHERE user_id=$1)`,
 			`DELETE FROM beta_invite_uses WHERE user_id=$1`,
+			// Direct connections (0042, D257); the foreign keys cascade too, for an image from before it.
+			`DELETE FROM provider_inbox WHERE user_id=$1`,
+			`DELETE FROM connection_states WHERE user_id=$1`,
+			`DELETE FROM connection_pending WHERE user_id=$1`,
+			`DELETE FROM connection_tokens WHERE user_id=$1`,
+			`DELETE FROM connections WHERE user_id=$1`,
 			`DELETE FROM user_sources WHERE user_id=$1`,
 			`DELETE FROM feedback WHERE user_id=$1`,
 			`DELETE FROM score_queue WHERE user_id=$1`,
@@ -423,6 +443,19 @@ func (s *Store) TryRequestRecompute(ctx context.Context, userID uuid.UUID, minIn
 
 // ---- ingest ----------------------------------------------------------------
 
+// vendorOf is the vendor a HealthKit record's bundle id names (connect.VendorOfBundle), or nil: the column that lets
+// scoring prefer a direct night over the same vendor's copy through Apple Health (D257). Rows stored before 0042 keep
+// NULL; a re-send does not rewrite them.
+func vendorOf(bundle *string) *string {
+	if bundle == nil {
+		return nil
+	}
+	if v := connect.VendorOfBundle(*bundle); v != "" {
+		return &v
+	}
+	return nil
+}
+
 // UpsertSamples stores a sync's samples in one transaction and returns how many
 // rows changed. A record that carries its HealthKit id adopts it on the row with the
 // same natural key (D144); an identical re-send changes nothing and is not counted.
@@ -443,17 +476,17 @@ func (s *Store) UpsertSamples(ctx context.Context, userID uuid.UUID, in []model.
 				*x.ID, userID, x.Type, x.Start, x.End, x.Source, x.Value)
 			// No conflict target: a clash on either unique index (natural key, or the id of a
 			// renamed source) is a duplicate, never an error.
-			b.Queue(`INSERT INTO samples (user_id, type, start_at, end_at, value, unit, source, hk_id)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,
-				userID, x.Type, x.Start, x.End, x.Value, x.Unit, x.Source, *x.ID)
+			b.Queue(`INSERT INTO samples (user_id, type, start_at, end_at, value, unit, source, hk_id, vendor)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`,
+				userID, x.Type, x.Start, x.End, x.Value, x.Unit, x.Source, *x.ID, vendorOf(x.SourceBundleID))
 			continue
 		}
 		// An identical re-send is neither rewritten nor counted (SyncResponse → ignored.duplicate).
-		b.Queue(`INSERT INTO samples (user_id, type, start_at, end_at, value, unit, source)
-			VALUES ($1,$2,$3,$4,$5,$6,$7)
+		b.Queue(`INSERT INTO samples (user_id, type, start_at, end_at, value, unit, source, vendor)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 			ON CONFLICT (user_id, type, start_at, end_at, source) DO UPDATE SET value = EXCLUDED.value
 			WHERE samples.value IS DISTINCT FROM EXCLUDED.value`,
-			userID, x.Type, x.Start, x.End, x.Value, x.Unit, x.Source)
+			userID, x.Type, x.Start, x.End, x.Value, x.Unit, x.Source, vendorOf(x.SourceBundleID))
 	}
 	return s.runBatch(ctx, b)
 }
@@ -473,14 +506,14 @@ func (s *Store) UpsertSleep(ctx context.Context, userID uuid.UUID, in []model.Sl
 				  AND hk_id IS DISTINCT FROM $1::uuid
 				  AND NOT EXISTS (SELECT 1 FROM sleep_segments x WHERE x.user_id=$2 AND x.hk_id=$1 AND x.id <> sleep_segments.id)`,
 				*x.ID, userID, x.Start, x.End, x.Stage, x.Source)
-			b.Queue(`INSERT INTO sleep_segments (user_id, start_at, end_at, stage, source, hk_id)
-				VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
-				userID, x.Start, x.End, x.Stage, x.Source, *x.ID)
+			b.Queue(`INSERT INTO sleep_segments (user_id, start_at, end_at, stage, source, hk_id, vendor)
+				VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`,
+				userID, x.Start, x.End, x.Stage, x.Source, *x.ID, vendorOf(x.SourceBundleID))
 			continue
 		}
-		b.Queue(`INSERT INTO sleep_segments (user_id, start_at, end_at, stage, source)
-			VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-			userID, x.Start, x.End, x.Stage, x.Source)
+		b.Queue(`INSERT INTO sleep_segments (user_id, start_at, end_at, stage, source, vendor)
+			VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+			userID, x.Start, x.End, x.Stage, x.Source, vendorOf(x.SourceBundleID))
 	}
 	return s.runBatch(ctx, b)
 }

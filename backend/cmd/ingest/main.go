@@ -18,6 +18,7 @@ import (
 	"github.com/timkrebs/ryft/internal/app"
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
+	"github.com/timkrebs/ryft/internal/connect"
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/eventbus"
 	"github.com/timkrebs/ryft/internal/events"
@@ -47,6 +48,7 @@ func spec() app.Spec {
 		authCfg config.Auth
 		beta    config.Beta
 		attest  config.AppAttest
+		conn    config.Connect
 	)
 	return app.Spec{
 		Name:       "ingest",
@@ -72,15 +74,23 @@ func spec() app.Spec {
 				return app.ConfigError{Msg: "app attest config", Err: err}
 			}
 			log.Info("app attest", "mode", attest.Mode, "ring", attest.Ring != nil, "exempt", len(attest.ExemptUsers))
+			// The fake on Cloud Run, a provider without its settings or a malformed id stops the start (D257).
+			// The line names the providers, never a secret.
+			if conn, err = config.LoadConnect("ingest"); err != nil {
+				return app.ConfigError{Msg: "connect config", Err: err}
+			}
+			log.Info("connect", "providers", conn.Providers)
 			return nil
 		},
-		Build: func(ctx context.Context, d app.Deps) (app.Parts, error) { return build(ctx, d, authCfg, beta, attest) },
+		Build: func(ctx context.Context, d app.Deps) (app.Parts, error) {
+			return build(ctx, d, authCfg, beta, attest, conn)
+		},
 	}
 }
 
 // build makes ingest's mux on the opened pool and transport. ctx is Build's: the JWKS
 // refresher runs on it.
-func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Beta, attest config.AppAttest) (app.Parts, error) {
+func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Beta, attest config.AppAttest, conn config.Connect) (app.Parts, error) {
 	verifier, err := auth.FromConfig(ctx, authCfg)
 	if err != nil {
 		return app.Parts{}, app.ConfigError{Msg: "auth", Err: err}
@@ -90,21 +100,35 @@ func build(ctx context.Context, d app.Deps, authCfg config.Auth, beta config.Bet
 	// flush could not (and what fold-workouts wrote).
 	h := &handler{st: store.New(d.Pool), outbox: d.Outbox, log: d.Log, beta: beta, attest: attest}
 	pool := d.Pool
+	// The hook, its inbox and the consumer of its events (D257): the push halves of the served providers only.
+	reg, err := pushRegistry(conn)
+	if err != nil {
+		return app.Parts{}, app.ConfigError{Msg: "connect config", Err: err}
+	}
+	h.connect = newConnectHook(h.st, reg, beta, conn.MinPolicyVersion, d.Outbox, d.Log)
 	tick, err := d.Tick(ingestTicks( // the metrics push is the tick's final step (app)
-		func(ctx context.Context) error { return db.Ping(ctx, pool, "ingest") }, d.Outbox.Sweep)...)
+		func(ctx context.Context) error { return db.Ping(ctx, pool, "ingest") }, d.Outbox.Sweep,
+		eventbus.Tick{Name: "connect inbox", Run: h.connect.tick})...)
 	if err != nil {
 		return app.Parts{}, err
 	}
-	return app.Parts{Handler: newMux(h, d.Log, verifier, tick)}, nil
+	mux := newMux(h, d.Log, verifier, tick)
+	if err := h.connect.register(mux, d.Bus); err != nil {
+		return app.Parts{}, err
+	}
+	return app.Parts{Handler: mux}, nil
 }
 
 // tickBudget is ingest's POST /internal/tick, both steps together (D219).
 const tickBudget = 45 * time.Second
 
-// ingestTicks are ingest's tick steps: the db ping (ryft_db_up) and the outbox sweep, the
-// work of the db watch and the relay goroutine before Cloud Run (D219).
-func ingestTicks(ping, sweep func(context.Context) error) []eventbus.Tick {
-	return []eventbus.Tick{{Name: "db ping", Run: ping}, {Name: "outbox sweep", Run: sweep}}
+// ingestTicks are ingest's tick steps: the db ping (ryft_db_up), its own steps (the inbox's upkeep,
+// D257) and the outbox sweep last, so the events a step wrote leave in the same tick: the work of the
+// db watch and the relay goroutine before Cloud Run (D219).
+func ingestTicks(ping, sweep func(context.Context) error, own ...eventbus.Tick) []eventbus.Tick {
+	steps := []eventbus.Tick{{Name: "db ping", Run: ping}}
+	steps = append(steps, own...)
+	return append(steps, eventbus.Tick{Name: "outbox sweep", Run: sweep})
 }
 
 // newMux is ingest's routes: health, the tick, POST /v1/sync behind the auth middleware,
@@ -170,6 +194,8 @@ type handler struct {
 	log    *slog.Logger
 	beta   config.Beta
 	attest config.AppAttest // APP_ATTEST and its ring: the token check of /v1/ (no route is exempt)
+	// connect is the hook, its consumer and the inbox's tick step (D257); nil without one (tests).
+	connect *connectHook
 	// loadUser finds or creates the caller's row; nil is st.EnsureUser (tests load a fixed user).
 	loadUser func(context.Context, auth.Principal) (model.User, error)
 
@@ -303,7 +329,9 @@ const (
 
 // screen drops the records the server does not store and counts them: unknown
 // sample types and sleep stages (an app reading a new HealthKit type keeps
-// syncing instead of failing with 422), and records outside the window.
+// syncing instead of failing with 422), records whose source is the reserved
+// ryft-direct-<provider> of a direct connection (D257: a sync can neither mimic one
+// nor overwrite its rows; counted unknown_type), and records outside the window.
 func screen(req *model.SyncRequest, now time.Time) model.SyncIgnored {
 	var ig model.SyncIgnored
 	outside := func(start, end time.Time) bool {
@@ -312,7 +340,7 @@ func screen(req *model.SyncRequest, now time.Time) model.SyncIgnored {
 	samples := req.Samples[:0]
 	for _, s := range req.Samples {
 		switch {
-		case !model.KnownSampleTypes[s.Type]:
+		case !model.KnownSampleTypes[s.Type] || connect.IsReservedSource(s.Source):
 			ig.Samples.UnknownType++
 		case outside(s.Start, s.End):
 			ig.Samples.OutsideWindow++
@@ -326,7 +354,7 @@ func screen(req *model.SyncRequest, now time.Time) model.SyncIgnored {
 	sleep := req.Sleep[:0]
 	for _, s := range req.Sleep {
 		switch {
-		case !model.KnownSleepStages[s.Stage]:
+		case !model.KnownSleepStages[s.Stage] || connect.IsReservedSource(s.Source):
 			ig.Sleep.UnknownType++
 		case outside(s.Start, s.End):
 			ig.Sleep.OutsideWindow++

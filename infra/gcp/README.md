@@ -12,16 +12,16 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 | `project.tf` | the API keep list (`google_project_service`, `disable_on_destroy = false`; 16, and Compute Engine and Certificate Manager from `edge = "built"` on), Data Access audit logs (`DATA_READ`) for Secret Manager, STS and IAM credentials (every secret read and token mint), the Pub/Sub and Cloud Scheduler service agents |
 | `iam.tf` | the accounts `ryft-<api,ingest,scoring,notify,migrate>`, `ryft-push`, `ryft-deployer` (no key, ever; `grafana-reader` went with Grafana Cloud, D236); the deployer's rights (**The deployer**, below); Pub/Sub's token creator on `ryft-push` |
 | `wif.tf` | the GitHub pool `github` and provider `github-actions` (condition by repository and owner ID, `deploy.yml` on `main`, environment `deploy` or `site`, a GitHub-hosted runner); one principal set per environment, `ryft-deployer` bound to `deploy`'s alone (D233), `site`'s for `site-deployer` in ryftlab-site (by hand, step 10a) |
-| `secrets.tf` | the 12 secret containers in use (ticket B's 10, `posthog-project-key`, D231, and App Attest's token ring `app-attest-token-key`, api and ingest, D247), `prevent_destroy`, 30-day delayed destruction, accessors on each secret; `retired`: `otlp-token` and its accessor without `prevent_destroy`, on their way out (OPERATIONS → GCP 11.6). **No values**: they never pass through state |
+| `secrets.tf` | the 13 secret containers in use (ticket B's 10, `posthog-project-key`, D231, App Attest's token ring `app-attest-token-key`, api and ingest, D247, and Garmin's OAuth client secret `connect-garmin-client-secret`, api alone, D257: empty until phase 2), `prevent_destroy`, 30-day delayed destruction, accessors on each secret; `retired`: `otlp-token` and its accessor without `prevent_destroy`, on their way out (OPERATIONS → GCP 11.6). **No values**: they never pass through state |
 | `pubsub.tf`, `pubsub.auto.tfvars.json` | topics (messages stored in `europe-west1` only; `enforce_in_transit` stays off, so the Scheduler's publish and an operator's `gcloud pubsub` through the global endpoint still work), push and hold subscriptions, publisher bindings per topic, the agents' bindings. The JSON is written by `go run ./cmd/pubsub-topology` (PR A); do not edit it by hand once that exists |
 | `scheduler.tf` | the job `ryft-tick` (every 15 minutes) |
 | `nutrition.tf` | optional monthly `nutrition-etl-job`, its dedicated runtime and scheduler identities, and a pinned database secret reference (D270) |
 | `registry.tf` | Artifact Registry `ryft`: the 5 newest versions of each image kept, every other version deleted after 30 days (tagged or not); scanning off |
 | `run.tf` | who invokes the four services (one authoritative `run.invoker` binding each), and the domain mappings `api.` and `ingest.ryftlab.de` (only with `serve = true`, and gone at `edge = "locked"`) |
 | `dns.tf` | the zone `ryftlab.de` (`prevent_destroy`, DNSSEC off) with every record the Route 53 zone held (deleted 2026-11-19, D246), CAA with `pki.goog`, Search Console's TXT, and `api.`'s and `ingest.`'s record sets (`google_dns_record_set.host`): CNAMEs to the mappings, A records at the edge's address from `edge = "live"` on |
-| `edge.tf` | the edge (D242, from `edge = "built"` on): a global external Application Load Balancer on one IPv4 address (no IPv6), a serverless NEG and a backend service per public service, a URL map by host (anything else 301 to the site), an SSL policy (MODERN, TLS 1.2+), Certificate Manager certificates by DNS authorization in one map, HTTPS on 443 and a redirect on 80; one Cloud Armor policy: six WAF rules in preview (`local.edge_waf_preview`), an enforced rate rule per address, allow by default. Output `edge_ip` |
+| `edge.tf` | the edge (D242, from `edge = "built"` on): a global external Application Load Balancer on one IPv4 address (no IPv6), a serverless NEG and a backend service per public service, a URL map by host (anything else 301 to the site), an SSL policy (MODERN, TLS 1.2+), Certificate Manager certificates by DNS authorization in one map, HTTPS on 443 and a redirect on 80; one Cloud Armor policy: six WAF rules in preview (`local.edge_waf_preview`), none of them on the direct-connection callback (`/v1/connect/<provider>/callback`) or ingest's hook (only `ingest.` + `POST` + `/connect/<provider>/push`, `local.edge_waf_skip`, D257, review P2-5); the hook's throttle at 1900 (`ingest.` + `/connect/`, 6,000 per 60 s per address, then 429, never banned, `local.edge_hook`); an enforced rate rule per address at 2000, allow by default. Output `edge_ip` |
 | `site.tf`, `site.auto.tfvars` | the site's records on Firebase Hosting (C1, D233): the apex A set and its `hosting-site=` TXT (joins the apex TXT set), and www's A set and TXT or its CNAME, from the values the Firebase wizard shows. Empty adds nothing |
-| `logging.tf` | the bucket `ryft-logs` (europe-west1, 14 days) and the sink into it; from `edge = "built"` on two exclusions: the load balancer's requests but Cloud Armor's denials and preview matches, and api's and ingest's Cloud Run request log below 5xx (D242) |
+| `logging.tf` | the bucket `ryft-logs` (europe-west1, 14 days) and the sink into it; always the exclusion `connect-callback` (every entry whose absolute `httpRequest.requestUrl` is `http(s)://<host>/v1/connect/<provider>/callback`, with a query or none, anchored: the callback's OAuth state and code, D257, review P2-1); from `edge = "built"` on two more: the load balancer's requests but Cloud Armor's denials and preview matches, and api's and ingest's Cloud Run request log below 5xx (D242) |
 | `monitoring.tf` | Cloud Monitoring, RYFT's only observability (D236): the log-based metrics `ryft_ticks` (by `result`), `ryft_errors` and `ryft_notices` (D244: api's `feedback received`, `admin signed in` and `admin auth rejected` but for reasons `missing` and `expired`, by `kind`), the uptime checks (the site's `/`, `/privacy` and AASA always; api's and ingest's `/health/ready` while they're public; every 5 minutes from 3 locations), the dashboard "RYFT · Overview". All free at RYFT's volume, so ungated. From `edge = "built"` on: `ryft_edge_denials` and `ryft_edge_preview_matches` (by `priority`) and four edge tiles |
 | `alerts.tf` | the six alert policies, one condition each (uptime failing, 5xx over 2 %, tick missing, dead letters held, event backlog over 15 minutes, and since D244 feedback and admin access), to both notification channels, the email first, then the app's; only once `alert_app_channel` is set (step 11), the tick's only while the tick runs; the plan fails if that is the email channel (D237). Six is the cap, a test (`six_conditions_at_most`) |
 | `checks.tf` | warnings for what fails silently: the `_Default` log sink still on, a mapping not Ready, a disabled email channel (the app's has no data source, D237: step 11.4 tests it) |
@@ -170,8 +170,8 @@ and `locked` only with it on both (D242).
 
 | `edge` | The load balancer and Cloud Armor | `api.`, `ingest.` in DNS | Domain mappings | The sink |
 | --- | --- | --- | --- | --- |
-| `off` | none | CNAMEs to the mappings | yes | everything |
-| `built` | built, nothing points at it | CNAMEs to the mappings | yes | everything but the two exclusions |
+| `off` | none | CNAMEs to the mappings | yes | everything but `connect-callback` |
+| `built` | built, nothing points at it | CNAMEs to the mappings | yes | everything but the three exclusions |
 | `live` | serving | A records at `edge_ip` | yes (the way back) | the same |
 | `locked` | serving | A records at `edge_ip` | none | the same |
 
@@ -202,10 +202,12 @@ else.
 The arithmetic of each count is in the runbook (steps 4, 9, 11, 14a.9 and the stop line).
 
 1. **Apply 1** (`serve = false`, runbook step 4): everything except the invokers, the deployer's
-   bindings on the services and the mappings. On a rebuild today 125 to add, 0 to change, 0 to
+   bindings on the services and the mappings. On a rebuild today 134 to add, 0 to change, 0 to
    destroy: the 118 applied (116 before `posthog-project-key`, D231), less `grafana-reader` and its
    binding, plus D236's 6 (2 log-based metrics, the site's 3 uptime checks, the dashboard),
-   D244's `ryft_notices` and D247's `app-attest-token-key` with its accessor (2).
+   D244's `ryft_notices`, D247's `app-attest-token-key` with its accessor (2), and D257's
+   `connect-garmin-client-secret` with its accessor (2) and inbox topology (7); `monitoring.tf`'s
+   D257 metric `ryft_connect_pushes` comes on top.
 2. **Apply 2** (`serve = true`, step 9, after CI's first deploy at step 8): 15 to add (4 invoker
    bindings, 4 + 1 deployer bindings on the services and the job, 2 mappings, 2 CNAMEs, api's and
    ingest's uptime checks), 1 to change (the tick resumes), 1 to destroy (the deployer's project-wide
@@ -244,6 +246,19 @@ The arithmetic of each count is in the runbook (steps 4, 9, 11, 14a.9 and the st
    destroy; 1 to add (the metric) with `alert_app_channel` unset. The output `monitoring` lists the
    policy and the metric. The stop line and `serve = false` keep both (no line comes, so it is quiet):
    their counts above are unchanged.
+9. **Direct connections, phase 1** (D257, `connect/foundation`, at `edge = "live"`): this root's
+   part is 9 to add, 5 to change, 0 to destroy. Added: `connect-garmin-client-secret` and its
+   accessor (api), and the inbox topology from `pubsub.auto.tfvars.json`: the topics
+   `ryft-inbox-received` and `ryft-dlq-ingest` with their publisher bindings (4), the push
+   subscription `ingest-inbox-received`, its dead-letter source binding, the hold `dlq-ingest-hold`.
+   Changed in place: the Cloud Armor policy (the six WAF expressions gain the two path conditions, and
+   rule 1900 comes; the provider holds rules as a set, so the plan shows six removed and seven added
+   inside the one `~`), the sink (`connect-callback`), and through the topology policies 4 and 5 and
+   the dashboard (their subscription lists). `monitoring.tf`'s D257 part (sre) adds to this. **Stop
+   if** a secret, a subscription other than `ingest-inbox-received`, a record set, a backend service or
+   a mapping changes, or anything is destroyed. The secret's value is phase 2's (`gcloud secrets
+   versions add connect-garmin-client-secret --data-file=…`), and `deploy/run/api.yaml` pins it only
+   then. Cost: Cloud Armor bills the rule, $1 a month (D242 → Cost); the rest is free at RYFT's volume.
 
 ```bash
 cd infra/gcp

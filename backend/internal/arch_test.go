@@ -125,6 +125,11 @@ var denyRules = []denyRule{
 		Deny: internalAll,
 	},
 	{
+		ID: "R14", Why: "a provider adapter holds no token store, key, database or settings: internal/connect imports model and itself only, so a provider's push half can never reach what api seals (D257)",
+		From: []string{"internal/connect", "internal/connect/fake"}, Deny: internalAll,
+		Except: []string{"internal/model", "internal/connect"},
+	},
+	{
 		// appattest is a leaf itself (the rule above), so config stays one step from the bottom.
 		ID: "R9", Why: "config is a leaf but for the leaf appattest, whose ParseRing reads APP_ATTEST_TOKEN_KEYS at start-up (D247; internal/config/doc.go)",
 		From: []string{"internal/config"}, Deny: internalAll,

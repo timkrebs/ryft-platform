@@ -60,6 +60,10 @@ if [ "$(echo "$me" | json '(d["consent"] or {}).get("policy_version")')" != "$po
     || fail "POST /v1/me/consent"
 fi
 model=$(call "$API/v1/model" | json 'd["current"]') || fail "GET /v1/model"
+call "$API/v1/me/connections" | json 'isinstance(d["connections"], list) and isinstance(d["available"], list) and {"garmin", "suunto"} <= {x["provider"] for x in d["providers"]} or sys.exit(1)' >/dev/null \
+  || fail "GET /v1/me/connections provider catalog"
+echo "→ connection catalog: authenticated response"
+
 
 tz=$(echo "$me" | json 'd["tz"]')
 today=$(TZ="$tz" date +%F)

@@ -10,6 +10,7 @@ import (
 const (
 	SampleHeartRate       = "heart_rate"       // bpm
 	SampleHRVSDNN         = "hrv_sdnn"         // ms
+	SampleHRVRMSSD        = "hrv_rmssd"        // ms; what a direct connection delivers (D257), never an SDNN
 	SampleRestingHR       = "resting_hr"       // bpm, one per day from HealthKit
 	SampleRespiratoryRate = "respiratory_rate" // breaths/min
 	SampleSpO2            = "spo2"             // percent 0..100
@@ -25,7 +26,7 @@ const (
 var KnownSampleTypes = map[string]bool{
 	SampleHeartRate: true, SampleHRVSDNN: true, SampleRestingHR: true,
 	SampleRespiratoryRate: true, SampleSpO2: true, SampleVO2Max: true,
-	SampleActiveEnergy: true, SampleSteps: true, SampleBodyMass: true,
+	SampleActiveEnergy: true, SampleSteps: true, SampleBodyMass: true, SampleHRVRMSSD: true,
 }
 
 // Sleep stages, mirroring HKCategoryValueSleepAnalysis.
@@ -58,13 +59,25 @@ type Sample struct {
 	// The HealthKit object's UUID (HKObject.uuid): the handle a deletion names. Optional.
 	ID             *uuid.UUID `json:"id,omitempty"`
 	WasUserEntered bool       `json:"was_user_entered,omitempty"`
+	// Origin, Vendor and RecordID are the server's (D257): they never come from or go to a client.
+	// A direct connection's consumer sets them (OriginDirect, the provider, "<kind>:<record id>").
+	Origin   string `json:"-"`
+	Vendor   string `json:"-"`
+	RecordID string `json:"-"`
 }
+
+// How a record reached RYFT (the origin column; UserSource.origin): through Apple Health, uploaded by the
+// app, or through a direct connection (D257). Closed.
+const (
+	OriginHealthKit = "healthkit"
+	OriginDirect    = "direct"
+)
 
 // SampleSpillsToNextDay says whether a sample of this type also changes the
 // score of the day after its start (the night's HRV, respiration and SpO2 belong
 // to the morning).
 func SampleSpillsToNextDay(typ string) bool {
-	return typ == SampleHRVSDNN || typ == SampleRespiratoryRate || typ == SampleSpO2
+	return typ == SampleHRVSDNN || typ == SampleHRVRMSSD || typ == SampleRespiratoryRate || typ == SampleSpO2
 }
 
 // SleepSegment is one HealthKit sleep-analysis interval of one stage in a POST /v1/sync
@@ -76,7 +89,19 @@ type SleepSegment struct {
 	Source         string     `json:"source"`
 	SourceBundleID *string    `json:"source_bundle_id,omitempty"` // input only
 	ID             *uuid.UUID `json:"id,omitempty"`               // HKObject.uuid, optional
+	// Origin, Vendor, RecordID and RecordState are the server's, as on Sample. RecordState is the provider's
+	// validation state of the night (RecordProvisional, RecordFinal); "" for a HealthKit segment.
+	Origin      string `json:"-"`
+	Vendor      string `json:"-"`
+	RecordID    string `json:"-"`
+	RecordState string `json:"-"`
 }
+
+// The validation state of a direct night (sleep_segments.record_state).
+const (
+	RecordProvisional = "provisional"
+	RecordFinal       = "final"
+)
 
 // Source kinds (UserSource.kinds); closed in v1.
 const (
@@ -93,7 +118,7 @@ const (
 // SampleKinds maps a sample type to the kind a source is shown with. VO₂max
 // counts as heart rate: Apple estimates it from heart rate on walks and runs.
 var SampleKinds = map[string]string{
-	SampleHeartRate: KindHR, SampleRestingHR: KindHR, SampleVO2Max: KindHR, SampleHRVSDNN: KindHRV,
+	SampleHeartRate: KindHR, SampleRestingHR: KindHR, SampleVO2Max: KindHR, SampleHRVSDNN: KindHRV, SampleHRVRMSSD: KindHRV,
 	SampleRespiratoryRate: KindResp, SampleSpO2: KindSpO2, SampleActiveEnergy: KindEnergy, SampleSteps: KindSteps,
 }
 
@@ -103,6 +128,9 @@ type UserSource struct {
 	BundleID *string   `json:"bundle_id"`
 	Kinds    []string  `json:"kinds"` // sorted
 	LastSeen time.Time `json:"last_seen"`
+	// Origin is how the source's data reached RYFT: OriginHealthKit or OriginDirect (a direct
+	// connection, named by the provider's display name, D257). Closed.
+	Origin string `json:"origin"`
 }
 
 // Workout is a workout as uploaded by POST /v1/sync and as served by the api. The fields

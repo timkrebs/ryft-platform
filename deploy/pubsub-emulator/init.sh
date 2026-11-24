@@ -57,8 +57,10 @@ hold() {
     "$GCP_PROJECT" "$2" "$3")"
 }
 
+topic ryft-dlq-ingest
 topic ryft-dlq-notify
 topic ryft-dlq-scoring
+topic ryft-inbox-received
 topic ryft-ingested
 topic ryft-notify-wait
 topic ryft-refresh
@@ -67,6 +69,7 @@ topic ryft-session-completed
 topic ryft-session-scored
 topic ryft-tick
 
+push ingest-inbox-received ryft-inbox-received ingest /push/inbox.received false 60 604800 ryft-dlq-ingest
 push notify-refresh ryft-refresh notify /push/refresh false 60 604800 ryft-dlq-notify
 push notify-scored ryft-scored notify /push/scored false 60 604800 ryft-dlq-notify
 push notify-session-scored ryft-session-scored notify /push/session.scored false 60 604800 ryft-dlq-notify
@@ -78,5 +81,6 @@ push tick-ingest ryft-tick ingest /internal/tick false 600 600
 push tick-notify ryft-tick notify /internal/tick false 600 600
 push tick-scoring ryft-tick scoring /internal/tick false 600 600
 
+hold dlq-ingest-hold ryft-dlq-ingest 1209600
 hold dlq-notify-hold ryft-dlq-notify 1209600
 hold dlq-scoring-hold ryft-dlq-scoring 1209600

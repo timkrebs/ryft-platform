@@ -25,6 +25,7 @@ type tickSteps struct {
 	coaching  func(context.Context) error
 	wearables func(context.Context) error
 	n2r       func(context.Context) error // bounded morning nutrition calibration (D268)
+	connect   []eventbus.Tick             // connectAPI.ticks (D257): purge, gauges (the daily notices), refresh, deregister; each under its own deadline (database steps 8 s, provider steps 25 s), the database ones first
 }
 
 // ticks are the steps in order, under the names the tick logs.
@@ -54,5 +55,5 @@ func (s tickSteps) ticks() []eventbus.Tick {
 	if s.coaching != nil {
 		steps = append(steps, eventbus.Tick{Name: "coaching evaluation", Run: s.coaching})
 	}
-	return steps
+	return append(steps, s.connect...)
 }
