@@ -6,16 +6,16 @@ toolchain go1.27.4
 
 require (
 	github.com/MicahParks/jwkset v0.11.4
-	github.com/MicahParks/keyfunc/v3 v3.9.1
+	github.com/MicahParks/keyfunc/v3 v3.9.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.12.0
+	github.com/jackc/pgx/v5 v5.13.0
 	github.com/muktihari/fit v0.28.7
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	go.uber.org/goleak v1.3.0
 	golang.org/x/sync v0.25.0
-	golang.org/x/text v0.42.0
+	golang.org/x/text v0.44.0
 	golang.org/x/time v0.16.0
 )
 
