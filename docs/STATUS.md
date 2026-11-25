@@ -1,5 +1,11 @@
 # RYFT platform — status
 
+## Production readiness checks (2026-11-25)
+
+- API and ingest health checks returned HTTP 200. The last Nutrition ETL run completed successfully and the UTC monthly scheduler was enabled.
+- Platform CI now runs the USDA and OFF fixtures and the ETL COPY replay against its disposable migrated PostgreSQL service. Run the optional embedding integration on a disposable database with `pgvector` installed.
+- The Garmin Personal API helper is development-only and reads one account. The cloud deployment keeps direct-provider credentials and rollout decisions in the existing partner gates.
+
 ## Training-to-Nutrition coaching (2026-11-24)
 
 The branch adds opt-in coaching targets, HealthKit workout and body-mass evidence, signed partner
