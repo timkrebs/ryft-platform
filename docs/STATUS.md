@@ -1,5 +1,21 @@
 # RYFT platform — status
 
+## Coaching webhook queue isolation (2026-11-25, D272)
+
+Migration 0048 adds provider-scoped delivery leases and keeps the previous call for a dark rollback.
+An older queued delivery for a disabled provider stays unattempted while another provider processes
+its queue. The API and store fixtures cover this behavior and the migration test checks the function
+grants after upgrading from 0047.
+
+The Go suites and synthetic PostgreSQL 17/Pub/Sub smoke passed. A separate local PostgreSQL restore
+rehearsal preserved a fixture account through 0047 → 0048. The previous and proposed API binaries
+both reported ready against the upgraded database and returned 404 on both partner callbacks.
+
+Provider callbacks remain dark. Once the release gates pass and the reviewed change is on main, the
+existing deploy workflow applies the migration before rolling the services. For an approved manual
+rerun of main, use `gh workflow run deploy.yml --ref main -f smoke=true` and follow
+[the deployment and rollback runbook](OPERATIONS.md#deploy-roll-back-rotate).
+
 ## Production readiness checks (2026-11-25)
 
 - API and ingest health checks returned HTTP 200. The last Nutrition ETL run completed successfully and the UTC monthly scheduler was enabled.

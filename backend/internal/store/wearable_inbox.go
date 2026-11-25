@@ -38,11 +38,12 @@ type WearableJob struct {
 	Attempt  int16
 }
 
-// ClaimWearable leases one due delivery without blocking parallel consumers.
-func (s *Store) ClaimWearable(ctx context.Context, now time.Time, policy string) (*WearableJob, error) {
+// ClaimWearable leases one due delivery for an enabled provider without blocking parallel consumers.
+func (s *Store) ClaimWearable(ctx context.Context, now time.Time, policy string, providers []string) (*WearableJob, error) {
 	var j WearableJob
 	var data []byte
-	err := s.pool.QueryRow(ctx, `SELECT job_id,src,owner_id,payload,attempt FROM nutrition.claim_wearable($1,$2)`, now, policy).Scan(&j.ID, &j.Source, &j.User, &data, &j.Attempt)
+	err := s.pool.QueryRow(ctx, `SELECT job_id,src,owner_id,payload,attempt FROM nutrition.claim_wearable($1,$2,$3)`, now, policy, providers).
+		Scan(&j.ID, &j.Source, &j.User, &data, &j.Attempt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

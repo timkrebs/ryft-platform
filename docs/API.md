@@ -597,6 +597,8 @@ HealthKit accepts optional workout `tz_offset_sec`, `was_user_entered` and sourc
 
 Public partner callbacks are disabled by default. Configured `POST /v1/webhooks/garmin` and `POST /v1/webhooks/suunto` authenticate the original bytes with `X-HMAC-SHA256-Signature` before enqueuing them. The Garmin path expects the partner payload from an authenticated RYFT relay that signs it. Suunto accepts the `username` and `workoutid` notification. The queue handles linked users with current consent and removes raw payloads on completion. Files are fetched through a configured HTTPS partner bridge using the account and workout references. Client-supplied callback URLs are not fetched by the API.
 
+The worker leases deliveries only for the providers enabled in its revision. Disabled-provider deliveries stay subject to inbox retention.
+
 ## Endpoints
 
 | Method | Path | Service | Returns |

@@ -6767,3 +6767,11 @@ with cycling mechanical work preferred where present. The guardrail thresholds a
 The IOC REDs CAT2 clinical assessment combines more evidence. The evaluation uses persisted forecasts,
 dated feedback and outcomes and bounds parameter changes. Athlete metrics stay account-scoped and
 operator cohorts suppress small groups. [IOC REDs consensus](https://bjsm.bmj.com/content/57/17/1073)
+
+## D272 — Coaching queue claims follow the API revision's configured providers (2026-11-25)
+
+The tick passes the providers with configured webhook keys to a scoped form of
+`nutrition.claim_wearable`. The query filters providers before it locks a delivery or advances a
+retry attempt. Keep the prior signature for compatible rollbacks while both connectors are dark.
+Before removing a key on a future enabled rollout, stop routing requests and ticks to every
+revision that still has that key. An already running revision keeps its own configuration.

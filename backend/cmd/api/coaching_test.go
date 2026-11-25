@@ -113,14 +113,27 @@ func TestCoachingWebhookToBriefingAndEvaluation(t *testing.T) {
 	deliver("garmin", body, false, 401)
 	deliver("garmin", body, true, 200)
 	deliver("garmin", body, true, 200)
-	deliver("suunto", []byte(`{"username":"fixture-suunto","workoutid":"fit-777"}`), true, 200)
+	suuntoBody := []byte(`{"username":"fixture-suunto","workoutid":"fit-777"}`)
+	deliver("suunto", suuntoBody, true, 200)
 	var n int
 	if err := rig.pool.QueryRow(ctx, `SELECT count(*) FROM nutrition.wearable_inbox`).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("enqueue replay: %d %v", n, err)
 	}
-	if _, err := rig.pool.Exec(ctx, `UPDATE nutrition.wearable_inbox SET due_at=$1`, now.Add(-time.Minute)); err != nil {
+	if _, err := rig.pool.Exec(ctx, `UPDATE nutrition.wearable_inbox SET due_at=CASE provider
+		WHEN 'suunto' THEN $1::timestamptz - interval '1 minute' ELSE $1 END`, now.Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	h.partners.secrets["suunto"] = ""
+	deliver("suunto", suuntoBody, true, 404)
+	if err := h.processWearables(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := rig.pool.QueryRow(ctx, `SELECT count(*) FROM nutrition.wearable_inbox
+		WHERE (provider='suunto' AND attempts=0 AND completed_at IS NULL)
+		   OR (provider='garmin' AND attempts=1 AND completed_at IS NOT NULL)`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("disabled Suunto delivery should remain unclaimed while Garmin completes: %d %v", n, err)
+	}
+	h.partners.secrets["suunto"] = secret
 	if err := h.processWearables(ctx); err != nil {
 		t.Fatal(err)
 	}

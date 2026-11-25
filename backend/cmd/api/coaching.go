@@ -128,7 +128,13 @@ func (h *handler) partnerWebhook(kind string) http.HandlerFunc {
 }
 
 func (h *handler) processWearables(ctx context.Context) error {
-	if h.partners.secrets["garmin"] == "" && h.partners.secrets["suunto"] == "" {
+	var providers []string
+	for provider, secret := range h.partners.secrets {
+		if secret != "" {
+			providers = append(providers, provider)
+		}
+	}
+	if len(providers) == 0 {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -141,7 +147,7 @@ func (h *handler) processWearables(ctx context.Context) error {
 		return errors.New("read wearable rollout")
 	}
 	for range 6 {
-		job, err := h.st.ClaimWearable(ctx, h.coachingNow(), h.beta.PrivacyPolicyVersion)
+		job, err := h.st.ClaimWearable(ctx, h.coachingNow(), h.beta.PrivacyPolicyVersion, providers)
 		if err != nil {
 			return errors.New("wearable claim failed")
 		}
