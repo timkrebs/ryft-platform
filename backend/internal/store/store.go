@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/timkrebs/ryft/internal/connect"
@@ -375,7 +376,15 @@ func (s *Store) SetLearnedBase(ctx context.Context, id uuid.UUID, minutes int) (
 // sent (nil keeps the stored one). Device IDs are per install, so one phone
 // used by two accounts has a row per account.
 func (s *Store) TouchDevice(ctx context.Context, userID, deviceID uuid.UUID, name string, appVersion, osVersion *string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO devices (id, user_id, name, last_sync_at, app_version, os_version)
+	return touchDevice(ctx, s.pool, userID, deviceID, name, appVersion, osVersion)
+}
+
+type sqlExecutor interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func touchDevice(ctx context.Context, db sqlExecutor, userID, deviceID uuid.UUID, name string, appVersion, osVersion *string) error {
+	_, err := db.Exec(ctx, `INSERT INTO devices (id, user_id, name, last_sync_at, app_version, os_version)
 		VALUES ($1,$2,$3,now(),$4,$5)
 		ON CONFLICT (user_id, id) DO UPDATE SET last_sync_at = now(),
 		  name = CASE WHEN EXCLUDED.name <> '' THEN EXCLUDED.name ELSE devices.name END,
@@ -460,6 +469,12 @@ func vendorOf(bundle *string) *string {
 // rows changed. A record that carries its HealthKit id adopts it on the row with the
 // same natural key (D144); an identical re-send changes nothing and is not counted.
 func (s *Store) UpsertSamples(ctx context.Context, userID uuid.UUID, in []model.Sample) (int, error) {
+	return upsertSamples(ctx, userID, in, s.runBatch)
+}
+
+type batchRunner func(context.Context, *pgx.Batch) (int, error)
+
+func upsertSamples(ctx context.Context, userID uuid.UUID, in []model.Sample, run batchRunner) (int, error) {
 	if len(in) == 0 {
 		return 0, nil
 	}
@@ -488,13 +503,17 @@ func (s *Store) UpsertSamples(ctx context.Context, userID uuid.UUID, in []model.
 			WHERE samples.value IS DISTINCT FROM EXCLUDED.value`,
 			userID, x.Type, x.Start, x.End, x.Value, x.Unit, x.Source, vendorOf(x.SourceBundleID))
 	}
-	return s.runBatch(ctx, b)
+	return run(ctx, b)
 }
 
 // UpsertSleep stores a sync's sleep segments in one transaction and returns how many
 // rows changed. A duplicate is skipped, never an error; a segment with a HealthKit
 // id adopts it on the row with the same natural key (D144).
 func (s *Store) UpsertSleep(ctx context.Context, userID uuid.UUID, in []model.SleepSegment) (int, error) {
+	return upsertSleep(ctx, userID, in, s.runBatch)
+}
+
+func upsertSleep(ctx context.Context, userID uuid.UUID, in []model.SleepSegment, run batchRunner) (int, error) {
 	if len(in) == 0 {
 		return 0, nil
 	}
@@ -515,7 +534,7 @@ func (s *Store) UpsertSleep(ctx context.Context, userID uuid.UUID, in []model.Sl
 			VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
 			userID, x.Start, x.End, x.Stage, x.Source, vendorOf(x.SourceBundleID))
 	}
-	return s.runBatch(ctx, b)
+	return run(ctx, b)
 }
 
 // UpsertWorkouts stores a sync's workouts in one transaction and returns how many
@@ -523,6 +542,10 @@ func (s *Store) UpsertSleep(ctx context.Context, userID uuid.UUID, in []model.Sl
 // overwritten by a sync, and an identical re-send is not counted. Workouts go in
 // (start_at, id) order, the order the fold and SetWorkoutDuplicates lock in.
 func (s *Store) UpsertWorkouts(ctx context.Context, userID uuid.UUID, in []model.Workout) (int, error) {
+	return upsertWorkouts(ctx, userID, in, s.runBatch)
+}
+
+func upsertWorkouts(ctx context.Context, userID uuid.UUID, in []model.Workout, run batchRunner) (int, error) {
 	if len(in) == 0 {
 		return 0, nil
 	}
@@ -553,7 +576,7 @@ func (s *Store) UpsertWorkouts(ctx context.Context, userID uuid.UUID, in []model
 			  AND workouts.source <> $14`,
 			w.ID, userID, w.Activity, w.Start, w.End, w.AvgHR, w.MaxHR, w.EnergyKcal, w.DistanceM, w.Source, w.SourceBundleID, w.WasUserEntered, w.TZOffsetSec, model.SessionSource)
 	}
-	return s.runBatch(ctx, b)
+	return run(ctx, b)
 }
 
 func (s *Store) runBatch(ctx context.Context, b *pgx.Batch) (int, error) {
@@ -562,6 +585,14 @@ func (s *Store) runBatch(ctx context.Context, b *pgx.Batch) (int, error) {
 		return 0, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	n, err := runBatch(ctx, tx, b)
+	if err != nil {
+		return 0, err
+	}
+	return n, tx.Commit(ctx)
+}
+
+func runBatch(ctx context.Context, tx pgx.Tx, b *pgx.Batch) (int, error) {
 	res := tx.SendBatch(ctx, b)
 	n := 0
 	for i := 0; i < b.Len(); i++ {
@@ -575,7 +606,7 @@ func (s *Store) runBatch(ctx context.Context, b *pgx.Batch) (int, error) {
 	if err := res.Close(); err != nil {
 		return 0, err
 	}
-	return n, tx.Commit(ctx)
+	return n, nil
 }
 
 // ---- reads for scoring -----------------------------------------------------

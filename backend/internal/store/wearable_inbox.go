@@ -38,11 +38,12 @@ type WearableJob struct {
 	Attempt  int16
 }
 
-// ClaimWearable leases one due delivery without blocking parallel consumers.
-func (s *Store) ClaimWearable(ctx context.Context, now time.Time, policy string) (*WearableJob, error) {
+// ClaimWearable leases one due delivery for an enabled provider without blocking parallel consumers.
+func (s *Store) ClaimWearable(ctx context.Context, now time.Time, policy string, providers []string) (*WearableJob, error) {
 	var j WearableJob
 	var data []byte
-	err := s.pool.QueryRow(ctx, `SELECT job_id,src,owner_id,payload,attempt FROM nutrition.claim_wearable($1,$2)`, now, policy).Scan(&j.ID, &j.Source, &j.User, &data, &j.Attempt)
+	err := s.pool.QueryRow(ctx, `SELECT job_id,src,owner_id,payload,attempt FROM nutrition.claim_wearable($1,$2,$3)`, now, policy, providers).
+		Scan(&j.ID, &j.Source, &j.User, &data, &j.Attempt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -58,14 +59,24 @@ func (s *Store) FinishWearable(ctx context.Context, j WearableJob, now time.Time
 	return err
 }
 
-// ApplyWearable applies a partner delivery under the linked account scope.
+// ApplyWearable completes the current lease in the same transaction as its data.
 func (s *Store) ApplyWearable(ctx context.Context, j WearableJob, data wearables.Delivery, policy string, now time.Time) error {
+	if data.User != j.Delivery.User || data.RemoteID != j.Delivery.RemoteID {
+		return errors.New("partner response does not match the leased delivery")
+	}
 	return s.nutritionTx(ctx, j.User, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		p, err := readCoachingProfile(ctx, tx, j.User, true)
 		if err != nil || p == nil {
 			return err
 		}
-		if ok, err := coachingConsent(ctx, tx, j.User, policy); err != nil || !ok {
+		consented, err := coachingConsent(ctx, tx, j.User, policy)
+		if err != nil {
+			return err
+		}
+		var completed bool
+		err = tx.QueryRow(ctx, `SELECT nutrition.complete_wearable_lease($1,$2,$3,$4,$5)`,
+			j.ID, j.Attempt, j.Source, j.Delivery.User, now).Scan(&completed)
+		if err != nil || !completed || !consented {
 			return err
 		}
 		for _, w := range data.Workouts {
@@ -151,8 +162,11 @@ func coachingConsent(ctx context.Context, tx pgx.Tx, user uuid.UUID, policy stri
 		return true, nil
 	}
 	var granted bool
-	err := tx.QueryRow(ctx, `SELECT coalesce((SELECT policy_version FROM public.consents WHERE user_id=$1
-		AND kind='health_processing' AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1)=$2,false)`, user, policy).Scan(&granted)
+	err := tx.QueryRow(ctx, `SELECT policy_version=$2 FROM public.consents WHERE user_id=$1
+		AND kind='health_processing' AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1 FOR SHARE`, user, policy).Scan(&granted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
 	return granted, err
 }
 

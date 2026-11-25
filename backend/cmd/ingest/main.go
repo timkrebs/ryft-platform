@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -229,38 +230,48 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ignored := screen(&req, time.Now())
-	sent := model.SyncCounts{Samples: len(req.Samples), Sleep: len(req.Sleep), Workouts: len(req.Workouts)}
 	ctx := r.Context()
 	user, _ := auth.UserFrom(ctx)
 	userID := user.ID
+	if hasBodyMass(req) {
+		allowed, err := h.st.HealthKitBodyMassAllowed(ctx, userID)
+		if err != nil {
+			h.unavailable(w, r, fmt.Errorf("optional HealthKit stream: %w", err))
+			return
+		}
+		if !allowed {
+			ignored.Samples.UnknownType += dropBodyMass(&req)
+		}
+	}
+	sent := model.SyncCounts{Samples: len(req.Samples), Sleep: len(req.Sleep), Workouts: len(req.Workouts)}
 	loc, err := time.LoadLocation(user.TZ)
 	if err != nil {
 		httpx.Fail(w, r, fmt.Errorf("user tz: %w", err))
 		return
 	}
-	if err := h.st.TouchDevice(ctx, userID, req.DeviceID, req.DeviceName, req.AppVersion, req.OSVersion); err != nil {
-		httpx.Fail(w, r, fmt.Errorf("device: %w", err))
+	var grant *model.Consent
+	if h.beta.Consent == config.ModeOn {
+		grant = user.Consent // the cheap gate above already validated its policy version
+	}
+	consentChanged := func(err error) bool {
+		if !errors.Is(err, store.ErrHealthKitConsentChanged) {
+			return false
+		}
+		gate.Consent(w, r, h.beta, model.User{}, "ingest")
+		return true
+	}
+	counts, sourceErr, err := h.st.WriteHealthKitRecords(ctx, userID, grant, req)
+	if consentChanged(err) {
 		return
 	}
-
-	ns, err := h.st.UpsertSamples(ctx, userID, req.Samples)
 	if err != nil {
-		h.fail(w, r, fmt.Errorf("samples: %w", err))
+		h.fail(w, r, err)
 		return
 	}
-	nsl, err := h.st.UpsertSleep(ctx, userID, req.Sleep)
-	if err != nil {
-		h.fail(w, r, fmt.Errorf("sleep: %w", err))
-		return
-	}
-	nw, err := h.st.UpsertWorkouts(ctx, userID, req.Workouts)
-	if err != nil {
-		h.fail(w, r, fmt.Errorf("workouts: %w", err))
-		return
-	}
+	ns, nsl, nw := counts.Samples, counts.Sleep, counts.Workouts
 	// User.sources only: the data is stored, so a failure here does not fail the sync.
-	if err := h.st.UpsertSources(ctx, userID, store.SourcesOf(req.Samples, req.Sleep, req.Workouts)); err != nil {
-		h.log.ErrorContext(ctx, "sources", "err", err)
+	if sourceErr != nil {
+		h.log.ErrorContext(ctx, "sources", "err", sourceErr)
 	}
 
 	// The deletions, the days for GET /v1/me/sync and the event for scoring, in one
@@ -270,27 +281,26 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 	reqDays := touchedDays(&req, loc)
 	var applied store.Applied
 	eventFailed := false
-	if len(reqDays) > 0 || len(req.Deleted) > 0 {
-		applied, err = h.st.ApplySync(ctx, userID, store.Apply{Days: reqDays, Deleted: req.Deleted, Loc: loc, Fold: foldRequest(req.Workouts),
+	if len(reqDays) > 0 || len(req.Deleted) > 0 || req.Cursor != nil {
+		applied, err = h.st.ApplyHealthKit(ctx, userID, grant, req.DeviceID, req.Cursor, store.Apply{Days: reqDays, Deleted: req.Deleted, Loc: loc, Fold: foldRequest(req.Workouts),
 			Emit: func(tx pgx.Tx, days []string) error {
 				m, err := events.Ingested(model.IngestedEvent{UserID: userID, Days: days, Reason: "sync", RequestID: requestID(r)}, "")
 				if err != nil {
 					return err
 				}
-				return outbox.Insert(ctx, tx, "ingest", m)
+				err = outbox.Insert(ctx, tx, "ingest", m)
+				eventFailed = err != nil
+				return err
 			}})
+		if consentChanged(err) {
+			return
+		}
 		if err != nil {
 			if eventFailed {
 				metrics.EventsPublished.WithLabelValues("sync", "error").Inc()
 			}
 			countIngested(&req) // the records are stored whatever happened to the deletions
 			h.unavailable(w, r, fmt.Errorf("apply: %w", err))
-			return
-		}
-	}
-	if req.Cursor != nil {
-		if err := h.st.RecordHealthKitCursor(ctx, userID, req.DeviceID, *req.Cursor); err != nil {
-			h.unavailable(w, r, fmt.Errorf("record HealthKit cursor: %w", err))
 			return
 		}
 	}
@@ -309,7 +319,7 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 		applied.Unknown.Samples, applied.Unknown.Sleep, applied.Unknown.Workouts
 	summary := map[string]any{"samples": ns, "sleep": nsl, "workouts": nw, "days": len(days), "app_version": req.AppVersion,
 		"ignored": ignored, "deleted": applied.Deleted}
-	if err := h.st.RecordSync(ctx, userID, req.DeviceID, summary); err != nil {
+	if err := h.st.RecordHealthKitSync(ctx, userID, grant, req.DeviceID, summary); err != nil && !errors.Is(err, store.ErrHealthKitConsentChanged) {
 		h.log.ErrorContext(ctx, "record sync", "err", err)
 	}
 	countIngested(&req)
@@ -326,6 +336,21 @@ const (
 	futureSlack = 24 * time.Hour
 	pastWindow  = 400 * 24 * time.Hour
 )
+
+func bodyMassSample(s model.Sample) bool { return s.Type == model.SampleBodyMass }
+
+func hasBodyMass(req model.SyncRequest) bool {
+	return (req.Cursor != nil && req.Cursor.Stream == model.SampleBodyMass) || slices.ContainsFunc(req.Samples, bodyMassSample)
+}
+
+func dropBodyMass(req *model.SyncRequest) int {
+	before := len(req.Samples)
+	req.Samples = slices.DeleteFunc(req.Samples, bodyMassSample)
+	if req.Cursor != nil && req.Cursor.Stream == model.SampleBodyMass {
+		req.Cursor = nil
+	}
+	return before - len(req.Samples)
+}
 
 // screen drops the records the server does not store and counts them: unknown
 // sample types and sleep stages (an app reading a new HealthKit type keeps

@@ -115,11 +115,63 @@ func TestNutritionScoreAPIWithAccountScopedCGM(t *testing.T) {
 	if out.NutritionScore == nil || *out.NutritionScore != 100 || out.ChrononutritionPenalty != 0 {
 		t.Fatalf("recorded bedtime: %+v", out.NutritionScores)
 	}
-	check(a, http.MethodDelete, "/glucose", nil, http.StatusNoContent, nil)
+	check(a, http.MethodPut, "/n2r/profile", model.N2RProfile{BodyMassKG: 70, ExpectedBedtime: "23:00"}, http.StatusOK, nil)
+	check(a, http.MethodGet, day, nil, http.StatusOK, &out)
+	if out.N2R == nil {
+		t.Fatal("current consent should allow opted-in contextual scoring")
+	}
+
+	response := rig.do(a, http.MethodDelete, "/v1/me/consent", nil)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("withdraw consent: %d", response.Code)
+	}
+	assertUnscored := func(result model.NutritionDaily) {
+		t.Helper()
+		if result.ScoreVersion == "" || result.NutritionScore != nil || result.QualityScore != nil || result.GlucoseScore != nil ||
+			result.Breakdown != (model.NutritionQualityBreakdown{}) || result.MealGlucoseScores == nil ||
+			len(result.MealGlucoseScores) != 0 || result.ChrononutritionPenalty != 0 || result.N2R != nil {
+			t.Fatalf("fresh score without consent: %+v", result)
+		}
+	}
+	out = model.NutritionDaily{} // n2r is omitted when unavailable.
+	check(a, http.MethodGet, day+"&chrononutrition=true", nil, http.StatusOK, &out)
+	assertUnscored(out)
+	if out.Meals != 1 || out.Items != 1 || out.Nutrients["energy_kcal"].KnownSubtotal != 900 {
+		t.Fatalf("withdrawal hid meal totals: %+v", out)
+	}
+	const summary = "/summary?from=2026-11-24&to=2026-11-25"
 	var result []model.NutritionDaily
-	check(a, http.MethodGet, "/summary?from=2026-11-24&to=2026-11-25", nil, http.StatusOK, &result)
+	check(a, http.MethodGet, summary+"&chrononutrition=true", nil, http.StatusOK, &result)
+	if len(result) != 2 || result[0].Meals != 1 || result[1].Meals != 0 {
+		t.Fatalf("withdrawal hid range totals: %+v", result)
+	}
+	for _, daily := range result {
+		assertUnscored(daily)
+	}
+	var kept model.NutritionMeal
+	check(a, http.MethodGet, "/meals/"+meal.ID.String(), nil, http.StatusOK, &kept)
+	if kept.ID != meal.ID {
+		t.Fatal("withdrawal hid the caller's meal")
+	}
+	check(a, http.MethodPut, "/glucose", upload, http.StatusForbidden, nil)
+	response = rig.do(a, http.MethodPost, "/v1/me/consent", map[string]string{"policy_version": nutritionPolicy})
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("restore consent: %d", response.Code)
+	}
+	check(a, http.MethodGet, day, nil, http.StatusOK, &out)
+	if out.GlucoseScore == nil || *out.GlucoseScore != 100 || out.N2R == nil {
+		t.Fatalf("current consent did not restore scoring from retained inputs: %+v", out)
+	}
+
+	check(a, http.MethodDelete, "/glucose", nil, http.StatusNoContent, nil)
+	check(a, http.MethodGet, summary, nil, http.StatusOK, &result)
 	if len(result) != 2 || result[0].GlucoseScore != nil || result[0].NutritionScore == nil ||
 		*result[0].NutritionScore != 100 || result[1].NutritionScore != nil || result[1].ScoreVersion == "" {
 		t.Fatalf("summary fallback: %+v", result)
 	}
+	if response := rig.do(a, http.MethodDelete, "/v1/me/consent", nil); response.Code != http.StatusNoContent {
+		t.Fatalf("withdraw consent before erasure: %d", response.Code)
+	}
+	check(a, http.MethodDelete, "/meals/"+meal.ID.String(), nil, http.StatusNoContent, nil)
+	check(a, http.MethodGet, "/meals/"+meal.ID.String(), nil, http.StatusNotFound, nil)
 }

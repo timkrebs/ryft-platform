@@ -93,6 +93,88 @@ func TestApplyDirectIsIdempotentAndReplacesTheNight(t *testing.T) {
 	}
 }
 
+func TestApplyDirectRechecksConsentAfterParsing(t *testing.T) {
+	for _, scenario := range []string{"withdrawn", "older policy", "same policy regranted"} {
+		t.Run(scenario, func(t *testing.T) {
+			st, pool := testStore(t)
+			ctx := context.Background()
+			u := newAccount(t, st)
+			connectAs(t, st, u, "p1")
+			if got := store1(t, st, item("sleep", "n1", "p1", 1, `{"v":1}`)); got != HookStored {
+				t.Fatal(got)
+			}
+			r := nightRecord(u, inboxID(t, pool, "sleep", "n1"), time.Now().Add(-10*time.Hour).UTC(), model.RecordFinal, "core")
+			r.MinPolicy = policy
+			emitted := false
+			r.Emit = func(pgx.Tx, []string) error { emitted = true; return nil }
+			user, _, err := st.GetUser(ctx, u)
+			if err != nil || user.Consent == nil || user.Consent.PolicyVersion != policy {
+				t.Fatalf("before change: consent=%v err=%v", user.Consent != nil, err)
+			}
+			if err := st.RevokeConsent(ctx, u); err != nil {
+				t.Fatal(err)
+			}
+			switch scenario {
+			case "older policy":
+				if err := st.GrantConsent(ctx, u, "2025-01-01", nil); err != nil {
+					t.Fatal(err)
+				}
+			case "same policy regranted":
+				if err := st.GrantConsent(ctx, u, policy, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got, err := st.ApplyDirect(ctx, r); err != nil || got.Outcome != DirectNoConsent || emitted || len(got.Days) != 0 {
+				t.Fatalf("apply: %+v emitted=%v err=%v", got, emitted, err)
+			}
+			if n := countRows(t, pool, `SELECT count(*) FROM sleep_segments WHERE user_id=$1 AND origin='direct'`, u); n != 0 {
+				t.Fatalf("direct rows: %d", n)
+			}
+			if n := countRows(t, pool, `SELECT count(*) FROM provider_inbox WHERE id=$1 AND state='dropped' AND error='no_consent' AND payload IS NULL`, r.InboxID); n != 1 {
+				t.Fatal("the denied inbox payload was not removed")
+			}
+		})
+	}
+}
+
+func TestApplyDirectAcceptsNewDeliveryAfterRegrant(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+	u := newAccount(t, st)
+	connectAs(t, st, u, "p1")
+	store1(t, st, item("sleep", "before", "p1", 1, `{"v":1}`))
+	now := time.Now().UTC()
+	before := nightRecord(u, inboxID(t, pool, "sleep", "before"), now.Add(-36*time.Hour), model.RecordFinal, "core")
+	before.RecordID = "before"
+	if err := st.RevokeConsent(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.GrantConsent(ctx, u, policy, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := store1(t, st, item("sleep", "after", "p1", 1, `{"v":1}`)); got != HookStored {
+		t.Fatal(got)
+	}
+	after := nightRecord(u, inboxID(t, pool, "sleep", "after"), now.Add(-12*time.Hour), model.RecordFinal, "core")
+	after.RecordID = "after"
+	after.MinPolicy = policy
+	after.Also = []DirectRecord{before}
+	var emitted []string
+	after.Emit = func(_ pgx.Tx, days []string) error { emitted = days; return nil }
+	if got, err := st.ApplyDirect(ctx, after); err != nil || got.Outcome != DirectApplied || len(got.Also) != 0 || len(emitted) == 0 {
+		t.Fatalf("fresh apply: %+v, emitted=%v, err=%v", got, emitted, err)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM sleep_segments WHERE user_id=$1 AND origin='direct' AND record_id='sleep:after'`, u); n != 1 {
+		t.Fatalf("fresh direct rows: %d", n)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM sleep_segments WHERE user_id=$1 AND origin='direct' AND record_id='sleep:before'`, u); n != 0 {
+		t.Fatalf("direct rows from the withdrawn grant: %d", n)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM provider_inbox WHERE id=$1 AND state='dropped' AND error='no_consent' AND payload IS NULL`, before.InboxID); n != 1 {
+		t.Fatal("the old batch payload was not removed")
+	}
+}
+
 // P2-3: records given as Also are stored in the same transaction under one Emit with the union of the days; a row
 // handled meanwhile is skipped, and the others' own deliveries find them processed.
 func TestApplyDirectStoresAlsoRecordsInOneEvent(t *testing.T) {
@@ -185,7 +267,7 @@ func TestApplyDeregistrationRevokesAndDeletes(t *testing.T) {
 	store1(t, st, item("deregistration", "d1", "p1", 1, `{"kind":"deregistration"}`))
 	id := inboxID(t, pool, "deregistration", "d1")
 	var days []string
-	res, err := st.ApplyDeregistration(ctx, id, 1, u, testProvider, func(tx pgx.Tx, d []string) error { days = d; return nil })
+	res, err := st.ApplyDeregistration(ctx, id, 1, u, testProvider, policy, func(tx pgx.Tx, d []string) error { days = d; return nil })
 	if err != nil || res.Outcome != DirectApplied || len(days) == 0 {
 		t.Fatalf("%+v %v %v", res, err, days)
 	}
@@ -203,7 +285,7 @@ func TestApplyDeregistrationRevokesAndDeletes(t *testing.T) {
 	if n := countRows(t, pool, `SELECT count(*) FROM connection_tokens WHERE user_id=$1`, u); n != 1 {
 		t.Fatal("ingest touched the tokens")
 	}
-	if again, err := st.ApplyDeregistration(ctx, id, 1, u, testProvider, nil); err != nil || again.Outcome != DirectNotPending {
+	if again, err := st.ApplyDeregistration(ctx, id, 1, u, testProvider, policy, nil); err != nil || again.Outcome != DirectNotPending {
 		t.Fatalf("repeat %+v %v", again, err)
 	}
 	// No record of a revoked link is applied afterwards.
@@ -227,7 +309,7 @@ func TestApplyPermissions(t *testing.T) {
 	}
 	apply := func(rec string, missing bool) {
 		store1(t, st, item("permissions", rec, "p1", 1, `{"r":"`+rec+`"}`))
-		if o, err := st.ApplyPermissions(ctx, inboxID(t, pool, "permissions", rec), 1, u, testProvider, missing); err != nil || o != DirectApplied {
+		if o, err := st.ApplyPermissions(ctx, inboxID(t, pool, "permissions", rec), 1, u, testProvider, policy, missing); err != nil || o != DirectApplied {
 			t.Fatalf("%s %v", o, err)
 		}
 	}
@@ -291,7 +373,7 @@ func TestEveryEndOfAConnectionDeletesTheSameDirectData(t *testing.T) {
 		connectAs(t, st, u, "p1")
 		pushNight(t, st, pool, u, "p1", "n", night)
 		store1(t, st, item("deregistration", "d", "p1", 1, `{}`))
-		if _, err := st.ApplyDeregistration(context.Background(), inboxID(t, pool, "deregistration", "d"), 1, u, testProvider, nil); err != nil {
+		if _, err := st.ApplyDeregistration(context.Background(), inboxID(t, pool, "deregistration", "d"), 1, u, testProvider, policy, nil); err != nil {
 			t.Fatal(err)
 		}
 		left(t, pool, u)

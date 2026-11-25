@@ -940,9 +940,9 @@ Google measures itself (Cloud Run, Pub/Sub), log-based metrics counted from line
 write, five uptime checks, the dashboard "RYFT · Overview" and six alert policies, all in
 `infra/gcp` (`monitoring.tf`, `alerts.tf`). Step 11 built five, with two metrics; the sixth, feedback
 and admin access on a third metric, is your decision of 2026-11-19 (D244) and its own apply, step
-14a.9. Six is the cap, a test (`six_conditions_at_most`). The policies notify two channels you made
-by hand in the console: the email `ryft-timkrebs` and the Google Cloud app's. What each policy means and its
-first look: **When an alert fires**, below; the whole picture: OBSERVABILITY → Cloud Monitoring.
+14a.9. Six is the cap, a test (`six_conditions_at_most`). The first five use the email `ryft-timkrebs`
+and the Google Cloud app channel created in the console. Notices use the email only (D281). See
+**When an alert fires** for each policy and OBSERVABILITY → Cloud Monitoring for the complete setup.
 The Grafana steps that stood here (the reader key, the data source, the OTLP push, the synthetics,
 the app rules) never ran, and are gone with D236.
 
@@ -1642,10 +1642,10 @@ compose stack and `make smoke-supabase` against the copy step 3 forbids.
     (of three then; seven since D257 added the connection notices, **Direct connections**). No id becomes
     a label, and no category either.
   - The policy **RYFT · Notices: feedback, admin access, connections** (named RYFT · Feedback and admin
-    access until D257 added the connection notices; `alerts.tf`, warning, both channels) fires on any
+    access until D257 added the connection notices; `alerts.tf`, warning, email only since D281) fires on any
     such line in the last 5 minutes, one incident per kind, and notifies the opening only. It closes by
     itself about 5 minutes after the last line, so the next feedback opens a new incident and notifies
-    again. Its mail and push name the policy and the kind (`feedback received`), never the report, its
+    again. Its email names the policy and the kind (`feedback received`), never the report, its
     category or the account.
   - The price (D244 → The price; Google's pricing page through search snippets, *(search)*): $0 until
     2027-09-01, then about $0.35–0.45 a month. D239's proposal's $1.50 was D236's reading A, which the
@@ -1699,7 +1699,7 @@ token; it refreshes once). The key's own use and `admin second factor required` 
    Read in the plan: the metric's `filter` names `resource.labels.service_name="api"`, the stdout log,
    the three messages and `NOT jsonPayload.reason="missing" AND NOT jsonPayload.reason="expired"`; its
    `label_extractors` is `kind = "EXTRACT(jsonPayload.message)"`. The policy's `notification_channels`
-   is the email channel's name, then `<the app channel's id>` (D237); its `condition_threshold` is
+   is the single existing email channel's name (D281). Its `condition_threshold` is
    `ALIGN_SUM` over `300s`, `REDUCE_SUM` by `metric.label.kind`, `COMPARISON_GT` 0, `duration` `60s`,
    `evaluation_missing_data` `EVALUATION_MISSING_DATA_INACTIVE`; `alert_strategy` is `auto_close`
    `1800s` and `notification_prompts` `["OPENED"]`. No change to the five policies, the uptime checks,
@@ -1757,18 +1757,15 @@ token; it refreshes once). The key's own use and `admin second factor required` 
    One line of each, the reject's reason `not_a_token`. Lines with reason `missing` or `expired` may be
    there too (crawlers, your page): they aren't counted.
 4. **Expected:** per kind, within about 5 minutes of its line (the log-based metric's lag of a minute or
-   two, the 60 s hold, the evaluation), one mail to `ryft-timkrebs` and one push in the Google Cloud app,
-   each naming **RYFT · Notices: feedback, admin access, connections** and the kind, the subject `RYFT · <kind>`: three of
-   each. Monitoring → Alerting → Incidents lists three, one per kind. Each closes by itself about 5
-   minutes after its line, with no closing notice (only the opening is notified). No mail or push names
-   an account, the report's text or a reason. Whether Google renders `${metric.label.kind}` in the
-   subject isn't verified (D244): if a subject shows the variable as written, or nothing, the incident's
-   page names the kind; note it in STATUS.md, it is no stop.
+   two, the 60 s hold, the evaluation), one email to `ryft-timkrebs`. The three emails identify
+   only the policy **RYFT · Notices: feedback, admin access, connections** and the kind. Monitoring →
+   Alerting → Incidents lists three, one per kind. Each closes by itself about 5 minutes after its
+   line and only the opening is notified. If the subject shows `${metric.label.kind}` as written or
+   is empty, use the incident page to identify the kind and record the result in STATUS.md.
 5. **Clean up:** in the admin tab, Feedback → the test report ("runbook 14a.9: …") → **Resolve**, then
-   **Sign out**. Note in STATUS.md the date and, per kind, the minutes from the line to the mail and to
-   the push.
+   **Sign out**. Note in STATUS.md the date and, per kind, the minutes from the line to the email.
 
-**Stop if** a kind's mail or push hasn't come 15 minutes after its line. Look in this order:
+**Stop if** a kind's email hasn't come 15 minutes after its line. Look in this order:
 - **Its line** (3's `gcloud logging read`). No `admin signed in`: the serving api lacks it (the merge's
   `deploy.yml` run), or the code was entered more than 10 minutes before the page's first call (sign in
   again, in a new tab). No line of any kind: a `LOG_LEVEL` above `info` in `deploy/run`.
@@ -1776,7 +1773,7 @@ token; it refreshes once). The key's own use and `admin second factor required` 
   point: the metric's filter doesn't match the line. Report it, with the line's keys (not their values).
 - **Its incident:** Monitoring → Alerting → **RYFT · Notices: feedback, admin access, connections**, the condition's chart.
   A point but no incident: report it.
-- **Its delivery:** an incident but no mail or push: 11.4's stop rule (the channel).
+- **Its delivery:** if the incident opened and the email is missing, verify the email channel attachment and delivery.
 
 ### 15. Testers
 
@@ -3213,9 +3210,9 @@ is gone. The tick's clean deletes it 7 days after it was published.
 
 ### When an alert fires
 
-Cloud Monitoring's six policies (`infra/gcp/alerts.tf`, D236, D244) reach the email `ryft-timkrebs`
-and the Google Cloud app. Each notification links its incident (Monitoring → Alerting →
-Incidents), which names the series that crossed: the check, the service, the subscription or the
+Cloud Monitoring's first five policies (`infra/gcp/alerts.tf`, D236, D244) reach the email `ryft-timkrebs`
+and the Google Cloud app. The sixth policy, Notices, sends to the email only (D281). Each notification
+links its incident (Monitoring → Alerting → Incidents), which names the check, service, subscription or
 kind. The dashboard **RYFT · Overview** has the context of the first five; **RYFT · Connections**
 (D257) that of the inbox's backlog and dead letters and of the connection notices. An incident closes by
 itself once its query returns nothing, or 30 minutes after its data stops; the sixth's when its
@@ -4278,20 +4275,29 @@ never a title, a value, an id list or the source app), then scoring's lines for 
 ## Training-to-Nutrition partner pilot
 
 The client starts with an adult account on the `nutrition.enabled` allow-list and current consent.
-Deploy 0047 and the new API and ingest binaries through the normal main deployment before collecting
-coaching evidence. The API tick processes the inbox and captures model forecasts without a new service.
+The API tick processes the coaching inbox and captures model forecasts without a new service.
 
-The defaults leave both native callbacks disabled. A partner test environment needs
-`COACHING_GARMIN_WEBHOOK_SECRET` or `COACHING_SUUNTO_WEBHOOK_SECRET` for HMAC-SHA256 over the original
-request bytes, plus `COACHING_GARMIN_FETCH_URL` and/or `COACHING_SUUNTO_FETCH_URL` and
-`COACHING_PARTNER_FETCH_TOKEN` for an approved HTTPS connector. Inject the secrets through pinned
-Secret Manager versions. The connector authenticates to the provider for the linked account and
-accepts `provider_user` and `workout_id` query parameters. It returns the FIT artifact as
-`application/octet-stream`; Garmin Ping can also return its JSON envelope. An approved partner relay
-can authenticate Garmin's delivery and sign the original body for the API. The operator provisions
-each verified provider-account link in `nutrition.wearable_links` after consent and onboarding.
-Keep the enrollment dark until the signed delivery and provider artifact fetch pass in a partner test
-account. The provider-facing credential broker and iOS screens have their own release paths.
+The coaching relay routes on **api** are `POST /v1/webhooks/garmin` and `POST /v1/webhooks/suunto`.
+Both are disabled by default. This build rejects coaching relay keys and fetch settings at Cloud Run
+startup. Use isolated local test configuration and synthetic records. Each local relay uses its own
+`COACHING_GARMIN_WEBHOOK_SECRET`
+or `COACHING_SUUNTO_WEBHOOK_SECRET` to verify HMAC-SHA256 over the original request bytes. An
+artifact fetch uses the provider's `COACHING_GARMIN_FETCH_URL` or `COACHING_SUUNTO_FETCH_URL` and
+`COACHING_PARTNER_FETCH_TOKEN` with a test HTTPS bridge. The bridge returns FIT as
+`application/octet-stream` and can return the Garmin Ping JSON envelope. Test one pre-linked account
+with current consent and verify that unknown accounts and revoked consent create no health rows.
+
+Disable a local relay by removing that provider's key and restarting **api**. Verify that the route
+returns `404` and the worker leaves that provider's pending jobs unclaimed while retention cleanup
+runs. Each relay has one active key. Rehearse rotation with a synthetic fixture, verifying that the
+previous key fails, the replacement works and the other provider is unaffected. Production activation
+and rotation require RYFT-02 or RYFT-03 approval for that provider, the authenticated connector and
+an approved cutover procedure with pinned Secret Manager versions and revision rollback.
+
+The relay uses the PostgreSQL `nutrition.wearable_inbox` table. The native connection dashboard and
+Pub/Sub dead-letter alerts cover the direct connection path below. Before a hosted relay pilot, verify
+provider-scoped rejection, oldest pending age, exhausted jobs and actual alert delivery. Keep account
+identifiers, signatures, URLs with query parameters and payloads out of metric labels and alerts.
 
 ## Direct connections
 
@@ -4533,6 +4539,13 @@ and tell testers that new data from it waits. Do **not** take the provider out o
 and confirms `404` as well. To stop new connections only (the existing ones keep flowing), turn the
 flag off for everyone (**Feature flags**, the kill switch, on `connect.garmin`); it never gates a
 disconnect.
+
+For a security emergency after a direct connector is approved, remove that provider from
+`CONNECT_PROVIDERS` and use the existing **api** and **ingest** deployment path. Verify that active
+revisions have the updated registry and answer `404` for the provider's signed route. The consumer
+marks pending rows for an unserved provider `provider_off`, so record recovery decisions before
+reenabling it. Rehearse this with synthetic deliveries before enabling the provider. Rotation uses
+the direct connector's pinned secrets and provider-specific procedure below.
 
 ### The hook is busy or slow (`busy`, `timeout`)
 

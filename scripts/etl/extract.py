@@ -96,6 +96,37 @@ def usda_rows(db: duckdb.DuckDBPyConnection, files: dict[str, Path],
         params.append(str(files["nutrient.csv"]))
     params.append(list(USDA_NUTRIENTS))
 
+    portion_cte, portion_join, portion_expr = "", "", "NULL AS portions"
+    if "food_portion.csv" in files:
+        portion_file = files["food_portion.csv"]
+        columns = csv_columns(db, portion_file)
+        if {"fdc_id", "gram_weight"} <= columns:
+            desc = "nullif(trim(p.portion_description),'')" if "portion_description" in columns else "NULL"
+            amount = "nullif(trim(p.amount),'')" if "amount" in columns else "NULL"
+            modifier = "nullif(trim(p.modifier),'')" if "modifier" in columns else "NULL"
+            seq = "try_cast(p.seq_num AS INTEGER)" if "seq_num" in columns else "NULL"
+            label_join, label = "", "NULL"
+            params.append(str(portion_file))
+            if "measure_unit_id" in columns and "measure_unit.csv" in files:
+                measure = files["measure_unit.csv"]
+                if {"id", "name"} <= csv_columns(db, measure):
+                    label_join = f"LEFT JOIN {CSV} m ON m.id=p.measure_unit_id"
+                    label = "nullif(trim(m.name),'')"
+                    params.append(str(measure))
+            portion_cte = f""", measured AS (
+                SELECT p.fdc_id, {desc} AS description, {amount} AS amount, {modifier} AS modifier,
+                       {label} AS measure, try_cast(p.gram_weight AS DOUBLE) AS grams,
+                       row_number() OVER (PARTITION BY p.fdc_id ORDER BY {seq} NULLS LAST,
+                           {desc}, {amount}, {modifier}, {label}, p.gram_weight) AS priority
+                FROM {CSV} p JOIN selected f USING(fdc_id) {label_join}
+                WHERE try_cast(p.gram_weight AS DOUBLE) > 0 AND try_cast(p.gram_weight AS DOUBLE) <= 100000
+            ), measures AS (
+                SELECT fdc_id, list(struct_pack(description := description, amount := amount, modifier := modifier,
+                       measure := measure, grams := grams) ORDER BY priority) AS portions
+                FROM measured WHERE priority <= 50 GROUP BY fdc_id
+            )"""
+            portion_join = "LEFT JOIN measures pr USING(fdc_id)"
+            portion_expr = "pr.portions"
     cat_join, cat_expr = "", "NULL AS category"
     if has_categories:
         cat_join = f"LEFT JOIN {CSV} c ON c.id = f.food_category_id"
@@ -112,8 +143,8 @@ def usda_rows(db: duckdb.DuckDBPyConnection, files: dict[str, Path],
             FROM {CSV} n JOIN selected f USING(fdc_id) {unit_join}
             WHERE n.nutrient_id IN (SELECT unnest(?::VARCHAR[]))
             GROUP BY n.fdc_id
-        )
-        SELECT f.fdc_id, f.description, f.publication_date, {cat_expr}, l.nutrients
-        FROM selected f LEFT JOIN labels l USING(fdc_id) {cat_join}
+        ){portion_cte}
+        SELECT f.fdc_id, f.description, f.publication_date, {cat_expr}, l.nutrients, {portion_expr}
+        FROM selected f LEFT JOIN labels l USING(fdc_id) {portion_join} {cat_join}
     """
     yield from batches(db.execute(sql, params), size)

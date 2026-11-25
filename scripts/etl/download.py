@@ -25,7 +25,7 @@ CSV_LIMIT = 192 * 1024**2
 RELEASE_PATTERN = re.compile(
     r"/fdc-datasets/FoodData_Central_(foundation_food|sr_legacy_food)_csv_(\d{4}-\d{2}(?:-\d{2})?)\.zip$"
 )
-USDA_TABLES = {"food.csv", "food_nutrient.csv", "food_category.csv", "nutrient.csv"}
+USDA_TABLES = {"food.csv", "food_nutrient.csv", "food_category.csv", "nutrient.csv", "food_portion.csv", "measure_unit.csv"}
 REQUIRED_USDA_TABLES = {"food.csv", "food_nutrient.csv"}
 
 

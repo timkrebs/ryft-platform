@@ -23,7 +23,7 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 | `site.tf`, `site.auto.tfvars` | the site's records on Firebase Hosting (C1, D233): the apex A set and its `hosting-site=` TXT (joins the apex TXT set), and www's A set and TXT or its CNAME, from the values the Firebase wizard shows. Empty adds nothing |
 | `logging.tf` | the bucket `ryft-logs` (europe-west1, 14 days) and the sink into it; always the exclusion `connect-callback` (every entry whose absolute `httpRequest.requestUrl` is `http(s)://<host>/v1/connect/<provider>/callback`, with a query or none, anchored: the callback's OAuth state and code, D257, review P2-1); from `edge = "built"` on two more: the load balancer's requests but Cloud Armor's denials and preview matches, and api's and ingest's Cloud Run request log below 5xx (D242) |
 | `monitoring.tf` | Cloud Monitoring, RYFT's only observability (D236): the log-based metrics `ryft_ticks` (by `result`), `ryft_errors` and `ryft_notices` (D244: api's `feedback received`, `admin signed in` and `admin auth rejected` but for reasons `missing` and `expired`, by `kind`), the uptime checks (the site's `/`, `/privacy` and AASA always; api's and ingest's `/health/ready` while they're public; every 5 minutes from 3 locations), the dashboard "RYFT · Overview". All free at RYFT's volume, so ungated. From `edge = "built"` on: `ryft_edge_denials` and `ryft_edge_preview_matches` (by `priority`) and four edge tiles |
-| `alerts.tf` | the six alert policies, one condition each (uptime failing, 5xx over 2 %, tick missing, dead letters held, event backlog over 15 minutes, and since D244 feedback and admin access), to both notification channels, the email first, then the app's; only once `alert_app_channel` is set (step 11), the tick's only while the tick runs; the plan fails if that is the email channel (D237). Six is the cap, a test (`six_conditions_at_most`) |
+| `alerts.tf` | the six alert policies, one condition each. Uptime, 5xx, missing tick, dead letters, and backlog use email then the Google Cloud app. Notices uses the existing email only (D281). The `alert_app_channel` gate still controls the policies and tick alerts require a running tick. The plan fails if the two channels resolve to the same channel (D237). Six is the cap, a test (`six_conditions_at_most`) |
 | `checks.tf` | warnings for what fails silently: the `_Default` log sink still on, a mapping not Ready, a disabled email channel (the app's has no data source, D237: step 11.4 tests it) |
 
 ## What it does not own (design §9)
@@ -66,6 +66,8 @@ terraform -chdir=infra/gcp show -json notices-recovery.tfplan | jq -e '
 
 Review the rest of the plan before applying the fresh file. When recovering a plan from the Connections stack, generate its replacement with that stack’s resource definitions and the D269 fix so the full plan reflects the resources already applied. Keep the existing metric and dependent alert policies in place throughout the recovery.
 
+For the D281 email-only update on an aligned workspace, the reviewed plan should update `google_monitoring_alert_policy.notices[0]` in place and attach just the existing email channel. Check the notification channel list, the metric and the other five policies before applying the saved plan.
+
 ## Nutrition on Cloud Run
 
 The existing API serves the scores and guidance and its 15-minute tick runs the morning calibration. The separate Cloud Run Job imports the public food catalog once a month. It runs one task with 2 vCPU, 4 GiB, one retry and an 1800-second task timeout. The scheduler uses OAuth with a job-scoped invoker. The job uses the existing PostgreSQL database and registry. DuckDB reads OFF with HTTP ranges and uses ephemeral storage. The runtime starts only for executions. [Cloud Run scheduled jobs](https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule) · [Cloud Run pricing](https://cloud.google.com/run/pricing)
@@ -98,7 +100,7 @@ Merge the Nutrition backend and infrastructure through the normal review and CI 
    GRANT ryft_nutrition_etl TO nutrition_etl_login;
    ```
 
-   Use the login's TLS PostgreSQL DSN for the same database the API reads. On Supabase use the session pooler connection and append the project ref to the login name as Supavisor expects. The role also needs database `TEMP` access for COPY staging. Store the DSN as a new secret version. The command prints the version identifier.
+   For Supabase use the session pooler host and project from `deploy/run/config.env`, port `5432`, database `postgres` and the dedicated login with its `.<project-ref>` suffix. Include `sslmode=verify-full`. The image uses the same Supabase CA as the Platform API. Omit `sslrootcert` or set it to `/etc/ryft/supabase-ca.crt` inside the image. The role also needs database `TEMP` access for COPY staging. If the current secret version passes preflight, reuse it. Otherwise add a new version. The command prints only the version identifier. [Supabase SSL enforcement](https://supabase.com/docs/guides/platform/ssl-enforcement) · [PostgreSQL TLS verification](https://www.postgresql.org/docs/18/libpq-ssl.html)
 
    ```bash
    printf 'Nutrition ETL PostgreSQL DSN: '
@@ -108,6 +110,42 @@ Merge the Nutrition backend and infrastructure through the normal review and CI 
      --project=ryftlab-prod --data-file=- --format='value(name)'
    unset nutrition_dsn
    ```
+
+   Before updating the scheduled job, have the authorized database operator check the selected secret and the candidate image on a trusted workstation with access to the pooler. Set `RYFT_ETL_IMAGE` to the full digest-pinned image reference from GitHub Actions and `RYFT_ETL_DB_VERSION` to the numeric version you intend to deploy. Run this with shell tracing disabled. Only pass/fail is printed. The candidate opens a verified TLS connection and checks privileges without changing database rows.
+
+   ```bash
+   (
+     set +x
+     set -euo pipefail
+     : "${RYFT_ETL_IMAGE:?Set the candidate image by digest}" "${RYFT_ETL_DB_VERSION:?Set the numeric secret version}"
+     [[ $RYFT_ETL_IMAGE =~ ^europe-west1-docker\.pkg\.dev/ryftlab-prod/ryft/nutrition-etl-job@sha256:[a-f0-9]{64}$ ]]
+     [[ $RYFT_ETL_DB_VERSION =~ ^[1-9][0-9]*$ ]]
+     gcloud secrets versions access "$RYFT_ETL_DB_VERSION" --secret=nutrition-etl-db --project=ryftlab-prod |
+       docker run --rm -i --entrypoint python --env CLOUD_RUN_JOB=nutrition-etl-job "$RYFT_ETL_IMAGE" -c '
+   import os
+   import sys
+   import psycopg
+   from import_pg import connect
+
+   os.environ["DATABASE_URL"] = sys.stdin.read()
+   try:
+       with connect() as conn:
+           ok = conn.execute("""
+               SELECT pg_has_role(current_user, %s::name, %s)
+                 AND has_database_privilege(current_user, current_database(), %s)
+                 AND has_table_privilege(current_user, %s, %s)
+                 AND NOT has_table_privilege(current_user, %s, %s)
+           """, ("ryft_nutrition_etl", "MEMBER", "TEMP", "nutrition.foods", "INSERT", "nutrition.meals", "SELECT")).fetchone()[0]
+   except (ValueError, psycopg.Error):
+       sys.exit("Nutrition ETL database preflight failed.")
+   if not ok:
+       sys.exit("Nutrition ETL database role preflight failed.")
+   print("Nutrition ETL database preflight passed.")
+   '
+   )
+   ```
+
+   Keep the current job pin if this check fails. Correct the dedicated login DSN or confirm the reviewed CA against the Supabase Dashboard and run preflight again. Follow the bounded rollout below using the same image digest and secret version that passed.
 
 4. Set `nutrition_etl` in HCP with the actual image digest and numeric secret version. Start with a bounded import and paused schedule.
 

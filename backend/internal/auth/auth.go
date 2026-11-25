@@ -23,10 +23,6 @@ type Principal struct {
 	Email    string // empty when the token has none
 	Provider string // sign-in provider, e.g. "apple"; "apikey" in apikey mode
 	Name     string // user_metadata.full_name (the app stores the Apple name there)
-	// AppleSubject is the Apple user ID when the account signed in with Apple
-	// (Supabase copies the identity into user_metadata); "" otherwise.
-	AppleSubject string
-
 	// What the token says about operator access. It never grants anything on its own: cmd/api's
 	// admin check also needs an admin_accounts row and a recent second factor (D153). All three
 	// are read leniently and stay empty when a claim has an unexpected shape (claims.go).

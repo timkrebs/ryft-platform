@@ -1,4 +1,5 @@
-# Cloud Monitoring's alert policies (D236, D244): six conditions, one policy each, all to both channels.
+# Cloud Monitoring's alert policies (D236, D244): six conditions, one policy each.
+# The first five use both channels. The notices policy uses email only (D281).
 # The cap is six (tests/monitoring.tftest.hcl): every condition has a monthly price (D236 -> Cost, D244
 # -> The price), and a seventh needs a decision, not a line here. The sixth was the user's (2026-11-19);
 # the direct connections' notices joined it rather than adding a seventh (D257).
@@ -24,9 +25,8 @@ data "google_monitoring_notification_channel" "email" {
   display_name = "ryft-timkrebs"
 
   lifecycle {
-    # The app channel must be another channel than this one, or every alert goes to the email twice
-    # and to no app (D237). By the channel number, the name's last segment: projects/<id> and
-    # projects/<number> are the same project, so the whole names may differ for the same channel.
+    # The two-channel policies require a distinct app channel (D237). Compare the name's last
+    # segment because projects/<id> and projects/<number> can name the same project.
     postcondition {
       condition     = reverse(split("/", self.name))[0] != reverse(split("/", var.alert_app_channel))[0]
       error_message = "alert_app_channel is the email channel ryft-timkrebs (${self.name}). It must be the Google Cloud app's channel: the other entry in the notificationChannels of the policy you attached the device to (docs/OPERATIONS.md -> GCP, step 11.1)."
@@ -35,7 +35,7 @@ data "google_monitoring_notification_channel" "email" {
 }
 
 locals {
-  # Email first, then the app, in every policy.
+  # Email first, then the app, in the five operational policies.
   alert_channels = concat(
     data.google_monitoring_notification_channel.email[*].name,
     local.alerting ? [var.alert_app_channel] : [],
@@ -214,7 +214,7 @@ resource "google_monitoring_alert_policy" "notices" {
   display_name          = "RYFT · Notices: feedback, admin access, connections"
   combiner              = "OR"
   severity              = "WARNING"
-  notification_channels = local.alert_channels
+  notification_channels = [data.google_monitoring_notification_channel.email[0].name]
 
   conditions {
     display_name = "A feedback, an admin sign-in, a refused admin bearer or a connection notice, by kind"

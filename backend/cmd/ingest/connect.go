@@ -37,12 +37,12 @@ type connectStore interface {
 	StoreInbox(ctx context.Context, provider, policyVersion string, items []store.HookItem, emit func(pgx.Tx, model.InboxReceivedEvent) error) ([]store.HookOutcome, error)
 	InboxRow(ctx context.Context, id int64) (store.InboxItem, error)
 	PendingDirect(ctx context.Context, user uuid.UUID, provider string, except int64, limit int) ([]store.InboxItem, error)
-	BumpInboxAttempt(ctx context.Context, id int64) (int, error)
-	FinishInbox(ctx context.Context, id int64, state, code string) error
+	BumpInboxAttempt(ctx context.Context, id int64, revision int) (int, error)
+	FinishInbox(ctx context.Context, id int64, revision int, state, code string) error
 	GetUser(ctx context.Context, id uuid.UUID) (model.User, *time.Location, error)
 	ApplyDirect(ctx context.Context, r store.DirectRecord) (store.DirectResult, error)
-	ApplyDeregistration(ctx context.Context, inboxID int64, revision int, user uuid.UUID, provider string, emit func(tx pgx.Tx, days []string) error) (store.DirectResult, error)
-	ApplyPermissions(ctx context.Context, inboxID int64, revision int, user uuid.UUID, provider string, missing bool) (store.DirectOutcome, error)
+	ApplyDeregistration(ctx context.Context, inboxID int64, revision int, user uuid.UUID, provider, minPolicy string, emit func(tx pgx.Tx, days []string) error) (store.DirectResult, error)
+	ApplyPermissions(ctx context.Context, inboxID int64, revision int, user uuid.UUID, provider, minPolicy string, missing bool) (store.DirectOutcome, error)
 	RepublishInbox(ctx context.Context, limit int, emit func(tx pgx.Tx, ev model.InboxReceivedEvent) error) (int, error)
 	ExpireInbox(ctx context.Context, limit int) (int64, error)
 	PurgeInbox(ctx context.Context, limit int) (map[string]int64, error)
@@ -182,7 +182,7 @@ func (c *connectHook) push(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := ps.SplitPush(body)
-	if err != nil {
+	if err != nil || len(items) > connect.MaxItems {
 		outcome = "bad_body"
 		httpx.WriteError(w, http.StatusBadRequest, "bad body")
 		return
@@ -282,7 +282,10 @@ func (c *connectHook) consume(ctx context.Context, ev model.InboxReceivedEvent) 
 	if err != nil {
 		return c.retry(ctx, ev.Provider, ev.Kind, err)
 	}
-	n, err := c.st.BumpInboxAttempt(ctx, row.ID)
+	if ev.Revision != row.Revision || ev.UserID != row.UserID || ev.Provider != row.Provider || ev.Kind != row.Kind {
+		return nil
+	}
+	n, err := c.st.BumpInboxAttempt(ctx, row.ID, row.Revision)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil
 	}
@@ -314,7 +317,7 @@ func (c *connectHook) consume(ctx context.Context, ev model.InboxReceivedEvent) 
 	}
 	emit := func(reason string) func(tx pgx.Tx, days []string) error {
 		return func(tx pgx.Tx, days []string) error {
-			m, err := events.Ingested(model.IngestedEvent{UserID: row.UserID, Days: days, Reason: reason}, fmt.Sprintf("inbox:%d:%d", row.ID, ev.Revision))
+			m, err := events.Ingested(model.IngestedEvent{UserID: row.UserID, Days: days, Reason: reason}, fmt.Sprintf("inbox:%d:%d", row.ID, row.Revision))
 			if err != nil {
 				return err
 			}
@@ -355,14 +358,14 @@ func (c *connectHook) consume(ctx context.Context, ev model.InboxReceivedEvent) 
 		}
 		return c.done(ctx, row, res.Outcome, res.Days)
 	case connect.KindDeregistration:
-		res, err := c.st.ApplyDeregistration(ctx, row.ID, row.Revision, row.UserID, row.Provider, emit(model.ReasonDisconnect))
+		res, err := c.st.ApplyDeregistration(ctx, row.ID, row.Revision, row.UserID, row.Provider, c.minPolicy, emit(model.ReasonDisconnect))
 		if err != nil {
 			return c.retry(ctx, row.Provider, row.Kind, err)
 		}
 		return c.done(ctx, row, res.Outcome, res.Days)
 	case connect.KindPermissions:
 		missing := slices.ContainsFunc(ps.Required(), func(p string) bool { return !slices.Contains(rec.Permissions, p) })
-		o, err := c.st.ApplyPermissions(ctx, row.ID, row.Revision, row.UserID, row.Provider, missing)
+		o, err := c.st.ApplyPermissions(ctx, row.ID, row.Revision, row.UserID, row.Provider, c.minPolicy, missing)
 		if err != nil {
 			return c.retry(ctx, row.Provider, row.Kind, err)
 		}
@@ -408,7 +411,7 @@ func (c *connectHook) consented(u model.User) bool {
 // (a record that cannot be one: failed). The rows' origin, vendor and source are the store's to stamp.
 func (c *connectHook) screenRecord(row store.InboxItem, rec connect.Records, loc *time.Location) (store.DirectRecord, string) {
 	now := c.now()
-	r := store.DirectRecord{InboxID: row.ID, Revision: row.Revision, UserID: row.UserID, Provider: row.Provider, Kind: row.Kind, RecordID: row.RecordID, Loc: loc,
+	r := store.DirectRecord{InboxID: row.ID, Revision: row.Revision, UserID: row.UserID, Provider: row.Provider, Kind: row.Kind, RecordID: row.RecordID, MinPolicy: c.minPolicy, Loc: loc,
 		NightState: rec.NightState}
 	outside := func(start, end time.Time) bool {
 		return start.After(now.Add(futureSlackDirect)) || end.Before(now.Add(-pastWindowDirect))
@@ -454,7 +457,7 @@ func (c *connectHook) screenRecord(row store.InboxItem, rec connect.Records, loc
 	return r, ""
 }
 
-// done records the outcome of an apply: processed (and flushes the event), or the link ended meanwhile.
+// done records the outcome of an apply and flushes the event after successful processing.
 func (c *connectHook) done(ctx context.Context, row store.InboxItem, o store.DirectOutcome, days []string) error {
 	switch o {
 	case store.DirectApplied:
@@ -463,16 +466,20 @@ func (c *connectHook) done(ctx context.Context, row store.InboxItem, o store.Dir
 		}
 		metrics.ConnectInboxProcessed.WithLabelValues(row.Provider, row.Kind, "processed").Inc()
 		c.log.InfoContext(ctx, "connect inbox", "provider", row.Provider, "kind", row.Kind, "outcome", "processed", "days", len(days))
-	case store.DirectNoConnection:
-		metrics.ConnectInboxProcessed.WithLabelValues(row.Provider, row.Kind, "no_connection").Inc()
-		c.log.InfoContext(ctx, "connect inbox", "provider", row.Provider, "kind", row.Kind, "outcome", "no_connection")
+	case store.DirectNoConnection, store.DirectNoConsent:
+		metrics.ConnectInboxProcessed.WithLabelValues(row.Provider, row.Kind, string(o)).Inc()
+		c.log.InfoContext(ctx, "connect inbox", "provider", row.Provider, "kind", row.Kind, "outcome", string(o))
 	}
 	return nil // not pending any more: a repeat, nothing to do
 }
 
 // finish ends a row without applying it: dropped (its payload goes at once) or failed (kept 7 days), with its code.
 func (c *connectHook) finish(ctx context.Context, row store.InboxItem, state, code string) error {
-	if err := c.st.FinishInbox(ctx, row.ID, state, code); err != nil {
+	err := c.st.FinishInbox(ctx, row.ID, row.Revision, state, code)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
 		return c.retry(ctx, row.Provider, row.Kind, err)
 	}
 	outcome := code

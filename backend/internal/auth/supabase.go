@@ -160,10 +160,8 @@ type supabaseClaims struct {
 		Role json.RawMessage `json:"role"`
 	} `json:"app_metadata"`
 	UserMetadata struct {
-		FullName   string `json:"full_name"`
-		Name       string `json:"name"`
-		Issuer     string `json:"iss"`         // of the identity, e.g. https://appleid.apple.com
-		ProviderID string `json:"provider_id"` // that identity's user ID
+		FullName string `json:"full_name"`
+		Name     string `json:"name"`
 	} `json:"user_metadata"`
 }
 
@@ -196,19 +194,14 @@ func (s *Supabase) Verify(ctx context.Context, token string) (Principal, error) 
 	if name == "" {
 		name = c.UserMetadata.Name
 	}
-	var appleSub string
-	if c.UserMetadata.Issuer == "https://appleid.apple.com" {
-		appleSub = clip(c.UserMetadata.ProviderID, 256)
-	}
 	return Principal{
-		UserID:       id,
-		Email:        clip(c.Email, 320),
-		Provider:     clip(c.AppMetadata.Provider, 64),
-		Name:         clip(strings.TrimSpace(name), 200),
-		AppleSubject: appleSub,
-		AppRole:      parseAppRole(c.AppMetadata.Role),
-		AAL:          parseAAL(c.AAL),
-		MFAAt:        parseTOTPAt(c.AMR),
+		UserID:   id,
+		Email:    clip(c.Email, 320),
+		Provider: clip(c.AppMetadata.Provider, 64),
+		Name:     clip(strings.TrimSpace(name), 200),
+		AppRole:  parseAppRole(c.AppMetadata.Role),
+		AAL:      parseAAL(c.AAL),
+		MFAAt:    parseTOTPAt(c.AMR),
 	}, nil
 }
 

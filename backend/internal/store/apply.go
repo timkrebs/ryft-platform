@@ -65,10 +65,14 @@ func (s *Store) ApplySync(ctx context.Context, userID uuid.UUID, a Apply) (Appli
 // twice (D146); queue and Emit last, with the final days, so the event and the queue rows
 // commit or roll back with the deletions (D101, D145).
 func applyTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, a Apply, del deletions) (Applied, error) {
-	days := newDaySet(a.Loc, a.Days)
 	if _, err := tx.Exec(ctx, lockApply, userID); err != nil {
 		return Applied{}, err
 	}
+	return applyLocked(ctx, tx, userID, a, del)
+}
+
+func applyLocked(ctx context.Context, tx pgx.Tx, userID uuid.UUID, a Apply, del deletions) (Applied, error) {
+	days := newDaySet(a.Loc, a.Days)
 	var out Applied
 	var err error
 	if out.Deleted, err = applyDeletions(ctx, tx, userID, del, days); err != nil {

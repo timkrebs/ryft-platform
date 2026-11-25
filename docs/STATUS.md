@@ -1,5 +1,61 @@
 # RYFT platform — status
 
+## Notices email delivery (2026-11-25, D281)
+
+Terraform configures the existing `ryft_notices` policy to send only to the existing email channel. Uptime and the PromQL policies still use both channels. Production delivery is pending the operator's reviewed apply and an email receipt check.
+
+```bash
+terraform -chdir=infra/gcp plan -out=notices-email.tfplan
+terraform -chdir=infra/gcp show -no-color notices-email.tfplan
+```
+
+## German beta Platform candidate (2026-11-25, D278–D280)
+
+Migrations 0050 and 0051 add German and English catalog fallback and import measured USDA and Open Food Facts portions while retaining food IDs and saved meal snapshots. Core HealthKit uploads use the current consent grant under the account sync lock in both write phases. Migration 0052 adds the disabled `nutrition.diary_enabled` flag. It keeps contextual processing and optional weight ingest on the protected pilot and leaves authenticated erasure available to owners. Production rollout and physical iPhone verification are pending.
+
+The CI #747 lint follow-up groups the meal export test imports, names the accepted coaching relay media-type condition and refreshes the generated package map.
+
+## Coaching relay acceptance (2026-11-25, D275)
+
+The RYFT-04 candidate keeps Garmin and Suunto coaching relays disabled on Cloud Run.
+Signed local fixtures cover provider key isolation, input rejection and the queue's
+account, consent, lease, deduplication and retry rules. Migration 0049 adds an
+account-scoped lease completion function. Live partner activation remains a
+separate approval and connector verification step.
+
+## Apple revocation identity binding (2026-11-25, D273)
+
+`POST /v1/me/apple-authorization` now verifies the linked Apple identity through
+Supabase Auth Admin before storing a refresh token. The fixture covers a missing
+link, a different or missing exchanged subject, and the successful revocation path.
+Follow the existing deploy workflow after RYFT-08 release gates and an authorized
+Sign in with Apple account test pass. No schema or deployment configuration change.
+
+The coaching inbox also keeps its scheduled retention step when all provider
+callbacks are disabled (D274). Its fixture covers expiration under disabled callbacks.
+
+## Coaching webhook queue isolation (2026-11-25, D272)
+
+Migration 0048 adds provider-scoped delivery leases and keeps the previous call for a dark rollback.
+An older queued delivery for a disabled provider stays unattempted while another provider processes
+its queue. The API and store fixtures cover this behavior and the migration test checks the function
+grants after upgrading from 0047.
+
+The Go suites and synthetic PostgreSQL 17/Pub/Sub smoke passed. A separate local PostgreSQL restore
+rehearsal preserved a fixture account through 0047 → 0048. The previous and proposed API binaries
+both reported ready against the upgraded database and returned 404 on both partner callbacks.
+
+Provider callbacks remain dark. Once the release gates pass and the reviewed change is on main, the
+existing deploy workflow applies the migration before rolling the services. For an approved manual
+rerun of main, use `gh workflow run deploy.yml --ref main -f smoke=true` and follow
+[the deployment and rollback runbook](OPERATIONS.md#deploy-roll-back-rotate).
+
+## Production readiness checks (2026-11-25)
+
+- API and ingest health checks returned HTTP 200. The last Nutrition ETL run completed successfully and the UTC monthly scheduler was enabled.
+- Platform CI now runs the USDA and OFF fixtures and the ETL COPY replay against its disposable migrated PostgreSQL service. Run the optional embedding integration on a disposable database with `pgvector` installed.
+- The Garmin Personal API helper is development-only and reads one account. The cloud deployment keeps direct-provider credentials and rollout decisions in the existing partner gates.
+
 ## Training-to-Nutrition coaching (2026-11-24)
 
 The branch adds opt-in coaching targets, HealthKit workout and body-mass evidence, signed partner

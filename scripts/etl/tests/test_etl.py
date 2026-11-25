@@ -19,7 +19,7 @@ from download import MissingUSDATables, Release, extract_usda, resolve_off, reso
 from extract import connection, off_rows, usda_rows
 from generate_embeddings import DIMENSIONS, pending_batch, vectors
 from import_pg import IMPORT_NAMESPACE, load_batch
-from transform import Nutrient, Reject, off_food, usda_food, validate
+from transform import Nutrient, Portion, Reject, off_food, usda_food, validate
 
 
 def write_fixture(directory: Path) -> tuple[Path, Path]:
@@ -42,6 +42,8 @@ def write_fixture(directory: Path) -> tuple[Path, Path]:
         out.writestr("release/food.csv", "fdc_id,description,food_category_id,publication_date\n12345,\"Apples, raw\",9,2026-01-01\n")
         out.writestr("release/food_category.csv", "id,description\n9,Fruits and Fruit Juices\n")
         out.writestr("release/food_nutrient.csv", "fdc_id,nutrient_id,amount\n12345,1008,48\n12345,1003,0\n12345,1004,0\n12345,1005,12\n12345,1093,3\n")
+        out.writestr("release/food_portion.csv", "fdc_id,seq_num,amount,measure_unit_id,portion_description,gram_weight\n12345,1,1,1,,110\n12345,2,1,2,1 medium,182\n12345,3,1,1,Invalid,0\n")
+        out.writestr("release/measure_unit.csv", "id,name\n1,cup\n")
         out.writestr("release/nutrient.csv", "id,unit_name\n1008,KCAL\n1003,G\n1004,G\n1005,G\n1093,MG\n")
     return parquet, archive
 
@@ -62,6 +64,11 @@ class PipelineTests(unittest.TestCase):
         values = {n.code: n.amount for n in food.nutrients}
         self.assertEqual((values["sodium"], values["fiber"], values["omega_3"]), (400, 0, 0.25))
         self.assertNotIn("trans_fat", values)
+        self.assertEqual(off_food({**row, "serving_size": "1 pack (30,5 g)"}, "v1").portions,
+                         (Portion("Serving", "serving", weight_g=30.5),))
+        for ambiguous in ("1 TL", "1 pack", "30 ml", "30–40 g", "0 g"):
+            with self.subTest(serving=ambiguous):
+                self.assertEqual(off_food({**row, "serving_size": ambiguous, "product_quantity_unit": "g"}, "v1").portions, ())
         with self.assertRaisesRegex(Reject, "unverified_100g_basis"):
             off_food({**row, "product_quantity_unit": "ml"}, "v1")
         with self.assertRaisesRegex(Reject, "invalid_barcode_checksum"):
@@ -77,6 +84,8 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(food.category.profile["whole_fruit_fraction"], 1)
         values = {n.code: n.amount for n in food.nutrients}
         self.assertEqual((values["carbohydrates_total"], values["sodium"]), (12, 3))
+        self.assertEqual(food.portions, (Portion("1 cup", "portion", weight_g=110.0),
+                                         Portion("1 medium", "portion", weight_g=182.0)))
 
     def test_usda_filters_supporting_foods_before_limit(self):
         files = extract_usda(self.archive, self.directory)
@@ -220,16 +229,22 @@ class PostgresTests(unittest.TestCase):
         row = {"fdc_id": external_id, "description": "Apples, raw", "publication_date": "2026-01-01", "nutrients": [
             {"id": key, "amount": amount} for key, amount in (("1008", 48), ("1003", 0), ("1004", 0), ("1005", 12))
         ]}
-        food = usda_food(row, "revision-1")
+        food = replace(usda_food(row, "revision-1"), portions=(Portion("1 cup", "portion", weight_g=110.0),))
         food_id = uuid.uuid5(IMPORT_NAMESPACE, f"usda:{external_id}")
         user, request, meal, item = [uuid.uuid4() for _ in range(4)]
+        legacy_portion = uuid.uuid4()
         with psycopg.connect(os.environ["RYFT_ETL_TEST_DATABASE_URL"], autocommit=True) as db:
             db.execute("SET ROLE ryft_nutrition_etl")
             self.assertEqual(load_batch(db, [food, food]), {"inserted": 1, "duplicates": 1})
+            portion = db.execute("SELECT id, weight_g, origin FROM nutrition.portions WHERE food_id=%s", (food_id,)).fetchone()
+            self.assertEqual(portion[1:], (110, "python_etl"))
             self.assertEqual(load_batch(db, [food]), {"unchanged": 1, "duplicates": 0})
+            self.assertEqual(db.execute("SELECT id FROM nutrition.portions WHERE food_id=%s", (food_id,)).fetchone(), portion[:1])
             with self.assertRaises(psycopg.errors.InsufficientPrivilege):
                 db.execute("SELECT count(*) FROM nutrition.meal_items")
             db.execute("RESET ROLE")
+            db.execute("""INSERT INTO nutrition.portions (id,food_id,source_id,label,unit,quantity,weight_g)
+                VALUES (%s,%s,%s,'1 medium','portion',1,182)""", (legacy_portion, food_id, food_id))
             db.execute("INSERT INTO public.users (id,name) VALUES (%s, 'ETL fixture')", (user,))
             db.execute("INSERT INTO nutrition.meal_requests (user_id,request_id) VALUES (%s,%s)", (user, request))
             db.execute("""INSERT INTO nutrition.meals (id,user_id,client_request_id,request_hash,consumed_at,
@@ -243,10 +258,15 @@ class PostgresTests(unittest.TestCase):
             db.execute("""UPDATE nutrition.classifications SET contribution_fraction=.5, origin='manual'
                 WHERE food_id=%s AND code='whole_fruit_fraction'""", (food_id,))
             db.execute("SET ROLE ryft_nutrition_etl")
-            update = replace(food, name="Apple, raw", names=[("en", "Apple, raw")], version="revision-2")
+            update = replace(food, name="Apple, raw", names=[("en", "Apple, raw")], version="revision-2",
+                             portions=(Portion("1 cup", "portion", weight_g=112.0),
+                                       Portion("1 medium", "portion", weight_g=182.0)))
             self.assertEqual(load_batch(db, [update]), {"updated": 1, "duplicates": 0})
             self.assertEqual(load_batch(db, [replace(food, version="revision-0", source_updated_at=None)])["conflict"], 1)
             db.execute("RESET ROLE")
+            portions = db.execute("SELECT id,weight_g,origin FROM nutrition.portions WHERE food_id=%s ORDER BY weight_g", (food_id,)).fetchall()
+            self.assertEqual([(weight, origin) for _, weight, origin in portions], [(112, "python_etl"), (182, "manual")])
+            self.assertEqual(portions[1][0], legacy_portion)
             self.assertEqual(db.execute("SELECT canonical_name FROM nutrition.foods WHERE id=%s", (food_id,)).fetchone(), ("Apple, raw",))
             self.assertEqual(db.execute("""SELECT origin, contribution_fraction FROM nutrition.classifications
                 WHERE food_id=%s AND code='whole_fruit_fraction'""", (food_id,)).fetchone(), ("manual", 0.5))

@@ -68,6 +68,7 @@ const (
 	DirectApplied      DirectOutcome = "processed"
 	DirectNotPending   DirectOutcome = "not_pending"   // already handled: a repeat of the event (D100)
 	DirectNoConnection DirectOutcome = "no_connection" // the link ended meanwhile: the row is dropped
+	DirectNoConsent    DirectOutcome = "no_consent"
 )
 
 // DirectRecord is one parsed inbox record to store. The consumer has screened its rows (window, stages, types,
@@ -77,13 +78,14 @@ type DirectRecord struct {
 	// Revision is the row's revision the payload was read at (InboxItem.Revision): a re-push since then makes the
 	// row another revision, and this apply is then a repeat of nothing (DirectNotPending; the new revision has its
 	// own event, P2-12).
-	Revision int
-	UserID   uuid.UUID
-	Provider string
-	Kind     string
-	RecordID string // the provider's record id (the inbox row's)
-	Sleep    []model.SleepSegment
-	Samples  []model.Sample
+	Revision  int
+	UserID    uuid.UUID
+	Provider  string
+	Kind      string
+	RecordID  string // the provider's record id (the inbox row's)
+	MinPolicy string // consent must still meet this cutoff when the write lock is held
+	Sleep     []model.SleepSegment
+	Samples   []model.Sample
 	// NightState is the provider's validation state of a night: model.RecordProvisional or RecordFinal.
 	NightState string
 	Loc        *time.Location
@@ -115,7 +117,7 @@ type DirectResult struct {
 // same record id, within the new rows' span plus 36 h each way), the new ones are inserted, the direct source is
 // noted, last_data_at moves, the touched days (deleted and new) are queued, Emit runs and the inbox row becomes
 // processed with its payload gone. A repeat of the event finds the row no longer pending and does nothing. A link
-// that ended since the hook stored the row (a disconnect holds the same lock) drops the row instead.
+// that ended since the hook stored the row or a consent that no longer meets the cutoff drops the row instead.
 func (s *Store) ApplyDirect(ctx context.Context, r DirectRecord) (DirectResult, error) {
 	var out DirectResult
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -123,7 +125,7 @@ func (s *Store) ApplyDirect(ctx context.Context, r DirectRecord) (DirectResult, 
 		if _, err := tx.Exec(ctx, lockApply, r.UserID); err != nil {
 			return err
 		}
-		o, err := lockInbox(ctx, tx, r.InboxID, r.Revision, r.UserID, r.Provider)
+		o, err := lockInbox(ctx, tx, r.InboxID, r.Revision, r.UserID, r.Provider, r.MinPolicy)
 		if err != nil || o != "" {
 			out.Outcome = o
 			return err
@@ -140,10 +142,10 @@ func (s *Store) ApplyDirect(ctx context.Context, r DirectRecord) (DirectResult, 
 			if x.UserID != r.UserID || x.Provider != r.Provider || x.InboxID == r.InboxID {
 				continue // not this account's: the caller's bug, never stored
 			}
-			if o, err := lockInbox(ctx, tx, x.InboxID, x.Revision, x.UserID, x.Provider); err != nil {
+			if o, err := lockInbox(ctx, tx, x.InboxID, x.Revision, x.UserID, x.Provider, r.MinPolicy); err != nil {
 				return err
 			} else if o != "" {
-				continue // handled meanwhile, or the link ended (that row's own event drops it)
+				continue
 			}
 			if err := storeDirect(ctx, tx, x, days); err != nil {
 				return err
@@ -282,11 +284,21 @@ func replaceRecord(ctx context.Context, tx pgx.Tx, r DirectRecord, key string, l
 // revision has its own event); DirectNoConnection, the link is gone, revoked or has no provider user id any more and
 // the row is now dropped. A row holds no provider user id (the hook resolved it to the account), so a link that was
 // replaced by another provider account is told by the confirm's swap deleting the account's inbox rows, and by the
-// hook's owner lookup holding the link's row (StoreInbox).
-func lockInbox(ctx context.Context, tx pgx.Tx, id int64, revision int, user uuid.UUID, provider string) (DirectOutcome, error) {
+// hook's owner lookup holding the link's row (StoreInbox). A qualifying grant must still be active and cover
+// the time this revision arrived. Withdrawal followed by regrant does not revive a previously queued revision.
+func lockInbox(ctx context.Context, tx pgx.Tx, id int64, revision int, user uuid.UUID, provider, minPolicy string) (DirectOutcome, error) {
 	var state string
 	var rev int
-	err := tx.QueryRow(ctx, `SELECT state, revision FROM provider_inbox WHERE id=$1 AND user_id=$2 FOR UPDATE`, id, user).Scan(&state, &rev)
+	var consented bool
+	err := tx.QueryRow(ctx, `SELECT p.state, p.revision,
+		COALESCE((SELECT policy_version FROM consents
+			WHERE user_id=$2 AND kind='health_processing' AND revoked_at IS NULL
+			ORDER BY granted_at DESC LIMIT 1) >= $4, false)
+		AND EXISTS (SELECT 1 FROM consents
+			WHERE user_id=$2 AND kind='health_processing' AND revoked_at IS NULL
+			AND policy_version >= $4 AND granted_at <= p.received_at)
+		FROM provider_inbox p
+		WHERE p.id=$1 AND p.user_id=$2 AND p.provider=$3 FOR UPDATE OF p`, id, user, provider, minPolicy).Scan(&state, &rev, &consented)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (state != "pending" || rev != revision)) {
 		return DirectNotPending, nil
 	}
@@ -305,6 +317,12 @@ func lockInbox(ctx context.Context, tx pgx.Tx, id int64, revision int, user uuid
 		}
 		return DirectNoConnection, nil
 	}
+	if !consented {
+		if err := markInbox(ctx, tx, id, "dropped", "no_consent"); err != nil {
+			return "", err
+		}
+		return DirectNoConsent, nil
+	}
 	return "", nil
 }
 
@@ -321,14 +339,14 @@ func markInbox(ctx context.Context, tx pgx.Tx, id int64, state, code string) err
 // lock the link becomes revoked / provider_revoked (provider user id and permissions cleared, S6), the direct data
 // and the direct source go, the other inbox rows of (user, provider) are deleted, the days are queued, Emit runs and
 // the row is processed. The tokens stay for api's purge: ingest cannot touch them.
-func (s *Store) ApplyDeregistration(ctx context.Context, inboxID int64, revision int, user uuid.UUID, provider string,
+func (s *Store) ApplyDeregistration(ctx context.Context, inboxID int64, revision int, user uuid.UUID, provider, minPolicy string,
 	emit func(tx pgx.Tx, days []string) error) (DirectResult, error) {
 	var out DirectResult
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, lockApply, user); err != nil {
 			return err
 		}
-		o, err := lockInbox(ctx, tx, inboxID, revision, user, provider)
+		o, err := lockInbox(ctx, tx, inboxID, revision, user, provider, minPolicy)
 		if err != nil || o != "" {
 			out.Outcome = o
 			return err
@@ -365,13 +383,13 @@ func (s *Store) ApplyDeregistration(ctx context.Context, inboxID int64, revision
 // gone: a connected link becomes needs_reauth / permissions; with nothing missing a link that a permission change
 // suspended becomes connected again. A needs_reauth for another reason (a failed refresh) is left alone. The
 // changed permissions list itself is written by the api at the next confirm.
-func (s *Store) ApplyPermissions(ctx context.Context, inboxID int64, revision int, user uuid.UUID, provider string, missing bool) (DirectOutcome, error) {
+func (s *Store) ApplyPermissions(ctx context.Context, inboxID int64, revision int, user uuid.UUID, provider, minPolicy string, missing bool) (DirectOutcome, error) {
 	var out DirectOutcome
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, lockApply, user); err != nil {
 			return err
 		}
-		o, err := lockInbox(ctx, tx, inboxID, revision, user, provider)
+		o, err := lockInbox(ctx, tx, inboxID, revision, user, provider, minPolicy)
 		if err != nil || o != "" {
 			out = o
 			return err

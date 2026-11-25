@@ -1,6 +1,6 @@
 # Nutrition HTTP API
 
-Base path is `/v1/nutrition` on the API host. Routes use the existing bearer, App Attest, beta admission, address/account limits, request IDs and 15-second budget. All routes require `flags["nutrition.enabled"]` for the account. Writes require current health-data consent when enforcement is on or warn. The consent gate allows deletions and reads. JSON accepts one document up to 64 KiB and rejects unknown fields, including client-supplied account IDs. Every personal lookup derives account scope from the bearer.
+Base path is `/v1/nutrition` on the API host. Routes use the existing bearer, App Attest, beta admission, address/account limits, request IDs and 15-second budget. `nutrition.diary_enabled` enables owner-private diary, catalog and goal routes. Existing `nutrition.enabled` permits those routes plus submissions, glucose writes, N2R and adaptive coaching. The daily and range responses retain nutrient totals and return an empty score breakdown for the diary-only cohort. Writes require current health-data consent when enforcement is on or warn. Authenticated owner erasure of meals, glucose and N2R is available independently of Nutrition feature flags and consent. JSON accepts one document up to 64 KiB and rejects unknown fields, including client-supplied account IDs. Every personal lookup derives account scope from the bearer.
 
 | Verb and relative path | Request | Success |
 | --- | --- | --- |
@@ -40,7 +40,7 @@ Content-Type: application/json
 {"foods":[{"id":"a7e40c6e-bfb4-47eb-ad64-aea61136db03","name":"Hähnchenbrust","brand":"","type":"generic","quality":"source_reported"}],"next_offset":null}
 ```
 
-Search bodies carry food names and barcode digits to keep them out of access URLs. Search defaults to 20, supports 1–50, and caps offsets at 1,000. `language` prefers matching translations and controls optional German/English stemming. `market` is an uppercase country code and a ranking preference. An exact label wins before prefix, brand prefix, full-text and typo-tolerant matches. Requested language, market, quality and completeness break ties. Text is accent- and punctuation-folded. An empty results array is a successful search.
+Search bodies carry food names and barcode digits to keep them out of access URLs. Search defaults to 20, supports 1–50, and caps offsets at 1,000. `language` prefers matching translations and supports German/English stemming for regional codes such as `de-DE`. `market` is a two-letter country preference. Exact labels precede prefixes, brand prefixes and full-text matches. Common German and English generic food terms can match the alternate term before typo matches. Results retain the catalog ID and the matched name supplied by the catalog. Match quality precedes market and language preferences. Text is accent- and punctuation-folded. An empty results array is a successful search.
 
 ```http
 POST /v1/nutrition/foods/barcode
@@ -53,7 +53,7 @@ Content-Type: application/json
 {"gtin":"00012345678905","matches":[],"conflicted":false,"truncated":false}
 ```
 
-A valid, unknown barcode has an empty `matches` array. `conflicted` signals two or more catalog IDs. Show candidates for review, and honor the 20-match cap indicated by `truncated`. Food detail returns a canonical name, optional verified density, names, source IDs, local labels for portions and nutrient references. An absent nutrient code is unknown. Portions are reported as measured weight, volume or servings with explicit IDs. There is no implicit grams-to-milliliters conversion.
+A valid, unknown barcode has an empty `matches` array. `conflicted` signals two or more catalog IDs. Show candidates for review, and honor the 20-match cap indicated by `truncated`. Food detail returns a canonical name, optional verified density, names, source IDs, local labels for portions and nutrient references. An absent nutrient code is unknown. Portions are reported as measured weight, volume or servings with explicit IDs. The public catalog imports USDA household measures with source gram weights and Open Food Facts servings with a declared mass or volume compatible with the item's reference basis. Use grams or milliliters where no measured portion is available. Mass-to-volume conversion requires a verified density.
 
 The development seed can return the following food detail. This example shows one name and one nutrient. `GET /foods/{id}/portions` returns the `portions` array on its own.
 
@@ -111,6 +111,8 @@ Future recognition contracts are in [Recognition](08-ai-recognition-design.md).
 ## Nutrition Score
 
 `/daily` and `/summary` add `score_version`, nullable `nutrition_score`, `quality_score`, and `glucose_score`, the ten nullable 0–10 point values in `breakdown`, `meal_glucose_scores`, and `chrononutrition_penalty` in points. All three top-level scores use the 0–100 range. An empty meal window list is `[]`. See the [calibration and rules](09-nutrition-intelligence.md#score-architecture).
+
+With a missing, outdated or withdrawn grant, the endpoints return the same version, counts and nutrient totals. The three scores and ten components are `null`, `meal_glucose_scores` is `[]`, `chrononutrition_penalty` is zero and `n2r` is omitted. Current consent resumes scoring from retained data. Owner access and erasure follow the usual feature gate.
 
 ```json
 {

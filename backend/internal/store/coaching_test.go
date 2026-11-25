@@ -73,19 +73,23 @@ func TestCoachingReplayAndEvaluationWithAPIRole(t *testing.T) {
 		Activity: []wearables.ActivitySample{{At: now.Add(-time.Hour), Kcal: 14}, {At: now.Add(time.Hour), Kcal: 30}}}
 	check(st.EnqueueWearable(ctx, "suunto", policy, []wearables.Delivery{delivery, delivery}))
 	exec("UPDATE nutrition.wearable_inbox SET due_at=$1", now.Add(-time.Minute))
-	job, err := st.ClaimWearable(ctx, now, policy)
+	if job, err := st.ClaimWearable(ctx, now, policy, nil); err != nil || job != nil {
+		t.Fatalf("claimed job without enabled providers: %+v %v", job, err)
+	}
+	providers := []string{"suunto"}
+	job, err := st.ClaimWearable(ctx, now, policy, providers)
 	if err != nil || job == nil || job.User != athlete || job.Delivery.RemoteID != delivery.RemoteID {
 		t.Fatalf("claimed wearable: %+v %v", job, err)
 	}
-	if other, err := st.ClaimWearable(ctx, now, policy); err != nil || other != nil {
+	if other, err := st.ClaimWearable(ctx, now, policy, providers); err != nil || other != nil {
 		t.Fatalf("duplicate job: %+v %v", other, err)
 	}
 	check(st.FinishWearable(ctx, *job, now, false))
-	if early, err := st.ClaimWearable(ctx, now, policy); err != nil || early != nil {
+	if early, err := st.ClaimWearable(ctx, now, policy, providers); err != nil || early != nil {
 		t.Fatalf("retry was due immediately: %+v %v", early, err)
 	}
 	retryAt := now.Add(16 * time.Minute)
-	job, err = st.ClaimWearable(ctx, retryAt, policy)
+	job, err = st.ClaimWearable(ctx, retryAt, policy, providers)
 	if err != nil || job == nil || job.Attempt != 2 {
 		t.Fatalf("retry: %+v %v", job, err)
 	}

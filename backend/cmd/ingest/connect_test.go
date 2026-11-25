@@ -101,11 +101,11 @@ func (s *stubStore) InboxRow(context.Context, int64) (store.InboxItem, error) { 
 func (s *stubStore) PendingDirect(context.Context, uuid.UUID, string, int64, int) ([]store.InboxItem, error) {
 	return s.pending, s.pendingErr
 }
-func (s *stubStore) BumpInboxAttempt(context.Context, int64) (int, error) {
+func (s *stubStore) BumpInboxAttempt(context.Context, int64, int) (int, error) {
 	s.bumps++
 	return s.bumpN + s.bumps, nil
 }
-func (s *stubStore) FinishInbox(_ context.Context, _ int64, state, code string) error {
+func (s *stubStore) FinishInbox(_ context.Context, _ int64, _ int, state, code string) error {
 	s.finished = append(s.finished, state+"/"+code)
 	return nil
 }
@@ -133,12 +133,12 @@ func (s *stubStore) ApplyDirect(_ context.Context, r store.DirectRecord) (store.
 	}
 	return store.DirectResult{Outcome: o, Days: []string{"2026-11-24"}, Also: also}, nil
 }
-func (s *stubStore) ApplyDeregistration(_ context.Context, _ int64, _ int, _ uuid.UUID, _ string, emit func(pgx.Tx, []string) error) (store.DirectResult, error) {
+func (s *stubStore) ApplyDeregistration(_ context.Context, _ int64, _ int, _ uuid.UUID, _, _ string, emit func(pgx.Tx, []string) error) (store.DirectResult, error) {
 	s.deregCalls++
 	_ = emit(nil, []string{"2026-11-24"})
 	return store.DirectResult{Outcome: store.DirectApplied, Days: []string{"2026-11-24"}}, nil
 }
-func (s *stubStore) ApplyPermissions(_ context.Context, _ int64, _ int, _ uuid.UUID, _ string, missing bool) (store.DirectOutcome, error) {
+func (s *stubStore) ApplyPermissions(_ context.Context, _ int64, _ int, _ uuid.UUID, _, _ string, missing bool) (store.DirectOutcome, error) {
 	s.permCalls = append(s.permCalls, missing)
 	return store.DirectApplied, nil
 }
@@ -204,6 +204,25 @@ func (rg *hookRig) signed(body string) *httptest.ResponseRecorder {
 const goodPush = `{"items":[{"kind":"sleep","record_id":"n-1","user":"puid-1","version":1,"night":{"state":"final","segments":[
  {"start":"2026-11-23T22:30:00Z","end":"2026-11-24T00:30:00Z","stage":"light"}]}},
  {"kind":"hrv","record_id":"h-1","user":"puid-1","version":1,"hrv":{"start":"2026-11-24T02:00:00Z","end":"2026-11-24T02:05:00Z","rmssd_ms":48.5}}]}`
+
+type oversizedSplit struct{ connect.Provider }
+
+func (oversizedSplit) SplitPush([]byte) ([]connect.PushItem, error) {
+	return make([]connect.PushItem, connect.MaxItems+1), nil
+}
+
+func TestHookRejectsOverLimitSplitBeforeStorage(t *testing.T) {
+	rg := newRig(t)
+	reg, err := connect.NewRegistry(oversizedSplit{fake.New(fakeSecret)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rg.hook.reg = reg.PushSide()
+	w := rg.signed(goodPush)
+	if w.Code != http.StatusBadRequest || len(rg.st.stored) != 0 || len(rg.events) != 0 || rg.flush != 0 {
+		t.Fatalf("status=%d stored=%d events=%d flushes=%d", w.Code, len(rg.st.stored), len(rg.events), rg.flush)
+	}
+}
 
 func TestHookStoresAndAnswers200WithoutProcessing(t *testing.T) {
 	rg := newRig(t)
@@ -375,7 +394,9 @@ func TestHookLogLineCarriesNoIdentity(t *testing.T) {
 
 func (rg *hookRig) consume(row store.InboxItem) error {
 	rg.st.row = row
-	return rg.hook.consume(context.Background(), model.InboxReceivedEvent{InboxID: row.ID, Provider: row.Provider, Kind: row.Kind, Revision: 1})
+	return rg.hook.consume(context.Background(), model.InboxReceivedEvent{
+		InboxID: row.ID, UserID: row.UserID, Provider: row.Provider, Kind: row.Kind, Revision: row.Revision,
+	})
 }
 
 func consented() model.User {
@@ -385,8 +406,37 @@ func consented() model.User {
 func sleepRow(now time.Time) store.InboxItem {
 	start := now.Add(-9 * time.Hour).Format(time.RFC3339)
 	end := now.Add(-2 * time.Hour).Format(time.RFC3339)
-	return store.InboxItem{ID: 7, UserID: uuid.New(), Provider: "fake", Kind: "sleep", RecordID: "n-1", State: "pending",
+	return store.InboxItem{ID: 7, UserID: uuid.New(), Provider: "fake", Kind: "sleep", RecordID: "n-1", State: "pending", Revision: 1,
 		Payload: []byte(`{"kind":"sleep","night":{"state":"final","segments":[{"start":"` + start + `","end":"` + end + `","stage":"deep"}]}}`)}
+}
+
+func TestConsumerIgnoresMismatchedEvents(t *testing.T) {
+	rg := newRig(t)
+	row := sleepRow(rg.now)
+	row.Revision = 2
+	rg.st.row = row
+	rg.st.user = consented()
+	for name, alter := range map[string]func(*model.InboxReceivedEvent){
+		"superseded revision": func(ev *model.InboxReceivedEvent) { ev.Revision-- },
+		"wrong owner":         func(ev *model.InboxReceivedEvent) { ev.UserID = uuid.New() },
+		"wrong provider":      func(ev *model.InboxReceivedEvent) { ev.Provider = "other" },
+		"wrong kind":          func(ev *model.InboxReceivedEvent) { ev.Kind = connect.KindHRV },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ev := model.InboxReceivedEvent{InboxID: row.ID, UserID: row.UserID, Provider: row.Provider, Kind: row.Kind, Revision: row.Revision}
+			alter(&ev)
+			if err := rg.hook.consume(context.Background(), ev); err != nil {
+				t.Fatal(err)
+			}
+			if rg.st.bumps != 0 || len(rg.st.finished) != 0 || len(rg.st.applied) != 0 || len(rg.events) != 0 || rg.flush != 0 {
+				t.Fatal("a mismatched event changed the inbox or caused a side effect")
+			}
+		})
+	}
+	if err := rg.consume(row); err != nil || rg.st.bumps != 1 || len(rg.st.applied) != 1 || len(rg.events) != 1 || rg.flush != 1 {
+		t.Fatalf("current revision: %v, attempts=%d, applied=%d, events=%d, flushes=%d",
+			err, rg.st.bumps, len(rg.st.applied), len(rg.events), rg.flush)
+	}
 }
 
 func TestConsumerAppliesARecord(t *testing.T) {

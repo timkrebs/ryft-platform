@@ -95,17 +95,12 @@ func (s *Store) RefreshN2RNights(ctx context.Context, now time.Time, policy stri
 func (s *Store) refreshN2RNight(ctx context.Context, night dueNight, now time.Time, policy string) error {
 	user := night.UserID
 	return s.nutritionTx(ctx, user, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if consented, err := coachingConsent(ctx, tx, user, policy); err != nil || !consented {
+			return err
+		}
 		p, err := readN2RProfile(ctx, tx, user, true)
 		if err != nil || p == nil {
 			return err
-		}
-		if policy != "" {
-			var current *string
-			err := tx.QueryRow(ctx, `SELECT (SELECT policy_version FROM consents WHERE user_id=$1 AND kind='health_processing'
-				AND revoked_at IS NULL ORDER BY granted_at DESC LIMIT 1)`, user).Scan(&current)
-			if err != nil || current == nil || *current != policy {
-				return err
-			}
 		}
 		wake := parseN2RDay(night.Date, p.Location)
 		b, err := morningN2R(ctx, tx, user, wake, now)

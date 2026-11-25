@@ -101,6 +101,10 @@ func (s *Store) PutCoachingGoal(ctx context.Context, user uuid.UUID, p model.Goa
 // DeleteCoachingGoal removes the coaching enrollment and associated history.
 func (s *Store) DeleteCoachingGoal(ctx context.Context, user uuid.UUID) error {
 	return s.nutritionTx(ctx, user, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		// Serialize opt-out with a delivery applying under this goal before removing its data.
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM nutrition.user_goal_profiles WHERE user_id=$1 FOR UPDATE`, user); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM nutrition.canonical_workouts WHERE user_id=$1`, user); err != nil {
 			return err
 		}

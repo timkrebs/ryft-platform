@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -131,14 +132,17 @@ func (c *Client) Exchange(ctx context.Context, code string) (Tokens, error) {
 	if body.RefreshToken == "" {
 		return Tokens{}, errors.New("apple: token response without refresh_token")
 	}
-	return Tokens{RefreshToken: body.RefreshToken, Subject: subject(body.IDToken)}, nil
+	return Tokens{RefreshToken: body.RefreshToken, Subject: subject(body.IDToken, c.cfg.ClientID)}, nil
 }
 
-// subject reads the id_token's sub. Not verified on purpose: the token comes
-// straight from Apple over TLS in reply to our own authenticated request.
-func subject(idToken string) string {
+// subject reads the id_token claims from the authenticated Apple exchange over
+// TLS. Match the issuer and relying party before returning its subject.
+func subject(idToken, audience string) string {
 	var c jwt.RegisteredClaims
 	if _, _, err := jwt.NewParser().ParseUnverified(idToken, &c); err != nil {
+		return ""
+	}
+	if c.Issuer != appleBase || !slices.Contains(c.Audience, audience) {
 		return ""
 	}
 	return c.Subject

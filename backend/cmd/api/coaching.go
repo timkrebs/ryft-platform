@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"time"
@@ -32,9 +34,9 @@ func (h *handler) coachingRoutes(api *http.ServeMux) {
 		func(ctx context.Context, user uuid.UUID, profile model.GoalProfile) (model.GoalProfile, error) {
 			return h.st.PutCoachingGoal(ctx, user, profile, h.coachingNow())
 		}))))
-	api.HandleFunc("DELETE /v1/users/goal-profile", h.nutritionGate(func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc("DELETE /v1/users/goal-profile", func(w http.ResponseWriter, r *http.Request) {
 		nutritionAnswer(w, r, 204, nil, h.st.DeleteCoachingGoal(r.Context(), userOf(r).ID))
-	}))
+	})
 	api.HandleFunc("PUT /v1/coaching/feedback/{date}", h.nutritionGate(h.n2rConsent(func(w http.ResponseWriter, r *http.Request) {
 		var in model.CoachingFeedback
 		if err := httpx.ReadSingleJSON(w, r, &in, httpx.MaxBodyDefault); err != nil {
@@ -76,8 +78,17 @@ type partnerConfig struct {
 func loadPartnerConfig() (partnerConfig, error) {
 	out := partnerConfig{secrets: map[string]string{"garmin": os.Getenv("COACHING_GARMIN_WEBHOOK_SECRET"),
 		"suunto": os.Getenv("COACHING_SUUNTO_WEBHOOK_SECRET")}, token: os.Getenv("COACHING_PARTNER_FETCH_TOKEN")}
+	garminURL, suuntoURL := os.Getenv("COACHING_GARMIN_FETCH_URL"), os.Getenv("COACHING_SUUNTO_FETCH_URL")
+	if httpx.CloudRunService() || os.Getenv("CLOUD_RUN_JOB") != "" {
+		if out.secrets["garmin"] != "" || out.secrets["suunto"] != "" || out.token != "" || garminURL != "" || suuntoURL != "" {
+			return out, errors.New("coaching relays require an approved connector before Cloud Run activation")
+		}
+	}
+	if out.secrets["garmin"] != "" && out.secrets["garmin"] == out.secrets["suunto"] {
+		return out, errors.New("coaching relays must use distinct signing keys")
+	}
 	var err error
-	out.fetch, err = wearables.NewFetchers(os.Getenv("COACHING_GARMIN_FETCH_URL"), os.Getenv("COACHING_SUUNTO_FETCH_URL"))
+	out.fetch, err = wearables.NewFetchers(garminURL, suuntoURL)
 	if err != nil {
 		return out, err
 	}
@@ -99,6 +110,11 @@ func (h *handler) partnerWebhook(kind string) http.HandlerFunc {
 			httpx.NotFound(w, r)
 			return
 		}
+		signatures := r.Header.Values("X-HMAC-SHA256-Signature")
+		if len(signatures) != 1 || signatures[0] == "" {
+			httpx.WriteError(w, 401, "invalid wearable signature")
+			return
+		}
 		const deadline = 1700 * time.Millisecond
 		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(deadline))
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
@@ -108,8 +124,23 @@ func (h *handler) partnerWebhook(kind string) http.HandlerFunc {
 			httpx.WriteError(w, 413, "wearable payload exceeds the request budget")
 			return
 		}
-		if !wearables.Signed(payload, r.Header.Get("X-HMAC-SHA256-Signature"), secret) {
+		if !wearables.Signed(payload, signatures[0], secret) {
 			httpx.WriteError(w, 401, "invalid wearable signature")
+			return
+		}
+		contentTypes := r.Header.Values("Content-Type")
+		if len(contentTypes) != 1 {
+			httpx.WriteError(w, 415, "unsupported wearable content type")
+			return
+		}
+		mediaType, _, err := mime.ParseMediaType(contentTypes[0])
+		supportedContentType := mediaType == "application/json" || kind == "suunto" && mediaType == "application/x-www-form-urlencoded"
+		if err != nil || !supportedContentType {
+			httpx.WriteError(w, 415, "unsupported wearable content type")
+			return
+		}
+		if kind == "suunto" && json.Valid(payload) != (mediaType == "application/json") {
+			httpx.WriteError(w, 422, "invalid wearable notification")
 			return
 		}
 		deliveries, err := wearables.DecodeDelivery(kind, payload)
@@ -128,20 +159,27 @@ func (h *handler) partnerWebhook(kind string) http.HandlerFunc {
 }
 
 func (h *handler) processWearables(ctx context.Context) error {
-	if h.partners.secrets["garmin"] == "" && h.partners.secrets["suunto"] == "" {
-		return nil
-	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	// Retention applies to existing data even after disabling the last provider.
 	if err := h.st.PurgeWearableInbox(ctx, h.coachingNow()); err != nil {
 		return errors.New("wearable queue retention failed")
+	}
+	var providers []string
+	for provider, secret := range h.partners.secrets {
+		if secret != "" {
+			providers = append(providers, provider)
+		}
+	}
+	if len(providers) == 0 {
+		return nil
 	}
 	all, err := h.st.Flags(ctx)
 	if err != nil {
 		return errors.New("read wearable rollout")
 	}
 	for range 6 {
-		job, err := h.st.ClaimWearable(ctx, h.coachingNow(), h.beta.PrivacyPolicyVersion)
+		job, err := h.st.ClaimWearable(ctx, h.coachingNow(), h.beta.PrivacyPolicyVersion, providers)
 		if err != nil {
 			return errors.New("wearable claim failed")
 		}
@@ -158,10 +196,10 @@ func (h *handler) processWearables(ctx context.Context) error {
 		if err == nil {
 			err = h.st.ApplyWearable(ctx, *job, body, h.beta.PrivacyPolicyVersion, h.coachingNow())
 		}
-		if finalize := h.st.FinishWearable(ctx, *job, h.coachingNow(), err == nil); finalize != nil {
-			return errors.New("wearable queue completion failed")
-		}
 		if err != nil {
+			if finalize := h.st.FinishWearable(ctx, *job, h.coachingNow(), false); finalize != nil {
+				return errors.New("wearable queue completion failed")
+			}
 			return errors.New("wearable processing failed, retry scheduled")
 		}
 	}

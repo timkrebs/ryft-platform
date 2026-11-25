@@ -1,0 +1,23 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "meals": {
+      "items": {
+        "$ref": "NutritionMeal"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "next_after": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "meals",
+    "next_after"
+  ],
+  "title": "NutritionMealExportPage",
+  "type": "object"
+}

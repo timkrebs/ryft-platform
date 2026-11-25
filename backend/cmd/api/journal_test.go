@@ -41,7 +41,7 @@ func call(t *testing.T, h http.HandlerFunc, u model.User, method, path, body str
 		r.SetPathValue(pathValues[k], pathValues[k+1])
 	}
 	rec := httptest.NewRecorder()
-	h(rec, asUser(r, u, ""))
+	h(rec, asUser(r, u))
 	return rec
 }
 

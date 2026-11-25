@@ -11,6 +11,9 @@ func TestNutritionMigrationWithSupabaseExtensionAndRoles(t *testing.T) {
 	if _, err := pool.Exec(ctx, "CREATE SCHEMA extensions; CREATE EXTENSION pg_trgm SCHEMA extensions"); err != nil {
 		t.Fatal(err)
 	}
+	if err := migrateTo(ctx, pool, quiet, 47); err != nil {
+		t.Fatal(err)
+	}
 	if err := Migrate(ctx, pool, quiet); err != nil {
 		t.Fatal(err)
 	}
@@ -28,6 +31,25 @@ func TestNutritionMigrationWithSupabaseExtensionAndRoles(t *testing.T) {
 	}
 	if scalar[bool](t, pool, "SELECT has_table_privilege('ryft_api','nutrition.import_jobs','SELECT')") {
 		t.Fatal("API can read operator import jobs")
+	}
+	for _, claim := range []string{
+		"nutrition.claim_wearable(timestamptz,text)",
+		"nutrition.claim_wearable(timestamptz,text,text[])",
+		"nutrition.complete_wearable_lease(bigint,smallint,text,text,timestamptz)",
+	} {
+		if !scalar[bool](t, pool, "SELECT has_function_privilege('ryft_api',$1,'EXECUTE')", claim) {
+			t.Errorf("API role cannot execute %s", claim)
+		}
+		for _, role := range []string{"anon", "authenticated", "service_role", "ryft_ingest", "ryft_nutrition_etl"} {
+			if scalar[bool](t, pool, "SELECT has_function_privilege($1,$2,'EXECUTE')", role, claim) {
+				t.Errorf("%s can execute %s", role, claim)
+			}
+		}
+	}
+	for _, role := range []string{"anon", "authenticated", "service_role", "ryft_api", "ryft_ingest", "ryft_nutrition_etl"} {
+		if scalar[bool](t, pool, "SELECT has_function_privilege($1,'nutrition.discard_revoked_wearable()','EXECUTE')", role) {
+			t.Errorf("%s has execute on the consent-withdrawal trigger function", role)
+		}
 	}
 	withoutRLS := scalar[int](t, pool, `SELECT count(*) FROM pg_tables WHERE schemaname='nutrition' AND NOT rowsecurity`)
 	if withoutRLS != 0 {

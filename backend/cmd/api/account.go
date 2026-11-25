@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -232,7 +233,7 @@ const appleAuthorizationTimeout = 15 * time.Second
 // encrypted, so that deleting the account can revoke the app's grant at Apple.
 func (h *handler) appleAuthorization(w http.ResponseWriter, r *http.Request) {
 	a := h.accounts
-	if a.apple == nil {
+	if a.apple == nil || a.admin == nil {
 		httpx.WriteError(w, http.StatusNotImplemented, "apple token revocation is not configured")
 		return
 	}
@@ -247,9 +248,31 @@ func (h *handler) appleAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := userOf(r)
-	p, _ := auth.FromContext(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), appleAuthorizationTimeout)
 	defer cancel()
+	owner, err := a.admin.GetUser(ctx, u.ID)
+	switch {
+	case errors.Is(err, auth.ErrNoAuthUser):
+		httpx.WriteError(w, http.StatusUnprocessableEntity, "authorization code is for a different Apple ID")
+		return
+	case err != nil:
+		h.log.WarnContext(ctx, "read linked apple identities", "err", err)
+		w.Header().Set("Retry-After", "5")
+		httpx.WriteError(w, http.StatusServiceUnavailable, "apple identity could not be verified, retry")
+		return
+	}
+	// Supabase's linked identities are provider-managed. Access-token
+	// user_metadata is editable by the account holder.
+	var subjects []string
+	for _, identity := range owner.Identities {
+		if identity.Provider == "apple" && identity.ProviderID != "" {
+			subjects = append(subjects, identity.ProviderID)
+		}
+	}
+	if len(subjects) == 0 {
+		httpx.WriteError(w, http.StatusUnprocessableEntity, "authorization code is for a different Apple ID")
+		return
+	}
 	tokens, err := a.apple.Exchange(ctx, code)
 	switch {
 	case errors.Is(err, apple.ErrInvalidGrant):
@@ -264,7 +287,7 @@ func (h *handler) appleAuthorization(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusServiceUnavailable, "apple is not reachable, retry")
 		return
 	}
-	if p.AppleSubject != "" && tokens.Subject != "" && tokens.Subject != p.AppleSubject {
+	if !slices.Contains(subjects, tokens.Subject) {
 		httpx.WriteError(w, http.StatusUnprocessableEntity, "authorization code is for a different Apple ID")
 		return
 	}

@@ -159,9 +159,9 @@ here, and nothing at `off`:
 
 ### The alert policies
 
-Six conditions, one policy each, to both channels: the email `ryft-timkrebs` and the Google Cloud
-app's (made by hand; the app channel by its resource name, the workspace variable
-`alert_app_channel`, not sensitive and in no file, D237). Six is the cap
+Six conditions, one policy each. The first five send to the email `ryft-timkrebs` and the Google Cloud
+app channel. Notices sends to the email only (D281). Both channels were made by hand. The app channel's
+resource name comes from the workspace variable `alert_app_channel` (D237). Six is the cap
 (`tests/monitoring.tftest.hcl`): each condition has a price, and the sixth was the user's decision
 (2026-11-19, D244); a seventh is a decision too. Each policy's documentation is its first look; the
 table with the commands is OPERATIONS → GCP → When an alert fires.

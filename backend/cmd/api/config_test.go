@@ -27,7 +27,7 @@ func TestRemoteConfig(t *testing.T) {
 	get := func(u model.User) model.RemoteConfig {
 		t.Helper()
 		rec := httptest.NewRecorder()
-		h.remoteConfig(rec, asUser(httptest.NewRequest(http.MethodGet, "/v1/config", nil), u, ""))
+		h.remoteConfig(rec, asUser(httptest.NewRequest(http.MethodGet, "/v1/config", nil), u))
 		var c model.RemoteConfig
 		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &c) != nil {
 			t.Fatalf("GET /v1/config: %d %s", rec.Code, rec.Body)
@@ -37,7 +37,7 @@ func TestRemoteConfig(t *testing.T) {
 	c := get(ua)
 	want := map[string]bool{"train.enabled": true, "sleep.planner": true, "today.redesign": false,
 		"coach.enabled": false, "push.enabled": false, "physiology.card": false, "train.import": false,
-		"analytics.enabled": false, model.FlagNutrition: false, "connect.garmin": false}
+		"analytics.enabled": false, model.FlagNutrition: false, model.FlagNutritionDiary: false, "connect.garmin": false}
 	if c.TTLSec != 21600 || len(c.Flags) != len(want) {
 		t.Fatalf("config %+v", c)
 	}
