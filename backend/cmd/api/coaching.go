@@ -134,7 +134,8 @@ func (h *handler) partnerWebhook(kind string) http.HandlerFunc {
 			return
 		}
 		mediaType, _, err := mime.ParseMediaType(contentTypes[0])
-		if err != nil || !(mediaType == "application/json" || kind == "suunto" && mediaType == "application/x-www-form-urlencoded") {
+		supportedContentType := mediaType == "application/json" || kind == "suunto" && mediaType == "application/x-www-form-urlencoded"
+		if err != nil || !supportedContentType {
 			httpx.WriteError(w, 415, "unsupported wearable content type")
 			return
 		}

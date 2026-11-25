@@ -4,6 +4,8 @@
 
 Migrations 0050 and 0051 add German and English catalog fallback and import measured USDA and Open Food Facts portions while retaining food IDs and saved meal snapshots. Core HealthKit uploads use the current consent grant under the account sync lock in both write phases. Migration 0052 adds the disabled `nutrition.diary_enabled` flag. It keeps contextual processing and optional weight ingest on the protected pilot and leaves authenticated erasure available to owners. Production rollout and physical iPhone verification are pending.
 
+The CI #747 lint follow-up groups the meal export test imports, names the accepted coaching relay media-type condition and refreshes the generated package map.
+
 ## Coaching relay acceptance (2026-11-25, D275)
 
 The RYFT-04 candidate keeps Garmin and Suunto coaching relays disabled on Cloud Run.
