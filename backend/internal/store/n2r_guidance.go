@@ -184,7 +184,7 @@ func guidanceFoods(ctx context.Context, tx pgx.Tx, code string, vectorSchema *st
 	if err != nil {
 		return nil, err
 	}
-	foods, err := pgx.CollectRows(rows, pgx.RowToStructByPos[model.FoodSummary])
+	foods, err := pgx.CollectRows(rows, scanFoodSummary)
 	if foods == nil {
 		foods = []model.FoodSummary{}
 	}

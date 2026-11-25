@@ -19,19 +19,19 @@ var commonGermanEnglish = [][2]string{
 	{"ei", "egg"}, {"olivenol", "olive oil"}, {"rapsol", "canola oil"},
 }
 
-// CatalogSearchAlias returns one secondary term for an exact DE or EN food name
-// or a prefix whose alternatives can be found with a single catalog term.
+// CatalogSearchAlias returns one secondary term for a known DE or EN food name.
+// It preserves explicit qualifiers and only expands an unambiguous prefix.
 func CatalogSearchAlias(query, language, market string) string {
 	base, _, _ := strings.Cut(language, "-")
 	if base != "de" && base != "en" && market != "DE" && market != "AT" && market != "CH" {
 		return ""
 	}
-	for _, pair := range commonGermanEnglish {
-		switch query {
-		case pair[0]:
-			return pair[1]
-		case pair[1]:
-			return pair[0]
+	if alias := exactCatalogAlias(query); alias != "" {
+		return alias
+	}
+	if first, qualifiers, ok := strings.Cut(query, " "); ok {
+		if alias := exactCatalogAlias(first); alias != "" {
+			return alias + " " + qualifiers
 		}
 	}
 	if len(query) < minimumCatalogAliasPrefix {
@@ -59,4 +59,16 @@ func CatalogSearchAlias(query, language, market string) string {
 		}
 	}
 	return shortest
+}
+
+func exactCatalogAlias(query string) string {
+	for _, pair := range commonGermanEnglish {
+		switch query {
+		case pair[0]:
+			return pair[1]
+		case pair[1]:
+			return pair[0]
+		}
+	}
+	return ""
 }

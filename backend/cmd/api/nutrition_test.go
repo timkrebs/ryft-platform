@@ -124,3 +124,50 @@ func TestNutritionRoutesUseBearerFlagsConsentAndPrivateResponses(t *testing.T) {
 		t.Fatal("private nutrition input or identifier in API logs")
 	}
 }
+
+func TestNutritionFavoriteOwnershipAndErasure(t *testing.T) {
+	rig := newNutritionRig(t)
+	ctx := context.Background()
+	a, b, noConsent := rig.account(), rig.account(), rig.account(true)
+	putFlag := func(enabled bool) {
+		t.Helper()
+		if _, _, err := rig.st.PutFlag(ctx, model.FeatureFlag{Key: model.FlagNutritionDiary,
+			Enabled: enabled, AllowUserIDs: []uuid.UUID{a, b, noConsent}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(user uuid.UUID, method, path string, body any, want int) []byte {
+		t.Helper()
+		r := rig.do(user, method, nutritionPrefix+path, body)
+		if r.Code != want {
+			t.Fatalf("%s %s: got %d, want %d", method, path, r.Code, want)
+		}
+		return r.Body.Bytes()
+	}
+	putFlag(true)
+	body := check(a, http.MethodPost, "/foods/custom", model.FoodCustomInput{ClientRequestID: uuid.New(), Name: "Private fixture"}, 200)
+	var f model.FoodDetail
+	if err := json.Unmarshal(body, &f); err != nil {
+		t.Fatal(err)
+	}
+	detail := "/foods/" + f.ID.String()
+	favorite := detail + "/favorite"
+	check(uuid.Nil, http.MethodPut, favorite, nil, 401)
+	check(noConsent, http.MethodPut, favorite, nil, 403)
+	check(b, http.MethodPut, favorite, nil, 404)
+	check(a, http.MethodPut, favorite, nil, 204)
+	check(a, http.MethodPut, favorite, nil, 204)
+	check(b, http.MethodDelete, favorite, nil, 204)
+	body = check(a, http.MethodGet, detail+"?language=de-DE", nil, 200)
+	if err := json.Unmarshal(body, &f); err != nil || f.Favorited == nil || !*f.Favorited {
+		t.Fatal("owner's favorite missing after another user's DELETE")
+	}
+	putFlag(false)
+	check(a, http.MethodPut, favorite, nil, 404)
+	check(a, http.MethodDelete, favorite, nil, 204)
+	putFlag(true)
+	body = check(a, http.MethodGet, detail, nil, 200)
+	if err := json.Unmarshal(body, &f); err != nil || f.Favorited == nil || *f.Favorited {
+		t.Fatal("detail must advertise explicit false after erasure")
+	}
+}

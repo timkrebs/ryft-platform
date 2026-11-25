@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
-from json import dumps
+from json import dumps, loads
+from pathlib import Path
 
 from categorizer import Category, classify, normalize
 
@@ -91,6 +92,20 @@ USDA_NUTRIENTS = {
 
 USDA_ENERGY_PRIORITY = {"2048": 3, "1008": 2, "2047": 1}
 UNIT_MASS_G = {"g": 1, "mg": 0.001, "ug": 0.000001}
+BLS_ATTRIBUTION = "Max Rubner-Institut (2025), Bundeslebensmittelschlüssel (BLS), Version 4.0"
+USDA_PORTION_ID = re.compile(r"[1-9][0-9]{0,19}")
+UNKNOWN_MEASURES = {"undetermined", "unspecified", "unknown", "not specified", "n/a", "none"}
+HOUSEHOLD_TERMS = {
+    "cup": ("cup", "Tasse"), "tsp": ("tsp", "TL"), "teaspoon": ("tsp", "TL"),
+    "tbsp": ("tbsp", "EL"), "tablespoon": ("tbsp", "EL"), "slice": ("slice", "Scheibe"),
+    "piece": ("piece", "Stück"), "unit": ("piece", "Stück"), "container": ("container", "Becher"),
+}
+SIZE_TERMS = {
+    "extra small": ("Extra small", "Extra klein"), "extra large": ("Extra large", "Extra groß"),
+    "small": ("Small", "Klein"), "medium": ("Medium", "Mittel"), "large": ("Large", "Groß"),
+    "jumbo": ("Jumbo", "Jumbo"),
+}
+STAPLES = loads(Path(__file__).with_name("staples.v1.json").read_text(encoding="utf-8"))
 
 
 @dataclass(frozen=True)
@@ -106,6 +121,14 @@ class Portion:
     unit: str
     weight_g: float | None = None
     volume_ml: float | None = None
+    source_portion_id: str | None = None
+    portion_key: str | None = None
+    labels: dict[str, str] = field(default_factory=dict)
+    short_label_en: str | None = None
+    short_label_de: str | None = None
+    is_default: bool = False
+    sort_order: int = 0
+    legacy_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,13 +148,22 @@ class Food:
     warnings: tuple[str, ...]
     reference_unit: str = "g"
     portions: tuple[Portion, ...] = ()
+    is_canonical_staple: bool = False
+    canonical_group_key: str | None = None
+    food_form: str | None = None
+    subtitles: dict[str, str] = field(default_factory=dict)
+    aliases: tuple[tuple[str, str], ...] = ()
+    attribution: str | None = None
+    density_g_ml: float | None = None
 
     @property
     def checksum(self) -> bytes:
         data = asdict(self)
         data.pop("version")
-        if not self.portions:
-            data.pop("portions")
+        for key in ("portions", "is_canonical_staple", "canonical_group_key", "food_form", "subtitles",
+                    "aliases", "attribution", "density_g_ml"):
+            if not data[key]:
+                data.pop(key)
         return sha256(dumps(data, sort_keys=True, default=str, allow_nan=False).encode()).digest()
 
     @property
@@ -174,18 +206,57 @@ def off_serving(text: str | None, reference_unit: str) -> tuple[Portion, ...]:
                     volume_ml=size if unit == "ml" else None),)
 
 
-def usda_measures(rows: list[dict] | None) -> tuple[Portion, ...]:
-    result = {}
+def household_labels(row: dict, description: str) -> dict[str, str]:
+    """Translate compact, known household terms without translating a preparation or size qualifier."""
+    amount = row.get("amount")
+    terms = [description.lower(), (row.get("modifier") or "").lower()]
+    for term in terms:
+        for size, labels in SIZE_TERMS.items():
+            if term == size or term.startswith((size + " ", size + "(")):
+                return dict(zip(("en", "de"), labels))
+    for term in ((row.get("modifier") or "").lower(), (row.get("measure") or "").lower(), terms[0]):
+        if term in HOUSEHOLD_TERMS and amount:
+            en, de = HOUSEHOLD_TERMS[term]
+            return {"en": f"{amount} {en}", "de": f"{amount.replace('.', ',')} {de}"}
+    return {}
+
+
+def usda_measures(rows: list[dict] | None, overrides: dict | None = None) -> tuple[Portion, ...]:
+    result: dict[tuple[str, float], Portion] = {}
+    used_ids: set[str] = set()
+    overrides = overrides or {}
     for row in (rows or [])[:50]:
         desc = row.get("description")
+        legacy_label = desc
         if not desc and (row.get("measure") or row.get("modifier")):
-            desc = " ".join(part for key in ("amount", "measure", "modifier") if (part := row.get(key)))
+            legacy_label = " ".join(part for key in ("amount", "measure", "modifier") if (part := row.get(key)))
+            parts = [part for part in (row.get("measure"), row.get("modifier")) if part and part.lower() not in UNKNOWN_MEASURES]
+            desc = " ".join(part for part in (row.get("amount"), *parts) if part) if parts else None
         grams = measured_quantity(row.get("grams"))
-        if not desc or len(desc) > 200 or "\0" in desc or grams is None:
+        if grams is None:
             continue
-        portion = Portion(desc, "portion", weight_g=grams)
-        result[portion] = None
-    return tuple(result)
+        desc = desc or f"{grams:g} g"
+        if len(desc) > 200 or "\0" in desc:
+            continue
+        source_id = row.get("source_id") or ""
+        source_id = source_id if USDA_PORTION_ID.fullmatch(source_id) else None
+        if source_id in used_ids:
+            continue
+        override = overrides.get(source_id, {})
+        if override and override["grams"] != grams:
+            override = {}  # The release weight changed. Keep the measured raw row without the curated claim.
+        labels = override.get("labels", {})
+        shorts = override.get("short_labels") or household_labels(row, desc)
+        portion = Portion(desc, "portion", weight_g=grams, source_portion_id=source_id,
+                          portion_key=override.get("key"), labels=labels, short_label_en=shorts.get("en"),
+                          short_label_de=shorts.get("de"), is_default=override.get("default", False),
+                          sort_order=override.get("order", 100 + (row.get("priority") or 0)), legacy_label=legacy_label)
+        key = (desc, grams)
+        if key not in result or override:
+            result[key] = portion
+            if source_id:
+                used_ids.add(source_id)
+    return tuple(sorted(result.values(), key=lambda portion: portion.sort_order))
 
 
 def gtin(code: str) -> str | None:
@@ -344,6 +415,40 @@ def usda_food(row: dict, version: str) -> Food:
         updated = datetime.strptime(row.get("publication_date") or "", "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
         updated = None
-    return Food("usda", external_id, version, name, "", [("en", name)], [], None, updated,
+    staple = STAPLES["usda"].get(external_id)
+    return Food("usda", external_id, version, staple["names"]["en"] if staple else name, "",
+                list(staple["names"].items()) if staple else [("en", name)], [], None, updated,
                 sorted(amounts.values(), key=lambda n: n.code), category, None, warnings,
-                portions=usda_measures(row.get("portions")))
+                portions=usda_measures(row.get("portions"), staple["portions"] if staple else None),
+                is_canonical_staple=staple.get("canonical", True) if staple else False,
+                canonical_group_key=staple["group"] if staple else None,
+                food_form=staple["form"] if staple else None, subtitles=staple["subtitles"] if staple else {},
+                aliases=staple_aliases(staple, ("en", name)) if staple else ())
+
+
+def staple_aliases(entry: dict, *extra: tuple[str, str]) -> tuple[tuple[str, str], ...]:
+    preferred = set(entry["names"].items())
+    aliases = [(lang, label) for lang, labels in entry["aliases"].items() for label in labels]
+    return tuple(sorted(set(aliases + list(extra)) - preferred))
+
+
+def bls_food(row: dict, version: str) -> Food:
+    external_id = row["external_id"]
+    entry = STAPLES["bls"][external_id]
+    name = entry["names"]["en"]
+    amounts = {code: Nutrient(code, amount, "bls:4.0") for code, amount in entry["nutrients"].items()}
+    portions = []
+    for key, portion in sorted(entry["portions"].items(), key=lambda item: item[1]["order"]):
+        ml = portion.get("ml")
+        grams = round(ml * entry["density_g_per_ml"], 6) if ml is not None else portion["grams"]
+        labels = portion["labels"]
+        shorts = portion["short_labels"]
+        portions.append(Portion(labels["en"], "portion", weight_g=grams, volume_ml=ml, portion_key=key, labels=labels,
+                                short_label_en=shorts["en"], short_label_de=shorts["de"],
+                                is_default=portion.get("default", False), sort_order=portion["order"]))
+    return Food("bls", external_id, version, name, "", list(entry["names"].items()), ["DE"], None, None,
+                sorted(amounts.values(), key=lambda n: n.code), classify(name, [], provider="bls"), None,
+                validate(name, amounts, False), portions=tuple(portions), is_canonical_staple=True,
+                canonical_group_key=entry["group"], food_form=entry["form"], subtitles=entry["subtitles"],
+                aliases=staple_aliases(entry), attribution=BLS_ATTRIBUTION,
+                density_g_ml=entry.get("density_g_per_ml"))

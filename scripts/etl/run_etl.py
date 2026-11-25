@@ -20,9 +20,9 @@ from tqdm import tqdm
 from download import CLIENT_HEADERS, extract_usda, file_sha256, resolve_off, resolve_usda, stage_usda
 from extract import connection, off_rows, usda_rows
 from import_pg import connect, load_batch
-from transform import Reject, off_food, usda_food
+from transform import STAPLES, Reject, bls_food, off_food, usda_food
 
-PIPELINE_VERSION = "py-etl3"
+PIPELINE_VERSION = "py-etl4"
 USDA_KINDS = ("foundation_food", "sr_legacy_food")
 
 
@@ -37,7 +37,7 @@ def bounded_int(low: int, high: int):
 
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", choices=("all", "off", "usda", "foundation", "sr-legacy"), default="all")
+    parser.add_argument("--source", choices=("all", "off", "usda", "foundation", "sr-legacy", "bls"), default="all")
     size = parser.add_mutually_exclusive_group()
     size.add_argument("--limit", type=bounded_int(1, 5_000_000), default=10_000,
                       help="raw rows per release after source pushdowns (default 10000)")
@@ -110,13 +110,20 @@ def run(args: argparse.Namespace) -> None:
                     result_metadata = {}
                 digest = file_sha256(archive)
                 tag = "foundation" if kind == "foundation_food" else "sr-legacy"
-                version = f"{PIPELINE_VERSION}:{tag}:{digest}"
+                version = f"{PIPELINE_VERSION}:staples{STAPLES['version']}:{tag}:{digest}"
                 with connection(directory, args.memory_mb) as db:
                     rows = usda_rows(db, files, limit, args.batch_size, data_type=kind)
                     result = process(rows, usda_food, version, conn, kind)
                 print(json.dumps({"mode": "write" if args.write else "dry-run", "sha256": digest,
                                   "has_category_table": "food_category.csv" in files,
                                   **result_metadata, **result}, sort_keys=True), flush=True)
+        if args.source in ("all", "bls"):
+            ids = list(STAPLES["bls"])[:limit]
+            batches = ([{"external_id": external_id} for external_id in ids[start:start + args.batch_size]]
+                       for start in range(0, len(ids), args.batch_size))
+            version = f"{PIPELINE_VERSION}:bls_4_0:staples{STAPLES['version']}"
+            result = process(batches, bls_food, version, conn, "bls")
+            print(json.dumps({"mode": "write" if args.write else "dry-run", **result}, sort_keys=True), flush=True)
 
 
 def main() -> int:

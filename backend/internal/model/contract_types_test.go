@@ -137,6 +137,7 @@ var contractTypes = map[string]reflect.Type{
 	"FoodSource":                reflect.TypeOf(FoodSource{}),
 	"FoodPortionInput":          reflect.TypeOf(FoodPortionInput{}),
 	"FoodPortion":               reflect.TypeOf(FoodPortion{}),
+	"FoodPortionSelection":      reflect.TypeOf(FoodPortionSelection{}),
 	"FoodNutrientInput":         reflect.TypeOf(FoodNutrientInput{}),
 	"FoodNutrient":              reflect.TypeOf(FoodNutrient{}),
 	"FoodDetail":                reflect.TypeOf(FoodDetail{}),

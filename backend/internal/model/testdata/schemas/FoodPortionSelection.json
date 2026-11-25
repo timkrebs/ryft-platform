@@ -1,0 +1,52 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "carbs_g": {
+      "nullable": true,
+      "type": "number"
+    },
+    "fat_g": {
+      "nullable": true,
+      "type": "number"
+    },
+    "gram_weight": {
+      "nullable": true,
+      "type": "number"
+    },
+    "kcal": {
+      "nullable": true,
+      "type": "number"
+    },
+    "label": {
+      "type": "string"
+    },
+    "portion_id": {
+      "format": "uuid",
+      "nullable": true,
+      "type": "string"
+    },
+    "protein_g": {
+      "nullable": true,
+      "type": "number"
+    },
+    "quantity": {
+      "type": "number"
+    },
+    "short_label": {
+      "type": "string"
+    },
+    "unit": {
+      "type": "string"
+    },
+    "volume_ml": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [
+    "quantity",
+    "unit"
+  ],
+  "title": "FoodPortionSelection",
+  "type": "object"
+}

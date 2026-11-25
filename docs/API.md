@@ -4137,6 +4137,7 @@ struct APIErrorBody: Codable {
 
 | 2026-11-25 | **[Nutrition diary and portability](#nutrition)** (D278–D280). Adds a default-off diary flag, bilingual generic food search, source-backed portions and an authenticated owner-only meal export. Protected Nutrition score and coaching access continues to use `nutrition.enabled`. Under enforcement, HealthKit checks current consent before both write phases. |
 | 2026-11-25 | **[Bilingual food suggestions](#nutrition)** (D283). Common German and English generic food suggestions support unambiguous prefixes of at least four normalized characters. |
+| 2026-11-25 | **[Nutrition food selection](#nutrition)** (D284). Optional localized catalog portions, measured previews, scoped favorites and last-used selections, and saved portion labels. |
 | 2026-11-25 | **Nutrition score consent** (D277). Daily and range summaries require current consent for freshly derived scores. Owner totals, retained meal records and deletions remain accessible under the Nutrition flag. |
 | 2026-11-24 | **Training-to-Nutrition coaching** (D271). Signed-in goal profiles, planned sessions and feedback, daily briefing, additive HealthKit metadata and consent-scoped partner ingestion. Operator-only aggregate evaluation. |
 | 2026-11-24 | **[Nutrition-to-Recovery](#nutrition-to-recovery)** (D268). Adds account opt-in, contextual scoring in daily summaries and current guidance. |

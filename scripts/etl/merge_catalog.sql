@@ -22,25 +22,29 @@ LEFT JOIN nutrition.foods occupied ON occupied.id=c.stable_id;
 CREATE TEMP TABLE etl_delta ON COMMIT DROP AS
 SELECT * FROM etl_merge WHERE outcome IN ('inserted', 'updated');
 
-INSERT INTO nutrition.foods (id, canonical_name, brand, food_type, quality, markets, completeness)
-SELECT food_id, name, brand, food_type, quality, markets, completeness
+INSERT INTO nutrition.foods (id, canonical_name, brand, food_type, quality, markets, completeness,
+    is_canonical_staple, canonical_group_key, food_form, subtitles, density_g_ml)
+SELECT food_id, name, brand, food_type, quality, markets, completeness,
+    is_canonical_staple, canonical_group_key, food_form, subtitles, density_g_ml
 FROM etl_delta WHERE outcome='inserted';
 
 -- A row explicitly associated with another canonical food keeps that food's operator-owned attributes.
 UPDATE nutrition.foods f
 SET canonical_name=d.name, brand=d.brand, quality=d.quality, markets=d.markets,
-    completeness=d.completeness, updated_at=now()
+    completeness=d.completeness, is_canonical_staple=d.is_canonical_staple,
+    canonical_group_key=d.canonical_group_key, food_form=d.food_form, subtitles=d.subtitles,
+    density_g_ml=coalesce(f.density_g_ml,d.density_g_ml),updated_at=now()
 FROM etl_delta d WHERE d.outcome='updated' AND d.food_id=d.stable_id AND f.id=d.food_id;
 
 INSERT INTO nutrition.food_sources (
-    id, food_id, provider, external_id, dataset_version, source_url, license_identifier, source_updated_at, checksum
+    id,food_id,provider,external_id,dataset_version,source_url,license_identifier,source_updated_at,checksum,attribution
 )
-SELECT source_id, food_id, provider, external_id, version, source_url, license, source_updated_at, checksum
+SELECT source_id,food_id,provider,external_id,version,source_url,license,source_updated_at,checksum,attribution
 FROM etl_delta WHERE true
 ON CONFLICT (provider, external_id) DO UPDATE SET dataset_version=excluded.dataset_version,
     source_url=excluded.source_url, license_identifier=excluded.license_identifier,
     source_updated_at=coalesce(excluded.source_updated_at,nutrition.food_sources.source_updated_at),
-    checksum=excluded.checksum, imported_at=now();
+    checksum=excluded.checksum,attribution=excluded.attribution,imported_at=now();
 
 DELETE FROM nutrition.food_names n USING etl_delta d WHERE n.food_id=d.food_id AND n.source_id=d.source_id;
 DELETE FROM nutrition.nutrient_values n USING etl_delta d WHERE n.food_id=d.food_id AND n.source_id=d.source_id;
@@ -49,9 +53,9 @@ DELETE FROM nutrition.classifications c USING etl_delta d
 WHERE c.food_id=d.food_id AND c.source_id=d.source_id AND c.origin='python_etl'
   AND (c.system, c.version) IN (('ahei_category', '1'), ('ryft_nutrition', '1'));
 
-INSERT INTO nutrition.food_names (food_id, source_id, language, label, normalized, normalized_brand)
-SELECT d.food_id, d.source_id, n.lang, n.label, n.normalized, d.normalized_brand
-FROM etl_delta d CROSS JOIN LATERAL jsonb_to_recordset(d.names) n(lang text, label text, normalized text);
+INSERT INTO nutrition.food_names (food_id, source_id, language, label, normalized, normalized_brand, alias)
+SELECT d.food_id, d.source_id, n.lang, n.label, n.normalized, d.normalized_brand, n.alias
+FROM etl_delta d CROSS JOIN LATERAL jsonb_to_recordset(d.names) n(lang text,label text,normalized text,alias boolean);
 
 INSERT INTO nutrition.nutrient_values (
     food_id, source_id, code, amount, reference_amount, reference_unit, method, quality
@@ -63,19 +67,40 @@ INSERT INTO nutrition.barcodes (food_id, source_id, original_barcode, gtin, mark
 SELECT d.food_id, d.source_id, d.external_id, d.gtin, market
 FROM etl_delta d CROSS JOIN LATERAL unnest(d.markets) market WHERE d.gtin IS NOT NULL;
 
+CREATE TEMP TABLE etl_portions ON COMMIT DROP AS
+SELECT d.food_id, d.source_id, coalesce(prior.id, p.id) AS id,
+    p.label,p.labels,p.unit,p.weight_g,p.volume_ml,p.source_portion_id,p.portion_key,
+    p.short_label_en,p.short_label_de,p.is_default,p.sort_order
+FROM etl_delta d CROSS JOIN LATERAL jsonb_to_recordset(d.portions)
+    p(id uuid,legacy_id uuid,label text,labels jsonb,unit text,weight_g numeric,volume_ml numeric,
+      source_portion_id text,portion_key text,short_label_en text,short_label_de text,is_default boolean,sort_order integer)
+LEFT JOIN LATERAL (
+    SELECT k.id FROM nutrition.portions k
+    WHERE k.food_id=d.food_id AND k.source_id=d.source_id AND k.origin='python_etl'
+      AND (k.source_portion_id=p.source_portion_id OR (k.source_portion_id IS NULL AND k.id=p.legacy_id))
+    ORDER BY (k.source_portion_id IS NOT NULL) DESC, k.id
+    LIMIT 1
+) prior ON true
+WHERE prior.id IS NOT NULL OR NOT EXISTS (SELECT FROM nutrition.portions known
+    WHERE known.source_id=d.source_id AND known.food_id=d.food_id AND known.origin='manual'
+      AND known.label=p.label AND known.unit=p.unit AND known.quantity=1 AND NOT known.estimated
+      AND known.weight_g IS NOT DISTINCT FROM p.weight_g AND known.volume_ml IS NOT DISTINCT FROM p.volume_ml);
+
 DELETE FROM nutrition.portions p USING etl_delta d
 WHERE p.source_id=d.source_id AND p.food_id=d.food_id AND p.origin='python_etl'
-  AND NOT EXISTS (SELECT FROM jsonb_to_recordset(d.portions) candidate(id uuid) WHERE candidate.id=p.id);
+  AND NOT EXISTS (SELECT FROM etl_portions candidate WHERE candidate.id=p.id);
 
-INSERT INTO nutrition.portions (id, food_id, source_id, label, labels, quantity, unit, weight_g, volume_ml, origin)
-SELECT p.id, d.food_id, d.source_id, p.label, p.labels, 1, p.unit, p.weight_g, p.volume_ml, 'python_etl'
-FROM etl_delta d CROSS JOIN LATERAL jsonb_to_recordset(d.portions)
-    p(id uuid, label text, labels jsonb, unit text, weight_g numeric, volume_ml numeric)
-WHERE NOT EXISTS (SELECT FROM nutrition.portions known
-    WHERE known.source_id=d.source_id AND known.food_id=d.food_id AND known.label=p.label
-      AND known.unit=p.unit AND known.quantity=1 AND NOT known.estimated
-      AND known.weight_g IS NOT DISTINCT FROM p.weight_g AND known.volume_ml IS NOT DISTINCT FROM p.volume_ml)
-ON CONFLICT (id) DO NOTHING;
+INSERT INTO nutrition.portions (id,food_id,source_id,label,labels,quantity,unit,weight_g,volume_ml,origin,
+    source_portion_id,portion_key,short_label_en,short_label_de,is_default,sort_order)
+SELECT id,food_id,source_id,label,labels,1,unit,weight_g,volume_ml,'python_etl',
+    source_portion_id,portion_key,short_label_en,short_label_de,is_default,sort_order
+FROM etl_portions
+ON CONFLICT (id) DO UPDATE SET label=excluded.label,labels=excluded.labels,quantity=excluded.quantity,
+    unit=excluded.unit,weight_g=excluded.weight_g,volume_ml=excluded.volume_ml,
+    source_portion_id=excluded.source_portion_id,portion_key=excluded.portion_key,
+    short_label_en=excluded.short_label_en,short_label_de=excluded.short_label_de,
+    is_default=excluded.is_default,sort_order=excluded.sort_order
+WHERE nutrition.portions.origin='python_etl';
 
 INSERT INTO nutrition.classifications (food_id, source_id, system, version, code, confidence, contribution_fraction, origin)
 SELECT d.food_id, d.source_id, 'ahei_category', '1', d.category, d.confidence, NULL, 'python_etl'

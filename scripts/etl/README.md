@@ -1,6 +1,6 @@
 # RYFT Nutrition ETL
 
-Die Pipeline importiert Open Food Facts und USDA FoodData Central in `nutrition.foods` und die zugehörigen Tabellen der Go-API. Ohne `--write` gibt die CLI nur Statistiken aus. Sie verbindet sich dabei mit keiner Datenbank.
+Die Pipeline importiert Open Food Facts, USDA FoodData Central und drei kuratierte Datensätze des Bundeslebensmittelschlüssels in den bestehenden Nutrition-Katalog. Ohne `--write` gibt die CLI nur Statistiken aus. Sie verbindet sich dabei mit keiner Datenbank.
 
 ## Lokal testen
 
@@ -23,7 +23,7 @@ RYFT_ETL_TEST_DATABASE_URL="$DATABASE_URL" python -m unittest discover -s tests 
 
 ## Import starten
 
-Der folgende Dry-Run liest die veröffentlichten Quellen. `--limit` begrenzt die Zahl der extrahierten Zeilen je Release nach den SQL-Quellfiltern und vor der Validierung. `--source` akzeptiert `all`, `off`, `usda`, `foundation` und `sr-legacy`. Die drei Pfadargumente erlauben einen vollständig lokalen Testlauf.
+Der folgende Dry-Run liest die veröffentlichten Quellen. `--limit` begrenzt die Zahl der extrahierten Zeilen je Release nach den SQL-Quellfiltern und vor der Validierung. Kuratierte USDA-IDs kommen bei begrenzten Läufen zuerst. `--source` akzeptiert `all`, `off`, `usda`, `foundation`, `sr-legacy` und `bls`. Die drei Pfadargumente erlauben einen vollständig lokalen Testlauf. `--source bls` liest ausschließlich die mitgelieferten Datensätze.
 
 ```bash
 python run_etl.py --source all --limit 10000
@@ -33,9 +33,17 @@ python run_etl.py --source all --limit 10000 \
   --sr-legacy-zip /tmp/sr-legacy.zip
 ```
 
-Für Schreibläufe die regulären Go-Migrationen bis einschließlich `0051_catalog_measured_portions.sql` anwenden. Als DB-Admin einen Datenbank-Login für den Job anlegen und ihm `ryft_nutrition_etl` zuweisen. Diese Rolle sieht nur den öffentlichen Katalog und hat keine Rechte auf Mahlzeiten oder CGM. Für temporäre COPY-Tabellen braucht der Login `TEMP` auf der Datenbank. Die Transaktion bleibt jeweils bei einer DB-Session. Für `DATABASE_URL` eine direkte Verbindung oder einen Session-Pooler verwenden und TLS entsprechend der Datenbankkonfiguration erzwingen.
+Für Schreibläufe die regulären Go-Migrationen bis einschließlich `0053_catalog_portion_selection.sql` anwenden. Als DB-Admin einen Datenbank-Login für den Job anlegen und ihm `ryft_nutrition_etl` zuweisen. Diese Rolle sieht nur den öffentlichen Katalog und hat keine Rechte auf Mahlzeiten oder CGM. Für temporäre COPY-Tabellen braucht der Login `TEMP` auf der Datenbank. Die Transaktion bleibt jeweils bei einer DB-Session. Für `DATABASE_URL` eine direkte Verbindung oder einen Session-Pooler verwenden und TLS entsprechend der Datenbankkonfiguration erzwingen.
 
-USDA-Haushaltsmaße kommen aus `food_portion.csv` mit dokumentiertem Grammgewicht. Open Food Facts liefert Portionsgrößen, wenn auf dem Produkt ein eindeutiger Gramm- oder Milliliterwert steht und der Bezugswert dieselbe Einheit verwendet. Eine Aktualisierung ersetzt nur veraltete Portionen des Python-Imports. Bei bereits identisch erfassten Portionen bleibt deren ID erhalten. Gespeicherte Mahlzeiten behalten ihre Portions- und Nährwert-Snapshots.
+USDA-Haushaltsmaße kommen aus `food_portion.csv` mit dokumentiertem Grammgewicht und stabiler USDA-Portions-ID. Der Import verknüpft `measure_unit.csv` und ignoriert Platzhalter wie `undetermined` in der Anzeige. Open Food Facts liefert Portionsgrößen, wenn auf dem Produkt ein eindeutiger Gramm- oder Milliliterwert steht und der Bezugswert dieselbe Einheit verwendet. Eine Aktualisierung ersetzt nur veraltete Portionen des Python-Imports. Bei einer schon importierten USDA-Portion übernimmt die Aktualisierung ihre bestehende RYFT-ID, wenn der alte Messwert und das alte Label übereinstimmen. Spätere Korrekturen desselben USDA-Datensatzes behalten diese ID. Gespeicherte Mahlzeiten behalten ihre Portions- und Nährwert-Snapshots.
+
+### Kuratierte Grundnahrungsmittel und Quellen
+
+`staples.v1.json` versioniert RYFT-Anzeigenamen, Suchaliase, Untertitel, Zubereitung und Portionsauswahl. Es führt ungesüßten Apfelsaft als eigenen Eintrag neben dem ganzen Apfel. USDA-Nährwerte bleiben im Originaldatensatz. Eine kuratierte Portionsanzeige wird nur übernommen, wenn die Rohlieferung dieselbe USDA-Portions-ID und dasselbe Gewicht enthält. Die US-Portionsgrößen von Eiern sind als solche gekennzeichnet. Das Auflösen von Quell- und Portions-IDs ändert die bestehenden IDs im Ernährungstagebuch nicht. [USDA FoodData Central, SR Legacy](https://fdc.nal.usda.gov/download-datasets/)
+
+Vollmilch 3,5 % (M111300), fettarme Milch 1,5 % (M111200) und Magerquark (M713100) verwenden pro 100 g die ausgewählten Nährwerte aus **Max Rubner-Institut (2025), Bundeslebensmittelschlüssel (BLS), Version 4.0 — Deutsche Nährstoffdatenbank, Karlsruhe**. Der Import normalisiert diese Auswahl in das RYFT-Nährstoffregister. Die Originaldateien sind im Job nicht erforderlich. Quelle unter [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). [Bundeslebensmittelschlüssel und DOI](https://doi.org/10.25826/Data20251217-134202-0)
+
+Das Milchglas misst 200 ml. Die Gramm-Äquivalente für 30, 200 und 300 ml verwenden den Referenzwert 1,030 g/ml für Vollmilch bzw. 1,034 g/ml für teilentrahmte Milch. Das Gewicht einzelner Produkte kann davon abweichen. Die 25-, 150- und 250-g-Einträge für Magerquark sind voreingestellte Gewichte. [BZfE zum 200-ml-Milchglas](https://www.bzfe.de/presse/pressemeldungen-archiv/weniger-milch-mehr-kaese-und-butter) · [FAO/INFOODS Density Database 2.0, S. 10](https://www.fao.org/fileadmin/templates/food_composition/documents/density_DB_v2_0_01.pdf)
 
 ```sql
 GRANT ryft_nutrition_etl TO nutrition_etl_login;

@@ -10,6 +10,9 @@
       "nullable": true,
       "type": "string"
     },
+    "language": {
+      "type": "string"
+    },
     "portion_id": {
       "format": "uuid",
       "nullable": true,

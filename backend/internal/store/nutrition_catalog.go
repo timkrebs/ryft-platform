@@ -76,20 +76,23 @@ func (s *Store) SearchFoods(ctx context.Context, user uuid.UUID, q model.FoodSea
 	if q.Limit == 0 {
 		q.Limit = 20
 	}
-	err := s.nutritionTx(ctx, user, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	err := s.nutritionTx(ctx, user, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, nutritionSearchSQL, query, q.Language, q.Market, q.Limit+1, q.Offset,
 			nutrition.CatalogSearchAlias(query, q.Language, q.Market))
 		if err != nil {
 			return err
 		}
-		page.Foods, err = pgx.CollectRows(rows, pgx.RowToStructByPos[model.FoodSummary])
-		if err == nil && len(page.Foods) > q.Limit {
+		page.Foods, err = pgx.CollectRows(rows, scanFoodSummary)
+		if err != nil {
+			return err
+		}
+		if len(page.Foods) > q.Limit {
 			page.Foods = page.Foods[:q.Limit]
 			if next := q.Offset + q.Limit; next <= 1000 {
 				page.NextOffset = &next
 			}
 		}
-		return err
+		return enrichFoodSearch(ctx, tx, user, page.Foods, q.Language)
 	})
 	return page, err
 }
@@ -107,7 +110,7 @@ func (s *Store) LookupFoodBarcode(ctx context.Context, user uuid.UUID, q model.F
 		if err != nil {
 			return err
 		}
-		out.Matches, err = pgx.CollectRows(rows, pgx.RowToStructByPos[model.FoodSummary])
+		out.Matches, err = pgx.CollectRows(rows, scanFoodSummary)
 		out.Conflicted = len(out.Matches) > 1
 		if len(out.Matches) > 20 {
 			out.Matches = out.Matches[:20]
@@ -120,11 +123,30 @@ func (s *Store) LookupFoodBarcode(ctx context.Context, user uuid.UUID, q model.F
 
 // Food loads an active food and its full reference profile.
 func (s *Store) Food(ctx context.Context, user, id uuid.UUID) (model.FoodDetail, error) {
+	return s.FoodForLanguage(ctx, user, id, "")
+}
+
+// FoodForLanguage reads the catalog detail with scoped localized selection hints.
+func (s *Store) FoodForLanguage(ctx context.Context, user, id uuid.UUID, language string) (model.FoodDetail, error) {
 	var out model.FoodDetail
+	language = strings.ToLower(language)
+	if language != "" && !nutrition.Language(language) {
+		return out, nutrition.ErrInvalid
+	}
 	err := s.nutritionTx(ctx, user, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
 		out, err = nutritionFood(ctx, tx, user, id)
-		return err
+		if err != nil {
+			return err
+		}
+		preferences, err := loadFoodPreferences(ctx, tx, user, []string{id.String()})
+		if err != nil {
+			return err
+		}
+		addFoodSelections(&out, preferences[id], language)
+		out.Name = nutrition.CatalogFoodName(out, language)
+		out.LastUsedSelection = out.LastUsedPortion
+		return nil
 	})
 	return out, err
 }
@@ -147,14 +169,14 @@ func nutritionFood(ctx context.Context, tx pgx.Tx, user, id uuid.UUID) (model.Fo
 			f.Names, err = pgx.CollectRows(rows, pgx.RowToStructByPos[model.FoodName])
 			return err
 		})
-	batch.Queue(`SELECT id, provider, external_id, dataset_version, source_url, license_identifier, source_updated_at
+	batch.Queue(`SELECT id,provider,external_id,dataset_version,source_url,license_identifier,coalesce(attribution,''),source_updated_at
 		FROM nutrition.food_sources WHERE food_id=$1 ORDER BY id`, id).Query(func(rows pgx.Rows) error {
 		var err error
 		f.Sources, err = pgx.CollectRows(rows, pgx.RowToStructByPos[model.FoodSource])
 		return err
 	})
-	batch.Queue(`SELECT id, source_id, label, labels, quantity, unit, weight_g, volume_ml, estimated
-		FROM nutrition.portions WHERE food_id=$1 ORDER BY label, id`, id).Query(func(rows pgx.Rows) error {
+	batch.Queue(`SELECT `+foodPortionFields+` FROM nutrition.portions p WHERE p.food_id=$1
+		ORDER BY p.sort_order,p.label,p.id`, id).Query(func(rows pgx.Rows) error {
 		var err error
 		f.Portions, err = pgx.CollectRows(rows, scanFoodPortion)
 		return err
@@ -185,8 +207,19 @@ func nutritionFood(ctx context.Context, tx pgx.Tx, user, id uuid.UUID) (model.Fo
 
 func scanFoodPortion(row pgx.CollectableRow) (model.FoodPortion, error) {
 	var p model.FoodPortion
-	err := row.Scan(&p.ID, &p.SourceID, &p.Label, &p.Labels, &p.Quantity, &p.Unit, &p.WeightG, &p.VolumeML, &p.Estimated)
+	err := scanFoodPortionWith(row, &p)
 	return p, err
+}
+
+func scanFoodPortionWith(row pgx.CollectableRow, p *model.FoodPortion, prefix ...any) error {
+	return row.Scan(append(prefix, &p.ID, &p.SourceID, &p.Label, &p.Labels, &p.Quantity, &p.Unit, &p.WeightG,
+		&p.VolumeML, &p.Estimated, &p.PortionKey, &p.ShortLabelEN, &p.ShortLabelDE, &p.IsDefault, &p.SortOrder)...)
+}
+
+func scanFoodSummary(row pgx.CollectableRow) (model.FoodSummary, error) {
+	var f model.FoodSummary
+	err := row.Scan(&f.ID, &f.Name, &f.Brand, &f.Type, &f.Quality)
+	return f, err
 }
 
 func scanFoodNutrient(row pgx.CollectableRow) (model.FoodNutrient, error) {
@@ -199,10 +232,10 @@ func scanFoodNutrient(row pgx.CollectableRow) (model.FoodNutrient, error) {
 func (s *Store) FoodPortions(ctx context.Context, user, id uuid.UUID) ([]model.FoodPortion, error) {
 	var out []model.FoodPortion
 	err := s.nutritionTx(ctx, user, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT p.id, p.source_id, p.label, p.labels, p.quantity, p.unit, p.weight_g, p.volume_ml, p.estimated
+		rows, err := tx.Query(ctx, `SELECT `+foodPortionFields+`
 			FROM nutrition.foods f LEFT JOIN nutrition.portions p ON p.food_id=f.id
 			WHERE f.id=$1 AND f.status='active' AND (f.owner_user_id IS NULL OR f.owner_user_id=$2)
-			ORDER BY p.label, p.id`, id, user)
+			ORDER BY p.sort_order,p.label,p.id`, id, user)
 		if err != nil {
 			return err
 		}
@@ -458,7 +491,10 @@ func decimalStrings(values []float64) []string {
 	return out
 }
 
-const nutritionSearchSQL = `SELECT * FROM nutrition.search_foods($1,$2,$3,$4,$5,$6)`
+const foodPortionFields = `p.id,p.source_id,p.label,p.labels,p.quantity,p.unit,p.weight_g,p.volume_ml,p.estimated,
+	coalesce(p.portion_key,''),coalesce(p.short_label_en,''),coalesce(p.short_label_de,''),p.is_default,p.sort_order`
+
+const nutritionSearchSQL = `SELECT * FROM nutrition.search_foods_v2($1,$2,$3,$4,$5,$6)`
 
 const nutritionBarcodeSQL = `SELECT f.id, f.canonical_name, f.brand, f.food_type, f.quality
 FROM (SELECT food_id, bool_or(market=$2 AND $2<>'') AS in_market FROM nutrition.barcodes

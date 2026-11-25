@@ -47,8 +47,10 @@ func (h *handler) nutritionRoutes(mux *http.ServeMux) {
 	}
 	register("POST", "/foods/search", nutritionBody(http.StatusOK, h.searchNutritionFoods))
 	register("POST", "/foods/barcode", nutritionBody(http.StatusOK, h.nutritionBarcode))
-	register("GET", "/foods/{id}", nutritionByID(h.st.Food))
+	register("GET", "/foods/{id}", h.nutritionFoodDetail)
 	register("GET", "/foods/{id}/portions", nutritionByID(h.st.FoodPortions))
+	register("PUT", "/foods/{id}/favorite", h.nutritionFoodFavorite(h.st.PutFoodFavorite))
+	erasure("/foods/{id}/favorite", h.nutritionFoodFavorite(h.st.DeleteFoodFavorite))
 	register("POST", "/foods/custom", nutritionBody(http.StatusOK, h.st.CreateCustomFood))
 	advanced("POST", "/foods/submissions", nutritionBody(http.StatusOK, h.st.SubmitFood))
 	register("POST", "/meals", h.createNutritionMeal)
@@ -152,6 +154,23 @@ func nutritionByID[O any](fn func(context.Context, uuid.UUID, uuid.UUID) (O, err
 		}
 		out, err := fn(r.Context(), userOf(r).ID, id)
 		nutritionAnswer(w, r, http.StatusOK, out, err)
+	}
+}
+
+func (h *handler) nutritionFoodDetail(w http.ResponseWriter, r *http.Request) {
+	nutritionByID(func(ctx context.Context, user, id uuid.UUID) (model.FoodDetail, error) {
+		return h.st.FoodForLanguage(ctx, user, id, r.URL.Query().Get("language"))
+	})(w, r)
+}
+
+func (h *handler) nutritionFoodFavorite(write func(context.Context, uuid.UUID, uuid.UUID) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := uuid.Parse(r.PathValue("id"))
+		if err != nil || id == uuid.Nil {
+			httpx.NotFound(w, r)
+			return
+		}
+		nutritionAnswer(w, r, http.StatusNoContent, nil, write(r.Context(), userOf(r).ID, id))
 	}
 }
 

@@ -256,7 +256,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/metrics` | owns every Prometheus metric the services export, declared in one place, and serves them on /metrics or pushes them by OTLP. | none | 1 file |
 | `internal/model` | owns the wire types of docs/API.md, the event payloads the services exchange, and the error code constants. | none | 5 files |
 | `internal/notify` | decides what RYFT pushes, to whom and when. | apns, events, logx, metrics, model, store | 4 files |
-| `internal/nutrition` | validates catalog and meal inputs and computes food nutrient snapshots. | model | 2 files |
+| `internal/nutrition` | validates catalog and meal inputs and computes food nutrient snapshots. | model | 3 files |
 | `internal/nutrition/importer` | streams and validates versioned food datasets for the Nutrition catalog. | model, nutrition | 1 file |
 | `internal/nutrition/score` | computes nutrition quality, glucose impact, contextual recovery and guidance from timestamped inputs. | model | 3 files |
 | `internal/periodization` | turns training and nutrition observations into bounded daily targets. | energy, model | 1 file |
@@ -266,7 +266,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/scoring/workoutdup` | owns the two rules that make one activity one workout: the same-source fold and the cross-source duplicate mark. | model | 1 file |
 | `internal/sealed` | encrypts the few secrets the platform stores (Apple refresh tokens, direct connections' tokens and PKCE verifiers) with AES-256-GCM. | none | 1 file |
 | `internal/smoke` | owns the Go end-to-end smoke against a running stack. | model | 1 file |
-| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, connect, energy, evaluation, events, events/outbox, flags, logx, metrics, model, nutrition, nutrition/score, periodization, scoring/workoutdup, train, wearables | 33 files (Postgres) |
+| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, connect, energy, evaluation, events, events/outbox, flags, logx, metrics, model, nutrition, nutrition/score, periodization, scoring/workoutdup, train, wearables | 34 files (Postgres) |
 | `internal/testsupport` | holds the helpers the Postgres-backed tests of several packages share. | none | via cmd/api, cmd/ingest, db, events/outbox, store |
 | `internal/train` | holds the pure rules of the Train feature that are not scoring. | model | 2 files |
 | `internal/wearables` | normalizes workout facts and resolves overlapping observations. | model | 2 files |

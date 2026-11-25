@@ -1,5 +1,9 @@
 # RYFT platform — status
 
+## Nutrition catalog selections (2026-11-25, D284)
+
+Migrations 0053–0054 introduce measured and localized portion choices, account-scoped favorites, recent diary selections and historic portion labels. Confirm catalog and iPhone acceptance before release. The normal Platform pipeline applies migrations before a reviewed API rollout. Its previous search functions remain available for a compatible binary rollback.
+
 ## German Nutrition food suggestions (2026-11-25, D283)
 
 In an English-only test catalog, typing `Apfe` now suggests `Apple` and `Apple juice`. `Apfels` narrows the suggestions to `Apple juice`. Go unit and PostgreSQL search tests passed locally. The change uses the existing search function and does not require a migration. Deployment and an on-device prefix check are pending. After review and merge, use the normal Platform deploy workflow.

@@ -6840,3 +6840,7 @@ When smoke is enabled, check the dedicated session after the tip check and befor
 ## D283 — Use one bilingual catalog term for Nutrition suggestions (2026-11-25)
 
 After preserving exact dictionary matches, expand prefixes of at least four normalized characters when the shortest alternate is a prefix of every other alternate. This lets `Apfe` find English apple and apple juice entries without requiring German catalog labels. Competing alternates without a shared dictionary term fall back to primary search. The existing query ranks direct lexical matches ahead of the generic-only alternate and returns catalog labels and IDs.
+
+## D284 — Localize catalog selections and preserve logged portion labels (2026-11-25)
+
+Catalog metadata identifies supported staple forms and measured defaults. Prioritize whole foods on broad staple searches, preserve explicit variant intent, and rank eligible records with account-scoped favorites and 90 days of remaining diary history. Preview amounts through the meal calculator. Reuse a retired or changed portion by its stored compatible mass or volume. Snapshot item labels and only recover a linked legacy label when the existing unit and measurements still agree. Keep source IDs, BLS CC BY attribution and the old search functions through rollout.
