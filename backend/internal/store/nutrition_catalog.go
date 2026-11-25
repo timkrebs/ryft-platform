@@ -66,6 +66,7 @@ func (s *Store) HasNutritionData(ctx context.Context, user uuid.UUID) (bool, err
 func (s *Store) SearchFoods(ctx context.Context, user uuid.UUID, q model.FoodSearch) (model.FoodSearchPage, error) {
 	page := model.FoodSearchPage{Foods: []model.FoodSummary{}}
 	query := nutrition.Normalize(q.Query)
+	q.Language, q.Market = strings.ToLower(q.Language), strings.ToUpper(q.Market)
 	if !nutrition.Text(q.Query, 100) || query == "" || !nutrition.Market(q.Market) ||
 		(q.Language != "" && !nutrition.Language(q.Language)) || q.Limit < 0 || q.Limit > 50 ||
 		q.Offset < 0 || q.Offset > 1000 {
@@ -76,7 +77,8 @@ func (s *Store) SearchFoods(ctx context.Context, user uuid.UUID, q model.FoodSea
 		q.Limit = 20
 	}
 	err := s.nutritionTx(ctx, user, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, nutritionSearchSQL, query, q.Language, q.Market, q.Limit+1, q.Offset)
+		rows, err := tx.Query(ctx, nutritionSearchSQL, query, q.Language, q.Market, q.Limit+1, q.Offset,
+			nutrition.CatalogSearchAlias(query, q.Language, q.Market))
 		if err != nil {
 			return err
 		}
@@ -456,7 +458,7 @@ func decimalStrings(values []float64) []string {
 	return out
 }
 
-const nutritionSearchSQL = `SELECT * FROM nutrition.search_foods($1,$2,$3,$4,$5)`
+const nutritionSearchSQL = `SELECT * FROM nutrition.search_foods($1,$2,$3,$4,$5,$6)`
 
 const nutritionBarcodeSQL = `SELECT f.id, f.canonical_name, f.brand, f.food_type, f.quality
 FROM (SELECT food_id, bool_or(market=$2 AND $2<>'') AS in_market FROM nutrition.barcodes

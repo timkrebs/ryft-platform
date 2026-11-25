@@ -206,10 +206,15 @@ type Timing struct {
 	LocalTimes map[uuid.UUID]time.Time
 }
 
+// UnscoredDaily retains the score response shape when there are no available scores.
+func UnscoredDaily() model.NutritionScores {
+	return model.NutritionScores{ScoreVersion: Version, MealGlucoseScores: []model.NutritionMealGlucoseScore{}}
+}
+
 // Daily computes the three day scores and the points available for display.
 func Daily(meals []model.NutritionMeal, calorieTarget float64, glucose map[uuid.UUID]model.NutritionMealGlucoseScore,
 	timing *Timing) model.NutritionScores {
-	result := model.NutritionScores{ScoreVersion: Version, MealGlucoseScores: []model.NutritionMealGlucoseScore{}}
+	result := UnscoredDaily()
 	ordered := slices.Clone(meals)
 	slices.SortFunc(ordered, compareMeals)
 	var q qualityTotals

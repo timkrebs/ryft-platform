@@ -789,7 +789,7 @@ func TestConfirmAfterRevokedClearsTheInbox(t *testing.T) {
 	if got := store1(t, st, notice); got != HookStored {
 		t.Fatal(got)
 	}
-	if res, err := st.ApplyDeregistration(ctx, inboxID(t, pool, "deregistration", "dereg-1"), 1, u, testProvider, nil); err != nil || res.Outcome != DirectApplied {
+	if res, err := st.ApplyDeregistration(ctx, inboxID(t, pool, "deregistration", "dereg-1"), 1, u, testProvider, policy, nil); err != nil || res.Outcome != DirectApplied {
 		t.Fatalf("%+v %v", res, err)
 	}
 	connectAs(t, st, u, "dr-1") // reconnects the same provider account

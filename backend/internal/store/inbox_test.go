@@ -77,6 +77,47 @@ func TestStoreInboxOutcomes(t *testing.T) {
 	}
 }
 
+func TestStoreInboxConcurrentDuplicatesEmitOnce(t *testing.T) {
+	st, pool := testStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	u := newAccount(t, st)
+	connectAs(t, st, u, "p1")
+	it := item("sleep", "n1", "p1", 1, `{"a":1}`)
+	type result struct {
+		out []HookOutcome
+		err error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	emitted := make(chan model.InboxReceivedEvent, 2)
+	for range 2 {
+		go func() {
+			<-start
+			out, err := st.StoreInbox(ctx, testProvider, policy, []HookItem{it}, func(_ pgx.Tx, ev model.InboxReceivedEvent) error {
+				emitted <- ev
+				return nil
+			})
+			results <- result{out, err}
+		}()
+	}
+	close(start)
+	outcomes := map[HookOutcome]int{}
+	for range 2 {
+		got := <-results
+		if got.err != nil || len(got.out) != 1 {
+			t.Fatalf("duplicate delivery: %+v", got)
+		}
+		outcomes[got.out[0]]++
+	}
+	if outcomes[HookStored] != 1 || outcomes[HookDuplicate] != 1 || len(emitted) != 1 {
+		t.Fatalf("outcomes=%v emitted=%d", outcomes, len(emitted))
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM provider_inbox WHERE user_id=$1 AND state='pending'`, u); n != 1 {
+		t.Fatalf("pending rows: %d", n)
+	}
+}
+
 // A changed re-push of a processed row goes back to pending with a new revision (design 7.4).
 func TestChangedRepushReopensAProcessedRow(t *testing.T) {
 	st, pool := testStore(t)
@@ -265,23 +306,52 @@ func TestInboxConsumerHelpers(t *testing.T) {
 		t.Fatalf("row %+v %v", row, err)
 	}
 	for want := 1; want <= 2; want++ {
-		if n, err := st.BumpInboxAttempt(ctx, id); err != nil || n != want {
+		if n, err := st.BumpInboxAttempt(ctx, id, row.Revision); err != nil || n != want {
 			t.Fatalf("bump %d %v", n, err)
 		}
 	}
-	if err := st.FinishInbox(ctx, id, "failed", "parse"); err != nil {
+	if err := st.FinishInbox(ctx, id, row.Revision, "failed", "parse"); err != nil {
 		t.Fatal(err)
 	}
 	if row, _ = st.InboxRow(ctx, id); row.State != "failed" || row.Payload == nil {
 		t.Fatalf("a failed row keeps its payload: %+v", row)
 	}
-	if _, err := st.BumpInboxAttempt(ctx, id); !errors.Is(err, ErrNotFound) {
+	if _, err := st.BumpInboxAttempt(ctx, id, row.Revision); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("bump after failed: %v", err)
 	}
 	if _, err := st.InboxRow(ctx, id+1000); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
 	_ = connect.KindHRV
+}
+
+func TestInboxAttemptsAndFinishApplyOnlyToCurrentRevision(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+	u := newAccount(t, st)
+	connectAs(t, st, u, "p1")
+	store1(t, st, item("hrv", "h1", "p1", 1, `{"x": 1}`))
+	id := inboxID(t, pool, "hrv", "h1")
+	previous, err := st.InboxRow(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store1(t, st, item("hrv", "h1", "p1", 2, `{"x": 2}`)); got != HookUpdated {
+		t.Fatal(got)
+	}
+	if _, err := st.BumpInboxAttempt(ctx, id, previous.Revision); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old attempt reached the new revision: %v", err)
+	}
+	if err := st.FinishInbox(ctx, id, previous.Revision, "dropped", "no_consent"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old verdict reached the new revision: %v", err)
+	}
+	current, err := st.InboxRow(ctx, id)
+	if err != nil || current.Revision != previous.Revision+1 || current.State != "pending" || string(current.Payload) != `{"x": 2}` {
+		t.Fatalf("current row: %+v %v", current, err)
+	}
+	if n, err := st.BumpInboxAttempt(ctx, id, current.Revision); err != nil || n != 1 {
+		t.Fatalf("current first attempt: %d %v", n, err)
+	}
 }
 
 // P2-3: PendingDirect lists the account's other pending sleep and hrv rows, oldest first, with payloads, and only those.
@@ -363,10 +433,10 @@ func TestApplyDirectRefusesAnOlderRevision(t *testing.T) {
 	store1(t, st, item("permissions", "p", "rv1", 1, `{"x":1}`))
 	pid := inboxID(t, pool, "permissions", "p")
 	store1(t, st, item("permissions", "p", "rv1", 2, `{"x":2}`))
-	if o, err := st.ApplyPermissions(ctx, pid, 1, u, testProvider, true); err != nil || o != DirectNotPending {
+	if o, err := st.ApplyPermissions(ctx, pid, 1, u, testProvider, policy, true); err != nil || o != DirectNotPending {
 		t.Fatalf("permissions at an old revision: %v %v", o, err)
 	}
-	if o, err := st.ApplyPermissions(ctx, pid, 2, u, testProvider, true); err != nil || o != DirectApplied {
+	if o, err := st.ApplyPermissions(ctx, pid, 2, u, testProvider, policy, true); err != nil || o != DirectApplied {
 		t.Fatalf("permissions at the current revision: %v %v", o, err)
 	}
 }

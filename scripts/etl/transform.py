@@ -19,6 +19,8 @@ ALCOHOL = {"en:alcoholic-beverages", "en:wines", "en:beers", "en:spirits"}
 VOLUME = {"ml", "cl", "dl", "l", "fl oz"}
 MASS = {"g", "mg", "kg", "oz", "lb"}
 LANG = re.compile(r"^[a-z]{2,8}(?:-[a-z0-9]{2,8})*$")
+DECLARED_SERVING = re.compile(r"\s*([0-9]+(?:[.,][0-9]+)?)\s*(g|ml)\s*", re.IGNORECASE)
+DECLARED_SERVING_SUFFIX = re.compile(r"[^()]+\(([^()]+)\)\s*")
 FIBER_EXCEPTION_G = 15
 ATWATER_FRACTION = 0.30
 MG_PER_G = 1_000
@@ -99,6 +101,14 @@ class Nutrient:
 
 
 @dataclass(frozen=True)
+class Portion:
+    label: str
+    unit: str
+    weight_g: float | None = None
+    volume_ml: float | None = None
+
+
+@dataclass(frozen=True)
 class Food:
     provider: str
     external_id: str
@@ -114,11 +124,14 @@ class Food:
     omega3_mg: float | None
     warnings: tuple[str, ...]
     reference_unit: str = "g"
+    portions: tuple[Portion, ...] = ()
 
     @property
     def checksum(self) -> bytes:
         data = asdict(self)
         data.pop("version")
+        if not self.portions:
+            data.pop("portions")
         return sha256(dumps(data, sort_keys=True, default=str, allow_nan=False).encode()).digest()
 
     @property
@@ -139,6 +152,40 @@ def number(x: object) -> float | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return val if math.isfinite(val) and val >= 0 else None
+
+
+def measured_quantity(raw: object) -> float | None:
+    value = number(raw)
+    return value if value is not None and 0 < value <= 100_000 and round(value, 6) == value else None
+
+
+def off_serving(text: str | None, reference_unit: str) -> tuple[Portion, ...]:
+    if not text or len(text) > 200:
+        return ()
+    measure = DECLARED_SERVING.fullmatch(text)
+    if not measure and (declared := DECLARED_SERVING_SUFFIX.fullmatch(text)):
+        measure = DECLARED_SERVING.fullmatch(declared[1])
+    if not measure or (unit := measure[2].lower()) != reference_unit:
+        return ()
+    size = measured_quantity(measure[1].replace(",", "."))
+    if size is None:
+        return ()
+    return (Portion("Serving", "serving", weight_g=size if unit == "g" else None,
+                    volume_ml=size if unit == "ml" else None),)
+
+
+def usda_measures(rows: list[dict] | None) -> tuple[Portion, ...]:
+    result = {}
+    for row in (rows or [])[:50]:
+        desc = row.get("description")
+        if not desc and (row.get("measure") or row.get("modifier")):
+            desc = " ".join(part for key in ("amount", "measure", "modifier") if (part := row.get(key)))
+        grams = measured_quantity(row.get("grams"))
+        if not desc or len(desc) > 200 or "\0" in desc or grams is None:
+            continue
+        portion = Portion(desc, "portion", weight_g=grams)
+        result[portion] = None
+    return tuple(result)
 
 
 def gtin(code: str) -> str | None:
@@ -259,7 +306,8 @@ def off_food(row: dict, version: str) -> Food:
     omega_mg = raw["omega-3-fat"] * MG_PER_G if "omega_3" in amounts else None
     brand = clean((row.get("brands") or "").split(",", 1)[0], 160)
     return Food("off", code, version, name, brand, sorted(names), markets, barcode, updated,
-                sorted(amounts.values(), key=lambda n: n.code), category, omega_mg, warnings, basis)
+                sorted(amounts.values(), key=lambda n: n.code), category, omega_mg, warnings, basis,
+                off_serving(row.get("serving_size"), basis))
 
 
 def usda_food(row: dict, version: str) -> Food:
@@ -297,4 +345,5 @@ def usda_food(row: dict, version: str) -> Food:
     except ValueError:
         updated = None
     return Food("usda", external_id, version, name, "", [("en", name)], [], None, updated,
-                sorted(amounts.values(), key=lambda n: n.code), category, None, warnings)
+                sorted(amounts.values(), key=lambda n: n.code), category, None, warnings,
+                portions=usda_measures(row.get("portions")))

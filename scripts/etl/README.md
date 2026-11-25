@@ -33,7 +33,9 @@ python run_etl.py --source all --limit 10000 \
   --sr-legacy-zip /tmp/sr-legacy.zip
 ```
 
-Für Schreibläufe die regulären Go-Migrationen bis einschließlich `0045_nutrition_classification_origin.sql` anwenden. Als DB-Admin einen Datenbank-Login für den Job anlegen und ihm `ryft_nutrition_etl` zuweisen. Diese Rolle sieht nur den öffentlichen Katalog und hat keine Rechte auf Mahlzeiten oder CGM. Für temporäre COPY-Tabellen braucht der Login `TEMP` auf der Datenbank. Die Transaktion bleibt jeweils bei einer DB-Session. Für `DATABASE_URL` eine direkte Verbindung oder einen Session-Pooler verwenden und TLS entsprechend der Datenbankkonfiguration erzwingen.
+Für Schreibläufe die regulären Go-Migrationen bis einschließlich `0051_catalog_measured_portions.sql` anwenden. Als DB-Admin einen Datenbank-Login für den Job anlegen und ihm `ryft_nutrition_etl` zuweisen. Diese Rolle sieht nur den öffentlichen Katalog und hat keine Rechte auf Mahlzeiten oder CGM. Für temporäre COPY-Tabellen braucht der Login `TEMP` auf der Datenbank. Die Transaktion bleibt jeweils bei einer DB-Session. Für `DATABASE_URL` eine direkte Verbindung oder einen Session-Pooler verwenden und TLS entsprechend der Datenbankkonfiguration erzwingen.
+
+USDA-Haushaltsmaße kommen aus `food_portion.csv` mit dokumentiertem Grammgewicht. Open Food Facts liefert Portionsgrößen, wenn auf dem Produkt ein eindeutiger Gramm- oder Milliliterwert steht und der Bezugswert dieselbe Einheit verwendet. Eine Aktualisierung ersetzt nur veraltete Portionen des Python-Imports. Bei bereits identisch erfassten Portionen bleibt deren ID erhalten. Gespeicherte Mahlzeiten behalten ihre Portions- und Nährwert-Snapshots.
 
 ```sql
 GRANT ryft_nutrition_etl TO nutrition_etl_login;
@@ -46,7 +48,9 @@ python run_etl.py --source all --limit 10000 --write
 python run_etl.py --source all --full --write
 ```
 
-Für Cloud SQL alternativ `INSTANCE_CONNECTION_NAME`, `PGUSER`, `PGDATABASE` und `PGPASSWORD` setzen. Der Client nutzt dann `/cloudsql/$INSTANCE_CONNECTION_NAME`. Auf Cloud Run muss der Job diese Instanz eingebunden haben und sein Konto `roles/cloudsql.client` besitzen. Für Supabase `DATABASE_URL` verwenden. Eine Cloud-SQL-Instanz mit ausschließlich privater IP braucht einen passenden Netzwerkpfad, auch wenn der Client einen lokalen Socket verwendet. [Cloud SQL und Cloud Run](https://docs.cloud.google.com/sql/docs/postgres/connect-instance-cloud-run)
+Für Cloud SQL alternativ `INSTANCE_CONNECTION_NAME`, `PGUSER`, `PGDATABASE` und `PGPASSWORD` setzen. Der Client nutzt dann `/cloudsql/$INSTANCE_CONNECTION_NAME`. Auf Cloud Run muss der Job diese Instanz eingebunden haben und sein Konto `roles/cloudsql.client` besitzen. Eine Cloud-SQL-Instanz mit ausschließlich privater IP braucht einen passenden Netzwerkpfad, auch wenn der Client einen lokalen Socket verwendet. [Cloud SQL und Cloud Run](https://docs.cloud.google.com/sql/docs/postgres/connect-instance-cloud-run)
+
+Für Supabase auf Cloud Run muss `DATABASE_URL` den freigegebenen Session-Pooler, Port `5432`, Datenbank `postgres`, den Login mit Projekt-Suffix und `sslmode=verify-full` verwenden. Das Image enthält die von der Go-API verwendete Supabase-CA. Falls der DSN `sslrootcert` enthält, muss der Wert `/etc/ryft/supabase-ca.crt` sein. Prüfe den geheimen DSN und das konkrete Image vor der Freigabe. [Produktions-Preflight](../../infra/gcp/README.md#nutrition-on-cloud-run)
 
 ## Verarbeitung und Wiederholung
 
@@ -78,12 +82,15 @@ Für `ryftlab-prod` gilt die [Terraform-Rollout-Anleitung](../../infra/gcp/READM
 
 Artifact Registry, Cloud Build, Cloud Run, Cloud Scheduler und Secret Manager müssen im Zielprojekt eingerichtet sein. Für den Socket-Pfad kommt die Cloud SQL Admin API hinzu. Das Cloud-Build-Konto benötigt Schreibrechte im Artifact-Registry-Repository. Das Jobkonto benötigt Zugriff auf das konfigurierte Secret. Das Deploy-Konto muss die beiden Service Accounts verwenden sowie den Job und seinen Scheduler-Eintrag verwalten können. Das Skript weist dem Scheduler-Konto `roles/run.invoker` am Job zu. [Cloud Run Jobs zeitgesteuert starten](https://docs.cloud.google.com/run/docs/execute/jobs-on-schedule)
 
+Für Supabase `SUPABASE_POOLER_HOST` und `SUPABASE_PROJECT_REF` aus dem freigegebenen Testprojekt exportieren. Der Build liest die öffentliche CA aus `backend/certs/supabase-ca.crt`.
+
 ```bash
 export GCP_PROJECT=my-staging-project GCP_REGION=europe-west1
 export ARTIFACT_REPOSITORY=nutrition IMAGE_TAG="$(git rev-parse --short HEAD)-$(date -u +%Y%m%d%H%M%S)"
 export JOB_SERVICE_ACCOUNT="nutrition-etl@$GCP_PROJECT.iam.gserviceaccount.com"
 export SCHEDULER_SERVICE_ACCOUNT="nutrition-scheduler@$GCP_PROJECT.iam.gserviceaccount.com"
 export DATABASE_URL_SECRET=nutrition-db-url:1
+: "${SUPABASE_POOLER_HOST:?Test-Pooler exportieren}" "${SUPABASE_PROJECT_REF:?Testprojekt-Ref exportieren}"
 bash deploy_job.sh --plan
 ```
 

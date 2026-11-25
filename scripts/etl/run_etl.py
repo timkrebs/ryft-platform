@@ -22,7 +22,7 @@ from extract import connection, off_rows, usda_rows
 from import_pg import connect, load_batch
 from transform import Reject, off_food, usda_food
 
-PIPELINE_VERSION = "py-etl2"
+PIPELINE_VERSION = "py-etl3"
 USDA_KINDS = ("foundation_food", "sr_legacy_food")
 
 

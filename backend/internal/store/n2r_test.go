@@ -70,7 +70,7 @@ func TestN2RPostgresMorningGuidanceAndIsolation(t *testing.T) {
 	if !foundStrength || !foundRed {
 		t.Fatalf("missing cards: %+v", guide.Cards)
 	}
-	daily, err := st.NutritionDailyWithN2R(ctx, a, guide.Date, guide.Date, false, now)
+	daily, err := st.NutritionDailyWithN2R(ctx, a, guide.Date, guide.Date, false, now, "")
 	if err != nil || len(daily) != 1 || daily[0].N2R == nil || daily[0].N2R.Budget.EnergyTarget != 2230 {
 		t.Fatalf("daily %+v %v", daily, err)
 	}
@@ -97,6 +97,26 @@ func TestN2RPostgresMorningGuidanceAndIsolation(t *testing.T) {
 	}
 	if err := root.QueryRow(ctx, `SELECT count(*) FROM nutrition.daily_biometric_baselines WHERE user_id=$1`, a).Scan(&count); err != nil || count != 2 {
 		t.Fatalf("nightly upsert: %d %v", count, err)
+	}
+	// A wake day selected before withdrawal must lose its authority to process.
+	due := dueNight{UserID: a, Date: now.Format(time.DateOnly)}
+	if _, err := root.Exec(ctx, `UPDATE nutrition.daily_biometric_baselines
+		SET processed_at='2001-01-01T00:00:00Z' WHERE user_id=$1 AND wake_date=$2::date`, a, due.Date); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RevokeConsent(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.refreshN2RNight(ctx, due, now, policy); err != nil {
+		t.Fatal(err)
+	}
+	var unchanged bool
+	if err := root.QueryRow(ctx, `SELECT processed_at='2001-01-01T00:00:00Z' FROM nutrition.daily_biometric_baselines
+		WHERE user_id=$1 AND wake_date=$2::date`, a, due.Date).Scan(&unchanged); err != nil || !unchanged {
+		t.Fatalf("nightly processing after withdrawal: %v %v", unchanged, err)
+	}
+	if err := st.GrantConsent(ctx, a, policy, nil); err != nil {
+		t.Fatal(err)
 	}
 	if err := st.nutritionTx(ctx, b, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `SELECT count(*) FROM nutrition.daily_biometric_baselines WHERE user_id=$1`, a).Scan(&count)

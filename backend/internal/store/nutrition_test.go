@@ -52,6 +52,54 @@ func nutritionTestStore(t *testing.T) (*Store, *pgxpool.Pool, uuid.UUID, uuid.UU
 	return st, root, a, b
 }
 
+func TestNutritionBilingualCatalogSearch(t *testing.T) {
+	ctx := context.Background()
+	st, root, user, _ := nutritionTestStore(t)
+	add := func(label, language, foodType string, markets []string) uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		if _, err := root.Exec(ctx, `INSERT INTO nutrition.foods(id,canonical_name,food_type,quality,markets)
+			VALUES ($1,$2,$3,'source_reported',$4)`, id, label, foodType, markets); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := root.Exec(ctx, `INSERT INTO nutrition.food_sources(id,food_id,provider,external_id,dataset_version,license_identifier)
+			VALUES ($1,$1,'ryft',$2,'test','RYFT')`, id, id.String()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := root.Exec(ctx, `INSERT INTO nutrition.food_names(food_id,source_id,language,label,normalized)
+			VALUES ($1,$1,$2,$3,$4)`, id, language, label, nutrition.Normalize(label)); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	banana := add("Bananas, raw", "en", "generic", []string{})
+	juice := add("Apple juice", "en", "generic", []string{"DE"})
+	bean := add("Kichererbsen", "de", "generic", []string{})
+	add("Lentils brand meal", "en", "branded", []string{"DE"})
+	de := add("Quark", "de", "branded", []string{"DE"})
+	ch := add("Quark", "de", "branded", []string{"CH"})
+	for _, tc := range []struct {
+		query, language, market string
+		want                    uuid.UUID
+	}{
+		{"Apfel", "de", "DE", fixtureApple}, {"Apple", "en", "DE", fixtureApple}, {"Apfelsaft", "de", "DE", juice},
+		{"Banane", "de-DE", "de", banana}, {"chickpeas", "en", "", bean},
+		{"Linsen", "de", "DE", uuid.Nil}, {"Quark", "de", "DE", de}, {"Quark", "de", "CH", ch},
+	} {
+		page, err := st.SearchFoods(ctx, user, model.FoodSearch{Query: tc.query, Language: tc.language, Market: tc.market})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.query, err)
+		}
+		got := uuid.Nil
+		if len(page.Foods) > 0 {
+			got = page.Foods[0].ID
+		}
+		if got != tc.want {
+			t.Errorf("%+v: first ID %s", tc, got)
+		}
+	}
+}
+
 func TestNutritionCatalogPrivacyAndSearch(t *testing.T) {
 	ctx := context.Background()
 	st, root, a, b := nutritionTestStore(t)
@@ -328,6 +376,44 @@ func TestNutritionImportIdempotencyAndRollback(t *testing.T) {
 	food, err := st.Food(ctx, a, got.Matches[0].ID)
 	if err != nil || food.Name != "New name" || food.Sources[0].DatasetVersion != "fixture-v2" {
 		t.Fatalf("updated source: %+v %v", food, err)
+	}
+}
+
+func TestNutritionDailyWithoutConsentSkipsScoreInputs(t *testing.T) {
+	ctx := context.Background()
+	st, root, owner, _ := nutritionTestStore(t)
+	const policy = "2026-10-26"
+	const day = "2026-11-24"
+	at := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	if _, _, err := st.CreateNutritionMeal(ctx, owner, model.NutritionMealInput{
+		ClientRequestID: uuid.New(), ConsumedAt: at, Timezone: "UTC", MealType: "lunch", InputMethod: "manual_search",
+		Items: []model.NutritionMealItemInput{{FoodID: fixtureApple, Quantity: 150, Unit: "g"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutNutritionGlucose(ctx, owner, []model.NutritionGlucoseSample{
+		{Timestamp: at, GlucoseMgDL: 100}, {Timestamp: at.Add(30 * time.Minute), GlucoseMgDL: 100},
+		{Timestamp: at.Add(time.Hour), GlucoseMgDL: 100},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.GrantConsent(ctx, owner, policy, nil); err != nil {
+		t.Fatal(err)
+	}
+	days, err := st.NutritionDailyWithN2R(ctx, owner, day, day, true, at, policy)
+	if err != nil || len(days) != 1 || days[0].GlucoseScore == nil {
+		t.Fatalf("expected valid CGM before withdrawal: %+v %v", days, err)
+	}
+	if err := st.RevokeConsent(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	// In this disposable database, any score-only read of CGM would now fail.
+	if _, err := root.Exec(ctx, `REVOKE SELECT ON nutrition.glucose_samples FROM ryft_api`); err != nil {
+		t.Fatal(err)
+	}
+	days, err = st.NutritionDailyWithN2R(ctx, owner, day, day, true, at, policy)
+	if err != nil || len(days) != 1 || days[0].Meals != 1 || days[0].GlucoseScore != nil {
+		t.Fatalf("expected totals without reading CGM for scoring: %+v %v", days, err)
 	}
 }
 

@@ -4278,20 +4278,29 @@ never a title, a value, an id list or the source app), then scoring's lines for 
 ## Training-to-Nutrition partner pilot
 
 The client starts with an adult account on the `nutrition.enabled` allow-list and current consent.
-Deploy 0047 and the new API and ingest binaries through the normal main deployment before collecting
-coaching evidence. The API tick processes the inbox and captures model forecasts without a new service.
+The API tick processes the coaching inbox and captures model forecasts without a new service.
 
-The defaults leave both native callbacks disabled. A partner test environment needs
-`COACHING_GARMIN_WEBHOOK_SECRET` or `COACHING_SUUNTO_WEBHOOK_SECRET` for HMAC-SHA256 over the original
-request bytes, plus `COACHING_GARMIN_FETCH_URL` and/or `COACHING_SUUNTO_FETCH_URL` and
-`COACHING_PARTNER_FETCH_TOKEN` for an approved HTTPS connector. Inject the secrets through pinned
-Secret Manager versions. The connector authenticates to the provider for the linked account and
-accepts `provider_user` and `workout_id` query parameters. It returns the FIT artifact as
-`application/octet-stream`; Garmin Ping can also return its JSON envelope. An approved partner relay
-can authenticate Garmin's delivery and sign the original body for the API. The operator provisions
-each verified provider-account link in `nutrition.wearable_links` after consent and onboarding.
-Keep the enrollment dark until the signed delivery and provider artifact fetch pass in a partner test
-account. The provider-facing credential broker and iOS screens have their own release paths.
+The coaching relay routes on **api** are `POST /v1/webhooks/garmin` and `POST /v1/webhooks/suunto`.
+Both are disabled by default. This build rejects coaching relay keys and fetch settings at Cloud Run
+startup. Use isolated local test configuration and synthetic records. Each local relay uses its own
+`COACHING_GARMIN_WEBHOOK_SECRET`
+or `COACHING_SUUNTO_WEBHOOK_SECRET` to verify HMAC-SHA256 over the original request bytes. An
+artifact fetch uses the provider's `COACHING_GARMIN_FETCH_URL` or `COACHING_SUUNTO_FETCH_URL` and
+`COACHING_PARTNER_FETCH_TOKEN` with a test HTTPS bridge. The bridge returns FIT as
+`application/octet-stream` and can return the Garmin Ping JSON envelope. Test one pre-linked account
+with current consent and verify that unknown accounts and revoked consent create no health rows.
+
+Disable a local relay by removing that provider's key and restarting **api**. Verify that the route
+returns `404` and the worker leaves that provider's pending jobs unclaimed while retention cleanup
+runs. Each relay has one active key. Rehearse rotation with a synthetic fixture, verifying that the
+previous key fails, the replacement works and the other provider is unaffected. Production activation
+and rotation require RYFT-02 or RYFT-03 approval for that provider, the authenticated connector and
+an approved cutover procedure with pinned Secret Manager versions and revision rollback.
+
+The relay uses the PostgreSQL `nutrition.wearable_inbox` table. The native connection dashboard and
+Pub/Sub dead-letter alerts cover the direct connection path below. Before a hosted relay pilot, verify
+provider-scoped rejection, oldest pending age, exhausted jobs and actual alert delivery. Keep account
+identifiers, signatures, URLs with query parameters and payloads out of metric labels and alerts.
 
 ## Direct connections
 
@@ -4533,6 +4542,13 @@ and tell testers that new data from it waits. Do **not** take the provider out o
 and confirms `404` as well. To stop new connections only (the existing ones keep flowing), turn the
 flag off for everyone (**Feature flags**, the kill switch, on `connect.garmin`); it never gates a
 disconnect.
+
+For a security emergency after a direct connector is approved, remove that provider from
+`CONNECT_PROVIDERS` and use the existing **api** and **ingest** deployment path. Verify that active
+revisions have the updated registry and answer `404` for the provider's signed route. The consumer
+marks pending rows for an unserved provider `provider_off`, so record recovery decisions before
+reenabling it. Rehearse this with synthetic deliveries before enabling the provider. Rotation uses
+the direct connector's pinned secrets and provider-specific procedure below.
 
 ### The hook is busy or slow (`busy`, `timeout`)
 

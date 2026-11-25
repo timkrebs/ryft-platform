@@ -8,8 +8,8 @@ package store
 //	7419002  lockUser         EnsureUser and DeleteUser, per user
 //	7419003  lockSession      saves of one Train session, per user and session
 //	7419004  lockEnrollments  a user's plan enrolment changes
-//	7419005  lockApply        a user's sync apply transaction (deletions, the same-source
-//	                        workout fold, queueing) and `ingest fold-workouts`
+//	7419005  lockApply        a user's HealthKit writes and sync apply, workout fold,
+//	                        native connection changes, inbox writes, and consent changes
 //	7419006  relayLock        the outbox relay, per publisher (internal/events/outbox; every
 //	                        drain of a Flush or a Sweep, so one publisher's rows go out in
 //	                        id order across instances, D101, D219)

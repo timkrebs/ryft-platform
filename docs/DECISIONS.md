@@ -6775,3 +6775,56 @@ The tick passes the providers with configured webhook keys to a scoped form of
 retry attempt. Keep the prior signature for compatible rollbacks while both connectors are dark.
 Before removing a key on a future enabled rollout, stop routing requests and ticks to every
 revision that still has that key. An already running revision keeps its own configuration.
+
+## D273 — Bind Apple revocation credentials to linked identities (2026-11-25)
+
+The authorization-code exchange requires an Apple linked identity supplied by
+Supabase Auth Admin. Compare its provider identifier or provider-owned identity
+subject to the non-empty subject returned by Apple's exchange for this client.
+A generic identity record ID
+does not prove the provider subject. User-editable access-token metadata carries
+display information only. If linked identity verification is unavailable, decline
+to save the refresh token and let the app retry within the authorization-code
+lifetime. [Supabase Auth identities](https://supabase.com/docs/guides/auth/identities)
+
+## D274 — Keep coaching inbox retention running with callbacks disabled (2026-11-25)
+
+The bounded inbox purge runs on the existing API tick before the provider eligibility
+check. Disabling providers still stops new deliveries and leases, and the retention
+period continues to apply to existing health payloads and replay records.
+
+## D275 — Constrain coaching relays to local fixtures and complete active leases atomically (2026-11-25)
+
+Cloud Run fails configuration if any existing coaching relay signing key or fetch
+setting is present. RYFT-02/03 define the provider approval and adapter work before
+any hosted activation. Local fixtures retain the signed relay envelope with explicit
+media types and a separate key per provider.
+
+Migration 0049 checks the current link and consent at enqueue. The worker rechecks
+ownership and consent and finishes the exact lease with the account-scoped domain
+writes in one transaction. Domain write failure rolls back completion. Coaching
+opt-out serializes with application on the goal row and deletes the link and inbox
+through the existing foreign keys. Consent withdrawal scrubs pending payloads
+while retaining replay markers, so regrant cannot reopen an earlier delivery.
+Keep the older queue functions for dark rollback.
+
+## D277 — Check consent inside the Nutrition scoring transaction (2026-11-25)
+
+Daily and range summaries return the owner's meal counts and nutrient totals.
+Fresh scores require current health-processing consent. A shared lock on the
+grant orders scoring and the nightly N2R refresh against withdrawal. The summary
+keeps its consistent read snapshot and retries serialization conflicts. Without
+current consent, it returns the existing empty score shape and skips CGM, sleep
+and contextual score inputs. The caller can still erase records.
+
+## D278 — Use source identifiers and measured household servings (2026-11-25)
+
+Common German and English generic names add one alternate search term while keeping the food ID and catalog label. Exact names rank ahead of translated matches. When match quality ties, the requested market and language determine preference. The Python importer accepts measured USDA gram weights and Open Food Facts servings with a known mass or volume on the same reference basis. Updates keep existing equivalent portion IDs and change only Python-owned portion rows. Meal snapshots keep the quantities and nutrients in use when the meal was saved.
+
+## D279 — Serialize HealthKit write phases with consent changes (2026-11-25)
+
+Keep the cheap admission check before reading the request body. Before either write phase, acquire the existing account sync lock, then check that the grant that admitted the request is still active. Grant and withdrawal use the same lock. Store the optional cursor in the apply transaction with the queue and deletions. Replaying an old request across a same-policy regrant fails. Records already committed with valid consent retain the documented retry behavior when apply fails.
+
+## D280 — Separate the beta diary from the protected Nutrition pilot (2026-11-25)
+
+`nutrition.diary_enabled` defaults off and permits meals, catalog reads, private foods and diary totals independently of `nutrition.enabled`. The existing protected pilot flag still governs scoring, CGM writes, coaching, submissions and optional HealthKit weight collection. Enable the diary flag only for the approved pilot cohort. Keep authenticated owner erasure routes available independently of those flags. The existing beta gate governs API admission.

@@ -7,7 +7,7 @@ Usage: bash deploy_job.sh --plan|--apply
 
 Required: GCP_PROJECT, ARTIFACT_REPOSITORY, IMAGE_TAG, JOB_SERVICE_ACCOUNT,
           SCHEDULER_SERVICE_ACCOUNT and one database configuration:
-          DATABASE_URL_SECRET (Secret Manager NAME:VERSION)
+          DATABASE_URL_SECRET (Secret Manager NAME:VERSION), SUPABASE_POOLER_HOST, SUPABASE_PROJECT_REF
           INSTANCE_CONNECTION_NAME, PGUSER, PGDATABASE, PGPASSWORD_SECRET
 Optional: GCP_REGION (europe-west1), SCHEDULER_REGION (GCP_REGION),
           SCHEDULE (0 4 1 * *), SCHEDULE_TIME_ZONE (Etc/UTC)
@@ -55,8 +55,17 @@ if [[ -n ${INSTANCE_CONNECTION_NAME:-} ]]; then
             --set-secrets "PGPASSWORD=$PGPASSWORD_SECRET")
 else
   : "${DATABASE_URL_SECRET:?Set DATABASE_URL_SECRET or INSTANCE_CONNECTION_NAME}"
+  : "${SUPABASE_POOLER_HOST:?Set the approved Supabase pooler host}"
+  : "${SUPABASE_PROJECT_REF:?Set the approved Supabase project ref}"
   validate_secret "$DATABASE_URL_SECRET"
-  db_flags=(--remove-volume cloudsql --clear-env-vars --set-secrets "DATABASE_URL=$DATABASE_URL_SECRET")
+  if [[ ! $SUPABASE_POOLER_HOST =~ ^aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com$ ||
+        ! $SUPABASE_PROJECT_REF =~ ^[a-z0-9]{20}$ ]]; then
+    printf 'Set a valid Supabase session pooler host and project ref.\n' >&2
+    exit 2
+  fi
+  db_flags=(--remove-volume cloudsql
+            --set-env-vars "SUPABASE_POOLER_HOST=$SUPABASE_POOLER_HOST,SUPABASE_PROJECT_REF=$SUPABASE_PROJECT_REF"
+            --set-secrets "DATABASE_URL=$DATABASE_URL_SECRET")
 fi
 
 run() {
@@ -68,7 +77,14 @@ run() {
   fi
 }
 
-run gcloud builds submit "$directory" --project "$GCP_PROJECT" --tag "$image"
+if (( apply )); then
+  context=$(mktemp -d)
+  trap 'rm -rf -- "$context"' EXIT
+else
+  context="${TMPDIR:-/tmp}/nutrition-etl-build-context"
+fi
+run bash "$directory/stage_build_context.sh" "$context"
+run gcloud builds submit "$context" --project "$GCP_PROJECT" --tag "$image"
 run gcloud run jobs deploy "$name" --project "$GCP_PROJECT" --region "$region" \
   --image "$image" --service-account "$JOB_SERVICE_ACCOUNT" --cpu 2 --memory 4Gi \
   --tasks 1 --parallelism 1 --max-retries 1 --task-timeout 1800s \

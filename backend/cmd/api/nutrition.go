@@ -22,6 +22,8 @@ import (
 
 const nutritionPrefix = "/v1/nutrition"
 
+type nutritionAdvancedKey struct{}
+
 func redactNutritionPath(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == nutritionPrefix || strings.HasPrefix(r.URL.Path, nutritionPrefix+"/") {
@@ -35,32 +37,42 @@ func redactNutritionPath(next http.Handler) http.Handler {
 
 func (h *handler) nutritionRoutes(mux *http.ServeMux) {
 	register := func(method, path string, fn http.HandlerFunc) {
+		mux.HandleFunc(method+" "+nutritionPrefix+path, h.nutritionAccess(false, fn))
+	}
+	advanced := func(method, path string, fn http.HandlerFunc) {
 		mux.HandleFunc(method+" "+nutritionPrefix+path, h.nutritionGate(fn))
+	}
+	erasure := func(path string, fn http.HandlerFunc) {
+		mux.HandleFunc("DELETE "+nutritionPrefix+path, fn)
 	}
 	register("POST", "/foods/search", nutritionBody(http.StatusOK, h.searchNutritionFoods))
 	register("POST", "/foods/barcode", nutritionBody(http.StatusOK, h.nutritionBarcode))
 	register("GET", "/foods/{id}", nutritionByID(h.st.Food))
 	register("GET", "/foods/{id}/portions", nutritionByID(h.st.FoodPortions))
 	register("POST", "/foods/custom", nutritionBody(http.StatusOK, h.st.CreateCustomFood))
-	register("POST", "/foods/submissions", nutritionBody(http.StatusOK, h.st.SubmitFood))
+	advanced("POST", "/foods/submissions", nutritionBody(http.StatusOK, h.st.SubmitFood))
 	register("POST", "/meals", h.createNutritionMeal)
 	register("GET", "/meals", h.listNutritionMeals)
 	register("GET", "/meals/{id}", nutritionByID(h.st.NutritionMeal))
 	register("PATCH", "/meals/{id}", h.patchNutritionMeal)
-	register("DELETE", "/meals/{id}", h.deleteNutritionMeal)
+	erasure("/meals/{id}", h.deleteNutritionMeal)
 	register("GET", "/daily", h.dailyNutrition)
 	register("GET", "/summary", h.dailyNutrition)
-	register("PUT", "/glucose", h.putNutritionGlucose)
-	register("DELETE", "/glucose", h.deleteNutritionGlucose)
+	advanced("PUT", "/glucose", h.putNutritionGlucose)
+	erasure("/glucose", h.deleteNutritionGlucose)
 	register("GET", "/goals", h.nutritionGoals)
 	register("PUT", "/goals", nutritionBody(http.StatusOK, h.st.PutNutritionGoals))
-	register("GET", "/n2r/profile", h.getN2RProfile)
-	register("PUT", "/n2r/profile", h.n2rConsent(nutritionBody(http.StatusOK, h.st.PutN2RProfile)))
-	register("DELETE", "/n2r/profile", h.deleteN2RProfile)
-	register("GET", "/guidance/current", h.n2rConsent(h.currentN2RGuidance))
+	advanced("GET", "/n2r/profile", h.getN2RProfile)
+	advanced("PUT", "/n2r/profile", h.n2rConsent(nutritionBody(http.StatusOK, h.st.PutN2RProfile)))
+	erasure("/n2r/profile", h.deleteN2RProfile)
+	advanced("GET", "/guidance/current", h.n2rConsent(h.currentN2RGuidance))
 }
 
 func (h *handler) nutritionGate(fn http.HandlerFunc) http.HandlerFunc {
+	return h.nutritionAccess(true, fn)
+}
+
+func (h *handler) nutritionAccess(advancedOnly bool, fn http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if info := httpx.Info(r.Context()); info != nil && r.Pattern != "" {
 			info.LogPath = r.Pattern
@@ -71,7 +83,8 @@ func (h *handler) nutritionGate(fn http.HandlerFunc) http.HandlerFunc {
 			nutritionAnswer(w, r, 0, nil, err)
 			return
 		}
-		if !flags.Enabled(all, model.FlagNutrition, user.ID) {
+		pilot := flags.Enabled(all, model.FlagNutrition, user.ID)
+		if !pilot && (advancedOnly || !flags.Enabled(all, model.FlagNutritionDiary, user.ID)) {
 			httpx.NotFound(w, r)
 			return
 		}
@@ -88,6 +101,9 @@ func (h *handler) nutritionGate(fn http.HandlerFunc) http.HandlerFunc {
 					return
 				}
 			}
+		}
+		if !advancedOnly {
+			r = r.WithContext(context.WithValue(r.Context(), nutritionAdvancedKey{}, pilot))
 		}
 		fn(w, r)
 	}
@@ -236,10 +252,10 @@ func (h *handler) dailyNutrition(w http.ResponseWriter, r *http.Request) {
 	}
 	var out []model.NutritionDaily
 	var err error
-	if h.beta.PrivacyPolicyVersion == "" || gate.Consented(h.beta, userOf(r)) {
-		out, err = h.st.NutritionDailyWithN2R(r.Context(), userOf(r).ID, from, to, penalty, time.Now())
+	if pilot, _ := r.Context().Value(nutritionAdvancedKey{}).(bool); pilot {
+		out, err = h.st.NutritionDailyWithN2R(r.Context(), userOf(r).ID, from, to, penalty, time.Now(), h.beta.PrivacyPolicyVersion)
 	} else {
-		out, err = h.st.NutritionDaily(r.Context(), userOf(r).ID, from, to, penalty)
+		out, err = h.st.NutritionDiaryTotals(r.Context(), userOf(r).ID, from, to)
 	}
 	if err != nil {
 		nutritionAnswer(w, r, 0, nil, err)

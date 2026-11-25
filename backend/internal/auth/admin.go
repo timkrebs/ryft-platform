@@ -81,6 +81,7 @@ type AdminUserInfo struct {
 
 // AdminIdentity is one way into the account (an Apple id, an email password).
 type AdminIdentity struct {
+	ProviderID   string // verified provider identifier from the linked identity
 	Provider     string
 	Email        string
 	LastSignInAt *time.Time
@@ -113,6 +114,7 @@ func (a *Admin) GetUser(ctx context.Context, id uuid.UUID) (AdminUserInfo, error
 		EmailConfirmedAt *time.Time `json:"email_confirmed_at"`
 		LastSignInAt     *time.Time `json:"last_sign_in_at"`
 		Identities       []struct {
+			ProviderID   string         `json:"provider_id"`
 			Provider     string         `json:"provider"`
 			IdentityData map[string]any `json:"identity_data"`
 			LastSignInAt *time.Time     `json:"last_sign_in_at"`
@@ -125,7 +127,19 @@ func (a *Admin) GetUser(ctx context.Context, id uuid.UUID) (AdminUserInfo, error
 	out := AdminUserInfo{Email: u.Email, EmailConfirmedAt: u.EmailConfirmedAt, LastSignInAt: u.LastSignInAt}
 	for _, i := range u.Identities {
 		email, _ := i.IdentityData["email"].(string)
-		out.Identities = append(out.Identities, AdminIdentity{Provider: i.Provider, Email: email, LastSignInAt: i.LastSignInAt})
+		providerID := i.ProviderID
+		if subject, _ := i.IdentityData["sub"].(string); i.Provider == "apple" && subject != "" {
+			// Some Auth responses omit provider_id. The linked Apple's
+			// identity data is provider-managed, unlike user_metadata.
+			if providerID == "" || providerID == subject {
+				providerID = subject
+			} else {
+				providerID = ""
+			}
+		}
+		out.Identities = append(out.Identities, AdminIdentity{
+			ProviderID: providerID, Provider: i.Provider, Email: email, LastSignInAt: i.LastSignInAt,
+		})
 	}
 	return out, nil
 }

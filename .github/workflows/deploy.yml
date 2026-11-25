@@ -214,7 +214,15 @@ jobs:
           done
           if [[ $PUBLISH_NUTRITION_ETL == true ]]; then
             s=nutrition-etl-job
-            docker build --platform linux/amd64 --provenance=false --sbom=false -t "ryft-$s:$GITHUB_SHA" scripts/etl
+            etl_context="$RUNNER_TEMP/nutrition-etl-context"
+            bash scripts/etl/stage_build_context.sh "$etl_context"
+            pooler=$(sed -n 's/^SUPABASE_POOLER_HOST=//p' deploy/run/config.env)
+            project_ref=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env)
+            [[ $pooler =~ ^aws-[0-9]+-[a-z0-9-]+\.pooler\.supabase\.com$ && $project_ref =~ ^[a-z0-9]{20}$ ]] ||
+              { echo "::error title=deploy::invalid Supabase pooler host or project for the ETL"; exit 1; }
+            docker build --platform linux/amd64 --provenance=false --sbom=false \
+              --build-arg "SUPABASE_POOLER_HOST=$pooler" --build-arg "SUPABASE_PROJECT_REF=$project_ref" \
+              -t "ryft-$s:$GITHUB_SHA" "$etl_context"
             echo "$s $(docker image inspect --format '{{.Id}}' "ryft-$s:$GITHUB_SHA")" >> "$RUNNER_TEMP/ids"
             docker save -o "$RUNNER_TEMP/images/$s.tar" "ryft-$s:$GITHUB_SHA"
             images+=("$s")

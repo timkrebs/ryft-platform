@@ -63,7 +63,7 @@ func scoreNutritionDays(ctx context.Context, tx pgx.Tx, user uuid.UUID, days []m
 	}
 	if len(meals) == 0 {
 		for i := range days {
-			days[i].NutritionScores = score.Daily(nil, 0, nil, nil)
+			days[i].NutritionScores = score.UnscoredDaily()
 		}
 		return nil
 	}

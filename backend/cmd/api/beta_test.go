@@ -22,12 +22,13 @@ func TestBetaGate(t *testing.T) {
 	}{
 		{"GET", "/v1/days", without, 403}, {"POST", "/v1/devices/x/push", without, 403},
 		{"GET", "/v1/me", without, 204}, {"GET", "/v1/config", without, 204}, {"GET", "/v1/model", without, 204},
+		{"GET", nutritionDiaryExportPath, without, 204},
 		{"POST", "/v1/me/invite", without, 204}, {"POST", "/v1/me/consent", without, 204},
 		{"DELETE", "/v1/me/consent", without, 204}, {"POST", "/v1/feedback", without, 204},
 		{"PATCH", "/v1/me", without, 403}, {"GET", "/v1/days", with, 204},
 	} {
 		rec := httptest.NewRecorder()
-		betaGate(config.ModeOn, inner).ServeHTTP(rec, asUser(httptest.NewRequest(c.method, c.path, nil), c.user, ""))
+		betaGate(config.ModeOn, inner).ServeHTTP(rec, asUser(httptest.NewRequest(c.method, c.path, nil), c.user))
 		if rec.Code != c.want {
 			t.Errorf("%s %s (access %v): %d, want %d", c.method, c.path, c.user.BetaAccess, rec.Code, c.want)
 		}
@@ -36,7 +37,7 @@ func TestBetaGate(t *testing.T) {
 		}
 	}
 	rec := httptest.NewRecorder()
-	betaGate(config.ModeOff, inner).ServeHTTP(rec, asUser(httptest.NewRequest(http.MethodGet, "/v1/days", nil), without, ""))
+	betaGate(config.ModeOff, inner).ServeHTTP(rec, asUser(httptest.NewRequest(http.MethodGet, "/v1/days", nil), without))
 	if rec.Code != 204 || rec.Header().Get("X-RYFT-Gate") != "" {
 		t.Fatal("gate off: everyone passes, no header")
 	}
@@ -47,7 +48,7 @@ func TestBetaGate(t *testing.T) {
 		header string
 	}{{without, "/v1/days", "invite_required"}, {with, "/v1/days", ""}, {without, "/v1/me", ""}} {
 		rec := httptest.NewRecorder()
-		betaGate(config.ModeWarn, inner).ServeHTTP(rec, asUser(httptest.NewRequest(http.MethodGet, c.path, nil), c.user, ""))
+		betaGate(config.ModeWarn, inner).ServeHTTP(rec, asUser(httptest.NewRequest(http.MethodGet, c.path, nil), c.user))
 		if rec.Code != 204 || rec.Header().Get("X-RYFT-Gate") != c.header {
 			t.Errorf("warn, %s, access %v: %d, X-RYFT-Gate %q, want 204 %q", c.path, c.user.BetaAccess, rec.Code,
 				rec.Header().Get("X-RYFT-Gate"), c.header)

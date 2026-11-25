@@ -71,30 +71,48 @@ func (s *Store) StoreInbox(ctx context.Context, provider, minPolicy string, item
 	for _, it := range items {
 		puids = append(puids, it.ProviderUserID)
 	}
-	// One transaction: the owners are read with their link rows locked FOR SHARE, so a confirm that replaces or relinks
-	// the link (it locks the same row) either commits before this lookup, and the push is for nobody, or waits for
-	// this commit and then deletes the rows stored here (P2-16).
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT provider_user_id, user_id FROM connections
-			WHERE provider=$1 AND provider_user_id = ANY($2) AND status IN ('connected','needs_reauth') ORDER BY user_id FOR SHARE`, provider, puids)
+		// Follow confirm's lock order: owner apply locks first, in UUID order, then the live link rows.
+		// The first read identifies whom to lock. The locked read below must still resolve to those same owners.
+		const lookupOwners = `SELECT provider_user_id, user_id FROM connections
+			WHERE provider=$1 AND provider_user_id = ANY($2) AND status IN ('connected','needs_reauth')`
+		rows, err := tx.Query(ctx, lookupOwners+` ORDER BY user_id`, provider, puids)
 		if err != nil {
 			return err
 		}
-		owner := map[string]uuid.UUID{}
+		candidates := map[string]uuid.UUID{}
+		var users []uuid.UUID
+		var locks pgx.Batch
 		var puid string
 		var uid uuid.UUID
-		if _, err := pgx.ForEachRow(rows, []any{&puid, &uid}, func() error { owner[puid] = uid; return nil }); err != nil {
+		if _, err := pgx.ForEachRow(rows, []any{&puid, &uid}, func() error {
+			candidates[puid] = uid
+			users = append(users, uid)
+			locks.Queue(lockApply, uid)
+			return nil
+		}); err != nil {
 			return err
 		}
-		users := make([]uuid.UUID, 0, len(owner))
-		for _, u := range owner {
-			users = append(users, u)
-		}
+		owner := map[string]uuid.UUID{}
 		consented := map[uuid.UUID]bool{}
 		pending := map[uuid.UUID]int{}
 		if len(users) > 0 {
-			// The account's current consent (not withdrawn, the latest granted: the user row's, as the consumer reads
-			// it) is to minPolicy or a later version (D259). A withdrawal revokes every row, so it always drops.
+			if err := tx.SendBatch(ctx, &locks).Close(); err != nil {
+				return err
+			}
+			rows, err = tx.Query(ctx, lookupOwners+` AND user_id = ANY($3) ORDER BY user_id FOR SHARE`, provider, puids, users)
+			if err != nil {
+				return err
+			}
+			if _, err := pgx.ForEachRow(rows, []any{&puid, &uid}, func() error {
+				if candidates[puid] == uid {
+					owner[puid] = uid
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+			// Consent withdrawal takes the same apply lock. Check the current consent after taking the locks.
 			if rows, err = tx.Query(ctx, `SELECT u FROM unnest($1::uuid[]) AS u
 				WHERE (SELECT c.policy_version FROM consents c WHERE c.user_id = u AND c.kind='health_processing'
 				  AND c.revoked_at IS NULL ORDER BY c.granted_at DESC LIMIT 1) >= $2`, users, minPolicy); err != nil {
@@ -177,10 +195,10 @@ func storeItem(ctx context.Context, tx pgx.Tx, provider string, user uuid.UUID, 
 	var id int64
 	var revision int
 	var inserted bool
-	err := tx.QueryRow(ctx, `INSERT INTO provider_inbox (provider, kind, record_id, user_id, version, payload, payload_sha256)
-		VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)
+	err := tx.QueryRow(ctx, `INSERT INTO provider_inbox (provider, kind, record_id, user_id, version, payload, payload_sha256, received_at)
+		VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,statement_timestamp())
 		ON CONFLICT (provider, kind, record_id) DO UPDATE SET version=EXCLUDED.version, revision=provider_inbox.revision + 1,
-		  payload=EXCLUDED.payload, payload_sha256=EXCLUDED.payload_sha256, state='pending', received_at=now(),
+		  payload=EXCLUDED.payload, payload_sha256=EXCLUDED.payload_sha256, state='pending', received_at=EXCLUDED.received_at,
 		  processed_at=NULL, attempts=0, error=NULL
 		WHERE provider_inbox.user_id = EXCLUDED.user_id AND provider_inbox.payload_sha256 <> EXCLUDED.payload_sha256
 		  AND EXCLUDED.version >= provider_inbox.version
@@ -278,22 +296,26 @@ func (s *Store) PendingDirect(ctx context.Context, user uuid.UUID, provider stri
 	})
 }
 
-// BumpInboxAttempt counts one delivery of a pending row and returns the count; ErrNotFound when the row is gone or
-// no longer pending.
-func (s *Store) BumpInboxAttempt(ctx context.Context, id int64) (int, error) {
+// BumpInboxAttempt counts one delivery of the pending revision. A replaced or finished revision returns ErrNotFound.
+func (s *Store) BumpInboxAttempt(ctx context.Context, id int64, revision int) (int, error) {
 	var n int
-	err := s.pool.QueryRow(ctx, `UPDATE provider_inbox SET attempts = attempts + 1 WHERE id=$1 AND state='pending' RETURNING attempts`, id).Scan(&n)
+	err := s.pool.QueryRow(ctx, `UPDATE provider_inbox SET attempts = attempts + 1
+		WHERE id=$1 AND revision=$2 AND state='pending' RETURNING attempts`, id, revision).Scan(&n)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrNotFound
 	}
 	return n, err
 }
 
-// FinishInbox moves a pending row to dropped or failed with its code. A dropped row's payload goes at once; a
-// failed one's stays for its 7 days (the purge deletes it).
-func (s *Store) FinishInbox(ctx context.Context, id int64, state, code string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE provider_inbox SET state=$2, error=$3, processed_at=now(),
-		payload = CASE WHEN $2 = 'failed' THEN payload ELSE NULL END WHERE id=$1 AND state='pending'`, id, state, code)
+// FinishInbox closes the pending revision and returns ErrNotFound if it has since changed. A dropped row's payload
+// goes immediately. The purge deletes failed payloads after seven days.
+func (s *Store) FinishInbox(ctx context.Context, id int64, revision int, state, code string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE provider_inbox SET state=$3, error=$4, processed_at=now(),
+		payload = CASE WHEN $3 = 'failed' THEN payload ELSE NULL END
+		WHERE id=$1 AND revision=$2 AND state='pending'`, id, revision, state, code)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
 	return err
 }
 

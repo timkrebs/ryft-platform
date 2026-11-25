@@ -98,7 +98,7 @@ Merge the Nutrition backend and infrastructure through the normal review and CI 
    GRANT ryft_nutrition_etl TO nutrition_etl_login;
    ```
 
-   Use the login's TLS PostgreSQL DSN for the same database the API reads. On Supabase use the session pooler connection and append the project ref to the login name as Supavisor expects. The role also needs database `TEMP` access for COPY staging. Store the DSN as a new secret version. The command prints the version identifier.
+   For Supabase use the session pooler host and project from `deploy/run/config.env`, port `5432`, database `postgres` and the dedicated login with its `.<project-ref>` suffix. Include `sslmode=verify-full`. The image uses the same Supabase CA as the Platform API. Omit `sslrootcert` or set it to `/etc/ryft/supabase-ca.crt` inside the image. The role also needs database `TEMP` access for COPY staging. If the current secret version passes preflight, reuse it. Otherwise add a new version. The command prints only the version identifier. [Supabase SSL enforcement](https://supabase.com/docs/guides/platform/ssl-enforcement) · [PostgreSQL TLS verification](https://www.postgresql.org/docs/18/libpq-ssl.html)
 
    ```bash
    printf 'Nutrition ETL PostgreSQL DSN: '
@@ -108,6 +108,42 @@ Merge the Nutrition backend and infrastructure through the normal review and CI 
      --project=ryftlab-prod --data-file=- --format='value(name)'
    unset nutrition_dsn
    ```
+
+   Before updating the scheduled job, have the authorized database operator check the selected secret and the candidate image on a trusted workstation with access to the pooler. Set `RYFT_ETL_IMAGE` to the full digest-pinned image reference from GitHub Actions and `RYFT_ETL_DB_VERSION` to the numeric version you intend to deploy. Run this with shell tracing disabled. Only pass/fail is printed. The candidate opens a verified TLS connection and checks privileges without changing database rows.
+
+   ```bash
+   (
+     set +x
+     set -euo pipefail
+     : "${RYFT_ETL_IMAGE:?Set the candidate image by digest}" "${RYFT_ETL_DB_VERSION:?Set the numeric secret version}"
+     [[ $RYFT_ETL_IMAGE =~ ^europe-west1-docker\.pkg\.dev/ryftlab-prod/ryft/nutrition-etl-job@sha256:[a-f0-9]{64}$ ]]
+     [[ $RYFT_ETL_DB_VERSION =~ ^[1-9][0-9]*$ ]]
+     gcloud secrets versions access "$RYFT_ETL_DB_VERSION" --secret=nutrition-etl-db --project=ryftlab-prod |
+       docker run --rm -i --entrypoint python --env CLOUD_RUN_JOB=nutrition-etl-job "$RYFT_ETL_IMAGE" -c '
+   import os
+   import sys
+   import psycopg
+   from import_pg import connect
+
+   os.environ["DATABASE_URL"] = sys.stdin.read()
+   try:
+       with connect() as conn:
+           ok = conn.execute("""
+               SELECT pg_has_role(current_user, %s::name, %s)
+                 AND has_database_privilege(current_user, current_database(), %s)
+                 AND has_table_privilege(current_user, %s, %s)
+                 AND NOT has_table_privilege(current_user, %s, %s)
+           """, ("ryft_nutrition_etl", "MEMBER", "TEMP", "nutrition.foods", "INSERT", "nutrition.meals", "SELECT")).fetchone()[0]
+   except (ValueError, psycopg.Error):
+       sys.exit("Nutrition ETL database preflight failed.")
+   if not ok:
+       sys.exit("Nutrition ETL database role preflight failed.")
+   print("Nutrition ETL database preflight passed.")
+   '
+   )
+   ```
+
+   Keep the current job pin if this check fails. Correct the dedicated login DSN or confirm the reviewed CA against the Supabase Dashboard and run preflight again. Follow the bounded rollout below using the same image digest and secret version that passed.
 
 4. Set `nutrition_etl` in HCP with the actual image digest and numeric secret version. Start with a bounded import and paused schedule.
 

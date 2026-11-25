@@ -6,8 +6,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// FlagNutrition gates the Nutrition API and the App entry point.
-const FlagNutrition = "nutrition.enabled"
+const (
+	// FlagNutrition preserves the protected pilot with optional scoring and coaching.
+	FlagNutrition = "nutrition.enabled"
+	// FlagNutritionDiary permits core diary reads and writes without advanced processing.
+	FlagNutritionDiary = "nutrition.diary_enabled"
+)
 
 // FoodSummary is a catalog match. Nutrient profiles are fetched by ID.
 type FoodSummary struct {
@@ -228,6 +232,12 @@ type NutritionMeal struct {
 type NutritionMealPage struct {
 	Meals      []NutritionMeal `json:"meals"`
 	NextOffset *int            `json:"next_offset"`
+}
+
+// NutritionMealExportPage returns stored diary snapshots and a stable page cursor.
+type NutritionMealExportPage struct {
+	Meals     []NutritionMeal `json:"meals"`
+	NextAfter *uuid.UUID      `json:"next_after"`
 }
 
 // NutritionTotal reports a known subtotal and coverage among recorded items.

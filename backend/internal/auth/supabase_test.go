@@ -167,19 +167,15 @@ func TestSupabaseAcceptsValidToken(t *testing.T) {
 	}
 }
 
-func TestSupabaseReadsTheAppleSubjectOnlyFromApple(t *testing.T) {
+func TestSupabaseIgnoresEditableAppleSubjectClaims(t *testing.T) {
 	srv := newJWKSServer(t)
 	key := srv.addKey(t, "k1")
 	v := newVerifier(t, srv, SupabaseOptions{})
 	c := claims()
-	c["user_metadata"] = map[string]any{"iss": "https://appleid.apple.com", "provider_id": "001234.abc", "full_name": "Tim"}
-	if p, err := v.Verify(context.Background(), sign(t, key, "k1", c)); err != nil || p.AppleSubject != "001234.abc" {
-		t.Fatalf("apple: %+v %v", p, err)
-	}
-	c = claims()
-	c["user_metadata"] = map[string]any{"iss": "https://accounts.google.com", "provider_id": "999"}
-	if p, _ := v.Verify(context.Background(), sign(t, key, "k1", c)); p.AppleSubject != "" {
-		t.Fatalf("another provider's ID is not an Apple subject: %q", p.AppleSubject)
+	c["user_metadata"] = map[string]any{"iss": "https://appleid.apple.com", "provider_id": []string{"untrusted"}, "full_name": "Fixture"}
+	p, err := v.Verify(context.Background(), sign(t, key, "k1", c))
+	if err != nil || p.UserID.String() != c["sub"] || p.Name != "Fixture" {
+		t.Fatalf("principal %+v, error %v", p, err)
 	}
 }
 

@@ -9,3 +9,4 @@
 !categorizer.py
 !import_pg.py
 !merge_catalog.sql
+!supabase-ca.crt

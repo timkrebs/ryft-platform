@@ -26,7 +26,8 @@ import (
 var gateOpen = map[string]bool{
 	"GET /v1/me": true, "GET /v1/me/sync": true, "GET /v1/config": true, "GET /v1/model": true, "POST /v1/me/invite": true,
 	"POST /v1/me/consent": true, "DELETE /v1/me/consent": true, "POST /v1/feedback": true,
-	"POST /v1/app-attest/challenge": true, "POST /v1/app-attest/keys": true, "POST /v1/app-attest/token": true,
+	"GET " + nutritionDiaryExportPath: true,
+	"POST /v1/app-attest/challenge":   true, "POST /v1/app-attest/keys": true, "POST /v1/app-attest/token": true,
 }
 
 // DELETE /v1/me/connections/{provider} is open too (isDisconnect): ending a connection is never gated.

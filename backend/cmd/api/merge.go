@@ -110,7 +110,7 @@ func (a admin) merge(w http.ResponseWriter, r *http.Request) {
 		nutritionAnswer(w, r, 0, nil, err)
 		return
 	}
-	if hasNutrition || flags.Enabled(allFlags, model.FlagNutrition, from) {
+	if hasNutrition || flags.Enabled(allFlags, model.FlagNutrition, from) || flags.Enabled(allFlags, model.FlagNutritionDiary, from) {
 		metrics.AdminRequests.WithLabelValues("invalid").Inc()
 		httpx.WriteError(w, http.StatusConflict, "merge is unavailable for the source account while it has Nutrition access or records")
 		return

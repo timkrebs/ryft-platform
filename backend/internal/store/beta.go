@@ -23,18 +23,28 @@ var ErrInvalidCode = errors.New("invalid or used code")
 // GrantConsent records the user's consent to policyVersion. A current consent
 // to the same version is kept as it is (its granted_at stays).
 func (s *Store) GrantConsent(ctx context.Context, userID uuid.UUID, policyVersion string, appVersion *string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO consents (user_id, kind, policy_version, app_version)
-		SELECT $1, 'health_processing', $2, $3
-		WHERE NOT EXISTS (SELECT 1 FROM consents WHERE user_id=$1 AND kind='health_processing'
-		  AND revoked_at IS NULL AND policy_version=$2)`, userID, policyVersion, appVersion)
-	return err
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, lockApply, userID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO consents (user_id, kind, policy_version, app_version)
+			SELECT $1, 'health_processing', $2, $3
+			WHERE NOT EXISTS (SELECT 1 FROM consents WHERE user_id=$1 AND kind='health_processing'
+			  AND revoked_at IS NULL AND policy_version=$2)`, userID, policyVersion, appVersion)
+		return err
+	})
 }
 
-// RevokeConsent withdraws every current consent of the user (none is fine).
+// RevokeConsent withdraws the current consent under the native ingest apply lock.
 func (s *Store) RevokeConsent(ctx context.Context, userID uuid.UUID) error {
-	_, err := s.pool.Exec(ctx, `UPDATE consents SET revoked_at = now()
-		WHERE user_id=$1 AND kind='health_processing' AND revoked_at IS NULL`, userID)
-	return err
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, lockApply, userID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE consents SET revoked_at = now()
+			WHERE user_id=$1 AND kind='health_processing' AND revoked_at IS NULL`, userID)
+		return err
+	})
 }
 
 // inviteAlphabet has no 0/O, 1/I/L: codes are read aloud and typed on a phone.

@@ -80,7 +80,9 @@ func TestClientSecretIsAppleShaped(t *testing.T) {
 func TestExchange(t *testing.T) {
 	f := newFakeApple(t)
 	c, _ := client(t, f)
-	idToken, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{Subject: "001234.abcdef"}).SignedString([]byte("x"))
+	idToken, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+		Issuer: appleBase, Audience: jwt.ClaimStrings{"dev.timkrebs.ryft"}, Subject: "001234.abcdef",
+	}).SignedString([]byte("x"))
 	f.body = `{"access_token":"a","refresh_token":"r.secret","id_token":"` + idToken + `"}`
 	got, err := c.Exchange(t.Context(), "c.code")
 	if err != nil || got.RefreshToken != "r.secret" || got.Subject != "001234.abcdef" {
@@ -103,6 +105,24 @@ func TestExchange(t *testing.T) {
 	f.status, f.body = 503, ``
 	if _, err := c.Exchange(t.Context(), "c"); err == nil || errors.Is(err, ErrInvalidGrant) {
 		t.Fatalf("an outage is a plain error: %v", err)
+	}
+}
+
+func TestSubjectRequiresAppleIssuerAndAppAudience(t *testing.T) {
+	for _, tc := range []struct{ issuer, audience string }{
+		{"https://accounts.example.invalid", "dev.timkrebs.ryft"},
+		{appleBase, "example.invalid.app"},
+		{appleBase, ""},
+	} {
+		token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+			Issuer: tc.issuer, Audience: jwt.ClaimStrings{tc.audience}, Subject: "fixture",
+		}).SignedString([]byte("x"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := subject(token, "dev.timkrebs.ryft"); got != "" {
+			t.Errorf("wrong issuer or audience returned subject %q", got)
+		}
 	}
 }
 

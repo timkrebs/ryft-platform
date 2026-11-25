@@ -6,11 +6,78 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/timkrebs/ryft/internal/model"
 )
+
+func TestNutritionDiaryCohortAndIndependentErasure(t *testing.T) {
+	rg := newNutritionRig(t)
+	ctx := context.Background()
+	pilot, diary, outsider := rg.account(), rg.account(), rg.account()
+	put := func(f model.FeatureFlag) {
+		t.Helper()
+		if _, _, err := rg.st.PutFlag(ctx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(model.FeatureFlag{Key: model.FlagNutrition, Enabled: true, AllowUserIDs: []uuid.UUID{pilot}})
+	put(model.FeatureFlag{Key: model.FlagNutritionDiary, Enabled: true, AllowUserIDs: []uuid.UUID{diary}})
+	check := func(user uuid.UUID, method, path string, payload any, want int, out any) {
+		t.Helper()
+		r := rg.do(user, method, path, payload)
+		if r.Code != want {
+			t.Fatalf("%s %s: got %d, want %d", method, path, r.Code, want)
+		}
+		if out != nil {
+			if err := json.Unmarshal(r.Body.Bytes(), out); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var cfg model.RemoteConfig
+	check(diary, http.MethodGet, "/v1/config", nil, 200, &cfg)
+	if !cfg.Flags[model.FlagNutritionDiary] || cfg.Flags[model.FlagNutrition] {
+		t.Fatalf("wrong diary flags: %v", cfg.Flags)
+	}
+	var food model.FoodDetail
+	check(diary, http.MethodPost, nutritionPrefix+"/foods/custom", map[string]any{
+		"client_request_id": uuid.New(), "name": "Diary fixture",
+		"nutrients": []map[string]any{{"code": "energy_kcal", "amount": 200, "unit": "kcal", "reference_amount": 100, "reference_unit": "g"}},
+	}, 200, &food)
+	at := time.Now().UTC().Truncate(time.Second)
+	day := at.Format(time.DateOnly)
+	var meal model.NutritionMeal
+	check(diary, http.MethodPost, nutritionPrefix+"/meals", model.NutritionMealInput{ClientRequestID: uuid.New(), ConsumedAt: at,
+		Timezone: "UTC", MealType: "snack", InputMethod: "manual_entry",
+		Items: []model.NutritionMealItemInput{{FoodID: food.ID, Quantity: 100, Unit: "g"}}}, 201, &meal)
+	var total model.NutritionDaily
+	check(diary, http.MethodGet, nutritionPrefix+"/daily?date="+day, nil, 200, &total)
+	if total.Meals != 1 || total.Nutrients["energy_kcal"].KnownSubtotal != 200 || total.N2R != nil || total.GlucoseScore != nil || total.NutritionScore != nil {
+		t.Fatalf("diary returned wrong totals or advanced scores: %+v", total)
+	}
+	check(outsider, http.MethodGet, nutritionPrefix+"/daily?date="+day, nil, 404, nil)
+	check(diary, http.MethodGet, nutritionPrefix+"/n2r/profile", nil, 404, nil)
+	check(diary, http.MethodPut, nutritionPrefix+"/glucose", `{}`, 404, nil)
+	check(diary, http.MethodGet, nutritionPrefix+"/guidance/current", nil, 404, nil)
+	check(diary, http.MethodGet, "/v1/coaching/daily-briefing", nil, 404, nil)
+	check(pilot, http.MethodGet, nutritionPrefix+"/n2r/profile", nil, 200, nil)
+	check(pilot, http.MethodGet, nutritionPrefix+"/daily?date="+day, nil, 200, nil)
+	put(model.FeatureFlag{Key: model.FlagNutritionDiary})
+	path := nutritionPrefix + "/meals/" + meal.ID.String()
+	check(uuid.Nil, http.MethodDelete, path, nil, 401, nil)
+	check(outsider, http.MethodDelete, path, nil, 204, nil) // idempotent and conceals ownership
+	if _, err := rg.st.NutritionMeal(ctx, diary, meal.ID); err != nil {
+		t.Fatalf("another account removed the diary meal: %v", err)
+	}
+	check(diary, http.MethodDelete, path, nil, 204, nil)
+	check(diary, http.MethodDelete, nutritionPrefix+"/glucose", nil, 204, nil)
+	check(diary, http.MethodDelete, nutritionPrefix+"/n2r/profile", nil, 204, nil)
+	check(diary, http.MethodDelete, "/v1/users/goal-profile", nil, 204, nil)
+	check(diary, http.MethodDelete, "/v1/me/consent", nil, 204, nil)
+}
 
 func TestNutritionRoutesUseBearerFlagsConsentAndPrivateResponses(t *testing.T) {
 	rg := newNutritionRig(t)

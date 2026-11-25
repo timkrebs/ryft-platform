@@ -63,6 +63,20 @@ INSERT INTO nutrition.barcodes (food_id, source_id, original_barcode, gtin, mark
 SELECT d.food_id, d.source_id, d.external_id, d.gtin, market
 FROM etl_delta d CROSS JOIN LATERAL unnest(d.markets) market WHERE d.gtin IS NOT NULL;
 
+DELETE FROM nutrition.portions p USING etl_delta d
+WHERE p.source_id=d.source_id AND p.food_id=d.food_id AND p.origin='python_etl'
+  AND NOT EXISTS (SELECT FROM jsonb_to_recordset(d.portions) candidate(id uuid) WHERE candidate.id=p.id);
+
+INSERT INTO nutrition.portions (id, food_id, source_id, label, labels, quantity, unit, weight_g, volume_ml, origin)
+SELECT p.id, d.food_id, d.source_id, p.label, p.labels, 1, p.unit, p.weight_g, p.volume_ml, 'python_etl'
+FROM etl_delta d CROSS JOIN LATERAL jsonb_to_recordset(d.portions)
+    p(id uuid, label text, labels jsonb, unit text, weight_g numeric, volume_ml numeric)
+WHERE NOT EXISTS (SELECT FROM nutrition.portions known
+    WHERE known.source_id=d.source_id AND known.food_id=d.food_id AND known.label=p.label
+      AND known.unit=p.unit AND known.quantity=1 AND NOT known.estimated
+      AND known.weight_g IS NOT DISTINCT FROM p.weight_g AND known.volume_ml IS NOT DISTINCT FROM p.volume_ml)
+ON CONFLICT (id) DO NOTHING;
+
 INSERT INTO nutrition.classifications (food_id, source_id, system, version, code, confidence, contribution_fraction, origin)
 SELECT d.food_id, d.source_id, 'ahei_category', '1', d.category, d.confidence, NULL, 'python_etl'
 FROM etl_delta d

@@ -65,6 +65,14 @@ func SourcesOf(samples []model.Sample, sleep []model.SleepSegment, workouts []mo
 // UpsertSources records a sync's sources: last_seen only moves forward, a
 // bundle id once sent is kept.
 func (s *Store) UpsertSources(ctx context.Context, userID uuid.UUID, seen []SourceSeen) error {
+	return upsertSources(ctx, s.pool, userID, seen)
+}
+
+type batchSender interface {
+	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
+}
+
+func upsertSources(ctx context.Context, db batchSender, userID uuid.UUID, seen []SourceSeen) error {
 	if len(seen) == 0 {
 		return nil
 	}
@@ -76,17 +84,21 @@ func (s *Store) UpsertSources(ctx context.Context, userID uuid.UUID, seen []Sour
 			  bundle_id = COALESCE(EXCLUDED.bundle_id, user_sources.bundle_id)`,
 			userID, x.Name, x.Kind, x.BundleID, x.LastSeen)
 	}
-	return s.pool.SendBatch(ctx, b).Close()
+	return db.SendBatch(ctx, b).Close()
 }
 
 // RecordSync stores what a device's sync carried on the device row (the admin
 // view's "last sync").
 func (s *Store) RecordSync(ctx context.Context, userID, deviceID uuid.UUID, summary map[string]any) error {
+	return recordSync(ctx, s.pool, userID, deviceID, summary)
+}
+
+func recordSync(ctx context.Context, db sqlExecutor, userID, deviceID uuid.UUID, summary map[string]any) error {
 	raw, err := json.Marshal(summary)
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `UPDATE devices SET last_sync_summary = $3::jsonb WHERE user_id = $1 AND id = $2`,
+	_, err = db.Exec(ctx, `UPDATE devices SET last_sync_summary = $3::jsonb WHERE user_id = $1 AND id = $2`,
 		userID, deviceID, string(raw))
 	return err
 }

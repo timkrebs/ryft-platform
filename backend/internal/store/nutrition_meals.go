@@ -14,6 +14,7 @@ import (
 
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/nutrition"
+	"github.com/timkrebs/ryft/internal/nutrition/score"
 )
 
 const mealFields = `id, client_request_id, consumed_at, timezone, local_date::text, meal_type, input_method,
@@ -74,11 +75,10 @@ func readNutritionMeal(ctx context.Context, tx pgx.Tx, user, id uuid.UUID, lock 
 	return meals[0], err
 }
 
-// A consistent catalog snapshot is used for all of a meal's foods. A concurrent
-// mutation can force a serialization retry, including two retries of the same POST.
-func (s *Store) writeNutritionMeal(ctx context.Context, user uuid.UUID, fn func(pgx.Tx) error) error {
+// A concurrent change to a row locked inside a repeatable read can require a fresh snapshot.
+func (s *Store) nutritionSnapshot(ctx context.Context, user uuid.UUID, mode pgx.TxAccessMode, fn func(pgx.Tx) error) error {
 	for attempt := 0; ; attempt++ {
-		err := s.nutritionTx(ctx, user, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, fn)
+		err := s.nutritionTx(ctx, user, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: mode}, fn)
 		var pgErr *pgconn.PgError
 		if attempt >= 2 || !errors.As(err, &pgErr) || pgErr.Code != "40001" {
 			return err
@@ -102,7 +102,7 @@ func (s *Store) CreateNutritionMeal(ctx context.Context, user uuid.UUID, in mode
 		return out, false, nutrition.ErrInvalid
 	}
 	created := false
-	err = s.writeNutritionMeal(ctx, user, func(tx pgx.Tx) error {
+	err = s.nutritionSnapshot(ctx, user, pgx.ReadWrite, func(tx pgx.Tx) error {
 		created = false
 		tag, err := tx.Exec(ctx, `INSERT INTO nutrition.meal_requests(user_id,request_id) VALUES ($1,$2)
 			ON CONFLICT DO NOTHING`, user, in.ClientRequestID)
@@ -231,7 +231,7 @@ func (s *Store) PatchNutritionMeal(ctx context.Context, user, id uuid.UUID, patc
 	if patch.Revision < 1 || (patch.Items != nil && !validItemCount(*patch.Items)) {
 		return out, nutrition.ErrInvalid
 	}
-	err := s.writeNutritionMeal(ctx, user, func(tx pgx.Tx) error {
+	err := s.nutritionSnapshot(ctx, user, pgx.ReadWrite, func(tx pgx.Tx) error {
 		old, err := readNutritionMeal(ctx, tx, user, id, true)
 		if err != nil {
 			return err
@@ -330,28 +330,47 @@ func (s *Store) NutritionMeals(ctx context.Context, user uuid.UUID, from, to str
 
 // NutritionDaily sums known values and measures coverage among logged items.
 func (s *Store) NutritionDaily(ctx context.Context, user uuid.UUID, from, to string, chrononutrition bool) ([]model.NutritionDaily, error) {
-	return s.nutritionDaily(ctx, user, from, to, chrononutrition, nil)
+	return s.nutritionDaily(ctx, user, from, to, chrononutrition, nil, "", true)
 }
 
-// NutritionDailyWithN2R adds opt-in contextual scoring to the existing daily contract.
-func (s *Store) NutritionDailyWithN2R(ctx context.Context, user uuid.UUID, from, to string, chrononutrition bool, now time.Time) ([]model.NutritionDaily, error) {
-	return s.nutritionDaily(ctx, user, from, to, chrononutrition, &now)
+// NutritionDailyWithN2R adds freshly computed scores only with consent to policy.
+func (s *Store) NutritionDailyWithN2R(ctx context.Context, user uuid.UUID, from, to string, chrononutrition bool, now time.Time, policy string) ([]model.NutritionDaily, error) {
+	return s.nutritionDaily(ctx, user, from, to, chrononutrition, &now, policy, true)
 }
 
-func (s *Store) nutritionDaily(ctx context.Context, user uuid.UUID, from, to string, chrononutrition bool, n2rNow *time.Time) ([]model.NutritionDaily, error) {
+// NutritionDiaryTotals reads owner diary entries and skips all score inputs.
+func (s *Store) NutritionDiaryTotals(ctx context.Context, user uuid.UUID, from, to string) ([]model.NutritionDaily, error) {
+	return s.nutritionDaily(ctx, user, from, to, false, nil, "", false)
+}
+
+func (s *Store) nutritionDaily(ctx context.Context, user uuid.UUID, from, to string, chrononutrition bool, n2rNow *time.Time, policy string, scoreAllowed bool) ([]model.NutritionDaily, error) {
 	first, last, err := nutritionDateRange(from, to)
 	if err != nil {
 		return nil, err
 	}
 	defer observeNutritionDB("daily", time.Now())
-	days := []model.NutritionDaily{}
 	index := map[string]int{}
 	for day := first; !day.After(last); day = day.AddDate(0, 0, 1) {
-		key := day.Format(time.DateOnly)
-		index[key] = len(days)
-		days = append(days, model.NutritionDaily{LocalDate: key, Nutrients: map[string]model.NutritionTotal{}})
+		index[day.Format(time.DateOnly)] = len(index)
 	}
-	err = s.nutritionTx(ctx, user, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	var days []model.NutritionDaily
+	mode := pgx.ReadOnly
+	if policy != "" {
+		mode = pgx.ReadWrite // FOR SHARE keeps the grant current until scoring finishes.
+	}
+	err = s.nutritionSnapshot(ctx, user, mode, func(tx pgx.Tx) error {
+		consented := false
+		if scoreAllowed {
+			var err error
+			if consented, err = coachingConsent(ctx, tx, user, policy); err != nil {
+				return err
+			}
+		}
+		days = make([]model.NutritionDaily, len(index))
+		for key, i := range index {
+			days[i] = model.NutritionDaily{LocalDate: key, Nutrients: map[string]model.NutritionTotal{},
+				NutritionScores: score.UnscoredDaily()}
+		}
 		rows, err := tx.Query(ctx, `WITH meal AS (
 			SELECT id, local_date FROM nutrition.meals WHERE user_id=$1 AND local_date BETWEEN $2::date AND $3::date
 		), items AS (
@@ -391,6 +410,9 @@ func (s *Store) nutritionDaily(ctx context.Context, user uuid.UUID, from, to str
 			return err
 		}
 		rows.Close()
+		if !consented {
+			return nil
+		}
 		if err := scoreNutritionDays(ctx, tx, user, days, index, chrononutrition); err != nil {
 			return err
 		}

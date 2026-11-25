@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -86,7 +87,7 @@ func TestAdminGetUser(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{"id":"` + id.String() + `","email":"x7k2@privaterelay.appleid.com",
 			"email_confirmed_at":"2026-10-20T17:40:00Z", "last_sign_in_at":"2026-10-20T17:40:00Z",
-			"identities":[{"provider":"apple","identity_data":{"email":"x7k2@privaterelay.appleid.com"},"last_sign_in_at":"2026-10-20T17:40:00Z"},
+			"identities":[{"provider":"apple","id":"linked-row","provider_id":"001234.abc","identity_data":{"sub":"001234.abc","email":"x7k2@privaterelay.appleid.com"},"last_sign_in_at":"2026-10-20T17:40:00Z"},
 			              {"provider":"email","identity_data":{"email":"tim@example.com"}}]}`))
 	}))
 	defer srv.Close()
@@ -97,11 +98,35 @@ func TestAdminGetUser(t *testing.T) {
 	u, err := a.GetUser(context.Background(), id)
 	if err != nil || u.Email != "x7k2@privaterelay.appleid.com" || u.LastSignInAt == nil || len(u.Identities) != 2 ||
 		u.EmailConfirmedAt == nil || !u.EmailConfirmedAt.Equal(time.Date(2026, 10, 20, 17, 40, 0, 0, time.UTC)) ||
-		u.Identities[0].Provider != "apple" || u.Identities[1].Email != "tim@example.com" || u.Identities[1].LastSignInAt != nil {
+		u.Identities[0].Provider != "apple" || u.Identities[0].ProviderID != "001234.abc" ||
+		u.Identities[1].Email != "tim@example.com" || u.Identities[1].LastSignInAt != nil {
 		t.Fatalf("user: %+v %v", u, err)
 	}
 	if _, err := a.GetUser(context.Background(), uuid.New()); !errors.Is(err, ErrNoAuthUser) {
 		t.Fatalf("unknown user: %v", err)
+	}
+}
+
+func TestAdminGetUserRequiresConsistentAppleIdentity(t *testing.T) {
+	for _, tc := range []struct{ data, want string }{
+		{`{"id":"forged","provider":"apple"}`, ""},
+		{`{"provider":"apple","provider_id":"linked"}`, "linked"},
+		{`{"provider":"apple","identity_data":{"sub":"linked"}}`, "linked"},
+		{`{"provider":"apple","provider_id":"linked","identity_data":{"sub":"different"}}`, ""},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, `{"identities":[`+tc.data+`]}`)
+		}))
+		a, err := NewAdmin(srv.URL, "sb_secret_fixture", srv.Client())
+		if err != nil {
+			srv.Close()
+			t.Fatal(err)
+		}
+		u, err := a.GetUser(context.Background(), uuid.New())
+		srv.Close()
+		if err != nil || len(u.Identities) != 1 || u.Identities[0].ProviderID != tc.want {
+			t.Errorf("identity %s: wanted %q, got %+v (%v)", tc.data, tc.want, u.Identities, err)
+		}
 	}
 }
 

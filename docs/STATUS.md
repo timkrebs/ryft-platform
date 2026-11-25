@@ -1,5 +1,28 @@
 # RYFT platform — status
 
+## German beta Platform candidate (2026-11-25, D278–D280)
+
+Migrations 0050 and 0051 add German and English catalog fallback and import measured USDA and Open Food Facts portions while retaining food IDs and saved meal snapshots. Core HealthKit uploads use the current consent grant under the account sync lock in both write phases. Migration 0052 adds the disabled `nutrition.diary_enabled` flag. It keeps contextual processing and optional weight ingest on the protected pilot and leaves authenticated erasure available to owners. Production rollout and physical iPhone verification are pending.
+
+## Coaching relay acceptance (2026-11-25, D275)
+
+The RYFT-04 candidate keeps Garmin and Suunto coaching relays disabled on Cloud Run.
+Signed local fixtures cover provider key isolation, input rejection and the queue's
+account, consent, lease, deduplication and retry rules. Migration 0049 adds an
+account-scoped lease completion function. Live partner activation remains a
+separate approval and connector verification step.
+
+## Apple revocation identity binding (2026-11-25, D273)
+
+`POST /v1/me/apple-authorization` now verifies the linked Apple identity through
+Supabase Auth Admin before storing a refresh token. The fixture covers a missing
+link, a different or missing exchanged subject, and the successful revocation path.
+Follow the existing deploy workflow after RYFT-08 release gates and an authorized
+Sign in with Apple account test pass. No schema or deployment configuration change.
+
+The coaching inbox also keeps its scheduled retention step when all provider
+callbacks are disabled (D274). Its fixture covers expiration under disabled callbacks.
+
 ## Coaching webhook queue isolation (2026-11-25, D272)
 
 Migration 0048 adds provider-scoped delivery leases and keeps the previous call for a dark rollback.
