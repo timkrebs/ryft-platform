@@ -4,7 +4,7 @@
 # image. A manual dispatch can include the Nutrition ETL image in the same scan. After the scan it
 # signs in to Google Cloud and pushes those same images to
 # Artifact Registry, tagged with the short SHA. It renders deploy/run with their digests, checks that
-# main is still at this commit, runs the migrate job and stops when it fails (nothing rolls, as with
+# main is still at this commit, verifies smoke authentication, runs the migrate job and stops when it fails (nothing rolls, as with
 # the old PreSync), then replaces the services in the order scoring, notify, ingest, api, and runs
 # `make smoke-prod`. A manual run (workflow_dispatch, main only: the WIF condition admits nothing
 # else) does the same; its `smoke` input skips the smoke for the first deploy, before anything is
@@ -45,7 +45,7 @@ on:
   workflow_dispatch:
     inputs:
       smoke:
-        description: Run make smoke-prod after the deploy (off only for the first deploy, before infra/gcp's apply 2)
+        description: Verify smoke authentication before rollout and run make smoke-prod after it (off only for the first deploy)
         type: boolean
         default: true
       publish_nutrition_etl:
@@ -325,6 +325,18 @@ jobs:
           else
             echo "current=true" >> "$GITHUB_OUTPUT"
           fi
+      - name: Verify production smoke authentication
+        if: steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.smoke)
+        env:
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+          SMOKE_TOKEN: ${{ secrets.SMOKE_TOKEN }}
+          SMOKE_USER_ID: ${{ secrets.SMOKE_USER_ID }}
+        run: |
+          ref=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env)
+          SMOKE_AUTH_FILE="$RUNNER_TEMP/ryft-smoke-auth.json" SUPABASE_URL="https://$ref.supabase.co" \
+            ./scripts/smoke_prod.sh --auth-preflight
       # Migrations first; a failed run stops the workflow here and no service rolls. The job does not
       # retry (maxRetries 0, deploy/run/migrate.yaml).
       - name: migrate (replace the job, execute it, wait)
@@ -344,13 +356,9 @@ jobs:
           done
       - name: make smoke-prod
         if: steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.smoke)
-        env:
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
-          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
         run: |
-          ref=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env)
-          SUPABASE_URL="https://$ref.supabase.co" make smoke-prod
+          trap 'rm -f "$RUNNER_TEMP/ryft-smoke-auth.json"' EXIT
+          SMOKE_AUTH_FILE="$RUNNER_TEMP/ryft-smoke-auth.json" make smoke-prod
       # On success and when superseded. After a failure nothing runs (no status function in this file),
       # and the runner empties $RUNNER_TEMP, where the credentials are, at the end of the job.
       - name: Sign out

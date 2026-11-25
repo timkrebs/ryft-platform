@@ -2481,13 +2481,16 @@ main only), and only while the repository variable `GCP_DEPLOY` is `on`. One run
    tagged with the short SHA.
 5. `deploy/run` rendered with their digests.
 6. Main's head again, just before `migrate`: a commit overtaken during the build ends green as
-   "superseded" here, its images pushed and nothing rolled. Then `migrate`: `gcloud run jobs
-   replace`, then `execute --wait`. If it fails, the run stops and no service rolls.
+   "superseded" here, its images pushed and nothing rolled. The smoke authentication preflight
+   validates the dedicated session through `GET /v1/me` before `migrate` and service rollout (D282).
+   That read can initialize the dedicated account. Then `migrate` runs via `gcloud run jobs replace`
+   and `execute --wait`. If either preflight or migrate fails, the run stops before service rollout.
 7. `gcloud run services replace` for scoring, notify, ingest, api, in that order. Each waits until
    its new revision is ready. The startup probe is `/health/live` (`/health/ready` stays the
    uptime checks' target), so ready means the process serves, not that it reaches the database.
-8. `make smoke-prod`. It is what catches a revision with a broken database config. Only a manual
-   run with `smoke` off skips it.
+8. `make smoke-prod` revalidates the runner's protected session against the new API before sync and
+   consent writes. It catches a revision with a broken database config. The first-deploy bootstrap
+   switch `smoke: false` covers both phases until the public API is reachable.
 
 Every run builds and deploys all five, whatever the merge changed, and runs `migrate` (a no-op
 when no file is new). The run summary lists the tag, the digests and each service's new revision.
@@ -2515,13 +2518,22 @@ git grep -ho 'name: [a-z0-9-]*, key: "[0-9]*"' origin/main -- deploy/run/ | tr -
 # 3. The environment deploy admits main only.
 gh api "repos/$R/environments/deploy" --jq '.deployment_branch_policy'   # protected_branches false, custom_branch_policies true
 gh api "repos/$R/environments/deploy/deployment-branch-policies" --jq '.branch_policies[] | [.name,.type]'   # ["main","branch"], nothing else
-# 4. The smoke user's three secrets in that environment. Copy each value, then run its line:
+# 4. Where password sign-in is enabled, copy each smoke setting into the protected deploy environment.
 pbpaste | gh secret set SUPABASE_ANON_KEY --env deploy -R "$R"   # Supabase -> Project Settings -> API Keys -> the publishable key
 pbpaste | gh secret set SMOKE_EMAIL --env deploy -R "$R"         # the smoke user's address (1Password)
 pbpaste | gh secret set SMOKE_PASSWORD --env deploy -R "$R"      # its password (1Password)
 pbcopy < /dev/null
-gh secret list --env deploy -R "$R"                              # the three names
+gh secret list --env deploy -R "$R"                              # the names only
 ```
+
+Where email sign-in is disabled, use a current Supabase access token acquired by signing into the
+dedicated smoke account through an approved provider. Put that token in `SMOKE_TOKEN` and the same
+account's Supabase UUID in `SMOKE_USER_ID`, both in the protected `deploy` environment. Allow enough
+token lifetime for the CI wait, migrate, rollout and post-rollout smoke. The same two settings work
+with `make smoke-prod` from an authorized shell. Remove a temporary token from the environment after
+use. The script validates the UUID before passing a supplied remote bearer to the API. Provider
+failures report the HTTP status and a known error code, such as `422 (email_provider_disabled)`.
+[Supabase Auth error codes](https://supabase.com/docs/guides/auth/debugging/error-codes)
 
 "Allow administrators to bypass" stays unchecked (Settings → Environments → `deploy`). If the
 environment is missing, create it as step 10a.1 creates `site`, with `deploy` in its place.
@@ -2605,6 +2617,8 @@ Alerting; the dashboard RYFT · Overview) for 30 minutes. What each outcome leav
   for main's head, deploys.
 - `ci-ok` red or late: nothing deployed. Red is fixed by a new commit, which deploys itself.
   Late: once ci is green on main's head, `gh workflow run deploy.yml --ref main -R "$R"`.
+- Smoke auth preflight failed: migrate and rollout have not started. Use the HTTP status and known
+  provider code to check the dedicated account and its session lifetime before dispatching again.
 - `migrate` failed: nothing rolled. Read its log as in step 8.
 - A revision isn't ready: Cloud Run keeps routing that service to its last ready revision
   (`latestRevision` means the latest *ready* one). The services before it run the new code, the

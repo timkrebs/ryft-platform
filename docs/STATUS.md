@@ -1,5 +1,9 @@
 # RYFT platform — status
 
+## Production smoke authentication (2026-11-25, D282)
+
+The workflow verifies the dedicated smoke session before migrate and rollout, then uses the same session for the post-rollout checks. The protected `deploy` environment needs an approved dedicated login or a current access token and matching account UUID. Once the reviewed change is on main and those credentials are available, use `gh workflow run deploy.yml --ref main` to verify the normal gated path.
+
 ## Notices email delivery (2026-11-25, D281)
 
 Terraform configures the existing `ryft_notices` policy to send only to the existing email channel. Uptime and the PromQL policies still use both channels. Production delivery is pending the operator's reviewed apply and an email receipt check.

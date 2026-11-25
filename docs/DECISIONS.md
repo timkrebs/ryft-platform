@@ -6832,3 +6832,7 @@ Keep the cheap admission check before reading the request body. Before either wr
 ## D281 — Deliver notices by email (2026-11-25)
 
 Use the existing `ryft-timkrebs` email channel alone for the `ryft_notices` policy. Uptime and the four PromQL policies use the email and the Google Cloud app channel. Keep the same alerting gate, policy identity and incident settings. Review the existing policy's in-place channel update in the saved Terraform plan, then confirm delivery with a synthetic notice.
+
+## D282 — Verify production smoke authentication before rollout (2026-11-25)
+
+When smoke is enabled, check the dedicated session after the tip check and before replacing or running the migrate job. Accept the existing password login where available or a short-lived Supabase access token for the configured dedicated fixture UUID. Keep the verified session in a private runner file and validate it against the rolled API before sync and consent writes. Report the HTTP status and allowlisted Auth error code on sign-in failure.
