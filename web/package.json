@@ -60,5 +60,15 @@
     "sharp": "0.35.5",
     "typescript": "6.0.3",
     "vitest": "5.1.0"
+  },
+  "overrides": {
+    "get-uri": {
+      "basic-ftp": "6.2.6"
+    },
+    "minimatch@^10.0.0": "11.0.8",
+    "linkinator": {
+      "glob": "14.0.6"
+    },
+    "body-parser@^1.20.0": "1.20.9"
   }
 }
