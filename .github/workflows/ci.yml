@@ -75,6 +75,7 @@ jobs:
               # deploy/run/api.yaml): a template-only change must run them.
               - 'deploy/run/**'
               - 'scripts/coverage.sh'
+              - 'scripts/etl/**'
               # internal/events/pubsub's tests compare the topology with the generated files and with
               # Terraform's constants (pubsub.tf).
               - 'infra/gcp/pubsub.auto.tfvars.json'
@@ -256,6 +257,14 @@ jobs:
       - run: |
           mkdir -p coverage
           go test -race -count=1 -coverprofile=coverage/coverage.out ./...
+      - name: Nutrition ETL fixtures and PostgreSQL COPY
+        working-directory: scripts/etl
+        run: |
+          (cd ../../backend && DATABASE_URL="$RYFT_TEST_POSTGRES_URL" go run ./cmd/migrate)
+          python3 -m venv "$RUNNER_TEMP/ryft-nutrition-etl"
+          python="$RUNNER_TEMP/ryft-nutrition-etl/bin/python"
+          "$python" -m pip install -r requirements.txt
+          RYFT_ETL_TEST_DATABASE_URL="$RYFT_TEST_POSTGRES_URL" "$python" -m unittest discover -s tests -v
       - name: The emulator's log
         if: failure()
         run: docker logs pubsub 2>&1 | tail -200
