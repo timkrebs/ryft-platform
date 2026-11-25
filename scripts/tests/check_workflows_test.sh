@@ -229,6 +229,12 @@ deploy_swap "a deploy that ignores the superseded wait" "needs.ci.outputs.curren
 job_swap "migrate and the services without the tip gate" "steps.tip.outputs.current == 'true'" deploy "$TIP_IF" "        if: github.sha != ''"
 deploy_swap "the smoke's tip gate undone by a top-level ||" "no || outside parentheses" \
   "$SMOKE_IF" "        if: steps.tip.outputs.current == 'true' && github.event_name != 'workflow_dispatch' || inputs.smoke"
+deploy_swap "smoke preflight removed" "smoke auth preflight must come before rollout" \
+  '            ./scripts/smoke_prod.sh --auth-preflight' '            true'
+fresh
+tip_gate="${TIP_IF#*if: }" yq -i '(.jobs.deploy.steps[] | select(.name == "Verify production smoke authentication").if) = strenv(tip_gate)' "$d/deploy.yml"
+run
+expect_fail "smoke preflight and post-rollout gates disagree" "under the same gate"
 job_swap "no tip step" "deploy job has no step with id" deploy "        id: tip" "        id: tip2"
 # Build and scan before any sign-in or push, with no third-party action and no docker.sock.
 deploy_swap "setup-buildx-action back" "its only action" \

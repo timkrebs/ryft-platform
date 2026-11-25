@@ -193,6 +193,9 @@ TIP_GATE = re.compile(r"steps\.tip\.outputs\.current\s*==\s*'true'")
 SCAN = re.compile(r"\$\{?TRIVY\}?\"?\s+image\b[^\n]*\s--input\b")
 SIGNS_IN = re.compile(r"ACTIONS_ID_TOKEN_REQUEST|(?<![A-Za-z0-9_\-])gcloud(?![A-Za-z0-9_\-])|(?<![A-Za-z0-9_\-])docker\b[^\n;&|]*?\b(?:login|push)\b")
 CHANGES_RUN = re.compile(r"(?<![A-Za-z0-9_\-])gcloud\s+run\s|(?<![A-Za-z0-9_\-])make\s+smoke-prod\b")
+SMOKE_AUTH = re.compile(r"scripts/smoke_prod\.sh\s+--auth-preflight\b")
+SMOKE_RUN = re.compile(r"\bmake\s+smoke-prod\b")
+ROLLOUT = re.compile(r"\bgcloud\s+run\s+(?:jobs\s+(?:replace|execute)|services\s+replace)\b")
 CHECKOUT = re.compile(r"actions/checkout@[0-9a-f]{40}")
 DEPLOY_PERMS = {"ci": {"actions": "read"}, "deploy": {"contents": "read", "id-token": "write"},
                 "site-build": {"contents": "read"}, "site": {"contents": "read", "id-token": "write"}}
@@ -337,11 +340,18 @@ if is_deploy:
         if tip is None:
             fail("deploy.yml's deploy job has no step with id `tip` (main is still at this commit, right before migrate)")
         for n, r in enumerate(runs):
-            if CHANGES_RUN.search(r):
+            if CHANGES_RUN.search(r) or SMOKE_AUTH.search(r):
                 cond = steps[n].get("if")
                 if not (tip is not None and n > tip and isinstance(cond, str) and TIP_GATE.match(cond.strip()) and not top_level_or(cond)):
                     fail(f"deploy.yml's deploy job, {step_label(n, steps[n])}: it changes Cloud Run or smokes, so it comes after the "
                          f"step `tip` and its `if` starts with steps.tip.outputs.current == 'true' (no || outside parentheses), is {cond!r}")
+        auth_steps = [n for n, r in enumerate(runs) if SMOKE_AUTH.search(r)]
+        smoke_steps = [n for n, r in enumerate(runs) if SMOKE_RUN.search(r)]
+        rollout_steps = [n for n, r in enumerate(runs) if ROLLOUT.search(r)]
+        if not (len(auth_steps) == len(smoke_steps) == 1 and rollout_steps and
+                auth_steps[0] < min(rollout_steps) <= max(rollout_steps) < smoke_steps[0] and
+                steps[auth_steps[0]].get("if") == steps[smoke_steps[0]].get("if")):
+            fail("deploy.yml's smoke auth preflight must come before rollout, under the same gate as the post-rollout smoke")
     # The site (C1): site-build builds without a token, site deploys from main's tip only.
     for sid in ("site-build", "site"):
         sj = jobs.get(sid)
