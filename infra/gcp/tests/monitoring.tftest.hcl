@@ -128,16 +128,24 @@ run "alerting_on_once_the_app_channel_is_set" {
     error_message = "gate on: the email channel ryft-timkrebs is read, in ryftlab-prod, and no other channel (the app's is an id)"
   }
 
-  # Exactly the email channel's name, then the variable, in every policy; and in the plan in clear, so
-  # the user can read the id there (D237: not sensitive).
+  # The five operational policies route to both channels. The notices policy uses the existing email (D281).
   assert {
     condition = alltrue([
-      for p in concat(google_monitoring_alert_policy.uptime, google_monitoring_alert_policy.notices, values(google_monitoring_alert_policy.promql)) :
+      for p in concat(google_monitoring_alert_policy.uptime, values(google_monitoring_alert_policy.promql)) :
       p.notification_channels == tolist([data.google_monitoring_notification_channel.email[0].name, var.alert_app_channel]) &&
       p.notification_channels == tolist(["projects/fake-for-tests/notificationChannels/1", "projects/fake-for-tests/notificationChannels/2"]) &&
       !issensitive(p.notification_channels)
     ])
-    error_message = "every policy's notification_channels is [the email channel's name, alert_app_channel], in that order, not sensitive"
+    error_message = "the uptime and PromQL policies use [the email channel's name, alert_app_channel], in that order, not sensitive"
+  }
+
+  assert {
+    condition = (
+      google_monitoring_alert_policy.notices[0].notification_channels == tolist([data.google_monitoring_notification_channel.email[0].name]) &&
+      google_monitoring_alert_policy.notices[0].notification_channels == tolist(["projects/fake-for-tests/notificationChannels/1"]) &&
+      !issensitive(google_monitoring_alert_policy.notices[0].notification_channels)
+    )
+    error_message = "the notices policy uses just the existing email channel"
   }
 
   assert {
@@ -152,7 +160,6 @@ run "alerting_on_once_the_app_channel_is_set" {
   assert {
     condition = alltrue([
       for p in concat(google_monitoring_alert_policy.uptime, google_monitoring_alert_policy.notices, values(google_monitoring_alert_policy.promql)) :
-      length(p.notification_channels) == 2 &&
       p.project == "ryftlab-prod" && p.combiner == "OR" && length(p.conditions) == 1 &&
       contains(["CRITICAL", "WARNING"], p.severity) &&
       startswith(p.display_name, "RYFT · ") &&
@@ -160,7 +167,7 @@ run "alerting_on_once_the_app_channel_is_set" {
       alltrue([for d in p.documentation : strcontains(d.content, "First look") && strcontains(d.content, "docs/OPERATIONS.md -> GCP")]) &&
       [for s in p.alert_strategy : s.auto_close] == ["1800s"]
     ])
-    error_message = "every policy: both channels, one condition, a severity, markdown documentation with a first look, closes 30 minutes after its data stops"
+    error_message = "every policy has one condition, a severity, markdown documentation with a first look, and closes 30 minutes after its data stops"
   }
 
   assert {
@@ -457,10 +464,10 @@ run "a_number_that_only_ends_alike_is_another_channel" {
 
   assert {
     condition = alltrue([
-      for p in concat(google_monitoring_alert_policy.uptime, google_monitoring_alert_policy.notices, values(google_monitoring_alert_policy.promql)) :
+      for p in concat(google_monitoring_alert_policy.uptime, values(google_monitoring_alert_policy.promql)) :
       p.notification_channels == tolist(["projects/fake-for-tests/notificationChannels/1", "projects/fake-for-tests/notificationChannels/11"])
     ])
-    error_message = "channel 11 is another channel than 1: the plan goes on, both in every policy"
+    error_message = "channel 11 differs from channel 1 and both can be used by the uptime and PromQL policies"
   }
 }
 

@@ -6828,3 +6828,7 @@ Keep the cheap admission check before reading the request body. Before either wr
 ## D280 — Separate the beta diary from the protected Nutrition pilot (2026-11-25)
 
 `nutrition.diary_enabled` defaults off and permits meals, catalog reads, private foods and diary totals independently of `nutrition.enabled`. The existing protected pilot flag still governs scoring, CGM writes, coaching, submissions and optional HealthKit weight collection. Enable the diary flag only for the approved pilot cohort. Keep authenticated owner erasure routes available independently of those flags. The existing beta gate governs API admission.
+
+## D281 — Deliver notices by email (2026-11-25)
+
+Use the existing `ryft-timkrebs` email channel alone for the `ryft_notices` policy. Uptime and the four PromQL policies use the email and the Google Cloud app channel. Keep the same alerting gate, policy identity and incident settings. Review the existing policy's in-place channel update in the saved Terraform plan, then confirm delivery with a synthetic notice.

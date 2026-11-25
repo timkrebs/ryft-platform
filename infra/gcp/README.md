@@ -23,7 +23,7 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 | `site.tf`, `site.auto.tfvars` | the site's records on Firebase Hosting (C1, D233): the apex A set and its `hosting-site=` TXT (joins the apex TXT set), and www's A set and TXT or its CNAME, from the values the Firebase wizard shows. Empty adds nothing |
 | `logging.tf` | the bucket `ryft-logs` (europe-west1, 14 days) and the sink into it; always the exclusion `connect-callback` (every entry whose absolute `httpRequest.requestUrl` is `http(s)://<host>/v1/connect/<provider>/callback`, with a query or none, anchored: the callback's OAuth state and code, D257, review P2-1); from `edge = "built"` on two more: the load balancer's requests but Cloud Armor's denials and preview matches, and api's and ingest's Cloud Run request log below 5xx (D242) |
 | `monitoring.tf` | Cloud Monitoring, RYFT's only observability (D236): the log-based metrics `ryft_ticks` (by `result`), `ryft_errors` and `ryft_notices` (D244: api's `feedback received`, `admin signed in` and `admin auth rejected` but for reasons `missing` and `expired`, by `kind`), the uptime checks (the site's `/`, `/privacy` and AASA always; api's and ingest's `/health/ready` while they're public; every 5 minutes from 3 locations), the dashboard "RYFT · Overview". All free at RYFT's volume, so ungated. From `edge = "built"` on: `ryft_edge_denials` and `ryft_edge_preview_matches` (by `priority`) and four edge tiles |
-| `alerts.tf` | the six alert policies, one condition each (uptime failing, 5xx over 2 %, tick missing, dead letters held, event backlog over 15 minutes, and since D244 feedback and admin access), to both notification channels, the email first, then the app's; only once `alert_app_channel` is set (step 11), the tick's only while the tick runs; the plan fails if that is the email channel (D237). Six is the cap, a test (`six_conditions_at_most`) |
+| `alerts.tf` | the six alert policies, one condition each. Uptime, 5xx, missing tick, dead letters, and backlog use email then the Google Cloud app. Notices uses the existing email only (D281). The `alert_app_channel` gate still controls the policies and tick alerts require a running tick. The plan fails if the two channels resolve to the same channel (D237). Six is the cap, a test (`six_conditions_at_most`) |
 | `checks.tf` | warnings for what fails silently: the `_Default` log sink still on, a mapping not Ready, a disabled email channel (the app's has no data source, D237: step 11.4 tests it) |
 
 ## What it does not own (design §9)
@@ -65,6 +65,8 @@ terraform -chdir=infra/gcp show -json notices-recovery.tfplan | jq -e '
 ```
 
 Review the rest of the plan before applying the fresh file. When recovering a plan from the Connections stack, generate its replacement with that stack’s resource definitions and the D269 fix so the full plan reflects the resources already applied. Keep the existing metric and dependent alert policies in place throughout the recovery.
+
+For the D281 email-only update on an aligned workspace, the reviewed plan should update `google_monitoring_alert_policy.notices[0]` in place and attach just the existing email channel. Check the notification channel list, the metric and the other five policies before applying the saved plan.
 
 ## Nutrition on Cloud Run
 
