@@ -6836,3 +6836,7 @@ Use the existing `ryft-timkrebs` email channel alone for the `ryft_notices` poli
 ## D282 — Verify production smoke authentication before rollout (2026-11-25)
 
 When smoke is enabled, check the dedicated session after the tip check and before replacing or running the migrate job. Accept the existing password login where available or a short-lived Supabase access token for the configured dedicated fixture UUID. Keep the verified session in a private runner file and validate it against the rolled API before sync and consent writes. Report the HTTP status and allowlisted Auth error code on sign-in failure.
+
+## D283 — Use one bilingual catalog term for Nutrition suggestions (2026-11-25)
+
+After preserving exact dictionary matches, expand prefixes of at least four normalized characters when the shortest alternate is a prefix of every other alternate. This lets `Apfe` find English apple and apple juice entries without requiring German catalog labels. Competing alternates without a shared dictionary term fall back to primary search. The existing query ranks direct lexical matches ahead of the generic-only alternate and returns catalog labels and IDs.

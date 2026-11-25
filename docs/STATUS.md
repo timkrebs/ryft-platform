@@ -1,5 +1,9 @@
 # RYFT platform — status
 
+## German Nutrition food suggestions (2026-11-25, D283)
+
+In an English-only test catalog, typing `Apfe` now suggests `Apple` and `Apple juice`. `Apfels` narrows the suggestions to `Apple juice`. Go unit and PostgreSQL search tests passed locally. The change uses the existing search function and does not require a migration. Deployment and an on-device prefix check are pending. After review and merge, use the normal Platform deploy workflow.
+
 ## Production smoke authentication (2026-11-25, D282)
 
 The workflow verifies the dedicated smoke session before migrate and rollout, then uses the same session for the post-rollout checks. The protected `deploy` environment needs an approved dedicated login or a current access token and matching account UUID. Once the reviewed change is on main and those credentials are available, use `gh workflow run deploy.yml --ref main` to verify the normal gated path.
