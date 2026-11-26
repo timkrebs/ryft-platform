@@ -6836,3 +6836,7 @@ Use the existing `ryft-timkrebs` email channel alone for the `ryft_notices` poli
 ## D282 — Verify production smoke authentication before rollout (2026-11-25)
 
 When smoke is enabled, check the dedicated session after the tip check and before replacing or running the migrate job. Accept the existing password login where available or a short-lived Supabase access token for the configured dedicated fixture UUID. Keep the verified session in a private runner file and validate it against the rolled API before sync and consent writes. Report the HTTP status and allowlisted Auth error code on sign-in failure.
+
+## D285 — Release Nutrition selection in two steps; a meal PATCH copies retained item rows (2026-11-26)
+
+The API before D285 deletes and reinserts every meal item on PATCH from its typed snapshot, so a rollback or a mixed-version rollout across a release that adds item columns or source fields erases them. This step copies each retained item row as stored (`to_jsonb` and `jsonb_populate_record`: every column, the sources JSON unchanged), only moves its position, and writes no new snapshot fields. It adds the two portion label columns empty (0053, constraints `NOT VALID`, validated by 0054). The catalog selection release (D284) writes the labels and ships only after this build is live; its rollback target is this build, never an earlier one.

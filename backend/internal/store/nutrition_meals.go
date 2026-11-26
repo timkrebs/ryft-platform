@@ -135,7 +135,7 @@ func (s *Store) CreateNutritionMeal(ctx context.Context, user uuid.UUID, in mode
 			return err
 		}
 		created = true
-		return insertNutritionItems(ctx, tx, user, out.ID, out.Items)
+		return insertNutritionItems(ctx, tx, user, out.ID, out.Items, nil)
 	})
 	return out, created && err == nil, err
 }
@@ -185,9 +185,19 @@ func makeNutritionItems(ctx context.Context, tx pgx.Tx, user uuid.UUID, inputs [
 	return newItems, nil
 }
 
-func insertNutritionItems(ctx context.Context, tx pgx.Tx, user, meal uuid.UUID, items []model.NutritionMealItem) error {
+// insertNutritionItems writes the items in order. An item whose id is in stored is copied from its row as stored
+// (every column, the sources JSON unchanged) and only moves to its new position; the rest are written from the
+// typed snapshot. Columns and JSON fields this build does not know therefore survive a PATCH (D285).
+func insertNutritionItems(ctx context.Context, tx pgx.Tx, user, meal uuid.UUID, items []model.NutritionMealItem,
+	stored map[uuid.UUID]string) error {
 	batch := &pgx.Batch{}
 	for pos, item := range items {
+		if raw, ok := stored[item.ID]; ok {
+			batch.Queue(`INSERT INTO nutrition.meal_items
+				SELECT * FROM jsonb_populate_record(NULL::nutrition.meal_items, $1::jsonb || jsonb_build_object('position', $2::int))`,
+				raw, pos)
+			continue
+		}
 		nutrients, err := json.Marshal(item.Nutrients)
 		if err != nil {
 			return err
@@ -264,11 +274,27 @@ func (s *Store) PatchNutritionMeal(ctx context.Context, user, id uuid.UUID, patc
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM nutrition.meal_items WHERE user_id=$1 AND meal_id=$2`, user, id); err != nil {
+		// The deleted rows come back whole, so retained items are copied as stored. ryft_api has no UPDATE on
+		// meal_items, and the unique (meal_id, position) cannot clash because every row is gone before any insert.
+		rows, err := tx.Query(ctx, `DELETE FROM nutrition.meal_items WHERE user_id=$1 AND meal_id=$2
+			RETURNING id, to_jsonb(meal_items.*)`, user, id)
+		if err != nil {
+			return err
+		}
+		stored := make(map[uuid.UUID]string, len(old.Items))
+		for rows.Next() {
+			var itemID uuid.UUID
+			var raw []byte
+			if err := rows.Scan(&itemID, &raw); err != nil {
+				return err
+			}
+			stored[itemID] = string(raw)
+		}
+		if err := rows.Err(); err != nil {
 			return err
 		}
 		out.Items = items
-		return insertNutritionItems(ctx, tx, user, id, items)
+		return insertNutritionItems(ctx, tx, user, id, items, stored)
 	})
 	return out, err
 }

@@ -3295,6 +3295,11 @@ backfills; never a drop or a rename), so the previous release runs on the newer 
 what it does not know, and its `migrate` skips every file it has and does not mind newer rows in
 `schema_migrations`. A rollback is therefore never a schema change.
 
+**A rollback target must preserve what it does not know.** On every write path that rewrites rows, it
+keeps the columns and JSON fields it has no model for. Since D285 a meal PATCH copies retained items
+as stored. Roll the catalog selection release (D284) back only to the D285 build or later, never to an
+older one: that build would erase the portion labels and source attribution on the next meal edit.
+
 **A migration that hits the lock timeout.** The migrator sets `lock_timeout` to 5 s in every
 migration's transaction (`internal/db`, `lockTimeout`; a migration may set its own `SET LOCAL`,
 which wins; 0027 does, also 5 s). A migration that cannot get its lock in that time fails with
