@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The production smoke after a deploy (docs/OPERATIONS.md → GCP → Deploy, roll back, rotate):
-# the edge answers for api and ingest, the dedicated smoke user is authenticated as the service
+# the edge answers for api and ingest, the dedicated smoke user (smoke@ryftapp.de in Supabase, its
+# id is SMOKE_USER_ID, bound by scripts/sql/bind_smoke_account.sql) is authenticated as the service
 # account ryft-smoke (a Google ID token that api and ingest map to that one user, D286), reads
 # /v1/me, sends one tiny sync and reads the day back once scoring has scored it
 # with the current model. Changes nothing but that user's step count for today.

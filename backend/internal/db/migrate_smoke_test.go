@@ -133,8 +133,13 @@ func testMigrateSmokeAccount(t *testing.T, supabase bool) {
 	}
 }
 
-// smokeEmail is the address both scripts expect the smoke account to hold in auth.users.
-const smokeEmail = "smoke@ryftlab.de"
+// smokeEmail is the address both scripts expect the smoke account to hold in auth.users (each script carries it as
+// v_email, because each file is pasted alone; the two tests below pin both to this one value).
+const smokeEmail = "smoke@ryftapp.de"
+
+// retiredSmokeEmail is the address #250 first named (a lookalike account created on 2026-11-26 and never used). An
+// account that holds it is not the smoke account.
+const retiredSmokeEmail = "smoke@ryftlab.de"
 
 // smokeScriptDB is a migrated database on the Supabase shape with stand-ins for auth.users (with the email
 // column, and, like Supabase, no unique constraint that would keep a second row from holding the same
@@ -268,8 +273,19 @@ func TestBindSmokeAccountScript(t *testing.T) {
 	refused("a valid email-only user that is not the smoke account", good, "is not the account with the email "+smokeEmail+" (that is "+second+")")
 	holder("", "")
 	refused("no row with the smoke email", good, "no auth.users row has the email "+smokeEmail)
+	// An otherwise valid account whose email is not the configured smoke email is refused, even when that email is
+	// the retired lookalike (the 2026-11-26 failure, the other way round) or the right one with a stray character.
+	for _, other := range []string{retiredSmokeEmail, "smoke@ryftapp.de.", "xsmoke@ryftapp.de", " smoke@ryftapp.de"} {
+		holder(good, other)
+		refused("an account holding "+other, good, "no auth.users row has the email "+smokeEmail)
+	}
+	holder(second, retiredSmokeEmail)
+	if _, err := pool.Exec(ctx, `UPDATE auth.users SET email = $2 WHERE id = $1`, good, smokeEmail); err != nil {
+		t.Fatal(err)
+	}
+	refused("the retired lookalike while the real account holds the email", second, "is not the account with the email "+smokeEmail+" (that is "+good+")")
 	holder(good, smokeEmail)
-	if _, err := pool.Exec(ctx, `INSERT INTO auth.users (id, email) VALUES ($1, $2)`, sso, "SMOKE@RyftLab.de"); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO auth.users (id, email) VALUES ($1, $2)`, sso, "SMOKE@RyftApp.de"); err != nil {
 		t.Fatal(err)
 	}
 	refused("the real smoke account while a second row holds the address", good, "2 auth.users rows have the email "+smokeEmail)
@@ -279,7 +295,7 @@ func TestBindSmokeAccountScript(t *testing.T) {
 	}
 
 	// The match ignores case: the address as the user typed it at sign-up binds.
-	holder(good, "Smoke@RyftLab.DE")
+	holder(good, "Smoke@RyftApp.DE")
 	if bound, _, err := run(good, false); err != nil || bound != good {
 		t.Fatalf("binding with the email in another case: %v, bound %q", err, bound)
 	}
@@ -429,6 +445,8 @@ func TestConsentSmokeAccountScript(t *testing.T) {
 	// The email re-check: another address, none at all, no auth.users row.
 	setEmail(smoke, "someone.else@example.test")
 	refused("another email", "2026-11-26", "does not have the email "+smokeEmail)
+	setEmail(smoke, retiredSmokeEmail)
+	refused("the retired lookalike email", "2026-11-26", "does not have the email "+smokeEmail)
 	if _, err := pool.Exec(ctx, `UPDATE auth.users SET email = NULL WHERE id = $1`, smoke); err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +456,7 @@ func TestConsentSmokeAccountScript(t *testing.T) {
 	}
 
 	// The bound account with the smoke email (any case) gets one consent, and the last statement shows it.
-	setEmail(smoke, "Smoke@RyftLab.de")
+	setEmail(smoke, "Smoke@RyftApp.de")
 	tag, err := run("2026-11-26")
 	if err != nil {
 		t.Fatalf("recording the consent: %v", err)

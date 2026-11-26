@@ -2685,10 +2685,18 @@ signs in with a password. It is the service account `ryft-smoke@ryftlab-prod.iam
   ```
 
   The script also resolves the account on its own, by its email in `auth.users`
-  (`smoke@ryftlab.de`). It refuses unless exactly one row has that email (case-insensitive) and that
+  (`smoke@ryftapp.de`, id `671779e8-9634-4964-b3a6-4445c6ad1c5f`, in `public.users` since
+  2026-10-20). It refuses unless exactly one row has that email (case-insensitive) and that
   row's id is the pasted UUID. A wrong UUID copied from `config.env` therefore stops here: "… is not
-  the account with the email smoke@ryftlab.de (that is <id>)". Then fix `SMOKE_USER_ID` in a config
-  PR, not the SQL.
+  the account with the email smoke@ryftapp.de (that is <id>)". Then fix `SMOKE_USER_ID` in a config
+  PR, not the SQL. (`smoke@ryftlab.de`, created 2026-11-26 and never used, is not the smoke account:
+  #250 first named it and its bind was refused, "not in public.users".)
+
+  The email lives in one named constant per language: `v_email` in each of the two SQL files
+  (`bind_smoke_account.sql`, `consent_smoke_account.sql`; each is pasted alone, so neither can import
+  the other) and `smokeEmail` in `backend/internal/db/migrate_smoke_test.go`, whose tests fail unless
+  both files carry exactly that value. To move the smoke account to another address, change all three
+  in one PR.
 
   Until the row exists, every smoke request is refused `401 smoke_unbound`, the preflight and the
   post-rollout smoke included. The migration creates the table, so the bind comes after a `migrate`
@@ -2800,7 +2808,7 @@ signs in with a password. It is the service account `ryft-smoke@ryftlab-prod.iam
   api's value, and a rollout needs that preflight first. So a config PR with the new UUID stops at
   the preflight ("did not identify the expected smoke account" or `401 smoke_unbound`). Nothing
   changes, and `migrate_only` alone doesn't help, because it rolls nothing. The way through:
-  1. The new account: `smoke@ryftlab.de` (change the old account's email or delete it first),
+  1. The new account: `smoke@ryftapp.de` (change the old account's email or delete it first),
      email identity only, with its `public.users` row (the bind script's check 3).
   2. The config PR with `SMOKE_USER_ID=<new>` merges. Its push run stops at the preflight, and
      nothing changes. If the commit carries migrations: `gh workflow run deploy.yml --ref main -f

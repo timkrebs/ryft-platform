@@ -19,7 +19,7 @@
 -- The consent is recorded only when ALL of these hold:
 --   1. the version is a real date written YYYY-MM-DD (the placeholder left in is refused);
 --   2. public.smoke_account holds a row (an unbound smoke is refused; this file never picks an account);
---   3. that account is in auth.users and its email is smoke@ryftlab.de (v_email below; compared without
+--   3. that account is in auth.users and its email is smoke@ryftapp.de (v_email below; compared without
 --      regard to case): a wrong binding never receives a consent.
 -- It acts only on the account in public.smoke_account. It adds one `health_processing` consent row for the
 -- version, exactly as the app's own grant does (backend/internal/store/beta.go), under the same per-user
@@ -30,7 +30,8 @@ DO $consent$
 DECLARE
     -- >>> REPLACE the text between the quotes with the new PRIVACY_POLICY_VERSION (YYYY-MM-DD). <<<
     v_version text := '<PRIVACY_POLICY_VERSION>';
-    v_email   constant text := 'smoke@ryftlab.de';
+    -- The same value as v_email in bind_smoke_account.sql and smokeEmail in backend/internal/db/migrate_smoke_test.go.
+    v_email   constant text := 'smoke@ryftapp.de';
     v_id      uuid;
     v_mail    text;
     v_n       integer;
