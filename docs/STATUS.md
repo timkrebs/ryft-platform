@@ -1,5 +1,11 @@
 # RYFT platform — status
 
+## No-watch recovery: the contract, docs only (2026-11-26, D291–D295)
+
+Done: `docs/API.md` → Recovery without a watch: the morning check-in (`PUT`/`GET`/`DELETE /v1/recovery/checkins/{date}`, the range), `GET /v1/recovery/status`, session RPE (`PUT`/`DELETE /v1/workouts/{id}/rpe`, `Workout.session_rpe`, `session_rpe_load`), `CoachingBriefing.recovery`, `N2RScore.bedtime_source`, the readiness value `LOW_RECOVERY_UNEXPLAINED`, and the flag `recovery.checkin`. The Swift mirror and a changelog row are in. No Go, no migration, no behaviour change: every new route answers `404` until the implementation PR. The examples are `http` blocks until the model types exist. D290 was taken by #252, so this work uses D291–D295.
+
+Open: the implementation (`docs/work/2026-11-26-no-watch-recovery/implementation.md`: migrations 0061+, tickets, tests), the privacy text #252 (or the next version) needs before the flag goes on for anyone, and eight product questions in that file. Merging this PR deploys nothing new: `deploy.yml` rolls the services unchanged, and the site job has no change.
+
 ## The real smoke account is smoke@ryftapp.de (2026-11-26, D286 correction)
 
 Steps 1 and 2 below are done (the #250 push run stopped at "bootstrap pending", and `migrate_only` ran). Step 3 refused `5258f5d1-…` (`smoke@ryftlab.de`, created today, never used): "not in public.users". Nothing was bound, and nothing rolled. The production smoke account is `smoke@ryftapp.de`, `671779e8-9634-4964-b3a6-4445c6ad1c5f`. This PR puts that id in `config.env` and that email in both SQL scripts and the tests. No migrations.
