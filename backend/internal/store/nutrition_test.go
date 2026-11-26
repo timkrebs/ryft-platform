@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -189,6 +190,54 @@ func TestNutritionCatalogPrivacyAndSearch(t *testing.T) {
 	}
 	if _, err := st.Food(ctx, a, fixtureApple); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
+	}
+}
+
+func TestNutritionBilingualTypeahead(t *testing.T) {
+	ctx := context.Background()
+	st, root, account, _ := nutritionTestStore(t)
+	if _, err := root.Exec(ctx, `
+DELETE FROM nutrition.food_names WHERE normalized='apfel' AND language='de';
+WITH foods AS (
+    INSERT INTO nutrition.foods(id,canonical_name,food_type,quality) VALUES
+        (gen_random_uuid(),'Apple juice','generic','source_reported'),
+        (gen_random_uuid(),'Apple drink','branded','source_reported')
+    RETURNING id,canonical_name
+), sources AS (
+    INSERT INTO nutrition.food_sources(id,food_id,provider,external_id,dataset_version,license_identifier)
+    SELECT id,id,'ryft',id::text,'typeahead','RYFT' FROM foods RETURNING id,food_id
+)
+INSERT INTO nutrition.food_names(food_id,source_id,language,label,normalized)
+SELECT f.id,s.id,'en',f.canonical_name,lower(f.canonical_name) FROM foods f JOIN sources s ON s.food_id=f.id`); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		query string
+		want  []string
+	}{
+		{"Apf", nil},
+		{"Apfe", []string{"Apple", "Apple juice"}},
+		{"Apfel", []string{"Apple", "Apple juice"}},
+		{"Apfels", []string{"Apple juice"}},
+		{"Apple", []string{"Apple", "Apple drink", "Apple juice"}},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			page, err := st.SearchFoods(ctx, account, model.FoodSearch{Query: tc.query, Language: "de-DE", Market: "DE"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var names []string
+			for _, food := range page.Foods {
+				names = append(names, food.Name)
+			}
+			// English direct matches share the prefix rank and their relative order is not part of the contract.
+			if tc.query == "Apple" {
+				slices.Sort(names)
+			}
+			if !slices.Equal(names, tc.want) {
+				t.Errorf("foods = %q, want %q", names, tc.want)
+			}
+		})
 	}
 }
 

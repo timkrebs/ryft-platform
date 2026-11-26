@@ -256,7 +256,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/metrics` | owns every Prometheus metric the services export, declared in one place, and serves them on /metrics or pushes them by OTLP. | none | 1 file |
 | `internal/model` | owns the wire types of docs/API.md, the event payloads the services exchange, and the error code constants. | none | 5 files |
 | `internal/notify` | decides what RYFT pushes, to whom and when. | apns, events, logx, metrics, model, store | 4 files |
-| `internal/nutrition` | validates catalog and meal inputs and computes food nutrient snapshots. | model | 1 file |
+| `internal/nutrition` | validates catalog and meal inputs and computes food nutrient snapshots. | model | 2 files |
 | `internal/nutrition/importer` | streams and validates versioned food datasets for the Nutrition catalog. | model, nutrition | 1 file |
 | `internal/nutrition/score` | computes nutrition quality, glucose impact, contextual recovery and guidance from timestamped inputs. | model | 3 files |
 | `internal/periodization` | turns training and nutrition observations into bounded daily targets. | energy, model | 1 file |
