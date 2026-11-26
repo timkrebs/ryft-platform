@@ -3,8 +3,9 @@
 --
 -- A query is "broad" when it names a canonical staple group ("milch" or "milk" for group
 -- milk, "apfel" or "apple" for group apple) or is one word of at least four characters that
--- a staple's name or alias starts with. Exact equality with a variant alias ("Milch 1,5
--- Prozent") is a specific query and does not promote the whole group.
+-- a staple's name or alias starts with, while no staple matches it exactly. Exact equality
+-- with a variant name or alias ("Vollmilch", "Milch 1,5 Prozent") is a specific query and
+-- does not promote the whole group.
 --
 -- Tiers, highest first (favorites, 90-day uses and last use then order within a tier):
 --   10 staple of a promoted group       9 whole forms of a promoted group
@@ -42,8 +43,8 @@ WITH scope AS (SELECT nutrition.account() AS user_id), terms AS (
            CASE WHEN n.language=$2 THEN 2 WHEN n.language=split_part($2,'-',1) THEN 1 ELSE 0 END AS language_rank,
            NOT n.alias AS preferred_label,ts_rank(n.document,terms.query) AS lexical,
            @trgm@.similarity(n.normalized,$1) AS fuzzy,$3=ANY(f.markets) AS preferred_market,
-           (f.is_canonical_staple AND (translate(f.canonical_group_key,'_-','  ') IN ($1,$6) OR
-                (length($1)>=4 AND strpos($1,' ')=0 AND n.normalized LIKE $1 || '%'))) AS broad_match
+           (f.is_canonical_staple AND translate(f.canonical_group_key,'_-','  ') IN ($1,$6)) AS group_match,
+           (f.is_canonical_staple AND length($1)>=4 AND strpos($1,' ')=0 AND n.normalized LIKE $1 || '%') AS prefix_match
     FROM nutrition.food_names n JOIN nutrition.foods f ON f.id=n.food_id CROSS JOIN terms CROSS JOIN scope
     WHERE f.status='active' AND scope.user_id IS NOT NULL
       AND (f.owner_user_id IS NULL OR f.owner_user_id=scope.user_id)
@@ -54,7 +55,10 @@ WITH scope AS (SELECT nutrition.account() AS user_id), terms AS (
                (strpos($6,' ')>0 AND n.document @@ terms.alternate))))
     ORDER BY f.id,match DESC,language_rank DESC,preferred_label DESC,lexical DESC,fuzzy DESC,n.label
 ), staple_groups AS (
-    SELECT DISTINCT canonical_group_key FROM candidates WHERE is_canonical_staple AND broad_match
+    -- Broad: the query names the group, or is a single-word prefix of a staple that no staple
+    -- matches exactly. An exact variant name (Vollmilch, Milch 1,5 Prozent) is specific.
+    SELECT DISTINCT canonical_group_key FROM candidates WHERE group_match
+       OR (prefix_match AND NOT EXISTS (SELECT FROM candidates e WHERE e.is_canonical_staple AND e.match=7))
 ), recent AS (
     SELECT i.food_id,count(*) AS uses,max(i.created_at) AS last_used
     FROM nutrition.meal_items i JOIN scope ON i.user_id=scope.user_id

@@ -277,7 +277,7 @@ type NutritionFavorite struct {
 type NutritionMealExportPage struct {
 	Meals     []NutritionMeal     `json:"meals"`
 	NextAfter *uuid.UUID          `json:"next_after"`
-	Favorites []NutritionFavorite `json:"favorites,omitempty"`
+	Favorites []NutritionFavorite `json:"favorites,omitzero"` // nil (later pages) is omitted, [] is sent
 }
 
 // NutritionTotal reports a known subtotal and coverage among recorded items.

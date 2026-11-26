@@ -427,6 +427,29 @@ class PostgresTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM nutrition.portions WHERE food_id=%s AND is_default",
                                         (food_id,)).fetchone(), (1,))
 
+    def test_one_default_per_food_across_sources(self):
+        # A second source an operator linked to the same food brings its own default: the batch
+        # must not violate nutrition_portions_one_default, and the food keeps exactly one default.
+        first, food_id = self.keyed_food("revision-1", portions=(
+            Portion("Small plum", "portion", weight_g=60.0, portion_key="small", is_default=True, sort_order=10),))
+        second, _ = self.keyed_food("revision-1", portions=(
+            Portion("1 cup of plums", "portion", weight_g=165.0, portion_key="cup", is_default=True, sort_order=10),))
+        linked_source = uuid.uuid4()
+        with psycopg.connect(os.environ["RYFT_ETL_TEST_DATABASE_URL"], autocommit=True) as db:
+            db.execute("SET ROLE ryft_nutrition_etl")
+            self.assertEqual(load_batch(db, [first]), {"inserted": 1, "duplicates": 0})
+            db.execute("RESET ROLE")
+            db.execute("""INSERT INTO nutrition.food_sources(id,food_id,provider,external_id,dataset_version,license_identifier)
+                VALUES (%s,%s,'usda',%s,'revision-0','CC0-1.0')""", (linked_source, food_id, second.external_id))
+            db.execute("SET ROLE ryft_nutrition_etl")
+            self.assertEqual(load_batch(db, [second]), {"updated": 1, "duplicates": 0})
+            defaults = db.execute("""SELECT source_id,portion_key FROM nutrition.portions
+                WHERE food_id=%s AND is_default""", (food_id,)).fetchall()
+            self.assertEqual(defaults, [(linked_source, "cup")])
+            self.assertEqual(db.execute("""SELECT count(*) FROM nutrition.portions
+                WHERE food_id=%s AND origin='python_etl'""", (food_id,)).fetchone(), (2,))
+            db.execute("RESET ROLE")
+
     def test_identical_rerun_keeps_portion_ids(self):
         cup = Portion("1 cup", "portion", weight_g=165.0, source_portion_id="777001", portion_key="cup", is_default=True)
         pit = Portion("1 pitted plum", "portion", weight_g=66.0, source_portion_id="777002", portion_key="plum")

@@ -113,6 +113,11 @@ func TestNutritionRankingGroupsAndVariants(t *testing.T) {
 	if ids := search("Milch 1,5 Prozent"); len(ids) == 0 || ids[0] != c.milk15 {
 		t.Errorf("exact variant alias lost to a favorite of another variant: %v", ids)
 	}
+	// A single-word exact variant name is specific too, although it is a prefix of a staple name.
+	favorite(c.milk15)
+	if ids := search("Vollmilch"); len(ids) == 0 || ids[0] != c.milk35 {
+		t.Errorf("single-word exact variant lost to a favorite of another variant: %v", ids)
+	}
 
 	// (b) A broad query promotes the whole group, and personalization orders its staples.
 	favorite(c.milk15)

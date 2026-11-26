@@ -97,11 +97,20 @@ DELETE FROM nutrition.portions p USING etl_delta d
 WHERE p.source_id=d.source_id AND p.food_id=d.food_id AND p.origin='python_etl'
   AND NOT EXISTS (SELECT FROM etl_portions candidate WHERE candidate.id=p.id);
 
--- At most one default per food (nutrition_portions_one_default) is checked per row, so a default
--- that moves to another portion would collide mid-statement. Clear the flag on the rows this
--- import owns first; the upsert below sets it again on the portion that keeps it.
-UPDATE nutrition.portions p SET is_default=false FROM etl_delta d
-WHERE p.source_id=d.source_id AND p.food_id=d.food_id AND p.origin='python_etl' AND p.is_default;
+-- At most one default per food (nutrition_portions_one_default), across all of its sources.
+-- A default set by hand (not python_etl) is kept and the import brings none; otherwise the
+-- delta's first default by (source, order, ID) wins.
+UPDATE etl_portions e SET is_default=false
+WHERE e.is_default AND (
+    EXISTS (SELECT FROM nutrition.portions m WHERE m.food_id=e.food_id AND m.is_default AND m.origin<>'python_etl')
+    OR EXISTS (SELECT FROM etl_portions o WHERE o.food_id=e.food_id AND o.is_default
+        AND (o.source_id,coalesce(o.sort_order,100),o.id) < (e.source_id,coalesce(e.sort_order,100),e.id)));
+-- The index is checked per row, so a default moving to another portion (or to another source of
+-- the same food) would collide mid-statement. Clear the imported defaults of every food that
+-- receives one first; the upsert below sets the flag on the portion that keeps it.
+UPDATE nutrition.portions p SET is_default=false
+WHERE p.origin='python_etl' AND p.is_default
+  AND p.food_id IN (SELECT food_id FROM etl_portions WHERE is_default);
 
 INSERT INTO nutrition.portions (id,food_id,source_id,label,labels,quantity,unit,weight_g,volume_ml,origin,
     source_portion_id,portion_key,short_label_en,short_label_de,is_default,sort_order)

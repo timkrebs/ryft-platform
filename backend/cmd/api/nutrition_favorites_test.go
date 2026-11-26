@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/timkrebs/ryft/internal/db"
+	"github.com/timkrebs/ryft/internal/flags"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
@@ -58,9 +59,10 @@ func TestAdminMergeRefusesFavoritesOnlySource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range flagList {
-		if (f.Key == model.FlagNutrition || f.Key == model.FlagNutritionDiary) && f.Enabled {
-			t.Fatalf("test needs %s off", f.Key)
+	// The same evaluation as merge.go: nutrition.enabled exists with rollout 0, so the raw row is not enough.
+	for _, key := range []string{model.FlagNutrition, model.FlagNutritionDiary} {
+		if flags.Enabled(flagList, key, from) {
+			t.Fatalf("test needs %s off for the source account", key)
 		}
 	}
 
@@ -163,5 +165,10 @@ func TestOwnerExportListsFavoritesOnFirstPageOnly(t *testing.T) {
 	other, _ := get(b, "")
 	if len(other.Favorites) != 1 || other.Favorites[0].FoodID != foodB {
 		t.Fatalf("another account's favourites: %+v", other.Favorites)
+	}
+	// A first page without favourites carries an empty list, not an absent field.
+	_, none := get(rg.account(), "")
+	if got := string(none["favorites"]); got != "[]" {
+		t.Fatalf("first page without favourites: favorites=%q", got)
 	}
 }

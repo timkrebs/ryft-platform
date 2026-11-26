@@ -3299,6 +3299,8 @@ what it does not know, and its `migrate` skips every file it has and does not mi
 keeps the columns and JSON fields it has no model for. Since D285 a meal PATCH copies retained items
 as stored. Roll the catalog selection release (D284) back only to the D285 build or later, never to an
 older one: that build would erase the portion labels and source attribution on the next meal edit.
+While the D285 build runs, its merge guard does not count Nutrition favourites: don't merge an account
+whose only Nutrition data is favourites until D284 is live again.
 
 **A migration that hits the lock timeout.** The migrator sets `lock_timeout` to 5 s in every
 migration's transaction (`internal/db`, `lockTimeout`; a migration may set its own `SET LOCAL`,
