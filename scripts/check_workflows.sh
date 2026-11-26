@@ -451,6 +451,13 @@ if is_deploy:
         co = [s for s in steps if "uses" in s]
         if not (co and isinstance(co[0].get("with"), dict) and co[0]["with"].get("fetch-depth") == 0):
             fail("deploy.yml's deploy job: its checkout needs `fetch-depth: 0` (the record step reads commit ancestry: which commit built the serving api's image)")
+        # Every image is also pushed under a tag no later run moves (a rebuild of the same commit re-points <sha7>), so the
+        # record step can still name the commit of the serving image.
+        push_run = next((r for r in runs if re.search(r"\bdocker\b[^\n]*\bpush\b", r)), "")
+        if not ('run_ref=$REGISTRY/$s:$tag-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT' in push_run and
+                re.search(r'^\s*docker\s+--config\s+"\$RUNNER_TEMP/docker"\s+push\s+--quiet\s+"\$run_ref"\s*$', push_run, re.M)):
+            fail("deploy.yml's deploy job: the push step also pushes each image as `$REGISTRY/$s:$tag-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT` "
+                 "(`run_ref`), a tag no later run moves: the record step reads the serving image's commit from its tags")
         first_run = next((r for r in runs if r), "")
         if not re.search(r'^\s*date\s+\+%s\s*>\s*"\$RUNNER_TEMP/deploy-started"\s*$', first_run, re.M):
             fail("deploy.yml's deploy job: its first run step writes the job's start (`date +%s > \"$RUNNER_TEMP/deploy-started\"`), "

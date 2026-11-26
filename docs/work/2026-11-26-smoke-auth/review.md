@@ -77,3 +77,29 @@ No blockers.
 | 7 | nit | The floor's grep also counts `testdata/` and read-only queries (safe side). | Documented in OPERATIONS. |
 
 CI on 40c29f1: `TestBindSmokeAccountScript` and `TestConsentSmokeAccountScript` passed (finding 2 is proven). `TestMigrateSupabaseShape` failed ("want a service policy on each of the 43 tables, got 42"), as it already did on 609817e: 0060 named its policy `smoke_account_read`. It was renamed `smoke_account_services`, like every service policy (0032's is SELECT only too). 0060 has never been applied anywhere, so editing it is allowed.
+
+# Third review (Codex, read-only; the last round): fixes in 352adbf
+
+Full text: `../docs/work/2026-11-26-smoke-auth-rollout/codex-review-3.md` (root repo; the lead's brief summarises it).
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | A failed `describe` after a replace turned into `unknown`: the rollout went on. | No fallback: the lookup fails into the EXIT handler. Case (b): `FAIL_DESCRIBE=notify` restores notify and scoring; ingest and api are never replaced. |
+| 2 | Unbounded gcloud and curl calls; a job timeout could kill the restores. | `timeout` on every gcloud call in record, rollout and rollback. Forward calls run under `bounded`, never past the job's 60 min minus 4 × 90 s of restores plus 180 s. Every restore is tried. The hand-restore commands are printed first. `smoke_prod.sh` has curl limits and a 600 s deadline. Cases (e) to (i). |
+| 3 | The D285 gate trusted a revision label that can outlive the image. | d285 needs the label AND an image commit (the registry tags of the serving digest) that contains #249 (`4bca49d`). |
+| 4 | Config drift could reopen the bootstrap. | d286=no only with no smoke settings AND an image commit at or before #249. Any other incomplete setting is a drift error in every mode. |
+| 5 | migrate_only published Hosting. | `!inputs.migrate_only` on site-build and site, pinned and evaluated. |
+| 6 | Replacing the smoke account deadlocks normal deploys. | Documented only (OPERATIONS, D286), untested. |
+
+# Review of 352adbf (code-reviewer, the one pass)
+
+No blockers. No path lets a non-legacy image reach d286=no, or an unproven one d285=yes.
+
+| # | Severity | Finding | Outcome |
+|---|---|---|---|
+| 1 | major | The push step re-tags `<svc>:<sha7>` before `record` reads the tags. A redeploy of the commit already serving (re-run, dispatch, recovery) leaves the serving digest untagged: d285=no, and once a commit writes the labels, a false floor refusal. | Fixed (lead): every image is also pushed as `<sha7>-<run id>-<attempt>`, and the parse takes its hex part. Pinned in check_workflows.sh; fixture cases for a run-unique tag alone and for a malformed one. |
+| 2 | minor | registry.tf deletes any version older than 30 days unless it is among the 5 newest. An old serving image loses its tags, and with them the proof. | Documented (OPERATIONS, D286). Such an image could not start new instances either. |
+| 3 | minor | `timeout` without `--foreground` puts the smoke in its own process group: Ctrl-C at a terminal stops only `make`. | Fixed (lead): `--foreground` when stdin is a terminal. |
+| 4 | minor | `deploy-started` is written after the full-history checkout, so the 180 s slack absorbs it. | Fixed (lead): its own run step before the checkout. |
+
+CI on 352adbf: one case failed, `the summary names the image's commit`. It looked for the commit in the step's output, but a passing run writes it only to the summary, which the next case checks. The case is removed.

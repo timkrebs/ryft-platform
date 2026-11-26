@@ -199,18 +199,20 @@ jobs:
       # The Trivy image of ci.yml, by digest.
       TRIVY: aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222
     steps:
+      # The job's start, before the (full-history) checkout: a file, not $GITHUB_ENV. The rollout step budgets
+      # its calls against the job's timeout-minutes and keeps the time its restores need.
+      - name: The job's start
+        run: |
+          date +%s > "$RUNNER_TEMP/deploy-started"
       # The whole history: the record step finds out which commit built the serving api's image (ancestry).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       # Before anything is built: config.env is filled in (the config PR of runbook step 8 merged) and
-      # every template renders; a FILL_ME_IN left stops the run here. The digests are fakes. It also writes
-      # the job's start (a file, not $GITHUB_ENV): the rollout step budgets its calls against the job's
-      # timeout-minutes and keeps the time its restores need.
+      # every template renders; a FILL_ME_IN left stops the run here. The digests are fakes.
       - name: config.env has no placeholder left and deploy/run renders
         run: |
-          date +%s > "$RUNNER_TEMP/deploy-started"
           printf -v z '%064d' 0
           args=()
           for s in api ingest scoring notify migrate; do args+=("--digest=$s=sha256:$z"); done
@@ -299,9 +301,15 @@ jobs:
           : > "$RUNNER_TEMP/digests"
           while read -r s id; do
             ref=$REGISTRY/$s:$tag
+            # And a tag no later run moves (a rebuild of this commit re-points <sha7>): the record step finds the
+            # commit of the serving image by its tags.
+            run_ref=$REGISTRY/$s:$tag-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT
             docker tag "$id" "$ref"
+            docker tag "$id" "$run_ref"
             [ "$(docker image inspect --format '{{.Id}}' "$ref")" = "$id" ] || { echo "::error title=deploy::$ref is not the scanned image $id"; exit 1; }
+            [ "$(docker image inspect --format '{{.Id}}' "$run_ref")" = "$id" ] || { echo "::error title=deploy::$run_ref is not the scanned image $id"; exit 1; }
             docker --config "$RUNNER_TEMP/docker" push --quiet "$ref"
+            docker --config "$RUNNER_TEMP/docker" push --quiet "$run_ref"
             rd=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" | grep -F "$REGISTRY/$s@" | head -n 1 || true)
             d=${rd#"$REGISTRY/$s@"}
             [[ $d =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error title=deploy::no registry digest for $s (RepoDigests: '$rd')"; exit 1; }
@@ -453,8 +461,10 @@ jobs:
               if not isinstance(e, dict) or not any(digest in str(e.get(k) or "") for k in ("version", "digest")):
                   continue
               t = str(e.get("tag") or e.get("name") or "").rsplit("/", 1)[-1]
-              if re.fullmatch(r"[0-9a-f]{7,40}", t):
-                  tags.add(t)
+              # <sha7>, or the run-unique <sha7>-<run id>-<attempt>: the commit is the hex part.
+              m = re.fullmatch(r"([0-9a-f]{7,40})(?:-[0-9]+-[0-9]+)?", t)
+              if m:
+                  tags.add(m.group(1))
           print("\n".join(sorted(tags)))
           ' "$digest"); then
               tags=

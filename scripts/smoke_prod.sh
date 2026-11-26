@@ -41,7 +41,10 @@ set -euo pipefail
 if [ -z "${SMOKE_PROD_DEADLINE:-}" ]; then
   if command -v timeout >/dev/null 2>&1; then
     export SMOKE_PROD_DEADLINE=armed
-    exec timeout -k 10 "${SMOKE_PROD_TIMEOUT:-600}" "${BASH:-bash}" "$0" "$@"
+    # At a terminal, --foreground keeps the script in the terminal's process group, so Ctrl-C stops it too.
+    fg=()
+    if [ -t 0 ]; then fg=(--foreground); fi
+    exec timeout ${fg[@]+"${fg[@]}"} -k 10 "${SMOKE_PROD_TIMEOUT:-600}" "${BASH:-bash}" "$0" "$@"
   fi
   echo "! smoke-prod: no \`timeout\` on this machine: running without an overall deadline (brew install coreutils)" >&2
 fi

@@ -352,6 +352,9 @@ deploy_swap "the smoke without its bound" "plain command line after the services
 deploy_swap "JOB_S that is not the job's timeout" "must equal the job's timeout-minutes" '          JOB_S=3600' '          JOB_S=3000'
 job_swap "a job timeout that JOB_S does not follow" "must equal the job's timeout-minutes" deploy '    timeout-minutes: 60' '    timeout-minutes: 45'
 deploy_swap "a time constant that is gone" "assigns JOB_S, RESTORE_S" '          SMOKE_S=900' '          true'
+deploy_swap "no run-unique tag pushed" "a tag no later run moves" \
+  '            docker --config "$RUNNER_TEMP/docker" push --quiet "$run_ref"' '            true'
+deploy_sub "a run tag that a rebuild moves" "a tag no later run moves" 'run_ref=$REGISTRY/$s:$tag-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT' 'run_ref=$REGISTRY/$s:$tag-latest'
 deploy_swap "the job's start not written" "writes the job's start" '          date +%s > "$RUNNER_TEMP/deploy-started"' '          true'
 deploy_sub "the job's start not checked" "reads \$RUNNER_TEMP/deploy-started" '[[ $started =~ ^[0-9]+$ ]] ||' 'true ||'
 deploy_sub "no time kept for the restores" "reads \$RUNNER_TEMP/deploy-started" 'reserve=$(( 4 * RESTORE_S + 180 ))' 'reserve=0'
@@ -797,8 +800,16 @@ api_is yes "$ENV_FULL" "$DN" "$N_SHA7"
 run_record "$x/rev.json"
 ex_ok "a labelled D286 api (image N) on a push"
 eq "the facts of a labelled D286 api" "$(outputs)" "d286=yes d285=yes "
-ex_out "the summary names the image's commit" "$N_SHA7"
 grep -qF "image $DN (commit(s) $N_SHA7)" "$x/summary" || fail "the summary lacks the image and its commit: $(cat "$x/summary")"
+# A rebuild of the serving commit moved <sha7> to another digest: the run-unique <sha7>-<run>-<attempt> still proves the image.
+api_is yes "$ENV_FULL" "$DN" "$N_SHA7-4581418616-1"
+run_record "$x/rev.json"
+ex_ok "a labelled D286 api known by its run-unique tag only"
+eq "the run-unique tag proves the image" "$(outputs)" "d286=yes d285=yes "
+api_is yes "$ENV_FULL" "$DN" "$N_SHA7-x-1"
+run_record "$x/rev.json"
+eq "a malformed run tag proves nothing" "$(outputs)" "d286=yes d285=no "
+api_is yes "$ENV_FULL" "$DN" "$N_SHA7"
 run_record "$x/rev.json" EVENT=workflow_dispatch MIGRATE_ONLY=true
 ex_ok "a labelled D286 api under migrate_only, whatever the tree writes"
 ex_out "migrate_only is announced" "migrate_only: only the migrations are applied"

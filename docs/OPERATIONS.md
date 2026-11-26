@@ -2464,20 +2464,28 @@ main only), and only while the repository variable `GCP_DEPLOY` is `on`. One run
    Nothing has signed in yet.
 4. Only when all five pass: the sign-in as `ryft-deployer` (WIF admits only this workflow, on main,
    in the environment `deploy`, on a GitHub-hosted runner), then the push of the same five images,
-   tagged with the short SHA.
+   tagged with the short SHA and with `<short SHA>-<run id>-<attempt>`. The second tag never moves,
+   so the image a later run finds serving still names its commit.
 5. `deploy/run` rendered with their digests.
 6. Main's head again, just before `migrate`: a commit overtaken during the build ends green as
    "superseded" here, its images pushed and nothing rolled. The smoke authentication preflight
    validates a freshly minted token through `GET /v1/me` before `migrate` and service rollout (D282).
    Then `migrate` runs via `gcloud run jobs replace` and `execute --wait`. If either the preflight or
    migrate fails, the run stops before service rollout. Before both, the run records each service's
-   serving revision and reads two facts from the serving api revision: does it have the D286 sign-in
-   (`SMOKE_OIDC_SA_ID` in its env), and does it carry the label `ryft-meal-patch=d285`? Without the
-   D286 sign-in, a dispatch runs the bootstrap check instead of the preflight, and a push stops here
-   ("the D286 bootstrap is pending", **The smoke authentication**). Without the label, a commit that
-   writes the meal portion labels stops here (**The D285 floor**, below). Nothing has changed at
-   that point. A dispatch with `-f migrate_only=true` runs `migrate` and stops: no smoke
-   authentication, no rollout, no smoke.
+   serving revision. It then reads the serving api revision and proves two facts from its image,
+   not from labels alone. The registry tags of the image's digest name the commits that built it,
+   and these are compared with #249 (`4bca49d`), D285's change and main's last commit before D286.
+   - **D286 sign-in.** Yes when the api's env has `SMOKE_OIDC_SA_EMAIL`, `SMOKE_OIDC_SA_ID`,
+     `SMOKE_OIDC_AUDIENCE` and `SMOKE_USER_ID`, all as literal non-empty values; the preflight runs.
+     No when it has none of the four and the image's commit is #249 or older: a dispatch runs the
+     bootstrap check instead, and a push stops here ("the D286 bootstrap is pending", **The smoke
+     authentication**). Anything else stops every mode as config drift, below.
+   - **D285.** Yes when the revision carries the label `ryft-meal-patch=d285` and the image's
+     commit contains #249. Otherwise a commit that writes the meal portion labels stops here
+     (**The D285 floor**, below).
+
+   Nothing has changed at that point. A dispatch with `-f migrate_only=true` runs `migrate` and
+   stops: no smoke authentication, no rollout, no smoke, and no site.
 7. `gcloud run services replace` for scoring, notify, ingest, api, in that order. Each waits until
    its new revision is ready. The startup probe is `/health/live` (`/health/ready` stays the
    uptime checks' target), so ready means the process serves, not that it reaches the database.
@@ -2487,8 +2495,13 @@ main only), and only while the repository variable `GCP_DEPLOY` is `on`. One run
    goes back to the recorded revisions (api, ingest, notify, scoring) and the run fails: **The smoke
    authentication** below has what that leaves. One EXIT trap does every rollback. A service is
    listed before its `replace` is issued, so a failed replace, a failed smoke or any unexpected
-   error sends every listed service back. A failed summary lookup does not stop the step. No input
-   skips this smoke. `migrate_only` skips the whole rollout.
+   error sends every listed service back. That includes a failed lookup of a new revision after
+   its replace, and the services after it are never replaced. No input skips this smoke.
+   `migrate_only` skips the whole rollout.
+   Before anything moves, the step prints "Restore by hand", one `update-traffic` command per
+   service, to its log and its summary. Every gcloud call and the smoke has a deadline. The
+   forward calls never run past the job's 60 minutes minus the time the four restores need (90 s
+   each, plus 180 s of slack). Every restore is tried, even when one fails or times out.
 
 Every run builds and deploys all five, whatever the merge changed, and runs `migrate` (a no-op
 when no file is new). The run summary lists the tag, the digests and each service's new revision.
@@ -2620,7 +2633,19 @@ Alerting; the dashboard RYFT · Overview) for 30 minutes. What each outcome leav
 - "the D286 bootstrap is pending": a push while the serving api predates D286 (the merge of D286,
   or the first push after a traffic rollback to such a revision). Nothing changed. Follow **The
   bootstrap**, below.
-- "… has no label ryft-meal-patch=d285 …": **The D285 floor**, below. Nothing changed.
+- "… is not proven D285 …": **The D285 floor**, below. Nothing changed.
+- "… is not proven to predate D286 … config drift, never a bootstrap": the serving api runs an image
+  built after #249, but its smoke settings are missing, empty, partial or secret-backed (the message
+  names each). It stops every mode, `migrate_only` too, and nothing changed. Put all four settings
+  back in `deploy/run` and `config.env`, or move the api's traffic to a revision that has them
+  (**A rollback**, below), then dispatch. The same message with "commit(s) none proven" on an
+  api-00044-era revision means the registry no longer has that image's tags (**The D285 floor**).
+- The job died during the rollout (its 60 minutes ran out, or the runner was lost) and no "Rolled
+  back" section was written: run the commands under "Restore by hand" at the top of the rollout
+  step's log (also in the run summary, when it was saved), api first, then check `status.traffic` as in
+  **A rollback**, step 3.
+- "not enough of the job's 60 minutes is left to roll out and still restore: nothing was rolled":
+  the build or `migrate` took too long. The migrations are applied; dispatch again.
 - `migrate` failed: nothing rolled. Read its log as in step 8.
 - A revision isn't ready: Cloud Run keeps routing that service to its last ready revision
   (`latestRevision` means the latest *ready* one). The services before it run the new code, the
@@ -2742,8 +2767,9 @@ signs in with a password. It is the service account `ryft-smoke@ryftlab-prod.iam
   expire (an hour), and only as the smoke account. Emptying `SMOKE_OIDC_*` in the templates turns
   the route off in the services (a deploy).
 - **The bootstrap: the first deploy after D286's merge.** The serving api doesn't know the Google
-  token. The deploy reads that from the serving revision (no `SMOKE_OIDC_SA_ID` in its env), not from
-  an input. The push run of the merge stops before `migrate`: "the D286 bootstrap is pending:
+  token. The deploy reads that from the serving revision, not from an input: none of the four smoke
+  settings in its env, and an image whose registry tag names #249 or an older commit. api-00044-5lh
+  is 3ceca58's image. The push run of the merge stops before `migrate`: "the D286 bootstrap is pending:
   dispatch with migrate_only, bind the smoke account (scripts/sql/bind_smoke_account.sql), then
   dispatch". Nothing changed. Then:
 
@@ -2768,17 +2794,51 @@ signs in with a password. It is the service account `ryft-smoke@ryftlab-prod.iam
   below by hand.) The next push stops as "bootstrap pending". Dispatch `gh workflow run deploy.yml
   --ref main -R "$R"`: the binding is already there, so no migrate-only run is needed. A rollback
   to a D286 or later revision needs nothing special.
+- **Replacing the smoke account** *(untested; normal operation never re-creates it)*. Every run's
+  preflight requires the serving api to map the token to the commit's `SMOKE_USER_ID`. The api maps
+  it to its own `SMOKE_USER_ID`, which must also be the bound account. Only a rollout changes the
+  api's value, and a rollout needs that preflight first. So a config PR with the new UUID stops at
+  the preflight ("did not identify the expected smoke account" or `401 smoke_unbound`). Nothing
+  changes, and `migrate_only` alone doesn't help, because it rolls nothing. The way through:
+  1. The new account: `smoke@ryftlab.de` (change the old account's email or delete it first),
+     email identity only, with its `public.users` row (the bind script's check 3).
+  2. The config PR with `SMOKE_USER_ID=<new>` merges. Its push run stops at the preflight, and
+     nothing changes. If the commit carries migrations: `gh workflow run deploy.yml --ref main -f
+     migrate_only=true -R "$R"`.
+  3. Rebind: `scripts/sql/bind_smoke_account.sql` with `v_rebind` true and the new UUID (expect 1
+     row), then its consent with `scripts/sql/consent_smoke_account.sql`. From here until step 4,
+     smoke tokens get `401 smoke_unbound`. No user is affected.
+  4. api and ingest onto the new UUID, by hand (a production change, yours: the same image, so the
+     D285 and D286 proofs still hold):
+
+     ```bash
+     for S in api ingest; do
+       gcloud run services update "$S" --update-env-vars=SMOKE_USER_ID=<new> --region=europe-west1 --project=ryftlab-prod
+       gcloud run services describe "$S" --region=europe-west1 --project=ryftlab-prod --format='yaml(status.traffic)'   # 100 on the new revision
+     done
+     make smoke-prod                                   # from main's checkout: config.env has the new UUID
+     gh workflow run deploy.yml --ref main -R "$R"     # the preflight passes; a normal rollout
+     ```
+
+  To back out, rebind the old account (`v_rebind`) and set the old UUID the same way.
 
 **The D285 floor.** An api from before D285 (api-00044-5lh and older) PATCHes a meal by deleting
 and reinserting its items, which erases `portion_label_snapshot` and `portion_short_label_snapshot`.
 Every api built since #250 carries the revision label `ryft-meal-patch=d285` (`deploy/run/api.yaml`;
-`check_cloudrun.py` requires it). The serving api is the automatic rollback's target, and the
-deploy refuses before `migrate`, in every mode, when that api lacks the label and the commit writes
-those columns. The test is a `git grep` of `backend/` without tests and without 0053/0054, and a
-failed grep counts as a writer. The error: "the serving api <rev> has no label ryft-meal-patch=d285
-(built before the label, #250: not known to be D285) and this commit writes the meal portion labels
-(<file>) … Nothing was changed." The grep errs on the safe side: a `testdata/` fixture or a
-read-only query that names the columns counts as a writer too.
+`check_cloudrun.py` requires it). A label can outlive its image, though (a hand `gcloud run services
+update --image` keeps it). So the deploy also requires the serving image to be built from a commit
+that contains #249 (`4bca49d`), as the registry tags of its digest show. The serving api is the
+automatic rollback's target, and the deploy refuses before `migrate`, in every mode, when that api
+isn't proven D285 and the commit writes those columns. The test is a `git grep` of `backend/` without
+tests and without 0053/0054, and a failed grep counts as a writer. The error: "the serving api <rev>
+is not proven D285 (label ryft-meal-patch=d285: <yes|no>; image <digest>, commit(s) <sha…|none
+proven>; …) and this commit writes the meal portion labels (<file>) … Nothing was changed." The grep
+errs on the safe side: a `testdata/` fixture or a read-only query that names the columns counts as a
+writer too.
+The proof lasts as long as the image's tags. The registry deletes every version older than 30
+days unless it is one of the 5 newest (`infra/gcp/registry.tf`). An api left serving that long
+past five newer builds loses its proof, and then its image too, so new instances can't pull it. Deploy
+before that happens. A tag list that can't be read is a warning, and the floor then refuses a writer.
 So the snapshot writer (#248) ships only once a labelled api serves, as D285 orders. Fix: deploy a
 commit without the writer first (or revert it), then this one. Never move traffic by hand to an
 unlabelled api once the labels hold data.
