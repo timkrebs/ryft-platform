@@ -18,6 +18,11 @@
   color: var(--text-secondary);
 }
 
+/* On the glow tile the severity word is full ink, as the app's InsightTile (secondary is ~4.1:1 there). */
+.glowWord {
+  color: var(--text-primary);
+}
+
 .dot {
   width: 6px;
   height: 6px;

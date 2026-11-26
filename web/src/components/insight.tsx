@@ -22,7 +22,7 @@ export function InsightCard({
 }) {
   const rows = (
     <>
-      <p className={styles.word}>
+      <p className={glow ? `${styles.word} ${styles.glowWord}` : styles.word}>
         <span className={`${styles.dot} ${styles[`dot-${glow ? 'hint' : severity}`]}`} aria-hidden="true" />
         {word}
       </p>
