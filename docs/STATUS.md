@@ -1,5 +1,14 @@
 # RYFT platform — status
 
+## The real smoke account is smoke@ryftapp.de (2026-11-26, D286 correction)
+
+Steps 1 and 2 below are done (the #250 push run stopped at "bootstrap pending", and `migrate_only` ran). Step 3 refused `5258f5d1-…` (`smoke@ryftlab.de`, created today, never used): "not in public.users". Nothing was bound, and nothing rolled. The production smoke account is `smoke@ryftapp.de`, `671779e8-9634-4964-b3a6-4445c6ad1c5f`. This PR puts that id in `config.env` and that email in both SQL scripts and the tests. No migrations.
+
+After its merge:
+1. The push run stops again at "the D286 bootstrap is pending". Nothing changes. No `migrate_only` is needed: there are no new migrations.
+2. Step 3 below with `671779e8-9634-4964-b3a6-4445c6ad1c5f` (and the consent if it has none).
+3. Steps 4 to 6 below.
+
 ## Production smoke without email sign-in (2026-11-26, D286)
 
 The smoke authenticates with a Google ID token for `ryft-smoke`. api and ingest map it to the smoke account only, and only if the database binds that account (`smoke_account`, migration 0060) and only on the routes the smoke uses. No GitHub secret is involved any more.
@@ -11,7 +20,7 @@ Before the merge:
 After the merge:
 1. The push run stops before migrate: "the D286 bootstrap is pending". The serving api-00044 has no D286 sign-in. Nothing changes.
 2. Run `gh workflow run deploy.yml --ref main -f migrate_only=true`. It applies 0053, 0054 and 0060 and rolls nothing.
-3. Bind the account with `scripts/sql/bind_smoke_account.sql` (Supabase SQL editor, as `postgres`; expect 1 row). The script cross-checks the UUID against `smoke@ryftlab.de` in `auth.users`.
+3. Bind the account with `scripts/sql/bind_smoke_account.sql` (Supabase SQL editor, as `postgres`; expect 1 row). The script cross-checks the UUID against `smoke@ryftapp.de` in `auth.users`. Then, if the account holds no unrevoked consent, record it with `scripts/sql/consent_smoke_account.sql` (the post-rollout smoke fails without one).
 4. Run `gh workflow run deploy.yml --ref main`. The bootstrap check, the rollout and the smoke run, and the run is green.
 5. Run `gh workflow run deploy.yml --ref main` once more. The preflight is used by itself.
 6. Delete `SMOKE_EMAIL`, `SMOKE_PASSWORD`, `SMOKE_TOKEN`, `SMOKE_USER_ID` and `SUPABASE_ANON_KEY` from the `deploy` environment.

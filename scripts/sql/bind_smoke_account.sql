@@ -3,7 +3,7 @@
 -- WHO RUNS IT: the operator, once, in the Supabase SQL editor of the production project as `postgres`
 --   (the owner). No service role can write public.smoke_account; this file is the only writer.
 -- BEFORE: create the smoke user in the Supabase dashboard (Authentication > Users) with the email
---   smoke@ryftlab.de, a real account that signed in with email, never with Apple or Google. Let it make
+--   smoke@ryftapp.de, a real account that signed in with email, never with Apple or Google. Let it make
 --   one request so the app's row exists. Copy its id from that dashboard page and put it in
 --   deploy/run/config.env as SMOKE_USER_ID. The id pasted below must be the same. This file looks the
 --   account up again by its email, so a UUID copied from the wrong place cannot be bound.
@@ -15,7 +15,7 @@
 --
 -- The account is bound only when ALL of these hold:
 --   1. auth.users has the id;
---   2. exactly one auth.users row has the email smoke@ryftlab.de (v_email below; compared without regard
+--   2. exactly one auth.users row has the email smoke@ryftapp.de (v_email below; compared without regard
 --      to case), and that row's id is the pasted one. Zero rows, two or more rows (Supabase allows a
 --      duplicate email for single sign-on users), or another id each refuse, with a text that says which;
 --   3. public.users has the id (the app's row; it is created by the account's first request);
@@ -24,7 +24,7 @@
 --   5. the id is not in public.deleted_users (a deleted account stays deleted).
 --
 -- REBINDING (another account takes over, or the first was deleted and re-created): the new account must be
---   the one that holds the email smoke@ryftlab.de (change the old account's email or delete it first),
+--   the one that holds the email smoke@ryftapp.de (change the old account's email or delete it first),
 --   then set v_rebind to true below. The DO block then runs an explicit DELETE of the current binding followed by the INSERT, in
 --   the same transaction; if any check fails the old binding stays. With v_rebind false (the default) an
 --   existing binding is never replaced: the run is refused and names the bound account.
@@ -40,8 +40,9 @@ DECLARE
     v_id     uuid    := '<SMOKE_USER_ID>';
     -- >>> true only to replace an existing binding (see REBINDING above). <<<
     v_rebind boolean := false;
-    -- The smoke account's email, found independently of the pasted UUID (check 2).
-    v_email  constant text := 'smoke@ryftlab.de';
+    -- The smoke account's email, found independently of the pasted UUID (check 2). The same value as v_email in
+    -- consent_smoke_account.sql and smokeEmail in backend/internal/db/migrate_smoke_test.go (the test pins all three).
+    v_email  constant text := 'smoke@ryftapp.de';
     v_other  text;
     v_bound  uuid;
     v_n      integer;
