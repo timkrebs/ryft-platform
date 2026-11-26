@@ -6872,19 +6872,26 @@ the bases they propose and every legal reading stay with the user and their revi
      GoDaddy instead of AWS, Grafana Cloud and Google Workspace; App Attest, PostHog, the full feedback
      diagnostics, Google's firewall logs; no site access log and no browser storage; the controller, the
      authority and the transfer bases as `TODO(user)`.
-  5. **Against C2:** sign-in is Apple or Google (C2's "email and password at Supabase", the sign-up and
-     password-reset emails and `no-reply@` are gone; the Google details carry two markers, because neither the
-     app at ea52758 nor the platform has a Google sign-in yet); the analytics events, identifier and menu path
+  5. **Against C2:** sign-in is Apple, with Google as a `TODO(user)` until the app offers it (the user turned
+     email sign-in off on 2026-11-26; C2's sign-up and password-reset emails and `no-reply@` are gone; older email
+     accounts keep their address and password hash at Supabase until deleted, with a marker for what happens to
+     them; the Google details carry markers in privacy, terms and support, because neither the app at ea52758 nor
+     the platform has a Google sign-in yet, and the unversioned support page must not state it as fact); the analytics events, identifier and menu path
      come from the app (two C2 markers resolved); the food diary (stored data, not live, catalog sources; CGM, N2R
      and coaching deferred to a later version); a new §4 on the Garmin and Suunto connections; the export's real
      contents; feedback's path; C2's "flag allow-lists keep the id" removed (D249); a sentence that unavailable
      parts process nothing until they arrive. Sections renumbered (§4 connections; §5-§12 follow).
   6. **The connection commitments** (privacy §4, §7, terms §7, support): only at the user's request, after the
      app shows what is read; sleep and overnight HRV only; tokens encrypted for the api; deliveries emptied once
-     processed, failed ones ≤ 7 days, their checksum 30 days; disconnecting in the app, a revocation at the
+     processed, failed ones ≤ 14 days (7 pending, then purged 7 days after failing, `store/inbox.go:355,366`),
+     the arrival record (kind, record id, checksum, times) 30 days; disconnecting in the app, a revocation at the
      provider and deleting the account each delete what the connection delivered and end RYFT's access at the
-     provider, retried up to 30 days with only the sealed tokens kept; further data from a provider needs a new
-     version first. Everything is described as not yet available (no real adapter on main,
+     provider, retried up to 30 days keeping the sealed tokens, the account id and the provider's user id; an
+     in-app disconnect deletes the row at once, a provider-side end keeps it listed 90 days; further data from a
+     provider needs a new version first. **Gap, open for the backend before phase 2:** the consent gate sets a
+     provider's deregistration notice aside like any other item while consent is withdrawn
+     (`store/inbox.go:139-140`, `cmd/ingest/connect.go:305-308`), so the revocation sentence carries a
+     `TODO(user)` until `KindDeregistration` is exempt. Everything is described as not yet available (no real adapter on main,
      `CONNECT_PROVIDERS=` empty).
   7. **No personal details:** the Impressum (edited in place, a single page), terms 2026-11-26 §1 and privacy
      2026-11-26 §1 carry `TODO(user)` markers that name what § 5 DDG, § 18(2) MStV, Art. 13(1)(a) GDPR and the
@@ -6900,6 +6907,8 @@ the bases they propose and every legal reading stay with the user and their revi
   in place (it is the record of consents given); describing CGM, N2R and coaching now (not in the app, and their
   data model may still move); naming the BLS (excluded on main pending review,
   `docs/architecture/nutrition/06-data-source-licensing.md:10`); a trademark notice for Garmin (none mandated was
-  found; the site names Garmin only as a source).
-- **Open:** the 24 `TODO(user)` in the three files (LEGAL_CHECKLIST U1-U15), Google sign-in in the app, the legal
+  found; the site names Garmin only as a source). Amended by the lead: BLS 4.0 is named as "once German staples
+  are added", with draft #248's attribution (`scripts/etl/transform.py:95` there, CC BY 4.0), because the brief
+  asks for it and #248 carries it.
+- **Open:** the 28 `TODO(user)` in the four files (LEGAL_CHECKLIST U1-U15), Google sign-in in the app, the legal
   review, the partner requirements still missing (partners.md).

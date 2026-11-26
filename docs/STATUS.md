@@ -5,7 +5,7 @@
 Privacy 2026-11-26 and terms 2026-11-26 (new versions; the old ones stay), the support page and the Impressum,
 rewritten for GCP, Firebase Hosting and Supabase, Apple or Google sign-in, the dark food diary, opt-in analytics,
 the report form and the planned Garmin and Suunto connections. No personal details: the provider and controller
-are `TODO(user)` (24 markers; `web/docs/LEGAL_CHECKLIST.md`). It supersedes the C2 draft (#228). Sources:
+are `TODO(user)` (28 markers; `web/docs/LEGAL_CHECKLIST.md`). It supersedes the C2 draft (#228). Sources:
 `docs/work/2026-11-26-legal-partners/facts.md`; partner requirements: `…/partners.md`.
 
 **Do not merge before the `TODO(user)` items and the legal review are done.** The merge puts 2026-11-26 into force:

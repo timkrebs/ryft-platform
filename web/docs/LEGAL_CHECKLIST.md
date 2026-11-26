@@ -13,8 +13,9 @@ Files (English only, web D18): `content/legal/en/privacy/{2026-10-20,2026-10-26,
 `…/terms/{2026-10-20,2026-11-26}.mdx`, `…/support.mdx`, `…/impressum.mdx`. The German privacy notice for the app
 beta is a separate item with counsel and not part of this list.
 
-**`TODO(user)` count: 24 in the content files** (privacy 2026-11-26: 20, terms 2026-11-26: 1, Impressum: 3,
-support: 0), plus 1 in `messages/en.json` (`legal.contact.responseTodo`, the response time on `/support`):
+**`TODO(user)` count: 28 in the content files** (privacy 2026-11-26: 22, terms 2026-11-26: 2, Impressum: 3,
+support: 1; after the review of #252: Google sign-in in terms and support, the older email accounts and the
+deregistration-under-withdrawn-consent gap in privacy), plus 1 in `messages/en.json` (`legal.contact.responseTodo`, the response time on `/support`):
 **25 on the site.** The older pages have none.
 
 ---
@@ -90,7 +91,7 @@ the new texts, this repository's new files, variables or commits, and the spots 
 | P4 | `docs/SUPABASE.md` still describes email accounts as a sign-in method | platform docs |
 | P5 | The deletion test counts no nutrition or coaching table (deletion relies on FK cascades) | `backend/internal/store/delete_test.go:74-91` |
 | P6 | The in-app export leaves out journal, nutrition and connections (the text says "on request") | app ea52758 `DataExport.swift`; `GET /v1/me/nutrition-export` exists, unused |
-| P7 | No guard refuses a `TODO(user)` in a published page: this PR's pages pass every check with 24 markers. A check that fails CI on `TODO(user)` in a `status: published` page would block this merge on purpose | `web/tests/legal.test.ts:104-107` (only drafts); proposal, not done here |
+| P7 | No guard refuses a `TODO(user)` in a published page: this PR's pages pass every check with 28 markers. A check that fails CI on `TODO(user)` in a `status: published` page would block this merge on purpose | `web/tests/legal.test.ts:104-107` (only drafts); proposal, not done here |
 | P8 | The "Garmin [device model]" attribution in the app's screens and export, once connections ship | partners.md G9 |
 
 ## 4. The version (D290)

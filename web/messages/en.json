@@ -276,13 +276,13 @@
         },
         {
           "q": "How do I join?",
-          "a": "The beta runs on TestFlight and needs an invite code. The beta page explains the steps."
+          "a": "The beta runs on TestFlight and is invite-only. The beta page explains the steps."
         }
       ]
     },
     "cta": {
       "title": "Try RYFT in the beta",
-      "body": "Free, on TestFlight, with an invite code.",
+      "body": "Free, on TestFlight, by invitation.",
       "button": "Join the beta"
     }
   },
@@ -295,7 +295,7 @@
     "who": {
       "title": "Who it's for",
       "items": [
-        "You have an iPhone with iOS 17 or later.",
+        "You have an iPhone with iOS 18.6 or later.",
         "You wear a watch or ring that writes heart rate and sleep to Apple Health.",
         "You want to see your numbers, and you're fine telling us when one looks wrong."
       ]
@@ -312,8 +312,8 @@
           "body": "Get TestFlight from the App Store, then open the RYFT link from your invite."
         },
         {
-          "title": "Redeem your code",
-          "body": "Open RYFT, create an account or sign in, and enter your invite code."
+          "title": "Sign in",
+          "body": "Open RYFT and sign in with Apple."
         },
         {
           "title": "Allow Apple Health",
@@ -393,7 +393,7 @@
           "Confirm. Everything RYFT stores about you is removed at once."
         ]
       },
-      "alt": "The Account card in RYFT's Profile: buttons for Change password, Log out and, in red, Delete account."
+      "alt": "The Account card in RYFT's Profile: buttons for Log out and, in red, Delete account."
     },
     "contact": {
       "title": "Write to us",
