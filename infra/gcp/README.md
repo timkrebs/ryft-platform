@@ -74,7 +74,7 @@ The existing API serves the scores and guidance and its 15-minute tick runs the 
 
 Merge the Nutrition backend and infrastructure through the normal review and CI flow. Run the following from `plattform` on green `main` after hosted validation and sign-off on the catalog sources and health-data consent.
 
-1. In HCP workspace `ryft-gcp`, set the Terraform variable `nutrition_etl` with **HCL** enabled and value `{}`. Plan the dedicated service accounts, the `nutrition-etl-db` secret container and its one accessor.
+1. In the operator's local, git-ignored `infra/gcp/terraform.tfvars`, set `nutrition_etl = {}`. The variable is kept there and not in HCP workspace `ryft-gcp`. If an earlier version of this step left a workspace variable `nutrition_etl`, delete it: it can override the local file, and a plan would then not move the pins. Plan the dedicated service accounts, the `nutrition-etl-db` secret container and its one accessor.
 
    ```bash
    terraform -chdir=infra/gcp plan -out=nutrition-bootstrap.tfplan
@@ -147,10 +147,10 @@ Merge the Nutrition backend and infrastructure through the normal review and CI 
 
    Keep the current job pin if this check fails. Correct the dedicated login DSN or confirm the reviewed CA against the Supabase Dashboard and run preflight again. Follow the bounded rollout below using the same image digest and secret version that passed.
 
-4. Set `nutrition_etl` in HCP with the actual image digest and numeric secret version. Start with a bounded import and paused schedule.
+4. Set `nutrition_etl` with the actual image digest and numeric secret version. It is **not** an HCP workspace variable: it lives in the operator's local, git-ignored `infra/gcp/terraform.tfvars`. Start with a bounded import and paused schedule.
 
    ```hcl
-   {
+   nutrition_etl = {
      image_digest            = "sha256:<digest shown in the GitHub Actions summary>"
      database_secret_version = 1
      row_limit               = 1000
@@ -163,7 +163,15 @@ Merge the Nutrition backend and infrastructure through the normal review and CI 
    terraform -chdir=infra/gcp show -no-color nutrition-job.tfplan
    ```
 
-   After reviewing and applying the job plan, run one bounded import and check its completion and aggregates.
+   After reviewing and applying the job plan, dry-run each source without `--write`. `--args` replaces the job's arguments for this execution only, so nothing is written and the Terraform pin stays. All 13 USDA staples are SR Legacy foods and bounded runs take them first. SR Legacy has 7,793 foods, so `--limit 10000` is the whole release (D287).
+
+   ```bash
+   gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,bls --wait
+   gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,foundation,--limit,10000 --wait
+   gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,sr-legacy,--limit,10000 --wait
+   ```
+
+   Each summary line must show `"mode": "dry-run"` with accepted rows. The SR Legacy line must have `accepted` close to 7,793, and the version must start with `py-etl4:staples1:sr-legacy:`. Then run the pinned bounded write (`--source all --write --limit <row_limit>`) and check completion and aggregates.
 
    ```bash
    gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --wait
@@ -171,6 +179,8 @@ Merge the Nutrition backend and infrastructure through the normal review and CI 
    gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="nutrition-etl-job"' \
      --project=ryftlab-prod --freshness=1h --limit=20
    ```
+
+   To write the whole SR Legacy release without raising `row_limit` for every source, override the arguments once: `--args=--source,sr-legacy,--write,--limit,10000`.
 
 5. Set `schedule_enabled = true` in the reviewed configuration after the bounded validation. The schedule is 04:00 UTC on the first day of each month. Keep `row_limit` until database load, runtime and source volume have been measured for the intended scope. Use `full_import = true` when ready for unbounded provider scans. `schedule_enabled = false` pauses future launches, and the global stop line also pauses them.
 
