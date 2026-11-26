@@ -16,6 +16,7 @@ change what is deployed. Derived values:
                  sslrootcert=/etc/ryft/supabase-ca.crt                                 (migrate)
   PUSH_AUDIENCE  https://<svc>-<project number>.europe-west1.run.app (the service's own run.app URL)
   IMAGE          europe-west1-docker.pkg.dev/ryftlab-prod/ryft/<svc>@sha256:<digest>
+SMOKE_USER_ID (a lower-case UUID) and SMOKE_SA_ID (digits) are the smoke identity of api and ingest (D286), required like PUSH_SA_ID.
 Fails closed: a FILL_ME_IN left in config.env (the config PR before the first deploy), a value of the
 wrong shape, a missing, unknown or repeated key (OTLP_ENDPOINT and OTLP_USER among the unknown since
 D236), an account twice in APP_ATTEST_EXEMPT_USERS, a provider in CONNECT_PROVIDERS twice, fake or not
@@ -76,13 +77,18 @@ KEYS = {
                              "aws-<n>-eu-central-1.pooler.supabase.com"),
     "APPLE_KEY_ID": (True, r"[A-Z0-9]{10}", "10 upper-case letters or digits"),
     "APNS_KEY_ID": (True, r"[A-Z0-9]{10}", "10 upper-case letters or digits"),
+    # The production smoke's identity (D286), api and ingest only: the dedicated account's Supabase user id and
+    # the unique ID of ryft-smoke, the `sub` of its Google ID tokens. Required like PUSH_SA_ID, no secret.
+    "SMOKE_USER_ID": (True, UUID, "the smoke account's Supabase user id, a lower-case UUID"),
+    "SMOKE_SA_ID": (True, r"[1-9][0-9]{11,24}", "ryft-smoke's unique ID, digits only"),
 }
 # The providers Cloud Run may serve (D257). fake is the compose-only test provider (CONNECT_FAKE=on).
 CONNECT_ON_CLOUD_RUN = ("garmin",)
 # The template placeholders, the only names ever substituted.
 VARS = ("IMAGE", "DATABASE_URL", "PUSH_AUDIENCE", "PRIVACY_POLICY_VERSION", "LOG_LEVEL", "SUPABASE_PROJECT_REF",
         "PUSH_SA_ID", "APPLE_KEY_ID", "APNS_KEY_ID", "BETA_GATE", "XFF_TRUSTED_HOPS", "APP_ATTEST",
-        "APP_ATTEST_EXEMPT_USERS", "CONNECT_PROVIDERS", "CONNECT_GARMIN_USER_CAP", "CONNECT_MIN_POLICY_VERSION")
+        "APP_ATTEST_EXEMPT_USERS", "CONNECT_PROVIDERS", "CONNECT_GARMIN_USER_CAP", "CONNECT_MIN_POLICY_VERSION",
+        "SMOKE_USER_ID", "SMOKE_SA_ID")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=(.*)")
 PLACE = re.compile(r"\$\{([A-Za-z0-9_]*)\}")

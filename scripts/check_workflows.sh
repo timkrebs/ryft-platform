@@ -195,6 +195,10 @@ SIGNS_IN = re.compile(r"ACTIONS_ID_TOKEN_REQUEST|(?<![A-Za-z0-9_\-])gcloud(?![A-
 CHANGES_RUN = re.compile(r"(?<![A-Za-z0-9_\-])gcloud\s+run\s|(?<![A-Za-z0-9_\-])make\s+smoke-prod\b")
 SMOKE_AUTH = re.compile(r"scripts/smoke_prod\.sh\s+--auth-preflight\b")
 SMOKE_RUN = re.compile(r"\bmake\s+smoke-prod\b")
+SMOKE_ENV_NAME = re.compile(r"SMOKE_(?:EMAIL|PASSWORD|TOKEN)|SUPABASE_ANON_KEY", re.I)
+SMOKE_ENV_VALUE = re.compile(r"\bsecrets\s*(?:\.\s*SMOKE_[A-Za-z0-9_]*|\[\s*['\"]SMOKE_[A-Za-z0-9_]*)|\bSUPABASE_ANON_KEY\b", re.I)
+GITHUB_ENV_WRITE = re.compile(r"GITHUB_ENV\b")
+SMOKE_SECRET = re.compile(r"\bsecrets\s*(?:\.\s*[A-Za-z0-9_\-*]*|\[)|\bSUPABASE_ANON_KEY\b|\bSMOKE_(?:EMAIL|PASSWORD|TOKEN)\b", re.I)
 ROLLOUT = re.compile(r"\bgcloud\s+run\s+(?:jobs\s+(?:replace|execute)|services\s+replace)\b")
 CHECKOUT = re.compile(r"actions/checkout@[0-9a-f]{40}")
 DEPLOY_PERMS = {"ci": {"actions": "read"}, "deploy": {"contents": "read", "id-token": "write"},
@@ -269,6 +273,26 @@ if is_deploy:
     on = wf.get("on")
     if not isinstance(on, dict) or set(on) != {"push", "workflow_dispatch"} or on.get("push") != {"branches": ["main"]}:
         fail("deploy.yml runs on exactly `push: {branches: [main]}` and `workflow_dispatch`")
+    # D286: nothing hands the smoke helper a token, an email or a password behind the smoke steps' backs: not the
+    # workflow's `env:`, not any job's, and no run script that writes a SMOKE_ name to $GITHUB_ENV (the helper
+    # would use SMOKE_TOKEN instead of minting its own).
+    env_scopes = [("the workflow's `env:`", wf.get("env"))] + \
+        [(f"job '{jid}' `env:`", j.get("env")) for jid, j in jobs.items() if isinstance(j, dict)]
+    for where, env in env_scopes:
+        if not isinstance(env, dict):
+            continue
+        for k, v in env.items():
+            m = SMOKE_ENV_NAME.fullmatch(str(k)) or SMOKE_ENV_VALUE.search(str(v))
+            if m:
+                fail(f"deploy.yml, {where}: `{k}`: {m.group(0)!r} is a smoke credential; the smoke authenticates with a Google ID token "
+                     "minted by the job's own sign-in and takes none (no SMOKE_TOKEN, SMOKE_EMAIL, SMOKE_PASSWORD, "
+                     "SUPABASE_ANON_KEY or secrets.*), D286")
+    for jid, j in jobs.items():
+        for n, s in enumerate(j.get("steps") if isinstance(j, dict) and isinstance(j.get("steps"), list) else []):
+            r = s.get("run") if isinstance(s, dict) else None
+            if isinstance(r, str) and GITHUB_ENV_WRITE.search(r) and re.search(r"SMOKE_", r):
+                fail(f"deploy.yml's job '{jid}', {step_label(n, s)}: a run script that names SMOKE_* and $GITHUB_ENV: a smoke "
+                     "credential (SMOKE_TOKEN, SMOKE_EMAIL, SMOKE_PASSWORD) never reaches a later step through the environment, D286")
     for jid, job in jobs.items():
         cond = job.get("if") if isinstance(job, dict) else None
         # The gate is a top-level conjunct: `vars.GCP_DEPLOY == 'on'` first, then only `&&` terms.
@@ -352,6 +376,14 @@ if is_deploy:
                 auth_steps[0] < min(rollout_steps) <= max(rollout_steps) < smoke_steps[0] and
                 steps[auth_steps[0]].get("if") == steps[smoke_steps[0]].get("if")):
             fail("deploy.yml's smoke auth preflight must come before rollout, under the same gate as the post-rollout smoke")
+        # D286: the smoke's identity is a Google ID token of ryft-smoke, minted with the job's own sign-in. Neither smoke
+        # step takes a secret (an expression `secrets.`, or the retired email, password, token and anon-key names).
+        for n in auth_steps + smoke_steps:
+            m = SMOKE_SECRET.search(json.dumps(steps[n]))
+            if m:
+                fail(f"deploy.yml's deploy job, {step_label(n, steps[n])}: `{m.group(0)}`: the smoke authenticates with a Google ID "
+                     "token of ryft-smoke minted by the job's own sign-in; it takes no secret (no secrets.*, SUPABASE_ANON_KEY, "
+                     "SMOKE_EMAIL, SMOKE_PASSWORD or SMOKE_TOKEN), D286")
     # The site (C1): site-build builds without a token, site deploys from main's tip only.
     for sid in ("site-build", "site"):
         sj = jobs.get(sid)

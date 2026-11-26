@@ -29,6 +29,10 @@ type Principal struct {
 	AppRole string    // app_metadata.role when it is a JSON string of at most 32 bytes; else ""
 	AAL     string    // exactly "aal1" or "aal2"; anything else ""
 	MFAAt   time.Time // the newest amr entry with method "totp"; zero when there is none
+	// Smoke marks the smoke account's Google token (D286). Its user row must already exist: the
+	// service's OnAuth refuses the token instead of creating the row, so a wrong SMOKE_USER_ID
+	// cannot pass by inserting an orphan.
+	Smoke bool
 }
 
 type principalKey struct{}

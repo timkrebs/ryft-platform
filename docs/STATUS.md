@@ -1,5 +1,20 @@
 # RYFT platform — status
 
+## Production smoke without email sign-in (2026-11-26, D286)
+
+The smoke authenticates with a Google ID token for `ryft-smoke`, which api and ingest map to the smoke account and to no one else. No GitHub secret is involved any more.
+
+Before the merge:
+1. Apply Terraform (`ryft-smoke` and its bindings).
+2. Commit `SMOKE_USER_ID` and `SMOKE_SA_ID` into `deploy/run/config.env`.
+
+After the merge:
+1. The push run stops at the preflight, because api-00044 rejects the token. Nothing rolls.
+2. Run `gh workflow run deploy.yml --ref main -f smoke=false`, then `gh workflow run deploy.yml --ref main`.
+3. Delete `SMOKE_EMAIL`, `SMOKE_PASSWORD`, `SMOKE_TOKEN`, `SMOKE_USER_ID` and `SUPABASE_ANON_KEY` from the `deploy` environment.
+
+The runbook is `docs/OPERATIONS.md` → The smoke authentication.
+
 ## Meal PATCH copies retained items as stored (2026-11-26, D285)
 
 Step 1 of the Nutrition selection release. A meal PATCH now copies each retained item row as stored, so columns and `sources` fields this build does not know survive, and only the position moves. Migration 0053 adds the empty `portion_label_snapshot` and `portion_short_label_snapshot` columns with `NOT VALID` length constraints, and 0054 validates them. There is no contract change and no `API.md` change. Merge and deploy this before the catalog selection PR (D284). That release rolls back only to this build or later. The new Postgres test (`TestNutritionPatchCopiesRetainedItemsAsStored`) first runs in CI's `test` job.

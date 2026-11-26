@@ -93,6 +93,13 @@ GATES = ROOT / "infra/gcp/gates.auto.tfvars"
 EDGE_PHASES = ("off", "built", "live", "locked")
 EDGE_LIVE = ("live", "locked")
 EDGE_LINE = re.compile(r'\s*edge\s*=\s*"([^"]*)"\s*(?:(?:#|//).*)?')
+# The production smoke's identity (D286), api and ingest only, all four or none: a Google ID token of ryft-smoke
+# is mapped to SMOKE_USER_ID. The email and the audience are fixed here and in the templates; the two ids come
+# from config.env (SMOKE_USER_ID, and SMOKE_SA_ID as SMOKE_OIDC_SA_ID). check_smoke compares the pair and keeps
+# the rows out of every other template.
+SMOKE_ENV = {"SMOKE_OIDC_SA_EMAIL": f"ryft-smoke@{PROJECT}.iam.gserviceaccount.com", "SMOKE_OIDC_SA_ID": None,
+             "SMOKE_OIDC_AUDIENCE": "ryft-smoke", "SMOKE_USER_ID": None}
+SMOKE_SERVICES = ("api", "ingest")
 # Direct connections (D257, design §9): the providers served, one config.env line for both public services
 # (check_connect compares the rendered pair as well), and in api the Garmin cap and the redirect URI's base.
 CONNECT_PUBLIC = {"CONNECT_PROVIDERS": None}
@@ -103,9 +110,9 @@ CONNECT_INGEST = {CUTOFF_ENV: None}
 CALLBACK_BASE = "https://api.ryftlab.de"
 CONNECT_API = {"CONNECT_GARMIN_USER_CAP": None, "CONNECT_CALLBACK_BASE": CALLBACK_BASE}
 PLAIN = {
-    "api": {**SHARED, **PUBLIC, **CONNECT_PUBLIC, **CONNECT_API, "ADMIN_WEB_ORIGINS": "https://ryftlab.de",
+    "api": {**SHARED, **PUBLIC, **SMOKE_ENV, **CONNECT_PUBLIC, **CONNECT_API, "ADMIN_WEB_ORIGINS": "https://ryftlab.de",
             "APPLE_TEAM_ID": "M77SKHKG63", "APPLE_KEY_ID": None, "APPLE_CLIENT_ID": "dev.timkrebs.ryft"},
-    "ingest": {**SHARED, **PUBLIC, **CONNECT_PUBLIC, **CONNECT_INGEST},
+    "ingest": {**SHARED, **PUBLIC, **SMOKE_ENV, **CONNECT_PUBLIC, **CONNECT_INGEST},
     "scoring": dict(SHARED),
     "notify": {**SHARED, "APNS_TOPIC": "dev.timkrebs.ryft", "APNS_KEY_ID": None, "APNS_TEAM_ID": "M77SKHKG63"},
     "migrate": {"DATABASE_URL": None, "LOG_LEVEL": None},
@@ -181,7 +188,9 @@ def fakes(committed):
     digits = "".join(str(i % 10) for i in range(1, 22))
     v = {"GCP_PROJECT_NUMBER": digits[:12], "PUSH_SA_ID": digits, "SUPABASE_PROJECT_REF": "q" * 20,
          "SUPABASE_POOLER_HOST": "aws-0-eu-central-1.pooler.supabase.com", "APPLE_KEY_ID": "A" * 10,
-         "APNS_KEY_ID": "N" * 10, "LOG_LEVEL": "info"}
+         "APNS_KEY_ID": "N" * 10, "LOG_LEVEL": "info",
+         # The smoke identity (D286): fakes of the right shape, apart from every other id, so a swapped row differs.
+         "SMOKE_USER_ID": "00000000-0000-4000-8000-0000000000a5", "SMOKE_SA_ID": digits[::-1]}
     m = re.search(r"^PRIVACY_POLICY_VERSION=(.*)$", committed, re.M)
     v["PRIVACY_POLICY_VERSION"] = m.group(1) if m else "2026-01-01"
     # The committed gate mode (the lint before this has checked its shape), so the render is what deploys.
@@ -279,6 +288,27 @@ def check_connect(cfg, pins):
     if not cap.isdigit() or int(cap) < 1:
         fail("config.env", f"garmin in CONNECT_PROVIDERS with CONNECT_GARMIN_USER_CAP={cap}: a cap above 0 (the "
              "programme's number, design §6.1) in the same PR; at 0 api refuses to start (D257)")
+
+
+def check_smoke():
+    """D286: the smoke identity as rendered: all four env rows in api and ingest, equal in both (the fixed email
+    and audience, config.env's two ids), and in no other template (check_env holds the values)."""
+    for s in SMOKE_SERVICES:
+        for n in SMOKE_ENV:
+            if s in plains and n not in plains[s]:
+                fail(f"{s}.yaml", f"{n} is missing: the smoke identity is all four of {', '.join(SMOKE_ENV)} in api and "
+                     "ingest (a service with some of them refuses to start, D286)")
+    for n in SMOKE_ENV:
+        vals = {s: plains[s].get(n) for s in SMOKE_SERVICES if s in plains}
+        if len(set(vals.values())) > 1:
+            fail("api.yaml / ingest.yaml", f"{n} is {vals.get('api')!r} in api.yaml and {vals.get('ingest')!r} in "
+                 "ingest.yaml: equal in both (one smoke account for the two services)")
+    for s, env in sorted(plains.items()):
+        if s in SMOKE_SERVICES:
+            continue
+        for n in SMOKE_ENV:
+            if n in env:
+                fail(f"{s}.yaml", f"{n} is set: the smoke identity belongs to api and ingest only (D286)")
 
 
 def check_cutoff():
@@ -675,6 +705,7 @@ def main(argv):
                 per["DATABASE_URL"] = (f"postgresql://ryft_{n}.{ref}@{host}:6543/postgres?sslmode=verify-full"
                                        "&sslrootcert=/etc/ryft/supabase-ca.crt&default_query_exec_mode=exec")
                 per["PUSH_AUDIENCE"] = f"https://{n}-{pn}.europe-west1.run.app"
+            per["SMOKE_OIDC_SA_ID"] = cfg["SMOKE_SA_ID"]  # config.env's key under the env name api and ingest read
             doc = load(yq, out / f"{n}.yaml")
             if doc is None:
                 continue
@@ -688,6 +719,7 @@ def main(argv):
     check_app_attest(cfg["APP_ATTEST"], pins, base)
     check_connect(cfg, pins)
     check_cutoff()
+    check_smoke()
     if not a.base_config:
         print("check_cloudrun: no --base-config, so the APP_ATTEST order against a base (off -> warn -> on, D245) "
               "is skipped (CI passes the base on a pull request)")
@@ -703,7 +735,8 @@ def report(based=False):
     order = ", APP_ATTEST's order against the base" if based else ""
     print("check_cloudrun: api, ingest, scoring, notify and migrate render; limits, ingress (against the gate edge), "
           "accounts, h2c, probes, env, secret pins (by number, migrate = the services), accessors, P5, the "
-          "connection switch (api = ingest, no fake, garmin only with its pin, id and cap), the consent cutoff "
+          "connection switch (api = ingest, no fake, garmin only with its pin, id and cap), the smoke identity "
+          "(four rows, equal in api and ingest, nowhere else), the consent cutoff "
           "(ingest only, not after the policy version) and App Attest's ring "
           f"under warn and on{order} hold")
     return 0

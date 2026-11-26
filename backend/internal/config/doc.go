@@ -31,6 +31,12 @@
 //     the fake is refused on Cloud Run; the api also refuses a served provider without its user cap (at least 1), its
 //     OAuth client (a real provider), DATA_ENCRYPTION_KEY or an https CONNECT_CALLBACK_BASE. No error holds a secret.
 //
+//   - Smoke sign-in (D286): SMOKE_OIDC_SA_EMAIL (a service account address ending in .iam.gserviceaccount.com),
+//     SMOKE_OIDC_SA_ID (its unique ID, 1 to 32 digits), SMOKE_OIDC_AUDIENCE (at most 256 printable characters, no
+//     spaces) and SMOKE_USER_ID (the smoke account's UUID, not nil) are all set or all empty. All empty is off;
+//     any other mix, a malformed one, or any of them with AUTH_MODE=apikey stops api and ingest. The errors name
+//     the variables, never a value. auth then accepts that one service account's Google ID token as that one user.
+//
 // It is not yet the only reader of the environment: cmd/migrate reads its own
 // variables, httpx.Logger reads LOG_LEVEL, K_SERVICE, CLOUD_RUN_JOB and
 // GCP_PROJECT (the log format), and the Postgres test helpers read

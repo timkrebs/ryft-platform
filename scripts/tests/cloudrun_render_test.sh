@@ -16,6 +16,7 @@ render() { "$py" -I "$HERE/scripts/cloudrun_render.py" "$@"; }
 
 pn=$(printf '7%011d' 0)
 said=$(printf '1%020d' 0)
+smokesa=$(printf '2%020d' 0)  # ryft-smoke's unique ID (D286), apart from ryft-push's
 printf -v s '%20s' ''; ref=${s// /q}
 printf -v s '%10s' ''; akey=${s// /A}; nkey=${s// /N}
 host=aws-0-eu-central-1.pooler.supabase.com
@@ -25,6 +26,7 @@ hops=1
 attest=warn
 # uid <n>: a lower-case UUID built from <n> (test accounts, no secrets).
 uid() { printf '%08x-0000-4000-8000-%012x' "$1" "$1"; }
+smokeuser=$(uid 77)  # the smoke account (D286)
 exempt="$(uid 1),$(uid 2)"
 providers=garmin
 gcap=250
@@ -37,7 +39,7 @@ out=$tmp/out
 fresh() {
   printf '%s\n' "# a fake, of the right shape" "PRIVACY_POLICY_VERSION=$policy" LOG_LEVEL=info "BETA_GATE=$gate" "XFF_TRUSTED_HOPS=$hops" \
     "APP_ATTEST=$attest" "APP_ATTEST_EXEMPT_USERS=$exempt" "CONNECT_PROVIDERS=$providers" "CONNECT_GARMIN_USER_CAP=$gcap" "CONNECT_MIN_POLICY_VERSION=$cutoff" "GCP_PROJECT_NUMBER=$pn" "PUSH_SA_ID=$said" "SUPABASE_PROJECT_REF=$ref" "SUPABASE_POOLER_HOST=$host" "APPLE_KEY_ID=$akey" \
-    "APNS_KEY_ID=$nkey" > "$cfg"
+    "APNS_KEY_ID=$nkey" "SMOKE_USER_ID=$smokeuser" "SMOKE_SA_ID=$smokesa" > "$cfg"
   rm -rf "$tpl" "$out"
   mkdir "$tpl"
   cp "$HERE"/deploy/run/{api,ingest,scoring,notify,migrate}.yaml "$tpl/"
@@ -100,6 +102,11 @@ for s in api ingest; do
   has "$s.yaml" "name: APP_ATTEST_EXEMPT_USERS, value: \"$exempt\" }"
   # Direct connections (D257): one config.env line, so api and ingest serve the same providers.
   has "$s.yaml" "name: CONNECT_PROVIDERS, value: \"$providers\" }"
+  # The smoke identity (D286): config.env's two ids under the names the services read, the fixed email and audience.
+  has "$s.yaml" "name: SMOKE_OIDC_SA_ID, value: \"$smokesa\" }"
+  has "$s.yaml" "name: SMOKE_USER_ID, value: \"$smokeuser\" }"
+  has "$s.yaml" 'name: SMOKE_OIDC_SA_EMAIL, value: ryft-smoke@ryftlab-prod.iam.gserviceaccount.com }'
+  has "$s.yaml" 'name: SMOKE_OIDC_AUDIENCE, value: ryft-smoke }'
   # The ring's pin comes with the warn flip PR (D247), never from the renderer: no placeholder makes it.
   if grep -q '^ *- { name: APP_ATTEST_TOKEN_KEYS,.*\${' "$tpl/$s.yaml"; then fail "$s.yaml: the ring's pin from a placeholder"; fi
 done
@@ -112,6 +119,8 @@ for f in scoring notify migrate; do
   if grep -q 'APP_ATTEST' "$out/$f.yaml"; then fail "$f.yaml has APP_ATTEST: only api and ingest check App Attest"; fi
   # Direct connections likewise (D257, design §9): scoring, notify and migrate have no connection env.
   if grep -q 'CONNECT_' "$out/$f.yaml"; then fail "$f.yaml has a CONNECT_ variable: only api and ingest serve connections"; fi
+  # The smoke identity likewise (D286): only the two services that verify the smoke's token carry it.
+  if grep -q 'SMOKE_' "$out/$f.yaml"; then fail "$f.yaml has a SMOKE_ variable: only api and ingest map the smoke token"; fi
 done
 # Garmin's cap and the callback base in api only; the fake provider's env in no template (compose only).
 has api.yaml "name: CONNECT_GARMIN_USER_CAP, value: \"$gcap\" }"
@@ -128,7 +137,7 @@ has notify.yaml "name: APNS_KEY_ID, value: \"$nkey\" }"
 
 # No environment variable reaches the output: the same render with the placeholders' names set.
 IMAGE=x DATABASE_URL=y PUSH_AUDIENCE=z LOG_LEVEL=debug PRIVACY_POLICY_VERSION=1999-01-01 BETA_GATE=off XFF_TRUSTED_HOPS=7 \
-  APP_ATTEST=on APP_ATTEST_EXEMPT_USERS="$(uid 9)" CONNECT_PROVIDERS=fake CONNECT_GARMIN_USER_CAP=9 CONNECT_MIN_POLICY_VERSION=1999-01-01 CONNECT_FAKE=on render "${R[@]}" --out "$tmp/again" "${D[@]}" >/dev/null 2>&1 || fail "the second render failed"
+  APP_ATTEST=on APP_ATTEST_EXEMPT_USERS="$(uid 9)" CONNECT_PROVIDERS=fake CONNECT_GARMIN_USER_CAP=9 CONNECT_MIN_POLICY_VERSION=1999-01-01 CONNECT_FAKE=on SMOKE_USER_ID="$(uid 9)" SMOKE_SA_ID=999999999999 render "${R[@]}" --out "$tmp/again" "${D[@]}" >/dev/null 2>&1 || fail "the second render failed"
 diff -r "$out" "$tmp/again" >/dev/null || fail "the environment changed the output: $(diff -r "$out" "$tmp/again")"
 
 # The OTLP pair went with Grafana Cloud (D236): its keys are unknown in config.env, its placeholders
@@ -197,6 +206,36 @@ setcfg XFF_TRUSTED_HOPS -
 bad "no hop count" "XFF_TRUSTED_HOPS is missing" "${R[@]}" --out "$out" "${D[@]}"
 setcfg XFF_TRUSTED_HOPS -
 bad "no hop count, linted" "XFF_TRUSTED_HOPS is missing" "${R[@]}" --lint
+# The smoke identity (D286): SMOKE_USER_ID a lower-case UUID, SMOKE_SA_ID digits; both required, so a
+# placeholder fails a render and passes --lint (which names it), and a wrong shape, an empty or a missing
+# line fails both. api and ingest carry them; the two ids come from nowhere else.
+setcfg SMOKE_USER_ID FILL_ME_IN
+setcfg SMOKE_SA_ID FILL_ME_IN
+o=$(render "${R[@]}" --lint 2>&1) || fail "--lint fails on the smoke ids' FILL_ME_IN: $o"
+case $o in *"FILL_ME_IN left (fill before the first deploy): SMOKE_USER_ID, SMOKE_SA_ID"*) ;; *) fail "--lint does not name the smoke ids: $o" ;; esac
+bad "a render with the smoke user left" "SMOKE_USER_ID is still FILL_ME_IN" "${R[@]}" --out "$out" "${D[@]}"
+setcfg SMOKE_SA_ID FILL_ME_IN
+bad "a render with the smoke account's ID left" "SMOKE_SA_ID is still FILL_ME_IN" "${R[@]}" --out "$out" "${D[@]}"
+for v in "$(uid 77 | tr a-f A-F)" "${smokeuser//-/}" "${smokeuser}0" "x$smokeuser" "$(uid 77),$(uid 78)" ' '"$smokeuser"; do
+  setcfg SMOKE_USER_ID "$v"
+  bad "a smoke user of '$v'" "SMOKE_USER_ID='$v' does not have the shape the smoke account's Supabase user id, a lower-case UUID" "${R[@]}" --out "$out" "${D[@]}"
+done
+for v in 0 123 01234567890123 12345678901x ryft-smoke@ryftlab-prod.iam.gserviceaccount.com '1234567890123456789012345678'; do
+  setcfg SMOKE_SA_ID "$v"
+  bad "a smoke SA ID of '$v'" "SMOKE_SA_ID='$v' does not have the shape ryft-smoke's unique ID, digits only" "${R[@]}" --out "$out" "${D[@]}"
+done
+setcfg SMOKE_USER_ID ''
+bad "an empty smoke user" "SMOKE_USER_ID is empty" "${R[@]}" --out "$out" "${D[@]}"
+setcfg SMOKE_SA_ID ''
+bad "an empty smoke SA ID, linted" "SMOKE_SA_ID is empty" "${R[@]}" --lint
+setcfg SMOKE_USER_ID -
+bad "no smoke user" "SMOKE_USER_ID is missing" "${R[@]}" --out "$out" "${D[@]}"
+setcfg SMOKE_SA_ID -
+bad "no smoke SA ID, linted" "SMOKE_SA_ID is missing" "${R[@]}" --lint
+printf 'SMOKE_USER_ID=%s\n' "$smokeuser" >> "$cfg"
+bad "the smoke user twice" "SMOKE_USER_ID is set twice" "${R[@]}" --out "$out" "${D[@]}"
+printf 'SMOKE_EMAIL=x\n' >> "$cfg"
+bad "a retired smoke key" "SMOKE_EMAIL is not a key of deploy/run/config.env" "${R[@]}" --out "$out" "${D[@]}"
 # APP_ATTEST (D245, D247): off, warn or on as committed, like the beta gate.
 for m in off on; do
   setcfg APP_ATTEST "$m"
@@ -353,4 +392,4 @@ usage "${R[@]}" --lint "${D[@]}"
 usage "${R[@]}" --out "$out" "${D[@]}" --force
 [ ! -e "$out" ] || fail "a usage error wrote $out"
 
-echo "✓ cloudrun_render_test: the derived values render by digest, BETA_GATE, XFF_TRUSTED_HOPS, APP_ATTEST, APP_ATTEST_EXEMPT_USERS and CONNECT_PROVIDERS only into api and ingest, CONNECT_GARMIN_USER_CAP and the callback base into api only, CONNECT_MIN_POLICY_VERSION into ingest only (empty or a date not after the policy), no fake provider anywhere, the environment changes nothing, FILL_ME_IN passes --lint and fails a render, and every wrong shape, key, digest, placeholder and \$ fails closed"
+echo "✓ cloudrun_render_test: the derived values render by digest, BETA_GATE, XFF_TRUSTED_HOPS, APP_ATTEST, APP_ATTEST_EXEMPT_USERS and CONNECT_PROVIDERS only into api and ingest, CONNECT_GARMIN_USER_CAP and the callback base into api only, CONNECT_MIN_POLICY_VERSION into ingest only (empty or a date not after the policy), no fake provider anywhere, SMOKE_USER_ID (a lower-case UUID) and SMOKE_SA_ID (digits) into api and ingest only, the environment changes nothing, FILL_ME_IN passes --lint and fails a render, and every wrong shape, key, digest, placeholder and \$ fails closed"

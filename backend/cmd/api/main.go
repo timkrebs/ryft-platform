@@ -345,7 +345,10 @@ func requestID(r *http.Request) string {
 // A deleted account's token is rejected like any other bad token.
 func ensureUser(st *store.Store) func(context.Context, auth.Principal) (model.User, error) {
 	return func(ctx context.Context, p auth.Principal) (model.User, error) {
-		u, err := st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name})
+		u, err := st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name, MustExist: p.Smoke})
+		if p.Smoke && (errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrDeleted)) {
+			return u, auth.Unauthorized("smoke_unknown_user", nil) // the smoke account never creates its row (D286)
+		}
 		if errors.Is(err, store.ErrDeleted) {
 			return u, auth.Unauthorized("deleted", err)
 		}

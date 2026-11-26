@@ -211,7 +211,18 @@ type Auth struct {
 	APIKey        string
 	APIKeyUserID  uuid.UUID
 	AllowInsecure bool
+
+	// Smoke sign-in (D286), supabase mode only: all four set, or none. A Google ID token of the
+	// one service account SmokeSAEmail (unique ID SmokeSAID, audience SmokeAudience) signs in as
+	// SmokeUserID and as nobody else. Empty means off.
+	SmokeSAEmail  string // SMOKE_OIDC_SA_EMAIL
+	SmokeSAID     string // SMOKE_OIDC_SA_ID: the token's sub
+	SmokeAudience string // SMOKE_OIDC_AUDIENCE
+	SmokeUserID   uuid.UUID
 }
+
+// SmokeOn reports whether the smoke sign-in is configured.
+func (a Auth) SmokeOn() bool { return a.SmokeUserID != uuid.Nil }
 
 // Load reads the settings common to all services. It refuses what cannot run (no
 // DATABASE_URL, a Pub/Sub or push setting loadPubSub refuses, XFF_TRUSTED_HOPS outside
@@ -274,6 +285,9 @@ func LoadAuth() (Auth, error) {
 	if err := refuseAPIKeyOnCloudRun(a.Mode); err != nil {
 		return a, err
 	}
+	if err := loadSmoke(&a); err != nil {
+		return a, err
+	}
 	switch a.Mode {
 	case AuthSupabase:
 		if a.Issuer == "" || a.JWKSURL == "" {
@@ -305,6 +319,73 @@ func LoadAuth() (Auth, error) {
 		return a, fmt.Errorf("AUTH_MODE must be %q or %q, got %q", AuthSupabase, AuthAPIKey, a.Mode)
 	}
 	return a, nil
+}
+
+// smokeEnv are the smoke sign-in's variables (D286), in the order loadSmoke reads them.
+var smokeEnv = []string{"SMOKE_OIDC_SA_EMAIL", "SMOKE_OIDC_SA_ID", "SMOKE_OIDC_AUDIENCE", "SMOKE_USER_ID"}
+
+var smokeSAID = regexp.MustCompile(`^[0-9]{1,32}$`)
+
+// loadSmoke reads the smoke sign-in: none of its variables set is off, all four is on, anything
+// between stops the start. It checks each one's shape and refuses them in apikey mode, where the
+// shared key already acts as any user. Its errors name variables and never a value.
+func loadSmoke(a *Auth) error {
+	vals := make([]string, len(smokeEnv))
+	var set, missing []string
+	for i, k := range smokeEnv {
+		vals[i] = strings.TrimSpace(os.Getenv(k))
+		if vals[i] == "" {
+			missing = append(missing, k)
+		} else {
+			set = append(set, k)
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	if a.Mode == AuthAPIKey {
+		return fmt.Errorf("%s is set with AUTH_MODE=apikey: the smoke sign-in belongs to supabase mode (D286)", set[0])
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("the smoke sign-in is all or nothing: %s unset while %s set (D286)", strings.Join(missing, ", "), strings.Join(set, ", "))
+	}
+	email, id, aud, user := vals[0], vals[1], vals[2], vals[3]
+	at := strings.IndexByte(email, '@')
+	switch {
+	case at < 1 || strings.Count(email, "@") != 1 || len(email) > 254 || !printable(email) ||
+		!strings.HasSuffix(email, ".iam.gserviceaccount.com") || len(email)-at-1 <= len(".iam.gserviceaccount.com"):
+		return fmt.Errorf("SMOKE_OIDC_SA_EMAIL must be a service account address (name@project.iam.gserviceaccount.com)")
+	case !smokeSAID.MatchString(id):
+		return fmt.Errorf("SMOKE_OIDC_SA_ID must be the service account's unique ID, 1 to 32 digits")
+	case len(aud) > 256 || !printable(aud):
+		return fmt.Errorf("SMOKE_OIDC_AUDIENCE must be 1 to 256 printable characters without spaces")
+	}
+	// A push token must never be a smoke token: the smoke identity differs from the push one.
+	if pe := strings.TrimSpace(os.Getenv("PUSH_SA_EMAIL")); pe != "" && pe == email {
+		return fmt.Errorf("SMOKE_OIDC_SA_EMAIL must not be the push service account (PUSH_SA_EMAIL)")
+	}
+	if pa := strings.TrimSpace(os.Getenv("PUSH_AUDIENCE")); pa != "" && pa == aud {
+		return fmt.Errorf("SMOKE_OIDC_AUDIENCE must not be the push audience (PUSH_AUDIENCE)")
+	}
+	u, err := uuid.Parse(user)
+	if err != nil || len(user) != 36 || u == uuid.Nil {
+		return fmt.Errorf("SMOKE_USER_ID must be the smoke account's user UUID")
+	}
+	a.SmokeSAEmail, a.SmokeSAID, a.SmokeAudience, a.SmokeUserID = email, id, aud, u
+	return nil
+}
+
+// printable reports whether s is non-empty visible ASCII: no space, no control character.
+func printable(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] <= ' ' || s[i] > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 // apiKeyEnv are apikey mode's variables: local development only.

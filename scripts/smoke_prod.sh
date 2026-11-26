@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
 # The production smoke after a deploy (docs/OPERATIONS.md → GCP → Deploy, roll back, rotate):
-# the edge answers for api and ingest, the dedicated smoke user signs in, reads
+# the edge answers for api and ingest, the dedicated smoke user is authenticated as the service
+# account ryft-smoke (a Google ID token that api and ingest map to that one user, D286), reads
 # /v1/me, sends one tiny sync and reads the day back once scoring has scored it
 # with the current model. Changes nothing but that user's step count for today.
 #
-#   SUPABASE_URL=https://<ref>.supabase.co SUPABASE_ANON_KEY=... \
-#   SMOKE_EMAIL=smoke@ryftlab.de SMOKE_PASSWORD=... make smoke-prod
-# Alternatively supply a short-lived SMOKE_TOKEN and the dedicated SMOKE_USER_ID.
-# deploy.yml uses --auth-preflight and a private SMOKE_AUTH_FILE across rollout.
+# From a shell: `gcloud auth login` once (your account needs
+# roles/iam.serviceAccountOpenIdTokenCreator on ryft-smoke), then `make smoke-prod`. It reads
+# SMOKE_USER_ID and SMOKE_SA_ID from deploy/run/config.env (or the environment), mints the token
+# through iamcredentials and checks its claims before the first API call. In deploy.yml the
+# runner's ryft-deployer does the same: no secret, nothing to rotate.
+# Alternatively supply a short-lived SMOKE_TOKEN, a Google token minted by hand with the same helper
+# (same checks, only the token written, to a new 0600 file):
+#   python3 -I scripts/lib/smoke_auth.py mint "$f"   # $f: a path that does not exist yet
+#   SMOKE_TOKEN=$(cat "$f") make smoke-prod; rm -f "$f"
+# (or a Supabase access JWT whose sub is SMOKE_USER_ID). Against a loopback stack SMOKE_TOKEN is the
+# only way in. deploy.yml uses --auth-preflight and a private SMOKE_AUTH_FILE across rollout.
 # With ADMIN_API_KEY, a smoke user without beta access gets a one-use invite code
 # (once; it keeps the access), so the smoke also passes with BETA_GATE on. The key comes
 # from the environment only (scripts/lib/admin.sh says how to read production's).

@@ -4,9 +4,10 @@
 # image. A manual dispatch can include the Nutrition ETL image in the same scan. After the scan it
 # signs in to Google Cloud and pushes those same images to
 # Artifact Registry, tagged with the short SHA. It renders deploy/run with their digests, checks that
-# main is still at this commit, verifies smoke authentication, runs the migrate job and stops when it fails (nothing rolls, as with
-# the old PreSync), then replaces the services in the order scoring, notify, ingest, api, and runs
-# `make smoke-prod`. A manual run (workflow_dispatch, main only: the WIF condition admits nothing
+# main is still at this commit, verifies smoke authentication (a Google ID token for the service account
+# ryft-smoke, minted by ryft-deployer with its own sign-in: no secret, no repository variable; D286), runs
+# the migrate job and stops when it fails (nothing rolls, as with the old PreSync), then replaces the
+# services in the order scoring, notify, ingest, api, and runs `make smoke-prod`. A manual run (workflow_dispatch, main only: the WIF condition admits nothing
 # else) does the same; its `smoke` input skips the smoke for the first deploy, before anything is
 # public (runbook step 8).
 #
@@ -325,18 +326,17 @@ jobs:
           else
             echo "current=true" >> "$GITHUB_OUTPUT"
           fi
+      # Smoke authentication (D286): a Google ID token for ryft-smoke, which api and ingest map to the smoke
+      # account only. The helper mints it with the gcloud sign-in of this job (ryft-deployer holds
+      # roles/iam.serviceAccountOpenIdTokenCreator on ryft-smoke), reads SMOKE_USER_ID and SMOKE_SA_ID from
+      # deploy/run/config.env and checks the token's claims and GET /v1/me before the rollout. No secret, no
+      # variable and no env here: the step reads nothing from the repository's secrets, and
+      # scripts/check_workflows.sh refuses a secrets.SMOKE_* or SUPABASE_ANON_KEY in it. The first deploy of
+      # this change cannot pass it against the old revisions: dispatch with `smoke` off once (OPERATIONS.md).
       - name: Verify production smoke authentication
         if: steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.smoke)
-        env:
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
-          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
-          SMOKE_TOKEN: ${{ secrets.SMOKE_TOKEN }}
-          SMOKE_USER_ID: ${{ secrets.SMOKE_USER_ID }}
         run: |
-          ref=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env)
-          SMOKE_AUTH_FILE="$RUNNER_TEMP/ryft-smoke-auth.json" SUPABASE_URL="https://$ref.supabase.co" \
-            ./scripts/smoke_prod.sh --auth-preflight
+          SMOKE_AUTH_FILE="$RUNNER_TEMP/ryft-smoke-auth.json" ./scripts/smoke_prod.sh --auth-preflight
       # Migrations first; a failed run stops the workflow here and no service rolls. The job does not
       # retry (maxRetries 0, deploy/run/migrate.yaml).
       - name: migrate (replace the job, execute it, wait)

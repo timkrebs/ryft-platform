@@ -103,7 +103,7 @@ test-scripts:
 	echo "✓ test-scripts: all $$n passed"
 
 # After a production deploy (docs/OPERATIONS.md → GCP → Deploy, roll back, rotate): the edge, the
-# dedicated smoke user's sign-in, /v1/me, one tiny sync, the day read back.
+# dedicated smoke user's Google ID token (gcloud auth login once), /v1/me, one tiny sync, the day read back.
 smoke-prod:
 	./scripts/smoke_prod.sh
 

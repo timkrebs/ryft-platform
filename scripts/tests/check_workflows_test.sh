@@ -230,7 +230,41 @@ job_swap "migrate and the services without the tip gate" "steps.tip.outputs.curr
 deploy_swap "the smoke's tip gate undone by a top-level ||" "no || outside parentheses" \
   "$SMOKE_IF" "        if: steps.tip.outputs.current == 'true' && github.event_name != 'workflow_dispatch' || inputs.smoke"
 deploy_swap "smoke preflight removed" "smoke auth preflight must come before rollout" \
-  '            ./scripts/smoke_prod.sh --auth-preflight' '            true'
+  '          SMOKE_AUTH_FILE="$RUNNER_TEMP/ryft-smoke-auth.json" ./scripts/smoke_prod.sh --auth-preflight' '          true'
+# D286: the smoke authenticates with a Google ID token of ryft-smoke, minted with the job's sign-in; neither smoke
+# step takes a secret, an env of the retired names or the anon key.
+SMOKE_NAME="      - name: Verify production smoke authentication"
+deploy_swap "a secret in the preflight's env" "\`secrets.SMOKE_USER_ID\`: the smoke authenticates" \
+  "$SMOKE_NAME" "$SMOKE_NAME\n        env:\n          SMOKE_USER_ID: \${{ secrets.SMOKE_USER_ID }}"
+deploy_swap "any secret in the preflight's env" "\`secrets.OTHER\`: the smoke authenticates" \
+  "$SMOKE_NAME" "$SMOKE_NAME\n        env:\n          X: \${{ secrets.OTHER }}"
+deploy_swap "the anon key in the preflight" "\`SUPABASE_ANON_KEY\`: the smoke authenticates" \
+  "$SMOKE_NAME" "$SMOKE_NAME\n        env:\n          SUPABASE_ANON_KEY: \${{ secrets.SUPABASE_ANON_KEY }}"
+deploy_swap "the retired password name in the preflight, without a secret" "\`SMOKE_PASSWORD\`: the smoke authenticates" \
+  "$SMOKE_NAME" "$SMOKE_NAME\n        env:\n          SMOKE_PASSWORD: x"
+deploy_swap "the retired token name in the preflight's command" "\`SMOKE_TOKEN\`: the smoke authenticates" \
+  '          SMOKE_AUTH_FILE="$RUNNER_TEMP/ryft-smoke-auth.json" ./scripts/smoke_prod.sh --auth-preflight' \
+  '          SMOKE_TOKEN=x SMOKE_AUTH_FILE="$RUNNER_TEMP/ryft-smoke-auth.json" ./scripts/smoke_prod.sh --auth-preflight'
+# Nor behind the steps' backs: the workflow's or a job's env, or a run script that writes a SMOKE_ name to
+# $GITHUB_ENV, would hand the helper a SMOKE_TOKEN to use instead of minting its own.
+deploy_swap "SMOKE_TOKEN in the workflow's env" "the workflow's \`env:\`: \`SMOKE_TOKEN\`" \
+  "permissions: {}" "permissions: {}\n\nenv:\n  SMOKE_TOKEN: x"
+deploy_swap "a SMOKE secret in the workflow's env under another name" "the workflow's \`env:\`: \`T\`" \
+  "permissions: {}" "permissions: {}\n\nenv:\n  T: \${{ secrets.SMOKE_TOKEN }}"
+deploy_swap "SMOKE_EMAIL in the deploy job's env" "job 'deploy' \`env:\`: \`SMOKE_EMAIL\`" \
+  "      PROJECT: ryftlab-prod" "      PROJECT: ryftlab-prod\n      SMOKE_EMAIL: x"
+deploy_swap "SMOKE_PASSWORD in a lower-case spelling in the deploy job's env" "job 'deploy' \`env:\`: \`smoke_password\`" \
+  "      PROJECT: ryftlab-prod" "      PROJECT: ryftlab-prod\n      smoke_password: x"
+deploy_swap "SUPABASE_ANON_KEY in the deploy job's env" "job 'deploy' \`env:\`: \`SUPABASE_ANON_KEY\`" \
+  "      PROJECT: ryftlab-prod" "      PROJECT: ryftlab-prod\n      SUPABASE_ANON_KEY: x"
+deploy_swap "a SMOKE secret in the deploy job's env under another name" "job 'deploy' \`env:\`: \`X\`" \
+  "      PROJECT: ryftlab-prod" "      PROJECT: ryftlab-prod\n      X: \${{ secrets['SMOKE_PASSWORD'] }}"
+deploy_swap "SMOKE_TOKEN written to GITHUB_ENV" "names SMOKE_\\* and \\\$GITHUB_ENV" \
+  "      - name: Sign out" "      - name: Smuggle\n        run: echo \"SMOKE_TOKEN=x\" >> \"\$GITHUB_ENV\"\n      - name: Sign out"
+deploy_swap "SMOKE_TOKEN written to GITHUB_ENV through a variable" "names SMOKE_\\* and \\\$GITHUB_ENV" \
+  "      - name: Sign out" "      - name: Smuggle\n        run: |\n          f=\${GITHUB_ENV}\n          printf 'SMOKE_TOKEN=%s\\\\n' x >> \"\$f\"\n      - name: Sign out"
+deploy_swap "a secret in the post-rollout smoke" "it takes no secret" \
+  "      - name: make smoke-prod" "      - name: make smoke-prod\n        env:\n          X: \${{ secrets.SMOKE_EMAIL }}"
 fresh
 tip_gate="${TIP_IF#*if: }" yq -i '(.jobs.deploy.steps[] | select(.name == "Verify production smoke authentication").if) = strenv(tip_gate)' "$d/deploy.yml"
 run
@@ -595,4 +629,4 @@ if [ "$failures" -gt 0 ]; then
   echo "✗ check_workflows_test: $failures case(s) failed" >&2
   exit 1
 fi
-echo "✓ check_workflows_test: parsed, not grepped: triggers, the environment only in deploy.yml's deploy and site, the old App key nowhere, deploy.yml's gate, status functions, continue-on-error, triggers, tokens, concurrency, the superseded and tip gates, scan before sign-in, no third-party action or docker.sock, the site built without a token and deployed and checked only from main's tip (switch, actions by SHA, no cache, nothing signs in up to tip), ci-ok only in ci.yml, no external reusable workflows, no secrets: inherit or dynamic secrets, no test hooks"
+echo "✓ check_workflows_test: parsed, not grepped: triggers, the environment only in deploy.yml's deploy and site, the old App key nowhere, deploy.yml's gate, status functions, continue-on-error, triggers, tokens, concurrency, the superseded and tip gates, scan before sign-in, no secret (secrets.*, SUPABASE_ANON_KEY, SMOKE_EMAIL, SMOKE_PASSWORD, SMOKE_TOKEN) in the smoke steps (D286), no third-party action or docker.sock, the site built without a token and deployed and checked only from main's tip (switch, actions by SHA, no cache, nothing signs in up to tip), ci-ok only in ci.yml, no external reusable workflows, no secrets: inherit or dynamic secrets, no test hooks"

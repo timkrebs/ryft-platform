@@ -132,6 +132,22 @@ func ingestTicks(ping, sweep func(context.Context) error, own ...eventbus.Tick) 
 	return append(steps, eventbus.Tick{Name: "outbox sweep", Run: sweep})
 }
 
+// ensureUser finds or creates the caller's user row from the verified token. A deleted account's
+// token is a bad token. The smoke account's token (D286) never creates a row: with none (or a
+// tombstone) it is refused, so a wrong SMOKE_USER_ID cannot pass by inserting an orphan.
+func ensureUser(st *store.Store) func(context.Context, auth.Principal) (model.User, error) {
+	return func(ctx context.Context, p auth.Principal) (model.User, error) {
+		u, err := st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name, MustExist: p.Smoke})
+		if p.Smoke && (errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrDeleted)) {
+			return u, auth.Unauthorized("smoke_unknown_user", nil)
+		}
+		if errors.Is(err, store.ErrDeleted) {
+			return u, auth.Unauthorized("deleted", err)
+		}
+		return u, err
+	}
+}
+
 // newMux is ingest's routes: health, the tick, POST /v1/sync behind the auth middleware,
 // the per-user limit and the app token check (h.attest; no route exempt, the exempt
 // accounts are), and a JSON 404 for the rest. The tick sits beside /v1, outside all of
@@ -156,13 +172,7 @@ func newMux(h *handler, log *slog.Logger, verifier auth.Verifier, tick http.Hand
 	limits := ratelimit.NewUserLimits()
 	load := h.loadUser
 	if load == nil {
-		load = func(ctx context.Context, p auth.Principal) (model.User, error) {
-			u, err := st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name})
-			if errors.Is(err, store.ErrDeleted) { // a deleted account's token is a bad token
-				return u, auth.Unauthorized("deleted", err)
-			}
-			return u, err
-		}
+		load = ensureUser(st)
 	}
 	mux.Handle("/v1/", auth.Middleware(auth.Options{
 		Log:      log,
