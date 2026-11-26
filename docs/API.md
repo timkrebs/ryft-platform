@@ -536,6 +536,137 @@ Daily and range summaries continue to return meal counts and nutrient totals to 
 {"meals": [], "next_after": null}
 ```
 
+### Nutrition food selection
+
+Added 2026-11-25 (D284). Additive: no field is renamed, removed or retyped, and a build that ignores every new field keeps working. Curated staples (USDA SR Legacy and BLS 4.0) carry measured household portions, one explicit default per food, and localized labels. Favourites and the last selection belong to the signed-in account. The server computes portion weights and macros. The app never sends grams for a portion.
+
+**Search.** `POST /v1/nutrition/foods/search` takes the existing `model.FoodSearch` body. Each `foods[]` entry may also carry the following optional fields. Decode every one of them as optional.
+
+| Field | Meaning |
+| --- | --- |
+| `subtitle` | A localized qualifier (`language`, then its base language, then English). Absent when the catalog has none. |
+| `default_portion` | The catalog's measured default as a `FoodPortionSelection` with a real `portion_id`. Absent when the food has no measured default. |
+| `last_used_portion` | The caller's most recent selection in the last 90 days of their remaining diary items. If the portion was changed or retired, the saved grams or millilitres are used instead (`unit` `g`/`ml`, no `portion_id`). Absent when there is no usable selection. |
+| `reference_portion` | 100 g, or 100 ml when the food's nutrients are given per volume. Absent when no compatible nutrients exist. |
+| `favorited` | Always present on search and detail (`true`/`false`). Absent on barcode matches and on `POST /foods/custom`. |
+
+Basic-food queries rank a matching staple and whole foods above derivatives (for example `Apfel` ranks the raw apple above apple juice). Explicit juice or variety queries keep their direct matches. Within a rank, the caller's favourites, item count in the last 90 days and most recent use order the results. The food ID breaks ties.
+
+A `FoodPortionSelection` has `quantity` and `unit` (`g`, `ml`, `portion` or `serving`) and optional `portion_id`, `label`, `short_label`, `gram_weight`, `volume_ml`, `kcal`, `protein_g`, `carbs_g` and `fat_g`. A macro the catalog doesn't know is absent; it is never `0`. The values come from the same calculator that saves meals, so the preview matches the saved item.
+
+<!-- type: model.FoodSearch -->
+```json
+{"query": "apfel", "language": "de-DE", "market": "DE", "limit": 20}
+```
+
+<!-- type: model.FoodSearchPage -->
+```json
+{
+  "foods": [
+    {
+      "id": "0f3c9a52-6a1e-4d0b-9c61-6d3f0a1b2c01",
+      "name": "Apfel, roh, mit Schale",
+      "brand": "",
+      "type": "generic",
+      "quality": "verified",
+      "subtitle": "Roh, mit Schale",
+      "default_portion": {"portion_id": "a7e40c6e-bfb4-47eb-ad64-aea61136db04", "quantity": 1, "unit": "portion", "label": "1 mittelgroßer Apfel", "short_label": "Mittel", "gram_weight": 182, "kcal": 94.64, "protein_g": 0.4732, "carbs_g": 25.1342, "fat_g": 0.3094},
+      "last_used_portion": {"portion_id": "5d0b8c1e-2f47-4a6b-8e13-91c2d4e5f602", "quantity": 1, "unit": "portion", "label": "1 kleiner Apfel", "short_label": "Klein", "gram_weight": 149, "kcal": 77.48, "protein_g": 0.3874, "carbs_g": 20.5769, "fat_g": 0.2533},
+      "reference_portion": {"quantity": 100, "unit": "g", "gram_weight": 100, "kcal": 52, "protein_g": 0.26, "carbs_g": 13.81, "fat_g": 0.17},
+      "favorited": true
+    },
+    {
+      "id": "6b2e7d14-3c58-4f9a-a0b2-7e8f9a0b1c03",
+      "name": "Apfelsaft",
+      "brand": "",
+      "type": "generic",
+      "quality": "verified",
+      "reference_portion": {"quantity": 100, "unit": "ml", "volume_ml": 100, "kcal": 46},
+      "favorited": false
+    }
+  ],
+  "next_offset": null
+}
+```
+
+**Detail.** `GET /v1/nutrition/foods/{id}?language=de-DE` (`language` is optional; an invalid tag returns `422`). It returns the existing `FoodDetail`, and `name` uses the matching non-alias name. `portions` are ordered by `sort_order`, then label, then ID. Each portion always has `is_default` and `sort_order`, and may have `portion_key`, `short_label_en` and `short_label_de`. At most one portion is `is_default: true`, and a default is always measured (never `estimated`). Detail also has the search fields above, plus `last_used_selection`, which has the same value as `last_used_portion`. BLS sources carry the BLS code in `external_id`, the release in `dataset_version`, and a named `attribution` (CC BY 4.0) that the app shows with the source.
+
+<!-- type: model.FoodDetail -->
+```json
+{
+  "id": "0f3c9a52-6a1e-4d0b-9c61-6d3f0a1b2c01",
+  "name": "Apfel, roh, mit Schale",
+  "brand": "",
+  "type": "generic",
+  "quality": "verified",
+  "subtitle": "Roh, mit Schale",
+  "default_portion": {"portion_id": "a7e40c6e-bfb4-47eb-ad64-aea61136db04", "quantity": 1, "unit": "portion", "label": "1 mittelgroßer Apfel", "short_label": "Mittel", "gram_weight": 182, "kcal": 94.64, "protein_g": 0.4732, "carbs_g": 25.1342, "fat_g": 0.3094},
+  "reference_portion": {"quantity": 100, "unit": "g", "gram_weight": 100, "kcal": 52, "protein_g": 0.26, "carbs_g": 13.81, "fat_g": 0.17},
+  "favorited": true,
+  "names": [{"language": "de", "label": "Apfel, roh, mit Schale", "alias": false}, {"language": "en", "label": "Apples, raw, with skin", "alias": false}],
+  "sources": [{"id": "c4d5e6f7-0818-4a2b-9c3d-4e5f60718293", "provider": "usda", "external_id": "171688", "dataset_version": "SR Legacy 2018-04", "source_url": "https://fdc.nal.usda.gov/food-details/171688/nutrients", "license_identifier": "CC0-1.0"}],
+  "portions": [
+    {"id": "5d0b8c1e-2f47-4a6b-8e13-91c2d4e5f602", "source_id": "c4d5e6f7-0818-4a2b-9c3d-4e5f60718293", "label": "1 small apple", "labels": {"de": "1 kleiner Apfel", "en": "1 small apple"}, "quantity": 1, "unit": "portion", "weight_g": 149, "estimated": false, "portion_key": "small", "short_label_en": "Small", "short_label_de": "Klein", "is_default": false, "sort_order": 10},
+    {"id": "a7e40c6e-bfb4-47eb-ad64-aea61136db04", "source_id": "c4d5e6f7-0818-4a2b-9c3d-4e5f60718293", "label": "1 medium apple", "labels": {"de": "1 mittelgroßer Apfel", "en": "1 medium apple"}, "quantity": 1, "unit": "portion", "weight_g": 182, "estimated": false, "portion_key": "medium", "short_label_en": "Medium", "short_label_de": "Mittel", "is_default": true, "sort_order": 20},
+    {"id": "e1f2a3b4-c5d6-4e7f-8091-a2b3c4d5e604", "source_id": "c4d5e6f7-0818-4a2b-9c3d-4e5f60718293", "label": "1 large apple", "labels": {"de": "1 großer Apfel", "en": "1 large apple"}, "quantity": 1, "unit": "portion", "weight_g": 223, "estimated": false, "portion_key": "large", "short_label_en": "Large", "short_label_de": "Groß", "is_default": false, "sort_order": 30}
+  ],
+  "nutrients": [{"code": "energy_kcal", "amount": 52, "unit": "kcal", "reference_amount": 100, "reference_unit": "g", "source_id": "c4d5e6f7-0818-4a2b-9c3d-4e5f60718293", "method": "fdc:1008", "quality": "source_reported"}]
+}
+```
+
+**Saving a meal.** `POST /v1/nutrition/meals` and `PATCH /v1/nutrition/meals/{id}` items take an optional `language`. For a new item with `unit` `portion` or `serving` and its `portion_id`, the server computes `weight_g`/`volume_ml` and the nutrients from the catalog. It also stores `food_name` in that language, plus `portion_label` and `portion_short_label`. An invalid `language` returns `422`. `language` is not allowed on an `item_id` entry and returns `422` there.
+
+<!-- type: model.NutritionMealInput -->
+```json
+{
+  "client_request_id": "9b1d4c3e-7a2f-4e8b-b6c5-d4e3f2a1b0c9",
+  "consumed_at": "2026-11-25T07:30:00Z",
+  "timezone": "Europe/Berlin",
+  "meal_type": "breakfast",
+  "input_method": "manual_search",
+  "items": [{"food_id": "0f3c9a52-6a1e-4d0b-9c61-6d3f0a1b2c01", "quantity": 1, "unit": "portion", "portion_id": "a7e40c6e-bfb4-47eb-ad64-aea61136db04", "language": "de-DE"}]
+}
+```
+
+**Saved items.** `POST /meals`, `PATCH /meals/{id}`, `GET /meals`, `GET /meals/{id}` and `GET /v1/me/nutrition-export` return each item with optional `portion_label` and `portion_short_label`. Both are a snapshot taken when the item was saved, and a later catalog rename or retirement doesn't change them. A PATCH that keeps an item by `item_id` (for example a change to the meal's name, notes or time) keeps the item's whole snapshot, labels included. Items saved before D284 have no short label. They gain `portion_label` only when their food, portion ID, unit and measured amount still match the catalog portion. Otherwise both fields are absent: show `quantity` and `unit`.
+
+<!-- type: model.NutritionMealItem -->
+```json
+{
+  "id": "63cf1226-48cf-43c7-957e-c994ec3bbe61",
+  "food_id": "0f3c9a52-6a1e-4d0b-9c61-6d3f0a1b2c01",
+  "food_name": "Apfel, roh, mit Schale",
+  "brand": "",
+  "quantity": 1,
+  "unit": "portion",
+  "portion_id": "a7e40c6e-bfb4-47eb-ad64-aea61136db04",
+  "portion_label": "1 mittelgroßer Apfel",
+  "portion_short_label": "Mittel",
+  "weight_g": 182,
+  "volume_ml": null,
+  "nutrients": {"energy_kcal": {"amount": 94.64, "unit": "kcal", "source_id": "c4d5e6f7-0818-4a2b-9c3d-4e5f60718293", "reference_amount": 100, "reference_unit": "g", "method": "fdc:1008", "quality": "source_reported"}},
+  "sources": [{"id": "c4d5e6f7-0818-4a2b-9c3d-4e5f60718293", "provider": "usda", "external_id": "171688", "dataset_version": "SR Legacy 2018-04", "source_url": "https://fdc.nal.usda.gov/food-details/171688/nutrients", "license_identifier": "CC0-1.0"}],
+  "calculation_version": 1,
+  "created_at": "2026-11-25T07:30:01Z"
+}
+```
+
+<!-- type: model.NutritionMealPatch -->
+```json
+{"revision": 1, "notes": "Before the run", "items": [{"item_id": "63cf1226-48cf-43c7-957e-c994ec3bbe61"}]}
+```
+
+**Favourites.** `PUT /v1/nutrition/foods/{id}/favorite` and `DELETE /v1/nutrition/foods/{id}/favorite` have no body and answer `204`. Both are idempotent, so a repeat also answers `204`. PUT needs the diary gate (`nutrition.diary_enabled` or `nutrition.enabled`) and a food the caller can see (a public food, or the caller's own custom food); otherwise it returns `404`. DELETE works for any valid UUID even with the Nutrition flags off, like the other erasure routes. A malformed ID returns `404`. Favourites belong to the account, are never shown to anyone else, and are deleted with the account (`DELETE /v1/me`).
+
+```http
+PUT /v1/nutrition/foods/0f3c9a52-6a1e-4d0b-9c61-6d3f0a1b2c01/favorite
+Authorization: Bearer <access token>
+
+HTTP/1.1 204 No Content
+```
+
+**Old builds** send no `language` and get the same items as before, plus the optional labels, which they ignore. Search and detail still return every field they returned before.
+
 ### Nutrition-to-Recovery
 
 `PUT /v1/nutrition/n2r/profile` opts into contextual scoring and returns the same settings shape. `GET /v1/nutrition/n2r/profile` returns the caller's settings or JSON `null`. `DELETE /v1/nutrition/n2r/profile` removes the settings and their derived night records and returns 204. The calorie target is configured through the existing Nutrition goals endpoint.
@@ -4137,7 +4268,7 @@ struct APIErrorBody: Codable {
 
 | 2026-11-25 | **[Nutrition diary and portability](#nutrition)** (D278–D280). Adds a default-off diary flag, bilingual generic food search, source-backed portions and an authenticated owner-only meal export. Protected Nutrition score and coaching access continues to use `nutrition.enabled`. Under enforcement, HealthKit checks current consent before both write phases. |
 | 2026-11-25 | **[Bilingual food suggestions](#nutrition)** (D283). Common German and English generic food suggestions support unambiguous prefixes of at least four normalized characters. |
-| 2026-11-25 | **[Nutrition food selection](#nutrition)** (D284). Optional localized catalog portions, measured previews, scoped favorites and last-used selections, and saved portion labels. |
+| 2026-11-25 | **[Nutrition food selection](#nutrition-food-selection)** (D284; platform PR `nutrition: everyday staples, portions and favourites`, branch `feat/nutrition-everyday-catalog`, stacked on #247). Additive: no v1 field renamed, removed or retyped. **Search** (`POST /v1/nutrition/foods/search`): `foods[]` gains optional `subtitle`, `default_portion`, `last_used_portion`, `reference_portion` (each a new `FoodPortionSelection`) and `favorited`; staples rank above derivatives, then favourites and recent use. **Detail** (`GET /v1/nutrition/foods/{id}`): optional `?language=`; the same fields plus `last_used_selection`; `portions[]` ordered by `sort_order` and gaining `is_default`, `sort_order`, optional `portion_key`, `short_label_en`, `short_label_de`; at most one measured default; `sources[]` gain optional `attribution` (BLS, CC BY 4.0). **Meals** (`POST /meals`, `PATCH /meals/{id}`): items take optional `language`; the server computes portion weight and macros. Saved items (`POST`/`PATCH`/`GET /meals`, `GET /meals/{id}`, `GET /v1/me/nutrition-export`) gain optional `portion_label` and `portion_short_label`, which are snapshots; an `item_id`-only PATCH keeps the snapshot. **Favourites**: `PUT`/`DELETE /v1/nutrition/foods/{id}/favorite`, `204`, idempotent, account-bound; DELETE works with the flags off. **Old builds** ignore every new field and keep working. **Swift:** `FoodPortionSelection`; optional properties on `FoodSummary`, `FoodDetail`, `FoodPortion`, `FoodSource`, `NutritionMealItemInput` and `NutritionMealItem`. |
 | 2026-11-25 | **Nutrition score consent** (D277). Daily and range summaries require current consent for freshly derived scores. Owner totals, retained meal records and deletions remain accessible under the Nutrition flag. |
 | 2026-11-24 | **Training-to-Nutrition coaching** (D271). Signed-in goal profiles, planned sessions and feedback, daily briefing, additive HealthKit metadata and consent-scoped partner ingestion. Operator-only aggregate evaluation. |
 | 2026-11-24 | **[Nutrition-to-Recovery](#nutrition-to-recovery)** (D268). Adds account opt-in, contextual scoring in daily summaries and current guidance. |

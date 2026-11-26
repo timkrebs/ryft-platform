@@ -49,7 +49,7 @@ A basic-food query prefers a matching curated staple and whole-food entries over
 {"portion_id":"a7e40c6e-bfb4-47eb-ad64-aea61136db04","quantity":1,"unit":"portion","label":"Mittelgroßer Apfel","short_label":"Mittel","gram_weight":150,"kcal":78,"protein_g":0.45,"fat_g":0}
 ```
 
-`PUT /foods/{id}/favorite` requires a visible active food and the diary write gate. `DELETE` erases the caller's favorite even with the diary flag off. It is idempotent for any valid UUID. Favorites disappear on account deletion.
+`PUT /foods/{id}/favorite` requires a visible active food and the diary write gate. Otherwise it answers 404. `DELETE` erases the caller's favorite even with the diary flag off. It is idempotent for any valid UUID. A malformed ID answers 404. Favorites disappear on account deletion. Barcode matches and `POST /foods/custom` don't carry the selection fields. The app contract with full examples is [API.md → Nutrition food selection](../../API.md#nutrition-food-selection).
 
 ```http
 POST /v1/nutrition/foods/barcode
