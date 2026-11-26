@@ -43,14 +43,20 @@
 #      `make smoke-prod`, not under migrate_only) mints afresh (unsets SMOKE_AUTH_FILE), puts each service on
 #      a `touched` list before its replace and rolls back in one EXIT trap (`update-traffic` from
 #      $RUNNER_TEMP/previous, api, ingest, notify, scoring, keeps the exit status); no smoke step takes a
-#      secret. The site (C1): site-build (npm runs
+#      secret. The record step proves the serving api from its IMAGE (the tags of its digest against
+#      D285_COMMIT, ancestry from a full checkout): d285 needs the label and an image of a commit containing it, d286 is
+#      yes with the four SMOKE_* settings complete, no only with none of them on a legacy image, anything else is
+#      config drift (an error in every mode). Time: JOB_S equals the deploy job's timeout-minutes x 60, every
+#      gcloud of the record and rollout steps runs under `timeout` or `bounded`, the rollback's update-traffic under
+#      its own `timeout -k 10 "$RESTORE_S"`, the restore commands are printed before the first replace, a failed
+#      lookup of a new revision is no best effort. The site (C1): site-build (npm runs
 #      code there) has no id-token and no environment, and its only actions are checkout,
 #      setup-node and upload-artifact by SHA; site runs in concurrency group `site` with
 #      cancel-in-progress false, its only actions are checkout, setup-node (no cache key, and
 #      package-manager-cache: false) and download-artifact by SHA, and no step up to and including its step `tip` signs in (gcloud,
 #      firebase, the OIDC request variables, GOOGLE_APPLICATION_CREDENTIALS); both need `ci`, and
-#      their `if` has the top-level conjuncts vars.SITE_DEPLOY == 'on' and
-#      needs.ci.outputs.current == 'true'; every step of `site` that names `firebase ... deploy`
+#      their `if` has the top-level conjuncts vars.SITE_DEPLOY == 'on',
+#      needs.ci.outputs.current == 'true' and !inputs.migrate_only; every step of `site` that names `firebase ... deploy`
 #      or check-hosting comes after `tip` and its `if` starts with steps.tip.outputs.current ==
 #      'true' (no top-level ||), and no other job of deploy.yml names `firebase ... deploy`;
 #   8. only ci.yml defines a job with the id or name `ci-ok`: deploy.yml reads the ci-ok job of
@@ -218,7 +224,51 @@ BOOTSTRAP_IF = ("steps.tip.outputs.current == 'true' && steps.record.outputs.d28
                 "github.event_name == 'workflow_dispatch' && !inputs.migrate_only")
 MIGRATE_IF = "steps.tip.outputs.current == 'true'"
 SMOKE_IF = "steps.tip.outputs.current == 'true' && !inputs.migrate_only"
-RECORD_ENV = {"EVENT": "${{ github.event_name }}", "MIGRATE_ONLY": "${{ inputs.migrate_only && 'true' || 'false' }}"}
+# D285_COMMIT is #249: D285's compatibility change and main's last commit before #250 (D286). The record step proves the
+# serving api's compatibility from the commits its IMAGE was built from, against this one.
+RECORD_ENV = {"EVENT": "${{ github.event_name }}", "MIGRATE_ONLY": "${{ inputs.migrate_only && 'true' || 'false' }}",
+              "D285_COMMIT": "4bca49de1b140dafc3609484a514617a7c6fbe02"}
+# Every gcloud of the rollout and the record step runs under `bounded <cap>` (the rollout's forward calls) or `timeout -k <n> <secs>`:
+# a hung call must not eat the time the restores need. Text in quotes (a message that prints a command) is no call.
+GCLOUD_WORD = re.compile(r"(?<![A-Za-z0-9_\-])gcloud(?![A-Za-z0-9_\-])")
+BOUNDED_PREFIX = re.compile(r"(?:\bbounded\s+\"\$[A-Za-z_]+\"|\btimeout\s+-k\s+\d+\s+(?:\"\$[A-Za-z_]+\"|\d+))\s+$")
+def strip_text(line):
+    """A line of shell with its plain quoted text blanked: '...' and "..." without a $ or ` in them (a message that prints a command).
+    A double-quoted string with an expansion stays as it is: it can hold a command substitution, and `bounded "$X"` is read from it."""
+    out, i, n = [], 0, len(line)
+    while i < n:
+        c = line[i]
+        if c == "'":
+            j = line.find("'", i + 1)
+            if j < 0:
+                out.append(line[i:])
+                break
+            out.append("''")
+            i = j + 1
+        elif c == '"':
+            j = i + 1
+            while j < n and line[j] != '"':
+                j += 2 if line[j] == "\\" else 1
+            body = line[i + 1:j]
+            out.append(line[i:j + 1] if ("$" in body or "`" in body) else '""')
+            i = j + 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+def unbounded_gcloud(script):
+    bad = []
+    for line in script.split("\n"):
+        t = line.strip()
+        if t.startswith("#"):
+            continue
+        bare = strip_text(t)
+        for m in GCLOUD_WORD.finditer(bare):
+            if not BOUNDED_PREFIX.search(bare[:m.start()]):
+                bad.append(t[:90])
+    return bad
+JOB_VARS = ("JOB_S", "RESTORE_S", "REPLACE_S", "DESCRIBE_S", "SMOKE_S")
+MIGRATE_ONLY_OFF = re.compile(r"!\s*inputs\.migrate_only")
 # The D285 floor's search (the files of backend/ that name the meal portion labels, tests and the two migrations
 # that add the columns aside), exactly.
 FLOOR_GREP = ("git grep -l -e portion_label_snapshot -e portion_short_label_snapshot -- backend ':!*_test.go' "
@@ -396,6 +446,15 @@ if is_deploy:
             if "uses" in s and not (isinstance(s["uses"], str) and CHECKOUT.fullmatch(s["uses"])):
                 fail(f"deploy.yml's deploy job, {step_label(n, s)}: `uses: {s['uses']}`: actions/checkout by SHA is its only action "
                      "(no third-party code, or container, in the job that can mint a token)")
+        # The record step proves the serving api's image from commit ancestry (the tags of its digest against D285_COMMIT):
+        # the whole history. The first run step writes the job's start, which the rollout step budgets against.
+        co = [s for s in steps if "uses" in s]
+        if not (co and isinstance(co[0].get("with"), dict) and co[0]["with"].get("fetch-depth") == 0):
+            fail("deploy.yml's deploy job: its checkout needs `fetch-depth: 0` (the record step reads commit ancestry: which commit built the serving api's image)")
+        first_run = next((r for r in runs if r), "")
+        if not re.search(r'^\s*date\s+\+%s\s*>\s*"\$RUNNER_TEMP/deploy-started"\s*$', first_run, re.M):
+            fail("deploy.yml's deploy job: its first run step writes the job's start (`date +%s > \"$RUNNER_TEMP/deploy-started\"`), "
+                 "the rollout step's time budget reads it")
         scan = next((n for n, r in enumerate(runs) if SCAN.search(r)), None)
         if scan is None:
             fail("deploy.yml's deploy job has no scan step (the pinned Trivy reading the saved images: \"$TRIVY\" image ... --input)")
@@ -454,20 +513,66 @@ if is_deploy:
             rd = REVISION_DESCRIBE.search(rr)
             after = rr[rd.start():] if rd else ""
             if not (rd and PREVIOUS_FILE.search(rr[:rd.start()]) and re.search(r"--format=json\b", after) and re.search(r"\bpython3\s+-I\b", after) and
+                    re.search(r"facts=\$\(printf\s+'%s'\s+\"\$rjson\"\s*\|\s*python3\s+-I\s+-c\s+'", after) and
                     "SMOKE_OIDC_SA_ID" in after and "ryft-meal-patch" in after and re.search(r"== \"d285\"", after) and
                     re.search(r"cannot describe the serving api revision", after) and
                     re.search(r'echo\s+"d286=\$d286"\s*>>\s*"\$GITHUB_OUTPUT"', after) and
                     re.search(r'echo\s+"d285=\$d285"\s*>>\s*"\$GITHUB_OUTPUT"', after)):
                 fail(f"deploy.yml's deploy job, {rl}: after recording the revisions it reads the serving api revision "
                      "(`gcloud run revisions describe --format=json`, a failure ends the run with ::error; parsed with python3 -I) and writes "
-                     "the step outputs d286 (SMOKE_OIDC_SA_ID in a container's env) and d285 (label ryft-meal-patch == d285) to $GITHUB_OUTPUT")
+                     "the step outputs d286 (the SMOKE_OIDC_* settings in the api container's env) and d285 (label ryft-meal-patch == d285 and an image of D285) to $GITHUB_OUTPUT")
+            # D286's settings: the four names, each a literal non-empty value (no valueFrom), from the api container's env.
+            nm = re.search(r"^\s*names\s*=\s*\[([^\]]*)\]", after, re.M)
+            if not (nm and set(re.findall(r'"([A-Z_]+)"', nm.group(1))) == {"SMOKE_OIDC_SA_EMAIL", "SMOKE_OIDC_SA_ID", "SMOKE_OIDC_AUDIENCE", "SMOKE_USER_ID"} and
+                    '"valueFrom"' in after and ".strip()" in after):
+                fail(f"deploy.yml's deploy job, {rl}: the D286 settings are the four SMOKE_OIDC_SA_EMAIL, SMOKE_OIDC_SA_ID, SMOKE_OIDC_AUDIENCE and "
+                     "SMOKE_USER_ID of the api container's env, each a literal non-empty value (a valueFrom is not)")
+            # The image: spec.containers[0].image, else status.imageDigest, as <REGISTRY>/api@sha256:<64 hex>.
+            if not (re.search(r"containers\[0\]", after) and "imageDigest" in after and re.search(r"/api@\(sha256:\[0-9a-f\]\{64\}\)", after) and
+                    re.search(r"'\s*\"\$REGISTRY\"\)", after) and "fullmatch" in after):
+                fail(f"deploy.yml's deploy job, {rl}: the serving api's image is its container's image (spec.containers[0].image), else status.imageDigest, "
+                     "and must fullmatch $REGISTRY/api@sha256:<64 hex>: anything else is no digest and proves nothing")
+            # The image's commits: the tags of that digest in the registry, kept when they are commits of this history.
+            if not (re.search(r'timeout\s+-k\s+10\s+60\s+gcloud\s+artifacts\s+docker\s+tags\s+list\s+"\$REGISTRY/api"\s+--format=json', after) and
+                    len(re.findall(r"\bpython3\s+-I\b", after)) >= 2 and re.search(r"\[0-9a-f\]\{7,40\}", after) and
+                    re.search(r'"version",\s*"digest"', after) and len(re.findall(r"::warning title=deploy::", after)) >= 3 and
+                    re.search(r'git\s+rev-parse\s+--verify\s+-q\s+"\$t\^\{commit\}"', after)):
+                fail(f"deploy.yml's deploy job, {rl}: the commits of the serving api's image: `timeout -k 10 60 gcloud artifacts docker tags list "
+                     "\"$REGISTRY/api\" --format=json`, parsed with python3 -I (the entries of that digest, tags matching [0-9a-f]{7,40}), each tag "
+                     "resolved with `git rev-parse --verify -q \"$t^{commit}\"`; a lookup that fails or cannot be read is a ::warning, no proof")
+            if not (re.search(r'git\s+merge-base\s+--is-ancestor\s+"\$c"\s+HEAD\s*\|\|\s*continue', after) and
+                    re.search(r'git\s+merge-base\s+--is-ancestor\s+"\$D285_COMMIT"\s+"\$c"\s*;\s*then\s+image_d285=yes', after) and
+                    re.search(r'git\s+merge-base\s+--is-ancestor\s+"\$c"\s+"\$D285_COMMIT"\s*;\s*then\s+image_legacy=yes', after)):
+                fail(f"deploy.yml's deploy job, {rl}: an image commit counts only when it is an ancestor of HEAD (`git merge-base --is-ancestor \"$c\" HEAD`); "
+                     "image_d285 is a commit that contains D285_COMMIT (`--is-ancestor \"$D285_COMMIT\" \"$c\"`), image_legacy one that D285_COMMIT contains "
+                     "(`--is-ancestor \"$c\" \"$D285_COMMIT\"`: it predates D286)")
+            # d286: complete settings, or none on a legacy image; anything else is drift, an error in every mode. d285: the label AND the image.
+            if not (re.search(r'\[\s*"\$smoke"\s*=\s*complete\s*\]\s*;\s*then\s+d286=yes', after) and
+                    re.search(r'elif\s+\[\s*"\$smoke"\s*=\s*none\s*\]\s*&&\s*\[\s*"\$image_legacy"\s*=\s*yes\s*\]\s*;\s*then\s+d286=no', after)):
+                fail(f"deploy.yml's deploy job, {rl}: d286 is yes with all four settings complete, and no only with none of them on an image that "
+                     "predates D286 (image_legacy); anything else is config drift")
+            drift = after.find("config drift, never a bootstrap")
+            if not (drift >= 0 and re.search(r"\bexit\s+1\b", after[drift:drift + 700]) and
+                    "is not proven to predate D286" in after and "Restore SMOKE_OIDC_* and SMOKE_USER_ID (deploy/run, config.env)" in after):
+                fail(f"deploy.yml's deploy job, {rl}: a serving api that is not proven to predate D286 and has incomplete smoke settings ends the run "
+                     "(in every mode, before migrate) with the ::error 'config drift, never a bootstrap', then exit 1")
+            if not re.search(r'\[\s*"\$label"\s*=\s*yes\s*\]\s*&&\s*\[\s*"\$image_d285"\s*=\s*yes\s*\]\s*;\s*then\s+d285=yes', after):
+                fail(f"deploy.yml's deploy job, {rl}: d285 is yes only with the label ryft-meal-patch=d285 AND an image of a commit that contains D285_COMMIT "
+                     "(the label alone can outlive the image)")
+            bad = unbounded_gcloud(rr)
+            if bad:
+                fail(f"deploy.yml's deploy job, {rl}: every gcloud runs under `timeout -k 10 60` (a hung call must not hold the job): {bad[0]}")
             # The D285 floor: an api without the label, and a tree that writes the meal portion labels, stop the run before migrate; a
             # git grep that fails (exit 2 and up, not 0 or 1) counts as a writer.
             if not (FLOOR_GREP in rr and re.search(r'\[\s*"\$d285"\s*=\s*no\s*\]', rr) and
                     re.search(r'\[\s*"\$rc"\s*!=\s*1\s*\]', rr) and "D285 requires a D285 api serving first" in rr and
                     re.search(r"\bexit\s+1\b", rr[rr.find("D285 requires"):])):
-                fail(f"deploy.yml's deploy job, {rl}: the D285 floor: while the serving api lacks the label ryft-meal-patch=d285, `{FLOOR_GREP}` "
+                fail(f"deploy.yml's deploy job, {rl}: the D285 floor: while the serving api is not proven D285, `{FLOOR_GREP}` "
                      "finding a file (or failing: exit other than 1) ends the run with an ::error ('D285 requires a D285 api serving first') before migrate")
+            if len(re.findall(r"the proof is the label plus an image built from a commit containing \$D285_COMMIT", rr)) != 2 or \
+                    len(re.findall(r"commit\(s\) \$\{image_commits:-none proven\}", rr)) < 3:
+                fail(f"deploy.yml's deploy job, {rl}: the D285 floor's two errors name the proof (the label plus an image built from a commit containing "
+                     "$D285_COMMIT) and the image's commits (or 'none proven')")
             # The selection by mode: migrate_only is a notice; d286 no on anything but a dispatch ends the run before migrate.
             if not (re.search(r'\[\s*"\$MIGRATE_ONLY"\s*=\s*true\s*\]', rr) and
                     re.search(r'\[\s*"\$d286"\s*=\s*no\s*\]\s*&&\s*\[\s*"\$EVENT"\s*!=\s*workflow_dispatch\s*\]', rr) and
@@ -499,8 +604,10 @@ if is_deploy:
             rep = re.search(r"\bgcloud\s+run\s+services\s+replace\b", sr)
             trap = re.search(r"^\s*trap\s+[A-Za-z_]\w*\s+EXIT\s*$", sr, re.M)  # a handler's name; `trap - EXIT` inside it resets
             touch = re.search(r"\btouched\+=\(", sr)
-            mk = re.search(r"^\s*make\s+smoke-prod\s*$", sr, re.M)
-            if not (UPDATE_TRAFFIC.search(sr) and "--to-revisions" in sr and PREVIOUS_FILE.search(sr) and
+            mk = re.search(r'^\s*bounded\s+"\$SMOKE_S"\s+make\s+smoke-prod\s*$', sr, re.M)
+            # (the restore commands that a message prints sit in quotes and are no call)
+            calls_update = any(UPDATE_TRAFFIC.search(strip_text(ln)) for ln in sr.split("\n"))
+            if not (calls_update and "--to-revisions" in sr and PREVIOUS_FILE.search(sr) and
                     re.search(r"\bfor\s+\w+\s+in\s+api\s+ingest\s+notify\s+scoring\s*;", sr) and trap and
                     re.search(r'\brollback\s+"\$\{touched\[@\]\}"', sr) and re.search(r'\bexit\s+"\$rc"', sr)):
                 fail(f"deploy.yml's deploy job, {sl}: the rollout step rolls back itself through one EXIT trap: it sends every service on the `touched` list back "
@@ -512,17 +619,66 @@ if is_deploy:
                 fail(f"deploy.yml's deploy job, {sl}: `touched+=(\"$s\")` comes before `gcloud run services replace` in the loop (scoring, notify, ingest, api), "
                      "and the trap is set before the loop: a failure at any point after the first replace was issued rolls back")
             # No comparison of the live traffic with the recorded revision (a rollback to it is safe either way), no early success,
-            # and the lookups for the summary are best effort.
+            # and the lookup of the new revision is no best effort: after a replace, a failed lookup is a failed rollout (the trap rolls back).
             if "status.traffic" in sr or re.search(r"\bcur=", sr) or re.search(r"\bexit\s+0\b", sr):
                 fail(f"deploy.yml's deploy job, {sl}: no `cur=` comparison of the live traffic (a rollback to the recorded revision is safe whether or not "
                      "the traffic moved) and no `exit 0`: the smoke is always the last command")
-            if not re.search(r"latestReadyRevisionName[^\n]*\|\|\s*rev=\"?unknown", sr):
-                fail(f"deploy.yml's deploy job, {sl}: the summary's lookup of the new revision is best effort (`|| rev=\"unknown\"`): a failed lookup after a good replace must not end the step")
+            if re.search(r"latestReadyRevisionName[^\n]*\|\|\s*rev=", sr) or not re.search(
+                    r"reason=\"the lookup of \$s's new revision failed\"\s*\n\s*rev=\$\(bounded\s+\"\$DESCRIBE_S\"\s+gcloud\s+run\s+services\s+describe\b[^\n]*"
+                    r"latestReadyRevisionName[^\n]*\)\s*\n", sr):
+                fail(f"deploy.yml's deploy job, {sl}: the lookup of the new revision after a replace has no `|| rev=` fallback and sets "
+                     "reason=\"the lookup of $s's new revision failed\" before it: a failed lookup fails the step into the EXIT handler, which rolls back")
             # The smoke is a plain command after the loop (a failure ends the step through -e and the trap); no `if` around it.
             if not (mk and rep and mk.start() > rep.start() and "touched" in sr[:mk.start()] and
-                    not re.search(r"\b(?:if|while|until)\s+!?\s*make\s+smoke-prod\b|make\s+smoke-prod\s*(?:\|\||&&)", sr)):
-                fail(f"deploy.yml's deploy job, {sl}: `make smoke-prod` is a plain command line after the services (no `if`, `||` or `&&` around it): "
+                    not re.search(r"\b(?:if|while|until)\s+!?\s*(?:bounded\s+\S+\s+)?make\s+smoke-prod\b|make\s+smoke-prod\s*(?:\|\||&&)", sr)):
+                fail(f"deploy.yml's deploy job, {sl}: `bounded \"$SMOKE_S\" make smoke-prod` is a plain command line after the services (no `if`, `||` or `&&` around it): "
                      "when it fails the trap rolls all four back")
+            # Time (the job's timeout-minutes, and the time the restores need): the constants, the deploy-started file, the budget, the
+            # bounded helper, every gcloud under `bounded` or `timeout`, the rollback under its own fixed budget, the targets printed first.
+            consts = {v: re.search(r"^\s*" + v + r"=([0-9]+)\s*$", sr, re.M) for v in JOB_VARS}
+            tm = d.get("timeout-minutes")
+            if not all(consts.values()):
+                fail(f"deploy.yml's deploy job, {sl}: it assigns {', '.join(JOB_VARS)} as plain numbers at its top (JOB_S=<seconds>, one line each)")
+            elif not (isinstance(tm, int) and not isinstance(tm, bool) and int(consts["JOB_S"].group(1)) == tm * 60):
+                fail(f"deploy.yml's deploy job, {sl}: JOB_S ({consts['JOB_S'].group(1)}) must equal the job's timeout-minutes x 60 ({tm!r} x 60)")
+            if not (re.search(r"^\s*started=\$\(cat\s+\"\$RUNNER_TEMP/deploy-started\"", sr, re.M) and re.search(r"\[\[\s*\$started\s*=~\s*\^\[0-9\]\+\$\s*\]\]", sr) and
+                    "deploy-started is missing or not a time" in sr and re.search(r"\bexit\s+1\b", sr[sr.find("deploy-started is missing"):]) and
+                    re.search(r"reserve=\$\(\(\s*4\s*\*\s*RESTORE_S\s*\+\s*180\s*\)\)", sr) and
+                    re.search(r"forward_end=\$\(\(\s*started\s*\+\s*JOB_S\s*-\s*reserve\s*\)\)", sr)):
+                fail(f"deploy.yml's deploy job, {sl}: it reads $RUNNER_TEMP/deploy-started (a time, else ::error and exit 1 before anything is touched) and "
+                     "computes reserve=$(( 4 * RESTORE_S + 180 )) and forward_end=$(( started + JOB_S - reserve ))")
+            bd = re.search(r"\bbounded\(\)\s*\{(.*?)\n\s*\}", sr, re.S)
+            if not (bd and "forward_end" in bd.group(1) and re.search(r"\breturn\s+124\b", bd.group(1)) and
+                    re.search(r'timeout\s+-k\s+10\s+"\$\(\(\s*cap\s*<\s*left\s*\?\s*cap\s*:\s*left\s*\)\)"\s+"\$@"', bd.group(1)) and
+                    bd.start() < (rep.start() if rep else 0)):
+                fail(f"deploy.yml's deploy job, {sl}: `bounded <cap> <cmd...>` is defined before the loop: left=forward_end-now; none left is return 124; "
+                     "else `timeout -k 10 \"$(( cap < left ? cap : left ))\" \"$@\"`")
+            budget = re.search(r"-lt\s+300\s*\]", sr)
+            if not (budget and "not enough of the job's 60 minutes is left to roll out and still restore: nothing was rolled" in sr and
+                    re.search(r"\bexit\s+1\b", sr[budget.start():budget.start() + 400]) and rep and budget.start() < rep.start()):
+                fail(f"deploy.yml's deploy job, {sl}: before the loop, under 300 s of forward time left is an ::error 'not enough of the job's 60 minutes is "
+                     "left to roll out and still restore: nothing was rolled' and exit 1 (nothing touched, no rollback)")
+            if not (re.search(r'^\s*bounded\s+"\$REPLACE_S"\s+gcloud\s+run\s+services\s+replace\b', sr, re.M) and
+                    re.search(r'\brev=\$\(bounded\s+"\$DESCRIBE_S"\s+gcloud\s+run\s+services\s+describe\b', sr)):
+                fail(f"deploy.yml's deploy job, {sl}: `gcloud run services replace` runs as `bounded \"$REPLACE_S\"` and the lookup of the new revision as "
+                     "`bounded \"$DESCRIBE_S\"`")
+            if not re.search(r'timeout\s+-k\s+10\s+"\$RESTORE_S"\s+gcloud\s+run\s+services\s+update-traffic\b', sr):
+                fail(f"deploy.yml's deploy job, {sl}: the rollback's `gcloud run services update-traffic` runs as `timeout -k 10 \"$RESTORE_S\"`: its own fixed "
+                     "budget, whatever is left of the forward time")
+            bad = unbounded_gcloud(sr)
+            if bad:
+                fail(f"deploy.yml's deploy job, {sl}: every gcloud of the rollout runs under `bounded <cap>` or `timeout -k <n> <secs>` (a hung call must not "
+                     f"eat the time the restores need): {bad[0]}")
+            hr = re.search(r"\bhand_restore\(\)\s*\{(.*?)\n\s*\}", sr, re.S)
+            call = re.search(r"\$\(hand_restore\)", sr)
+            if not (hr and call and rep and hr.start() < call.start() < rep.start() and
+                    "gcloud run services update-traffic %s --to-revisions=%s=100 --region=%s --project=%s" in hr.group(1) and
+                    re.search(r"\bfor\s+\w+\s+in\s+api\s+ingest\s+notify\s+scoring\s*;", hr.group(1)) and PREVIOUS_FILE.search(hr.group(1)) and
+                    "restore by hand" in sr[:rep.start()] and re.search(r'summary\s+"\$cmds"', sr[call.start():rep.start()]) and
+                    re.search(r"printf\s+'%s\\n%s\\n'\s+\"\$by_hand\"\s+\"\$cmds\"", sr[call.start():rep.start()])):
+                fail(f"deploy.yml's deploy job, {sl}: before the first `gcloud run services replace` the step prints the targets (`restore by hand`, "
+                     "`gcloud run services update-traffic <svc> --to-revisions=<previous>=100 --region=... --project=...` for api, ingest, notify, scoring from "
+                     "$RUNNER_TEMP/previous), to the log and to the step summary")
             for n, r in enumerate(runs):
                 if n != smoke_steps[0] and UPDATE_TRAFFIC.search(r):
                     fail(f"deploy.yml's deploy job, {step_label(n, steps[n])}: `gcloud run services update-traffic` belongs in the rollout step only (the one rollback handler)")
@@ -552,6 +708,11 @@ if is_deploy:
                  f"(a superseded run deploys nothing), is {sj.get('if')!r}")
         if not any(SITE_ON_TERM.fullmatch(t) for t in terms):
             fail(f"deploy.yml's {sid} job: its `if` must have the top-level conjunct vars.SITE_DEPLOY == 'on' (the site's switch), is {sj.get('if')!r}")
+        # A migrate_only dispatch applies the migrations and nothing else: it publishes no site either (on a push the input is null, so
+        # `!inputs.migrate_only` is true).
+        if not any(MIGRATE_ONLY_OFF.fullmatch(t) for t in terms):
+            fail(f"deploy.yml's {sid} job: its `if` must have the top-level conjunct !inputs.migrate_only (a migrate_only run publishes nothing, "
+                 f"not the site either), is {sj.get('if')!r}")
         steps = job_steps(sj)
         if steps is None:
             fail(f"deploy.yml's {sid} job has no list of steps")

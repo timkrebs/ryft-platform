@@ -1085,3 +1085,56 @@ done
 smoke_fake FAKE_POLICY=2026-12-01 || { echo 'smoke_prod.sh failed with a consent for an older policy than /v1/config' >&2; cat "$tmp/run.out" >&2; exit 1; }
 grep -qF "consent is for 2026-10-26, the policy in force is 2026-12-01" "$tmp/run.out"
 no_consent_write
+
+# Bounded calls: every curl of smoke_prod.sh has its own limits, and the whole script a deadline.
+if grep -v '^ *#' "$HERE/scripts/smoke_prod.sh" | grep -E '(^|[|( ])curl ' | grep -vq -e '--connect-timeout 10 --max-time 30'; then
+  echo 'a curl of smoke_prod.sh has no --connect-timeout 10 --max-time 30' >&2
+  exit 1
+fi
+grep -q -e '--retry 3 --retry-delay 2 --retry-max-time 60' "$HERE/scripts/smoke_prod.sh" || { echo 'smoke_curl has no --retry-max-time 60' >&2; exit 1; }
+# The deadline: the script runs again under `timeout -k 10 ${SMOKE_PROD_TIMEOUT:-600}`, once (a fake timeout records it).
+mkdir "$tmp/dl"
+cat > "$tmp/dl/timeout" <<'SH'
+#!/usr/bin/env bash
+echo "timeout $* [deadline=${SMOKE_PROD_DEADLINE:-}]" >> "$TIMEOUT_LOG"
+SH
+chmod +x "$tmp/dl/timeout"
+: > "$tmp/timeout.log"
+env -i PATH="$tmp/dl:$PATH" TIMEOUT_LOG="$tmp/timeout.log" bash "$HERE/scripts/smoke_prod.sh" --auth-preflight > "$tmp/dl.out" 2>&1
+[ "$(wc -l < "$tmp/timeout.log")" -eq 1 ] || { echo 'smoke_prod.sh did not call timeout exactly once' >&2; cat "$tmp/timeout.log" >&2; exit 1; }
+grep -qE '^timeout -k 10 600 [^ ]*bash [^ ]*/scripts/smoke_prod\.sh --auth-preflight \[deadline=armed\]$' "$tmp/timeout.log" \
+  || { echo 'smoke_prod.sh does not re-run itself under timeout -k 10 600' >&2; cat "$tmp/timeout.log" >&2; exit 1; }
+: > "$tmp/timeout.log"
+env -i PATH="$tmp/dl:$PATH" TIMEOUT_LOG="$tmp/timeout.log" SMOKE_PROD_TIMEOUT=45 bash "$HERE/scripts/smoke_prod.sh" > "$tmp/dl.out" 2>&1
+grep -q '^timeout -k 10 45 ' "$tmp/timeout.log" || { echo 'SMOKE_PROD_TIMEOUT is not the deadline' >&2; cat "$tmp/timeout.log" >&2; exit 1; }
+# Armed already: no second timeout (the re-run is the script itself).
+: > "$tmp/timeout.log"
+if env -i PATH="$tmp/dl:$PATH" TIMEOUT_LOG="$tmp/timeout.log" SMOKE_PROD_DEADLINE=armed bash "$HERE/scripts/smoke_prod.sh" --nope > "$tmp/dl.out" 2>&1; then
+  echo 'an armed smoke_prod.sh accepted --nope' >&2
+  exit 1
+fi
+[ ! -s "$tmp/timeout.log" ] || { echo 'an armed smoke_prod.sh ran timeout again' >&2; exit 1; }
+grep -q 'usage: smoke_prod.sh' "$tmp/dl.out"
+# No `timeout` on the machine: one line of notice, then it runs unbounded (here: to its usage error).
+mkdir "$tmp/nobin"
+for t in dirname mktemp rm; do ln -s "$(command -v "$t")" "$tmp/nobin/$t"; done
+if env -i PATH="$tmp/nobin" "$BASH" "$HERE/scripts/smoke_prod.sh" --nope > "$tmp/dl.out" 2>&1; then
+  echo 'smoke_prod.sh without timeout accepted --nope' >&2
+  exit 1
+fi
+grep -q '^! smoke-prod: no .timeout. on this machine' "$tmp/dl.out" || { echo 'no notice without timeout' >&2; cat "$tmp/dl.out" >&2; exit 1; }
+grep -q 'usage: smoke_prod.sh' "$tmp/dl.out"
+# The real deadline: a hung helper is killed at SMOKE_PROD_TIMEOUT, exit status 124 (needs a real `timeout`).
+if command -v timeout >/dev/null 2>&1; then
+  mkdir "$tmp/hang"
+  printf '%s\n' '#!/usr/bin/env bash' 'exec sleep 60' > "$tmp/hang/python3"
+  chmod +x "$tmp/hang/python3"
+  started=$(date +%s)
+  rc=0
+  env -i PATH="$tmp/hang:$PATH" SMOKE_PROD_TIMEOUT=2 SMOKE_USER_ID='20261125-0000-4000-8000-0000000000a1' SMOKE_SA_ID='104567890123456789012' \
+    bash "$HERE/scripts/smoke_prod.sh" --auth-preflight > "$tmp/dl.out" 2>&1 || rc=$?
+  [ "$rc" = 124 ] || { echo "a hung smoke_prod.sh ended with $rc, want 124" >&2; cat "$tmp/dl.out" >&2; exit 1; }
+  [ $(( $(date +%s) - started )) -lt 30 ] || { echo 'the deadline took far longer than SMOKE_PROD_TIMEOUT' >&2; exit 1; }
+else
+  echo '- smoke_auth_test: the real deadline case is SKIPPED, no timeout on this machine'
+fi

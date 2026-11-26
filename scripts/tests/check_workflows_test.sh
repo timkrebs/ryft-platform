@@ -9,10 +9,13 @@
 # conjuncts, the actions by SHA, no cache, nothing signs in up to `tip`, the deploy and the live
 # check behind the tip gate) and a second ci-ok all fail; the repository's own workflows pass.
 # deploy.yml's rollout step and its record step are also EXECUTED (the `run:` extracted with yq, run under
-# `bash -eo pipefail` with a fake gcloud and make): a failed lookup after a good replace, a failed replace, a
-# failing smoke, a failing rollback and an unexpected error each roll back the touched services; the record
-# step's facts, the D285 floor (a throwaway git tree with and without a writer, a labelled and an unlabelled
-# revision), fail closed, and the selection by mode.
+# `bash -eo pipefail` with a fake gcloud and make): a failed lookup after a good replace, a failed or hung replace,
+# a failing smoke, a failing or hung rollback and an unexpected error each roll back the touched services; a job
+# with too little time left, or no start time, touches nothing; the restore commands are printed first. The record
+# step's facts are proven from the serving api's IMAGE (a throwaway git tree with the commits L, P (D285) and N
+# (D286), the registry's tags of the image's digest from a fake gcloud): D286 settings complete, none on a legacy
+# image, or config drift; the D285 floor (a tree with and without a writer; a label that outlived its image), fail
+# closed, and the selection by mode. The site jobs' `if`s are evaluated for a push and both kinds of dispatch.
 # Every case runs, also after one has failed; the test fails at the end and names each failed case.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -297,7 +300,7 @@ deploy_swap "the rollout reuses the session file" "mints a fresh token, not the 
 deploy_swap "the rollout leaves the session variable alone" "mints a fresh token, not the preflight's session" \
   '          unset SMOKE_AUTH_FILE' '          true'
 deploy_swap "no rollback command in the rollout step" "the rollout step rolls back itself through one EXIT trap" \
-  '                 gcloud run services update-traffic "$s" --to-revisions="$prev=100" --region="$REGION" --project="$PROJECT" --quiet; then' '                 true; then'
+  '                 timeout -k 10 "$RESTORE_S" gcloud run services update-traffic "$s" --to-revisions="$prev=100" --region="$REGION" --project="$PROJECT" --quiet; then' '                 true; then'
 deploy_swap "the rollback in another order" "the rollout step rolls back itself through one EXIT trap" \
   '            for s in api ingest notify scoring; do' '            for s in scoring notify ingest api; do'
 deploy_swap "the rollback without the recorded revisions" "the rollout step rolls back itself through one EXIT trap" \
@@ -309,7 +312,7 @@ deploy_swap "the handler rolls back only some services" "the rollout step rolls 
 # Each service is on the list before its replace is issued, and the trap is set before the loop.
 deploy_swap "a service never on the touched list" "comes before \`gcloud run services replace\`" '            touched+=("$s")' '            true'
 fresh
-deploy_edit '            touched+=("$s")' '            true' && deploy_edit '            reason="unexpected error after the replace of $s"' '            reason="x"\n            touched+=("$s")' ||
+deploy_edit '            touched+=("$s")' '            true' && deploy_edit '            reason="the lookup of $s'"'"'s new revision failed"' '            reason="x"\n            touched+=("$s")' ||
   fail "the touched-after-replace fixture lines are not in deploy.yml (the test is stale)"
 run
 expect_fail "a service on the touched list only after its replace" "comes before \`gcloud run services replace\`"
@@ -326,27 +329,101 @@ deploy_sub() {
   mv "$d/deploy.new" "$d/deploy.yml"
   run; expect_fail "$1" "$2"
 }
+# deploy_after <name> <message part> <anchor> <line> <replacement>: the first line equal to <line> AFTER the first line that contains <anchor>, replaced.
+deploy_after() {
+  fresh
+  awk -v anchor="$3" -v from="$4" -v to="$5" '
+    !seen && index($0, anchor) { seen = 1; print; next }
+    seen && !hit && $0 == from { $0 = to; hit = 1 }
+    { print } END { exit !hit }' "$d/deploy.yml" > "$d/deploy.new" || { rm -f "$d/deploy.new"; fail "$1: the line '$4' after '$3' is not in deploy.yml (the test is stale)"; return; }
+  mv "$d/deploy.new" "$d/deploy.yml"
+  run; expect_fail "$1" "$2"
+}
 deploy_sub "the live traffic compared with the recorded revision again" "no \`cur=\` comparison" '            summary "- $s: $rev"' '            cur=x'
-deploy_sub "the summary lookup of the new revision is not best effort" "best effort" ' || rev="unknown"' ''
-deploy_sub "an early success in the rollout" "no \`exit 0\`" '          make smoke-prod' '          exit 0'
-deploy_swap "the smoke in an if" "plain command line after the services" '          make smoke-prod' '          if make smoke-prod; then true; fi'
-deploy_swap "the smoke followed by || true" "plain command line after the services" '          make smoke-prod' '          make smoke-prod || true'
-deploy_swap "the smoke command removed (only its name in a message is left)" "plain command line after the services" '          make smoke-prod' '          true'
+# A failed lookup of the new revision after a replace fails the step into the EXIT handler (no `|| rev=` fallback), with its reason set.
+deploy_sub "a best-effort fallback after the lookup of the new revision" "no \`|| rev=\` fallback" "latestReadyRevisionName)')" "latestReadyRevisionName)') || rev=\"unknown\""
+deploy_sub "the lookup of the new revision without its reason" "no \`|| rev=\` fallback" "reason=\"the lookup of \$s's new revision failed\"" 'reason="x"'
+deploy_sub "an early success in the rollout" "no \`exit 0\`" 'bounded "$SMOKE_S" make smoke-prod' 'exit 0'
+deploy_swap "the smoke in an if" "plain command line after the services" '          bounded "$SMOKE_S" make smoke-prod' '          if bounded "$SMOKE_S" make smoke-prod; then true; fi'
+deploy_swap "the smoke followed by || true" "plain command line after the services" '          bounded "$SMOKE_S" make smoke-prod' '          bounded "$SMOKE_S" make smoke-prod || true'
+deploy_swap "the smoke command removed (only its name in a message is left)" "plain command line after the services" '          bounded "$SMOKE_S" make smoke-prod' '          true'
+deploy_swap "the smoke without its bound" "plain command line after the services" '          bounded "$SMOKE_S" make smoke-prod' '          make smoke-prod'
+# Time: the constants, the job's start, the budget, the bounded helper, every gcloud under a bound, the targets printed first.
+deploy_swap "JOB_S that is not the job's timeout" "must equal the job's timeout-minutes" '          JOB_S=3600' '          JOB_S=3000'
+job_swap "a job timeout that JOB_S does not follow" "must equal the job's timeout-minutes" deploy '    timeout-minutes: 60' '    timeout-minutes: 45'
+deploy_swap "a time constant that is gone" "assigns JOB_S, RESTORE_S" '          SMOKE_S=900' '          true'
+deploy_swap "the job's start not written" "writes the job's start" '          date +%s > "$RUNNER_TEMP/deploy-started"' '          true'
+deploy_sub "the job's start not checked" "reads \$RUNNER_TEMP/deploy-started" '[[ $started =~ ^[0-9]+$ ]] ||' 'true ||'
+deploy_sub "no time kept for the restores" "reads \$RUNNER_TEMP/deploy-started" 'reserve=$(( 4 * RESTORE_S + 180 ))' 'reserve=0'
+deploy_sub "a forward end that ignores the reserve" "reads \$RUNNER_TEMP/deploy-started" 'forward_end=$(( started + JOB_S - reserve ))' 'forward_end=$(( started + JOB_S ))'
+deploy_sub "bounded without a timeout" "is defined before the loop" 'timeout -k 10 "$(( cap < left ? cap : left ))" "$@"' '"$@"'
+deploy_sub "bounded that ignores the time left" "is defined before the loop" 'cap < left ? cap : left' 'cap'
+deploy_sub "no budget check before the loop" "under 300 s of forward time left" '-lt 300 ]' '-lt 0 ]'
+deploy_sub "a budget error that does not stop the step" "under 300 s of forward time left" "not enough of the job's 60 minutes is left to roll out and still restore: nothing was rolled" 'x'
+deploy_swap "an unbounded replace" "every gcloud of the rollout runs under" \
+  '            bounded "$REPLACE_S" gcloud run services replace "$RUNNER_TEMP/run/$s.yaml" --region="$REGION" --project="$PROJECT" --quiet' \
+  '            gcloud run services replace "$RUNNER_TEMP/run/$s.yaml" --region="$REGION" --project="$PROJECT" --quiet'
+deploy_sub "an unbounded lookup of the new revision" "every gcloud of the rollout runs under" 'rev=$(bounded "$DESCRIBE_S" gcloud' 'rev=$(gcloud'
+deploy_swap "another unbounded gcloud in the rollout" "every gcloud of the rollout runs under" \
+  '          rm -f "$RUNNER_TEMP/ryft-smoke-auth.json"' '          rm -f "$RUNNER_TEMP/ryft-smoke-auth.json"\n          echo x; gcloud run services list'
+deploy_sub "a rollback without its own timeout" "the rollback's \`gcloud run services update-traffic\` runs as" 'timeout -k 10 "$RESTORE_S" gcloud run services update-traffic' 'gcloud run services update-traffic'
+deploy_sub "a rollback under a fixed number instead of RESTORE_S" "the rollback's \`gcloud run services update-traffic\` runs as" 'timeout -k 10 "$RESTORE_S" gcloud run services update-traffic' 'timeout -k 10 600 gcloud run services update-traffic'
+deploy_swap "the targets not printed" "prints the targets" '          cmds=$(hand_restore)' '          cmds=x'
+deploy_swap "the targets not in the summary" "prints the targets" '          summary "$cmds"' '          true'
+deploy_sub "the targets printed with another command" "prints the targets" 'update-traffic %s --to-revisions=%s=100 --region=%s --project=%s' 'update-traffic %s --to-revisions=%s=50 --region=%s --project=%s'
+fresh
+deploy_edit '          cmds=$(hand_restore)' '          cmds=x' && deploy_edit '            summary "- $s: $rev"' '            summary "- $s: $rev"\n            cmds=$(hand_restore)' ||
+  fail "the targets-after-the-replace fixture lines are not in deploy.yml (the test is stale)"
+run
+expect_fail "the targets printed only after the first replace" "prints the targets"
 deploy_swap "the services in a step of their own" "live in one step" \
   "      - name: The services, then make smoke-prod, and roll back when either fails" \
   "      - name: Early replace\n        if: steps.tip.outputs.current == 'true'\n        run: gcloud run services replace x.yaml\n      - name: The services, then make smoke-prod, and roll back when either fails"
 # The record step reads the serving api revision (python3 -I, not grep) and writes d286 and d285 to its outputs, before migrate.
-deploy_swap "the record step without the D286 fact" "after recording the revisions it reads the serving api revision" \
-  '          d286 = any(e.get("name") == "SMOKE_OIDC_SA_ID" and (e.get("value") or "").strip() for c in containers for e in (c.get("env") or []))' '          d286 = False'
 deploy_swap "the record step without the label fact" "after recording the revisions it reads the serving api revision" \
-  '          d285 = (rev.get("metadata", {}).get("labels") or {}).get("ryft-meal-patch") == "d285"' '          d285 = True'
+  '          label = (rev.get("metadata", {}).get("labels") or {}).get("ryft-meal-patch") == "d285"' '          label = True'
+# D286's settings: the four names, each a literal non-empty value (a valueFrom is not), from the api container.
+deploy_sub "a D286 setting dropped from the four" "the D286 settings are the four" ', "SMOKE_USER_ID"]' ']'
+deploy_sub "the D286 settings without the valueFrom rule" "the D286 settings are the four" 'elif "valueFrom" in es[0]:' 'elif False:'
+deploy_sub "the D286 settings without the non-empty rule" "the D286 settings are the four" 'es[0]["value"].strip()' 'es[0]["value"]'
+# The image: the container's, else status.imageDigest, by digest in the job's registry.
+deploy_sub "the image not read from the api container" "the serving api's image is its container's image" 'api = containers[0] if containers and isinstance(containers[0], dict) else {}' 'api = {}'
+deploy_sub "no status.imageDigest fallback" "the serving api's image is its container's image" 'rev.get("status", {}).get("imageDigest")' 'rev.get("status", {}).get("x")'
+deploy_sub "the image pattern not tied to the registry" "the serving api's image is its container's image" "' \"\$REGISTRY\")" "' \"x\")"
+# The image's commits: the tags of the digest, the commits of this history, the two directions of ancestry.
+deploy_sub "the tags lookup without a timeout" "the commits of the serving api's image" 'timeout -k 10 60 gcloud artifacts docker tags list' 'gcloud artifacts docker tags list'
+deploy_sub "tags of any shape" "the commits of the serving api's image" '[0-9a-f]{7,40}' '[0-9a-f]+'
+deploy_sub "a tag not resolved to a commit" "the commits of the serving api's image" 'git rev-parse --verify -q "$t^{commit}"' 'git rev-parse "$t"'
+deploy_sub "a lookup that fails without a warning" "the commits of the serving api's image" '::warning title=deploy::the tags of' '::notice title=deploy::the tags of'
+deploy_sub "an image commit outside this history counts" "an ancestor of HEAD" 'git merge-base --is-ancestor "$c" HEAD || continue' 'true'
+deploy_sub "image_d285 from the wrong direction" "image_legacy one that D285_COMMIT contains" \
+  'if git merge-base --is-ancestor "$D285_COMMIT" "$c"; then image_d285=yes; fi' 'if git merge-base --is-ancestor "$c" "$D285_COMMIT"; then image_d285=yes; fi'
+deploy_sub "image_legacy from the wrong direction" "image_legacy one that D285_COMMIT contains" \
+  'if git merge-base --is-ancestor "$c" "$D285_COMMIT"; then image_legacy=yes; fi' 'if git merge-base --is-ancestor "$D285_COMMIT" "$c"; then image_legacy=yes; fi'
+# d286 from the settings and the image; drift ends the run in every mode; d285 needs the image, not the label alone.
+deploy_sub "d286 yes without complete settings" "d286 is yes with all four settings complete" 'if [ "$smoke" = complete ]; then' 'if [ "$smoke" != none ]; then'
+deploy_sub "the bootstrap without a legacy image" "d286 is yes with all four settings complete" \
+  'elif [ "$smoke" = none ] && [ "$image_legacy" = yes ]; then' 'elif [ "$smoke" = none ]; then'
+deploy_sub "drift that is no error" "config drift, never a bootstrap" 'config drift, never a bootstrap' 'config x'
+deploy_after "drift that does not stop the run" "config drift, never a bootstrap" 'config drift, never a bootstrap' '            exit 1' '            true'
+deploy_sub "drift without the way out" "config drift, never a bootstrap" 'Restore SMOKE_OIDC_* and SMOKE_USER_ID (deploy/run, config.env)' 'x'
+deploy_sub "d285 on the label alone" "the label alone can outlive the image" \
+  'if [ "$label" = yes ] && [ "$image_d285" = yes ]; then d285=yes; else d285=no; fi' 'if [ "$label" = yes ]; then d285=yes; else d285=no; fi'
+deploy_sub "the floor's error without the proof" "name the proof" 'the proof is the label plus an image built from a commit containing' 'the proof is x'
+# Every gcloud of the record step is bounded too.
+deploy_sub "an unbounded describe of the services" "every gcloud runs under \`timeout -k 10 60\`" 'json=$(timeout -k 10 60 gcloud run services describe' 'json=$(gcloud run services describe'
+deploy_sub "an unbounded describe of the api revision" "every gcloud runs under \`timeout -k 10 60\`" 'rjson=$(timeout -k 10 60 gcloud run revisions describe' 'rjson=$(gcloud run revisions describe'
+job_swap "a checkout of the last commit only" "needs \`fetch-depth: 0\`" deploy '          fetch-depth: 0' '          fetch-depth: 1'
+deploy_swap "no D285_COMMIT in the record step" "its env must be exactly EVENT" '          D285_COMMIT: 4bca49de1b140dafc3609484a514617a7c6fbe02' '          X: y'
+deploy_swap "another D285_COMMIT in the record step" "its env must be exactly EVENT" \
+  '          D285_COMMIT: 4bca49de1b140dafc3609484a514617a7c6fbe02' '          D285_COMMIT: 3ceca58000000000000000000000000000000000'
 deploy_swap "the record step's guard by grep" "after recording the revisions it reads the serving api revision" \
   "          facts=\$(printf '%s' \"\$rjson\" | python3 -I -c '" "          facts=\$(printf '%s' \"\$rjson\" | grep -c SMOKE_OIDC_SA_ID; echo '"
 deploy_swap "the record step without the d286 output" "after recording the revisions it reads the serving api revision" '          echo "d286=$d286" >> "$GITHUB_OUTPUT"' '          true'
 deploy_swap "the record step without the d285 output" "after recording the revisions it reads the serving api revision" '          echo "d285=$d285" >> "$GITHUB_OUTPUT"' '          true'
 deploy_sub "a failed revision describe that is not an error" "after recording the revisions it reads the serving api revision" 'cannot describe the serving api revision' 'x'
 deploy_swap "the record step's revisions not read from the service" "records the serving revisions" \
-  '            json=$(gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format=json) ||' '            json=$(true) ||'
+  '            json=$(timeout -k 10 60 gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format=json) ||' '            json=$(true) ||'
 deploy_swap "the record step without its id" "needs one step each, in this order" "        id: record" "        id: recorded"
 deploy_swap "the record step without MIGRATE_ONLY" "its env must be exactly EVENT" \
   "          MIGRATE_ONLY: \${{ inputs.migrate_only && 'true' || 'false' }}" '          MIGRATE_ONLY: "false"'
@@ -447,7 +524,9 @@ $JOB"
 
 # --- deploy.yml's steps EXECUTED (the greps above pin the shape; these run the scripts). The `run:` of the rollout step and of
 # the record step is extracted with yq and run under `bash -eo pipefail` as Actions runs it, with a fake gcloud and make on the
-# PATH that log their calls (FAIL_REPLACE=<svc>, FAIL_TRAFFIC=<svc>, FAIL_DESCRIBE=1, FAIL_REVDESC=1, FAIL_SMOKE=1 pick what fails).
+# PATH that log their calls (FAIL_REPLACE=<svc>, FAIL_TRAFFIC=<svc>, FAIL_DESCRIBE=<svc> (the lookup of that service's new revision),
+# FAIL_REVDESC=1, FAIL_TAGS=1, FAIL_SMOKE=1 pick what fails; SLOW_REPLACE=<svc> and SLOW_TRAFFIC=<svc> hang for 30 s). The time constants of the
+# rollout step are rewritten in the extracted copy (SETC=(REPLACE_S=2 ...)): a hung call is cut by its own bound.
 x="$tmp/exec"; rm -rf "$x"; mkdir -p "$x/bin" "$x/nogit"
 DEPLOY="$HERE/.github/workflows/deploy.yml"
 step_run() { yq -r ".jobs.deploy.steps[] | select($1) | .run" "$DEPLOY"; }
@@ -459,15 +538,21 @@ cat > "$x/bin/gcloud" <<'EOF'
 #!/usr/bin/env bash
 echo "gcloud $*" >> "$CALLS"
 case "$1 $2 $3" in
-  "run services replace") svc=${4##*/}; svc=${svc%.yaml}; [ "$svc" != "${FAIL_REPLACE:-}" ] || exit 1 ;;
-  "run services update-traffic") [ "$4" != "${FAIL_TRAFFIC:-}" ] || exit 1 ;;
+  "run services replace")
+    svc=${4##*/}; svc=${svc%.yaml}
+    [ "$svc" != "${SLOW_REPLACE:-}" ] || exec sleep 30
+    echo "replaced $svc"
+    [ "$svc" != "${FAIL_REPLACE:-}" ] || exit 1 ;;
+  "run services update-traffic")
+    [ "$4" != "${SLOW_TRAFFIC:-}" ] || exec sleep 30
+    [ "$4" != "${FAIL_TRAFFIC:-}" ] || exit 1 ;;
   "run services describe")
-    [ -z "${FAIL_DESCRIBE:-}" ] || exit 1
     case "$*" in
       *--format=json*) printf '{"status":{"traffic":[{"percent":100,"revisionName":"%s-00044-5lh"}]}}\n' "$4" ;;
-      *) echo "$4-00099-new" ;;
+      *) [ "$4" != "${FAIL_DESCRIBE:-}" ] || exit 1; echo "$4-00099-new" ;;
     esac ;;
   "run revisions describe") [ -z "${FAIL_REVDESC:-}" ] || exit 1; cat "$REV_JSON" ;;
+  "artifacts docker tags") [ -z "${FAIL_TAGS:-}" ] || exit 1; cat "$TAGS_JSON" ;;
 esac
 EOF
 printf '%s\n' '#!/usr/bin/env bash' 'echo "make $*" >> "$CALLS"' '[ -z "${FAIL_SMOKE:-}" ] || exit 1' > "$x/bin/make"
@@ -486,11 +571,19 @@ rolled_to() { grep -qF -- "gcloud run services update-traffic $1 --to-revisions=
 rollout_setup() {
   rm -rf "$x/rt"; mkdir -p "$x/rt"; : > "$x/calls"; : > "$x/summary"
   printf '%s\n' 'scoring scoring-00001-aaa' 'notify notify-00002-bbb' 'ingest ingest-00003-ccc' 'api api-00044-5lh' > "$x/rt/previous"
+  date +%s > "$x/rt/deploy-started"
 }
+SETC=() # NAME=seconds: the time constants rewritten in the extracted copy of the step (a case sets and clears it)
 rollout_go() { # [VAR=value]...
   rc=0
+  cp "$x/rollout.sh" "$x/rollout_use.sh"
+  local kv
+  for kv in ${SETC[@]+"${SETC[@]}"}; do
+    sed "s/^${kv%%=*}=.*/$kv/" "$x/rollout_use.sh" > "$x/rollout_use.new" && mv "$x/rollout_use.new" "$x/rollout_use.sh"
+    grep -qx -- "$kv" "$x/rollout_use.sh" || fail "the constant ${kv%%=*} is not assigned in the rollout step (the test is stale)"
+  done
   env PATH="$x/bin:$PATH" CALLS="$x/calls" RUNNER_TEMP="$x/rt" GITHUB_STEP_SUMMARY="$x/summary" REGION=europe-west1 PROJECT=ryftlab-prod "$@" \
-    bash --noprofile --norc -eo pipefail "$x/rollout.sh" > "$x/out" 2>&1 || rc=$?
+    bash --noprofile --norc -eo pipefail "$x/rollout_use.sh" > "$x/out" 2>&1 || rc=$?
 }
 run_rollout() { rollout_setup; rollout_go "$@"; }
 ALL4="api ingest notify scoring "
@@ -501,19 +594,20 @@ eq "(a) the order of the replaces" "$(replaces)" "scoring notify ingest api "
 eq "(a) no rollback" "$(rolled)" ""
 eq "(a) the smoke ran once" "$(smoked)" 1
 grep -qF -- '- api: api-00099-new' "$x/summary" || fail "(a) the summary lacks the new api revision: $(cat "$x/summary")"
-# (b) a good replace followed by a failed lookup: the step goes on (best effort), the smoke runs.
-run_rollout FAIL_DESCRIBE=1
-ex_ok "(b) a failed revision lookup with the smoke ok"
-eq "(b) the replaces" "$(replaces)" "scoring notify ingest api "
-eq "(b) the smoke ran" "$(smoked)" 1
-eq "(b) no rollback" "$(rolled)" ""
-grep -qF -- '- api: unknown' "$x/summary" || fail "(b) the summary lacks the unknown revision: $(cat "$x/summary")"
-run_rollout FAIL_DESCRIBE=1 FAIL_SMOKE=1
-ex_fail "(b) a failed revision lookup with the smoke failing"
-eq "(b) the smoke ran" "$(smoked)" 1
-eq "(b) all four rolled back, in order" "$(rolled)" "$ALL4"
-ex_out "(b) the reason" "make smoke-prod failed after the rollout"
-for s in api:api-00044-5lh ingest:ingest-00003-ccc notify:notify-00002-bbb scoring:scoring-00001-aaa; do rolled_to "${s%%:*}" "${s#*:}" "(b)"; done
+# (b) a good replace followed by a failed lookup of that service's new revision: the step fails into the EXIT handler. scoring and notify
+# (the failed one included: its traffic has moved) go back to their recorded revisions, ingest and api are never replaced, no smoke.
+run_rollout FAIL_DESCRIBE=notify
+ex_fail "(b) a failed revision lookup after a replace"
+eq "(b) the replaces (later ones never start)" "$(replaces)" "scoring notify "
+eq "(b) rolled back, in order" "$(rolled)" "notify scoring "
+eq "(b) no smoke" "$(smoked)" 0
+ex_out "(b) the reason" "the lookup of notify's new revision failed"
+rolled_to notify notify-00002-bbb "(b)"; rolled_to scoring scoring-00001-aaa "(b)"
+! grep -qE 'replace .*/(ingest|api)\.yaml' "$x/calls" || fail "(b) ingest or api was replaced: $(cat "$x/calls")"
+# A lookup that fails for another service than the one asked (the fake only fails notify's) changes nothing.
+run_rollout FAIL_DESCRIBE=nobody
+ex_ok "(b) a lookup failing for nobody"
+eq "(b) the replaces without a failing lookup" "$(replaces)" "scoring notify ingest api "
 # A failing smoke without a failing lookup rolls back all four too.
 run_rollout FAIL_SMOKE=1
 ex_fail "a failing smoke"
@@ -548,99 +642,320 @@ ex_out "an unexpected error is named" "unexpected error"
 run_rollout FAIL_SMOKE=1 GITHUB_STEP_SUMMARY="$x"
 ex_fail "an unwritable summary and a failing smoke"
 eq "an unwritable summary does not stop the rollback" "$(rolled)" "$ALL4"
+# (e) ingest's replace hangs: it is cut at REPLACE_S, and scoring, notify and ingest (its traffic may have moved) are restored; api never starts.
+SETC=(REPLACE_S=2)
+run_rollout SLOW_REPLACE=ingest
+SETC=()
+ex_fail "(e) a replace that hangs"
+eq "(e) the replaces issued (api never starts)" "$(replaces)" "scoring notify ingest "
+eq "(e) rolled back, in order" "$(rolled)" "ingest notify scoring "
+eq "(e) no smoke" "$(smoked)" 0
+ex_out "(e) the reason" "the replace of ingest failed"
+rolled_to ingest ingest-00003-ccc "(e)"; rolled_to notify notify-00002-bbb "(e)"; rolled_to scoring scoring-00001-aaa "(e)"
+# (f) a restore that hangs is cut at RESTORE_S; the others are still attempted, the step fails and names it.
+SETC=(RESTORE_S=2)
+run_rollout FAIL_SMOKE=1 SLOW_TRAFFIC=notify
+SETC=()
+ex_fail "(f) a restore that hangs"
+eq "(f) every restore attempted" "$(rolled)" "$ALL4"
+ex_out "(f) the hanging restore is named" "the rollback of notify to 'notify-00002-bbb' failed"
+ex_out "(f) the summary of the failures" "not rolled back: notify"
+# (g) the job's time is nearly spent before the rollout starts: nothing is replaced, nothing restored (nothing was touched), the step fails.
+rollout_setup; echo $(( $(date +%s) - 3500 )) > "$x/rt/deploy-started"; rollout_go
+ex_fail "(g) too little of the job's time left"
+eq "(g) no replace" "$(replaces)" ""
+eq "(g) no rollback" "$(rolled)" ""
+eq "(g) no smoke" "$(smoked)" 0
+ex_out "(g) the error" "not enough of the job's 60 minutes is left to roll out and still restore: nothing was rolled"
+rollout_setup; echo $(( $(date +%s) - 3000 )) > "$x/rt/deploy-started"; rollout_go
+ex_fail "(g) 540 s of reserve and under 300 s of forward time left"
+eq "(g) no replace at the edge" "$(replaces)" ""
+rollout_setup; echo $(( $(date +%s) - 1000 )) > "$x/rt/deploy-started"; rollout_go
+ex_ok "(g) plenty of the job's time left"
+eq "(g) the replaces" "$(replaces)" "scoring notify ingest api "
+# (h) the restore commands, printed before the first replace, in the log and in the summary.
+run_rollout
+ex_ok "(h) a good rollout"
+first_hand=$({ grep -n 'restore by hand' "$x/out" || true; } | head -n 1 | cut -d: -f1)
+first_replace=$({ grep -n '^replaced ' "$x/out" || true; } | head -n 1 | cut -d: -f1)
+{ [ -n "$first_hand" ] && [ -n "$first_replace" ] && [ "$first_hand" -lt "$first_replace" ]; } \
+  || fail "(h) the restore commands are not printed before the first replace (lines: hand '$first_hand', replace '$first_replace'): $(cat "$x/out")"
+for s in api:api-00044-5lh ingest:ingest-00003-ccc notify:notify-00002-bbb scoring:scoring-00001-aaa; do
+  cmd="gcloud run services update-traffic ${s%%:*} --to-revisions=${s#*:}=100 --region=europe-west1 --project=ryftlab-prod"
+  ex_out "(h) the log has the restore command of ${s%%:*}" "$cmd"
+  grep -qxF -- "$cmd" "$x/summary" || fail "(h) the summary lacks '$cmd': $(cat "$x/summary")"
+done
+grep -qF 'restore by hand (OPERATIONS.md' "$x/summary" || fail "(h) the summary lacks the sentence: $(cat "$x/summary")"
+# They are also printed when nothing is replaced (a budget that is spent), so a killed job always leaves them.
+rollout_setup; echo $(( $(date +%s) - 3500 )) > "$x/rt/deploy-started"; rollout_go
+ex_out "(h) the restore commands before the budget error" "gcloud run services update-traffic scoring --to-revisions=scoring-00001-aaa=100"
+# (i) deploy-started missing, or not a time: nothing is touched, the step fails.
+rollout_setup; rm -f "$x/rt/deploy-started"; rollout_go
+ex_fail "(i) deploy-started missing"
+eq "(i) no replace" "$(replaces)" ""
+eq "(i) no rollback" "$(rolled)" ""
+ex_out "(i) the error" "deploy-started is missing or not a time"
+rollout_setup; echo 'soon' > "$x/rt/deploy-started"; rollout_go
+ex_fail "(i) deploy-started that is no time"
+eq "(i) no replace after garbage" "$(replaces)" ""
 
 # The record step: the serving api revision's facts, the D285 floor and the selection by mode, in a throwaway git tree.
-printf '%s\n' '{"metadata":{"labels":{"serving.knative.dev/service":"api"}},"spec":{"containers":[{"name":"api","env":[{"name":"AUTH_MODE","value":"supabase"}]}]}}' > "$x/rev_old.json"
-printf '%s\n' '{"metadata":{"labels":{"serving.knative.dev/service":"api","ryft-meal-patch":"d285"}},"spec":{"containers":[{"name":"api","env":[{"name":"AUTH_MODE","value":"supabase"}]}]}}' > "$x/rev_d285.json"
-printf '%s\n' '{"metadata":{"labels":{"ryft-meal-patch":"d285"}},"spec":{"containers":[{"name":"api","env":[{"name":"SMOKE_OIDC_SA_ID","value":"1"}]}]}}' > "$x/rev_both.json"
-printf '%s\n' '{"metadata":{"labels":{"ryft-meal-patch":"d284"}},"spec":{"containers":[{"name":"api","env":[]}]}}' > "$x/rev_wrong.json"
-printf '%s\n' '{"metadata":{"labels":{}},"spec":{"containers":[{"name":"api","env":[{"name":"SMOKE_OIDC_SA_ID","value":"1"}]}]}}' > "$x/rev_d286only.json"
-printf '%s\n' '{"metadata":{"labels":{"ryft-meal-patch":"d285"}},"spec":{"containers":[{"name":"api","env":[{"name":"SMOKE_OIDC_SA_ID","value":""}]}]}}' > "$x/rev_d286empty.json"
+# The api revision is proven from its IMAGE: the revision JSON names an image by digest, the registry's tags of that digest name the
+# commits that built it (the fake gcloud answers `artifacts docker tags list` from $TAGS_JSON), and git says where those commits sit.
 printf '%s\n' '[]' > "$x/rev_bad.json"
+hex64() { printf '%64s' "$1" | tr ' ' 0; }
+DL="sha256:$(hex64 a1)"; DP="sha256:$(hex64 a2)"; DN="sha256:$(hex64 a3)"   # the images of L, P and N
+env_item() { printf '{"name":"%s","value":"%s"}' "$1" "$2"; }
+S_EMAIL=$(env_item SMOKE_OIDC_SA_EMAIL smoke@example.invalid); S_ID=$(env_item SMOKE_OIDC_SA_ID 1)
+S_AUD=$(env_item SMOKE_OIDC_AUDIENCE aud); S_USER=$(env_item SMOKE_USER_ID u)
+ENV_FULL="[$S_EMAIL,$S_ID,$S_AUD,$S_USER]"
+ENV_NONE='[{"name":"AUTH_MODE","value":"supabase"}]'
+ENV_EMPTY_ID="[$S_EMAIL,$(env_item SMOKE_OIDC_SA_ID ''),$S_AUD,$S_USER]"
+ENV_SECRET="[$S_EMAIL,$S_ID,$S_AUD,{\"name\":\"SMOKE_USER_ID\",\"valueFrom\":{\"secretKeyRef\":{\"name\":\"smoke-user\",\"key\":\"1\"}}}]"
+ENV_THREE="[$S_EMAIL,$S_ID,$S_AUD]"
+mkrev() { # <file> <label: yes|no|other> <env json> <image: a digest, "tag" or "none"> [status.imageDigest]
+  python3 -I -c '
+import json, sys
+f, label, env, image = sys.argv[1:5]
+status = sys.argv[5] if len(sys.argv) > 5 else ""
+repo = "europe-west1-docker.pkg.dev/ryftlab-prod/ryft/api"
+labels = {"serving.knative.dev/service": "api"}
+if label == "yes":
+    labels["ryft-meal-patch"] = "d285"
+elif label == "other":
+    labels["ryft-meal-patch"] = "d284"
+c = {"name": "api", "env": json.loads(env)}
+if image == "tag":
+    c["image"] = repo + ":abc1234"
+elif image != "none":
+    c["image"] = repo + "@" + image
+json.dump({"metadata": {"labels": labels}, "spec": {"containers": [c]}, "status": {"imageDigest": repo + "@" + status} if status else {}}, open(f, "w"))
+' "$@"
+}
+mktags() { # <file> <digest> <tag>...: those tags on that digest, and N's tag as a decoy on another image
+  python3 -I -c '
+import json, sys
+f, digest, decoy, tags = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
+base = "projects/ryftlab-prod/locations/europe-west1/repositories/ryft/packages/api"
+out = [{"name": base + "/tags/" + t, "tag": base + "/tags/" + t, "version": base + "/versions/" + digest} for t in tags]
+out.append({"name": base + "/tags/" + decoy, "tag": base + "/tags/" + decoy, "version": base + "/versions/sha256:" + "f" * 64})
+json.dump(out, open(f, "w"))
+' "$1" "$2" "${N_SHA:0:7}" "${@:3}"
+}
+api_is() { # <label> <env json> <image digest|tag|none> [tag]...: the serving api revision ($x/rev.json) and its tags ($x/tags.json)
+  mkrev "$x/rev.json" "$1" "$2" "$3"
+  mktags "$x/tags.json" "$3" "${@:4}"
+}
 treedir="$x/tree"
-tree() { # [path]...: a fresh git repository: an innocent file and each path naming the meal portion label column
+gitc() { env GIT_AUTHOR_DATE=2026-01-01T00:00:00Z GIT_COMMITTER_DATE=2026-01-01T00:00:00Z git -C "$x/tree" -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.name=t -c user.email=t@example.invalid "$@"; }
+L_SHA=; P_SHA=; N_SHA=; S_SHA=
+tree() { # [path]...: a fresh git repository of three commits, L (the legacy one), P (L's child: D285's) and N (P's child: a D286 commit, HEAD),
+  # and S, a root commit of another history; then an innocent file and each path naming the meal portion label column (tracked, not committed)
   rm -rf "$x/tree"; mkdir -p "$x/tree/backend"
+  git -C "$x/tree" init -q
   echo 'package main' > "$x/tree/backend/main.go"
+  local l
+  gitc add -A && gitc commit -q -m L; l=$(gitc rev-parse HEAD)
+  echo d285 > "$x/tree/backend/d285.txt"; gitc add -A && gitc commit -q -m P; P_SHA=$(gitc rev-parse HEAD)
+  echo d286 > "$x/tree/backend/d286.txt"; gitc add -A && gitc commit -q -m N; N_SHA=$(gitc rev-parse HEAD)
+  S_SHA=$(gitc commit-tree "$(gitc mktree < /dev/null)" -m side)
+  [ -z "$L_SHA" ] || [ "$L_SHA" = "$l" ] || fail "the fixture commits are not reproducible: L was $L_SHA, is $l"
+  L_SHA=$l
   local p
   for p in "$@"; do mkdir -p "$x/tree/$(dirname "$p")"; echo 'INSERT INTO meal_items (portion_label_snapshot) VALUES ($1)' > "$x/tree/$p"; done
-  git -C "$x/tree" init -q && git -C "$x/tree" add -A
+  gitc add -A
 }
 run_record() { # <revision json> [VAR=value]...: the record step in $treedir, a push by default
   local rev=$1; shift
   rm -rf "$x/rt"; mkdir -p "$x/rt"; : > "$x/calls"; : > "$x/summary"; : > "$x/gout"
   rc=0
   ( cd "$treedir" && env PATH="$x/bin:$PATH" CALLS="$x/calls" RUNNER_TEMP="$x/rt" GITHUB_STEP_SUMMARY="$x/summary" GITHUB_OUTPUT="$x/gout" \
-      REGION=europe-west1 PROJECT=ryftlab-prod EVENT=push MIGRATE_ONLY=false REV_JSON="$rev" GIT_CEILING_DIRECTORIES="$tmp" "$@" \
+      REGION=europe-west1 PROJECT=ryftlab-prod REGISTRY=europe-west1-docker.pkg.dev/ryftlab-prod/ryft D285_COMMIT="$P_SHA" TAGS_JSON="$x/tags.json" \
+      EVENT=push MIGRATE_ONLY=false REV_JSON="$rev" GIT_CEILING_DIRECTORIES="$tmp" "$@" \
       bash --noprofile --norc -eo pipefail "$x/record.sh" ) > "$x/out" 2>&1 || rc=$?
 }
 outputs() { tr '\n' ' ' < "$x/gout"; }
 NOWRITER=(backend/internal/store/meals_test.go backend/internal/db/migrations/0053_portion_labels.sql backend/internal/db/migrations/0054_validate_portion_labels.sql)
 BOOTSTRAP_ERR="the D286 bootstrap is pending: dispatch with migrate_only, bind the smoke account (scripts/sql/bind_smoke_account.sql), then dispatch"
 D285_ERR="D285 requires a D285 api serving first"
-# The facts of the serving revision, a push with the D286 sign-in and the label: it goes on, whatever the tree writes.
-tree "${NOWRITER[@]}" backend/internal/store/meals.go
-run_record "$x/rev_both.json"
-ex_ok "a labelled api with the D286 sign-in on a push"
-eq "the facts of a labelled D286 api" "$(outputs)" "d286=yes d285=yes "
-# The route turned off (SMOKE_OIDC_SA_ID emptied in the templates) is no D286 api: the bootstrap stays reachable.
-run_record "$x/rev_d286empty.json" EVENT=workflow_dispatch
-ex_ok "an emptied SMOKE_OIDC_SA_ID on a dispatch"
-eq "an emptied SMOKE_OIDC_SA_ID is not the D286 sign-in" "$(outputs)" "d286=no d285=yes "
-run_record "$x/rev_both.json" EVENT=workflow_dispatch MIGRATE_ONLY=true
-ex_ok "a labelled api under migrate_only, whatever the tree writes"
-ex_out "migrate_only is announced" "migrate_only: only the migrations are applied"
-eq "no write: the record step is read only" "$(grep -cE 'replace|update-traffic|run jobs|run deploy' "$x/calls" || true)" 0
-# A tree that names the labels only in tests and in the two migrations that add the columns is no writer.
-tree "${NOWRITER[@]}"
-run_record "$x/rev_old.json"
-ex_fail "a push with an api that predates D286"
-ex_out "the push-run refusal" "$BOOTSTRAP_ERR"
-eq "the facts of an old api" "$(outputs)" "d286=no d285=no "
-run_record "$x/rev_old.json" EVENT=workflow_dispatch
-ex_ok "the bootstrap dispatch against an api that predates D286 (no writer in the tree)"
-eq "the facts for the bootstrap" "$(outputs)" "d286=no d285=no "
-ex_no_out "the bootstrap dispatch is no migrate_only" "migrate_only"
-run_record "$x/rev_old.json" EVENT=workflow_dispatch MIGRATE_ONLY=true
-ex_ok "migrate_only against an api that predates D286 (no writer in the tree)"
-ex_out "migrate_only is announced" "migrate_only: only the migrations are applied"
-ex_no_out "migrate_only is no refusal" "bootstrap is pending"
-run_record "$x/rev_d286only.json"
-ex_ok "a push with the D286 sign-in and no label (no writer in the tree)"
-eq "the facts of a D286 api without the label" "$(outputs)" "d286=yes d285=no "
-run_record "$x/rev_wrong.json" EVENT=workflow_dispatch
-ex_ok "a label of another value counts as none, no writer in the tree"
-eq "the facts of a wrong label" "$(outputs)" "d286=no d285=no "
-# The D285 floor: no label and a writer in backend/ stops every mode before migrate, naming the way out.
-for w in backend/internal/store/meals.go backend/internal/db/migrations/0055_backfill_portion_labels.sql; do
-  tree "${NOWRITER[@]}" "$w"
+DRIFT_ERR="config drift, never a bootstrap"
+PROOF_ERR="the proof is the label plus an image built from a commit containing"
+record_modes() { # <name> <expectation: ok|fail> <outputs after, or "" when none>: the same revision on a push, a dispatch and a migrate_only dispatch
+  local mode ev mo
   for mode in "push false" "workflow_dispatch false" "workflow_dispatch true"; do
     read -r ev mo <<<"$mode"
-    run_record "$x/rev_old.json" EVENT="$ev" MIGRATE_ONLY="$mo"
+    run_record "$x/rev.json" EVENT="$ev" MIGRATE_ONLY="$mo"
+    if [ "$2" = ok ]; then ex_ok "$1 ($ev, migrate_only $mo)"; else ex_fail "$1 ($ev, migrate_only $mo)"; fi
+    eq "$1: the outputs ($ev, migrate_only $mo)" "$(outputs)" "$3"
+  done
+}
+# --- D286: complete settings, or none at all on an image that predates it, or config drift (an error in every mode, nothing changed).
+tree "${NOWRITER[@]}" backend/internal/store/meals.go
+P_SHA7=${P_SHA:0:7}; N_SHA7=${N_SHA:0:7}; L_SHA7=${L_SHA:0:7}
+# A labelled api whose image is N's, with the four settings complete: it goes on in every mode, whatever the tree writes.
+api_is yes "$ENV_FULL" "$DN" "$N_SHA7"
+run_record "$x/rev.json"
+ex_ok "a labelled D286 api (image N) on a push"
+eq "the facts of a labelled D286 api" "$(outputs)" "d286=yes d285=yes "
+ex_out "the summary names the image's commit" "$N_SHA7"
+grep -qF "image $DN (commit(s) $N_SHA7)" "$x/summary" || fail "the summary lacks the image and its commit: $(cat "$x/summary")"
+run_record "$x/rev.json" EVENT=workflow_dispatch MIGRATE_ONLY=true
+ex_ok "a labelled D286 api under migrate_only, whatever the tree writes"
+ex_out "migrate_only is announced" "migrate_only: only the migrations are applied"
+eq "no write: the record step is read only" "$(grep -cE 'replace|update-traffic|run jobs|run deploy' "$x/calls" || true)" 0
+# Config drift: an image that is not legacy and settings that are missing, empty, partial or secret-backed. Never a bootstrap.
+for drift in "none|$ENV_NONE|SMOKE_OIDC_SA_EMAIL missing, SMOKE_OIDC_SA_ID missing, SMOKE_OIDC_AUDIENCE missing, SMOKE_USER_ID missing" \
+             "empty|$ENV_EMPTY_ID|SMOKE_OIDC_SA_ID empty" "secret|$ENV_SECRET|SMOKE_USER_ID secret-backed" "three|$ENV_THREE|SMOKE_USER_ID missing"; do
+  IFS='|' read -r name env_json detail <<<"$drift"
+  api_is no "$env_json" "$DN" "$N_SHA7"
+  record_modes "a D286 image with settings ($name)" fail ""
+  ex_out "the drift error ($name)" "$DRIFT_ERR"
+  ex_out "the drift error names the image and its commit ($name)" "(image $DN, commit(s) $N_SHA7)"
+  ex_out "the drift error names what is wrong ($name)" "($detail)"
+  ex_out "the drift error says nothing was changed ($name)" "Nothing was changed."
+  ex_no_out "no bootstrap pending for drift ($name)" "bootstrap is pending"
+done
+# A legacy image (tag to L, or to P: the D285 commit predates D286 too) with none of the settings is the bootstrap: reachable on a dispatch.
+tree "${NOWRITER[@]}"
+for image in "$DL|$L_SHA7|no|d286=no d285=no " "$DP|$P_SHA7|yes|d286=no d285=yes "; do
+  IFS='|' read -r img tag label want <<<"$image"
+  api_is "$label" "$ENV_NONE" "$img" "$tag"
+  run_record "$x/rev.json"
+  ex_fail "a push with an api that predates D286 (image $tag)"
+  ex_out "the push-run refusal ($tag)" "$BOOTSTRAP_ERR"
+  eq "the facts of an old api ($tag)" "$(outputs)" "$want"
+  run_record "$x/rev.json" EVENT=workflow_dispatch
+  ex_ok "the bootstrap dispatch against an api that predates D286 (image $tag, no writer in the tree)"
+  eq "the facts for the bootstrap ($tag)" "$(outputs)" "$want"
+  ex_no_out "the bootstrap dispatch is no migrate_only" "migrate_only"
+  ex_no_out "no drift for a legacy image ($tag)" "$DRIFT_ERR"
+  run_record "$x/rev.json" EVENT=workflow_dispatch MIGRATE_ONLY=true
+  ex_ok "migrate_only against an api that predates D286 (image $tag, no writer in the tree)"
+  ex_out "migrate_only is announced" "migrate_only: only the migrations are applied"
+  ex_no_out "migrate_only is no refusal" "bootstrap is pending"
+done
+# Even a legacy image with settings that are half there is drift (an emptied SMOKE_OIDC_SA_ID is no bootstrap, no D286 either).
+api_is no "$ENV_EMPTY_ID" "$DL" "$L_SHA7"
+record_modes "a legacy image with an emptied SMOKE_OIDC_SA_ID" fail ""
+ex_out "the emptied SMOKE_OIDC_SA_ID is drift" "$DRIFT_ERR"
+# D286 settings complete on a push, no label: d285 is no (no writer in the tree: it goes on).
+api_is no "$ENV_FULL" "$DN" "$N_SHA7"
+run_record "$x/rev.json"
+ex_ok "a push with the D286 sign-in and no label (no writer in the tree)"
+eq "the facts of a D286 api without the label" "$(outputs)" "d286=yes d285=no "
+# A label of another value counts as none.
+api_is other "$ENV_NONE" "$DL" "$L_SHA7"
+run_record "$x/rev.json" EVENT=workflow_dispatch
+ex_ok "a label of another value counts as none, no writer in the tree"
+eq "the facts of a wrong label" "$(outputs)" "d286=no d285=no "
+# --- no proof from the image: nothing the registry or git says counts (no commit, not this history, no digest, no tags).
+# A tag that is no commit of this history (a root commit of another one, a hex string that is no object, the decoy of another image).
+S_SHA7=${S_SHA:0:7}
+for tags in "$S_SHA7" "abcdef1" "$S_SHA7 abcdef1" ""; do
+  # shellcheck disable=SC2086  # the tags are words
+  api_is yes "$ENV_NONE" "$DL" $tags
+  record_modes "an image whose tags are no commit of this history (${tags:-no tag})" fail ""
+  ex_out "no proof from tags outside this history (${tags:-no tag})" "commit(s) none proven"
+done
+api_is yes "$ENV_FULL" "$DL" "$S_SHA7"
+run_record "$x/rev.json" EVENT=workflow_dispatch
+ex_ok "complete settings need no image proof"
+eq "the label alone is no D285 proof (tag outside this history)" "$(outputs)" "d286=yes d285=no "
+# An image by tag, not by digest: no digest, no proof, and the label alone is no D285.
+mkrev "$x/rev.json" yes "$ENV_NONE" tag; mktags "$x/tags.json" tag "$L_SHA7"
+record_modes "an image by tag with no settings" fail ""
+ex_out "an image by tag is named" "image none, commit(s) none proven"
+ex_out "the missing digest is a warning" "::warning title=deploy::"
+mkrev "$x/rev.json" yes "$ENV_FULL" tag; mktags "$x/tags.json" tag "$L_SHA7"
+run_record "$x/rev.json"
+ex_ok "an image by tag with complete settings"
+eq "the label alone is no D285 proof (image by tag)" "$(outputs)" "d286=yes d285=no "
+# status.imageDigest stands in for a container image that is no digest; an image of another registry is none.
+mkrev "$x/rev.json" yes "$ENV_FULL" tag "$DN"; mktags "$x/tags.json" "$DN" "$N_SHA7"
+run_record "$x/rev.json"
+ex_ok "the digest from status.imageDigest"
+eq "status.imageDigest proves the image" "$(outputs)" "d286=yes d285=yes "
+api_is yes "$ENV_FULL" "$DN" "$N_SHA7"
+sed 's#europe-west1-docker.pkg.dev/ryftlab-prod/ryft/api@#europe-west1-docker.pkg.dev/other/ryft/api@#' "$x/rev.json" > "$x/rev.other"
+run_record "$x/rev.other"
+ex_ok "an image of another registry"
+eq "an image of another registry proves nothing" "$(outputs)" "d286=yes d285=no "
+# D285: the label AND an image of a commit that contains D285_COMMIT. The label alone can outlive the image.
+api_is yes "$ENV_NONE" "$DL" "$L_SHA7"
+run_record "$x/rev.json" EVENT=workflow_dispatch
+ex_ok "the label with an image that predates D285 (no writer in the tree)"
+eq "the label outlived the image: d285 is no" "$(outputs)" "d286=no d285=no "
+api_is yes "$ENV_FULL" "$DN" "$N_SHA7"
+run_record "$x/rev.json" FAIL_TAGS=1
+ex_ok "a tag lookup that fails (no writer in the tree)"
+eq "the label with no tag lookup is no D285 proof" "$(outputs)" "d286=yes d285=no "
+ex_out "a failed tag lookup is a warning" "::warning title=deploy::the tags of europe-west1-docker.pkg.dev/ryftlab-prod/ryft/api cannot be listed"
+api_is yes "$ENV_FULL" "$DN" "$N_SHA7"; printf '%s\n' '{"not":"a list"}' > "$x/tags.json"
+run_record "$x/rev.json"
+ex_ok "a tag list that is no list (no writer in the tree)"
+eq "an unreadable tag list is no proof" "$(outputs)" "d286=yes d285=no "
+ex_out "an unreadable tag list is a warning" "::warning title=deploy::the tag list of"
+api_is no "$ENV_NONE" "$DL" "$L_SHA7"
+run_record "$x/rev.json" EVENT=workflow_dispatch FAIL_TAGS=1
+ex_fail "a legacy api whose tags cannot be listed is not proven legacy"
+ex_out "that is drift" "$DRIFT_ERR"
+# The D285 floor: no proof of D285 and a writer in backend/ stops every mode before migrate, naming the way out and the proof.
+for w in backend/internal/store/meals.go backend/internal/db/migrations/0055_backfill_portion_labels.sql; do
+  tree "${NOWRITER[@]}" "$w"
+  api_is no "$ENV_NONE" "$DL" "$L_SHA7"
+  for mode in "push false" "workflow_dispatch false" "workflow_dispatch true"; do
+    read -r ev mo <<<"$mode"
+    run_record "$x/rev.json" EVENT="$ev" MIGRATE_ONLY="$mo"
     ex_fail "the floor: $w, $ev, migrate_only $mo"
     ex_out "the floor names the way out ($w, $ev, migrate_only $mo)" "$D285_ERR"
+    ex_out "the floor names the proof ($w, $ev, migrate_only $mo)" "$PROOF_ERR $P_SHA"
+    ex_out "the floor names the image's commits ($w, $ev, migrate_only $mo)" "commit(s) $L_SHA7;"
     ex_out "the floor names the writer ($w)" "$w"
   done
-  run_record "$x/rev_d286only.json"
+  # The label outlived the image: the writer deploy is refused.
+  api_is yes "$ENV_NONE" "$DL" "$L_SHA7"
+  run_record "$x/rev.json" EVENT=workflow_dispatch
+  ex_fail "the floor: $w against a label that outlived its image"
+  ex_out "the floor ($w, label and a legacy image)" "$D285_ERR"
+  # A label and a tag lookup that fails: no proof either (the image is N's, settings complete).
+  api_is yes "$ENV_FULL" "$DN" "$N_SHA7"
+  run_record "$x/rev.json" FAIL_TAGS=1
+  ex_fail "the floor: $w against a label and a tag lookup that fails"
+  ex_out "the floor ($w, no tag lookup)" "commit(s) none proven"
+  api_is no "$ENV_FULL" "$DN" "$N_SHA7"
+  run_record "$x/rev.json"
   ex_fail "the floor: $w against an api with the D286 sign-in but no label"
   ex_out "the floor ($w, d286 yes)" "$D285_ERR"
-  run_record "$x/rev_wrong.json" EVENT=workflow_dispatch
+  api_is other "$ENV_NONE" "$DL" "$L_SHA7"
+  run_record "$x/rev.json" EVENT=workflow_dispatch
   ex_fail "the floor: $w against a label of another value"
-  run_record "$x/rev_d285.json" EVENT=workflow_dispatch
-  ex_ok "the labelled api passes the floor: $w"
-  eq "the facts of a labelled api" "$(outputs)" "d286=no d285=yes "
+  # The label and an image of D285 (P) or newer (N): the proof, the writer is fine.
+  api_is yes "$ENV_NONE" "$DP" "$P_SHA7"
+  run_record "$x/rev.json" EVENT=workflow_dispatch
+  ex_ok "the labelled D285 api (image P) passes the floor: $w"
+  eq "the facts of a labelled api (image P)" "$(outputs)" "d286=no d285=yes "
+  api_is yes "$ENV_FULL" "$DN" "$N_SHA7"
+  run_record "$x/rev.json"
+  ex_ok "the labelled D286 api (image N) passes the floor: $w"
+  eq "the facts of a labelled api (image N)" "$(outputs)" "d286=yes d285=yes "
 done
-# Fail closed: a tree git cannot search (a .git that points nowhere: git grep exits 128) counts as a writer, while the label is missing.
+# Fail closed: a tree git cannot search (a .git that points nowhere: git grep exits 128) counts as a writer, while D285 is not proven. Git cannot
+# resolve a commit there either, so no image is proven: complete settings are what lets the run reach the floor.
 echo 'gitdir: /nonexistent/ryft-test' > "$x/nogit/.git"
 treedir="$x/nogit"
-run_record "$x/rev_old.json" EVENT=workflow_dispatch
+api_is no "$ENV_FULL" "$DN" "$N_SHA7"
+run_record "$x/rev.json" EVENT=workflow_dispatch
 ex_fail "the floor in a tree git cannot search"
 ex_out "the floor fails closed" "counts as a writer"
-run_record "$x/rev_d285.json" EVENT=workflow_dispatch
-ex_ok "a labelled api needs no search"
+api_is yes "$ENV_FULL" "$DN" "$N_SHA7"
+run_record "$x/rev.json" EVENT=workflow_dispatch
+ex_fail "a label alone in a tree git cannot search (no image is proven)"
+ex_out "the label alone fails closed" "counts as a writer"
 treedir="$x/tree"
 # A revision that cannot be described or read stops the run with nothing migrated and no output.
 tree "${NOWRITER[@]}"
-run_record "$x/rev_old.json" EVENT=workflow_dispatch FAIL_REVDESC=1
+api_is no "$ENV_NONE" "$DL" "$L_SHA7"
+run_record "$x/rev.json" EVENT=workflow_dispatch FAIL_REVDESC=1
 ex_fail "a revision that cannot be described"
 ex_out "the describe failure" "cannot describe the serving api revision api-00044-5lh"
 eq "no output after a failed describe" "$(outputs)" ""
@@ -657,6 +972,8 @@ import re, sys
 expr, event, d286, mo = sys.argv[1:5]
 e = expr.replace("steps.tip.outputs.current", repr("true")).replace("steps.record.outputs.d286", repr(d286))
 e = e.replace("github.event_name", repr(event)).replace("inputs.migrate_only", mo)
+# a job `if`: the switches on, the wait found main at this commit
+e = e.replace("vars.GCP_DEPLOY", repr("on")).replace("vars.SITE_DEPLOY", repr("on")).replace("needs.ci.outputs.current", repr("true"))
 e = re.sub(r"!(?!=)", " not ", e.replace("&&", " and ").replace("||", " or "))
 print("run" if eval(e, {"__builtins__": {}}) else "skip")
 ' "$@"
@@ -671,9 +988,19 @@ mode_row workflow_dispatch yes False "run skip run run"
 mode_row workflow_dispatch yes True "skip skip run skip"
 mode_row workflow_dispatch no False "skip run run run"
 mode_row workflow_dispatch no True "skip skip run skip"
+# The site jobs, evaluated the same way (GCP_DEPLOY and SITE_DEPLOY on, the wait found main current): a migrate_only dispatch
+# publishes nothing; a push (the input is null there) and a plain dispatch build and deploy the site.
+job_if_of() { yq -r ".jobs.\"$1\".if" "$DEPLOY"; }
+site_row() { # <event> <migrate_only as Python> <site-build site>
+  eq "the site jobs on $1, migrate_only $2 (site-build site)" \
+    "$(runs_if "$(job_if_of site-build)" "$1" yes "$2") $(runs_if "$(job_if_of site)" "$1" yes "$2")" "$3"
+}
+site_row push None "run run"
+site_row workflow_dispatch False "run run"
+site_row workflow_dispatch True "skip skip"
 
 # --- the site (C1): site-off, site-build, site.
-SITE_IF="    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true'"
+SITE_IF="    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true' && !inputs.migrate_only"
 SITE_STEP_IF="        if: steps.tip.outputs.current == 'true' && steps.live.outputs.deploy == 'true'"
 # The tokens: site-off none, site-build contents: read only, site contents: read and id-token: write.
 job_swap "site-off with a token" "has no token" site-off "    permissions: {}" "    permissions:\n      contents: read"
@@ -688,7 +1015,14 @@ job_swap "site-build without ci" "site-build job must need" site-build "    need
 job_swap "the site ignoring the superseded wait" "top-level conjunct needs.ci.outputs.current" site "$SITE_IF" "    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on'"
 job_swap "the site with the superseded wait negated" "top-level conjunct needs.ci.outputs.current" site "$SITE_IF" "    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && !(needs.ci.outputs.current == 'true')"
 job_swap "site-build ignoring the superseded wait" "top-level conjunct needs.ci.outputs.current" site-build "$SITE_IF" "    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on'"
-job_swap "the site's conjuncts in another order" "" site "$SITE_IF" "    if: vars.GCP_DEPLOY == 'on' && needs.ci.outputs.current == 'true' && vars.SITE_DEPLOY == 'on'"
+job_swap "the site's conjuncts in another order" "" site "$SITE_IF" "    if: vars.GCP_DEPLOY == 'on' && !inputs.migrate_only && needs.ci.outputs.current == 'true' && vars.SITE_DEPLOY == 'on'"
+# A migrate_only dispatch applies the migrations only: neither site job runs (a conjunct of each, evaluated below).
+job_swap "the site without !inputs.migrate_only" "top-level conjunct !inputs.migrate_only" site "$SITE_IF" \
+  "    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true'"
+job_swap "site-build without !inputs.migrate_only" "top-level conjunct !inputs.migrate_only" site-build "$SITE_IF" \
+  "    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true'"
+job_swap "the site with migrate_only inside an ||" "top-level conjunct !inputs.migrate_only" site "$SITE_IF" \
+  "    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true' && (inputs.migrate_only || !inputs.migrate_only)"
 job_swap "the site without its switch" "vars.SITE_DEPLOY == 'on'" site "$SITE_IF" "    if: vars.GCP_DEPLOY == 'on' && needs.ci.outputs.current == 'true'"
 job_swap "the site's gate behind an ||" "must start with vars.GCP_DEPLOY" site "$SITE_IF" "    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true' || github.event_name == 'workflow_dispatch'"
 job_swap "site-off without the gate" "must start with vars.GCP_DEPLOY" site-off "    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY != 'on'" "    if: vars.SITE_DEPLOY != 'on'"
@@ -996,4 +1330,4 @@ if [ "$failures" -gt 0 ]; then
   echo "✗ check_workflows_test: $failures case(s) failed" >&2
   exit 1
 fi
-echo "✓ check_workflows_test: parsed, not grepped: triggers, the environment only in deploy.yml's deploy and site, the old App key nowhere, deploy.yml's gate, status functions, continue-on-error, triggers, tokens, concurrency, the superseded and tip gates, scan before sign-in, no secret (secrets.*, SUPABASE_ANON_KEY, SMOKE_EMAIL, SMOKE_PASSWORD, SMOKE_TOKEN) in the smoke steps (D286), the migrate_only input (no auth_preflight, no smoke) and the exact gates of the record step, the preflight, the bootstrap, migrate and the rollout (the smoke of a rollout is in its step and no input skips it; it mints afresh, touches each service before its replace and rolls back in one EXIT trap), the serving revisions and the serving api's facts recorded before migrate (the D285 floor, fail closed; the selection by mode), the rollout and the record step executed (rollbacks, floor, outputs), no third-party action or docker.sock, the site built without a token and deployed and checked only from main's tip (switch, actions by SHA, no cache, nothing signs in up to tip), ci-ok only in ci.yml, no external reusable workflows, no secrets: inherit or dynamic secrets, no test hooks"
+echo "✓ check_workflows_test: parsed, not grepped: triggers, the environment only in deploy.yml's deploy and site, the old App key nowhere, deploy.yml's gate, status functions, continue-on-error, triggers, tokens, concurrency, the superseded and tip gates, scan before sign-in, no secret (secrets.*, SUPABASE_ANON_KEY, SMOKE_EMAIL, SMOKE_PASSWORD, SMOKE_TOKEN) in the smoke steps (D286), the migrate_only input (no auth_preflight, no smoke) and the exact gates of the record step, the preflight, the bootstrap, migrate and the rollout (the smoke of a rollout is in its step and no input skips it; it mints afresh, touches each service before its replace and rolls back in one EXIT trap), the serving revisions and the serving api's facts recorded before migrate (the D285 floor, fail closed; the selection by mode), the rollout and the record step executed (rollbacks, hung calls cut by their bounds, the job's time budget, the restore commands printed first, the serving api proven from its image: D286 settings, drift, the D285 floor, outputs), the site jobs off under migrate_only, no third-party action or docker.sock, the site built without a token and deployed and checked only from main's tip (switch, actions by SHA, no cache, nothing signs in up to tip), ci-ok only in ci.yml, no external reusable workflows, no secrets: inherit or dynamic secrets, no test hooks"

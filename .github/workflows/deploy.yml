@@ -41,10 +41,12 @@
 # workflow does nothing. DEPLOY_HOLD_SERVICES (a repository variable, the reason) holds the services:
 # nothing is built or deployed and the run ends green with a notice (D175's hold, now a variable).
 # Rollback: a failed rollout or post-rollout smoke rolls back by itself, from the revisions recorded before
-# the rollout (the step summary lists them). By hand: `gcloud run services update-traffic <svc>
+# the rollout (the step summary lists them, and prints the commands to restore by hand before anything
+# moves). Every forward call of the rollout is bounded by the job's own timeout minus the time of the restores. By hand: `gcloud run services update-traffic <svc>
 # --to-revisions=<previous>=100` (the next deploy sends all traffic to its own revision again); a revert
 # of the merge redeploys the old code. The
 # site: Firebase console -> Hosting -> Release history -> Roll back, or SITE_DEPLOY off and a revert.
+# A migrate_only dispatch publishes nothing: the site jobs have `!inputs.migrate_only` in their `if`.
 # docs/OPERATIONS.md → GCP holds the steps. scripts/check_workflows.sh pins the shape of this file: no
 # status function (always(), failure(), ...) in any `if` and no continue-on-error, so a failed step
 # stops everything after it; checkout is the deploy job's only action; nothing signs in or pushes
@@ -197,13 +199,18 @@ jobs:
       # The Trivy image of ci.yml, by digest.
       TRIVY: aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222
     steps:
+      # The whole history: the record step finds out which commit built the serving api's image (ancestry).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       # Before anything is built: config.env is filled in (the config PR of runbook step 8 merged) and
-      # every template renders; a FILL_ME_IN left stops the run here. The digests are fakes.
+      # every template renders; a FILL_ME_IN left stops the run here. The digests are fakes. It also writes
+      # the job's start (a file, not $GITHUB_ENV): the rollout step budgets its calls against the job's
+      # timeout-minutes and keeps the time its restores need.
       - name: config.env has no placeholder left and deploy/run renders
         run: |
+          date +%s > "$RUNNER_TEMP/deploy-started"
           printf -v z '%064d' 0
           args=()
           for s in api ingest scoring notify migrate; do args+=("--digest=$s=sha256:$z"); done
@@ -342,11 +349,19 @@ jobs:
       # a failed rollout or smoke. Exactly one entry at 100% with a revision name of the service, else the
       # run stops here (a split or a tag-only state is not something to roll back to blindly). Read only.
       # Then the serving api revision itself (`gcloud run revisions describe`, parsed with python3 -I), two
-      # facts, both step outputs: `d286` (yes when a container's env has a non-empty SMOKE_OIDC_SA_ID: the api verifies
-      # the smoke account's Google ID token, D286) and `d285` (yes when the revision carries the label
-      # ryft-meal-patch=d285, set by deploy/run/api.yaml: a meal PATCH that copies stored item rows, D285).
-      # A revision that cannot be described stops the run with nothing migrated. Then:
-      #  - The D285 floor, in every mode: an api without the label erases the meal portion labels on a
+      # facts, both step outputs, proven from its IMAGE and not from labels alone: every image is pushed as
+      # $REGISTRY/<svc>:<short sha> of the commit that built it, so the tags of the revision's image digest
+      # (`gcloud artifacts docker tags list`) name its commits, kept when they are in this history.
+      # D285_COMMIT is #249, D285's compatibility change and main's last commit before D286. `d285` is yes when
+      # the revision carries the label ryft-meal-patch=d285 (deploy/run/api.yaml: a meal PATCH that copies stored
+      # item rows) AND an image commit contains D285_COMMIT (the label alone can outlive the image). `d286` is yes
+      # when the api container's env has all four of SMOKE_OIDC_SA_EMAIL, SMOKE_OIDC_SA_ID, SMOKE_OIDC_AUDIENCE and
+      # SMOKE_USER_ID as literal non-empty values (the api verifies the smoke account's Google ID token, D286), no
+      # when it has none of them AND an image commit is D285_COMMIT or older (it predates D286: the bootstrap),
+      # and anything else is config drift: an error in every mode, nothing changed. A tag lookup that fails or
+      # cannot be read proves nothing (a warning). A revision that cannot be described stops the run with nothing
+      # migrated. Then:
+      #  - The D285 floor, in every mode: an api not proven D285 erases the meal portion labels on a
       #    PATCH (it deletes and reinserts the items), so while it serves, and is the rollback target, this
       #    commit may not write those labels. `git grep` finds the files of backend/ (tests and the two
       #    migrations that add the columns aside) that name them; a git grep that fails counts as a writer
@@ -360,10 +375,14 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           MIGRATE_ONLY: ${{ inputs.migrate_only && 'true' || 'false' }}
+          # #249, D285's compatibility change and main's last commit before #250 (D286): an api image built from it
+          # or from a descendant is D285; one built from it or from an ancestor predates D286.
+          D285_COMMIT: 4bca49de1b140dafc3609484a514617a7c6fbe02
         run: |
+          [[ $D285_COMMIT =~ ^[0-9a-f]{40}$ ]] || { echo "::error title=deploy::D285_COMMIT is not a commit id: nothing is migrated or rolled"; exit 1; }
           : > "$RUNNER_TEMP/previous"
           for s in scoring notify ingest api; do
-            json=$(gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format=json) ||
+            json=$(timeout -k 10 60 gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format=json) ||
               { echo "::error title=deploy::cannot describe $s: nothing is rolled"; exit 1; }
             rev=$(printf '%s' "$json" | python3 -I -c '
           import json, re, sys
@@ -379,33 +398,106 @@ jobs:
           done
           { echo "### Serving before the rollout"; echo '```'; cat "$RUNNER_TEMP/previous"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           api_rev=$(sed -n 's/^api //p' "$RUNNER_TEMP/previous" | head -n 1)
-          rjson=$(gcloud run revisions describe "$api_rev" --region="$REGION" --project="$PROJECT" --format=json) ||
+          rjson=$(timeout -k 10 60 gcloud run revisions describe "$api_rev" --region="$REGION" --project="$PROJECT" --format=json) ||
             { echo "::error title=deploy::cannot describe the serving api revision $api_rev: nothing is migrated or rolled"; exit 1; }
           facts=$(printf '%s' "$rjson" | python3 -I -c '
-          import json, sys
+          import json, re, sys
+          registry = sys.argv[1]
           rev = json.load(sys.stdin)
           containers = rev.get("spec", {}).get("containers") or []
-          d286 = any(e.get("name") == "SMOKE_OIDC_SA_ID" and (e.get("value") or "").strip() for c in containers for e in (c.get("env") or []))
-          d285 = (rev.get("metadata", {}).get("labels") or {}).get("ryft-meal-patch") == "d285"
-          print("d286=" + ("yes" if d286 else "no"))
-          print("d285=" + ("yes" if d285 else "no"))
-          ') || { echo "::error title=deploy::the serving api revision $api_rev cannot be read: nothing is migrated or rolled"; exit 1; }
-          d286=$(printf '%s\n' "$facts" | sed -n 's/^d286=//p')
-          d285=$(printf '%s\n' "$facts" | sed -n 's/^d285=//p')
-          [[ $d286 =~ ^(yes|no)$ && $d285 =~ ^(yes|no)$ ]] ||
-            { echo "::error title=deploy::the serving api revision $api_rev gave no d286/d285 facts: nothing is migrated or rolled"; exit 1; }
+          api = containers[0] if containers and isinstance(containers[0], dict) else {}
+          pin = re.compile(re.escape(registry) + r"/api@(sha256:[0-9a-f]{64})")
+          m = pin.fullmatch(str(api.get("image") or "")) or pin.fullmatch(str(rev.get("status", {}).get("imageDigest") or ""))
+          names = ["SMOKE_OIDC_SA_EMAIL", "SMOKE_OIDC_SA_ID", "SMOKE_OIDC_AUDIENCE", "SMOKE_USER_ID"]
+          env = [e for e in (api.get("env") or []) if isinstance(e, dict)]
+          states = []
+          for n in names:
+              es = [e for e in env if e.get("name") == n]
+              if not es:
+                  states.append("missing")
+              elif "valueFrom" in es[0]:
+                  states.append("secret-backed")
+              elif isinstance(es[0].get("value"), str) and es[0]["value"].strip():
+                  states.append("ok")
+              else:
+                  states.append("empty")
+          bad = [n + " " + s for n, s in zip(names, states) if s != "ok"]
+          label = (rev.get("metadata", {}).get("labels") or {}).get("ryft-meal-patch") == "d285"
+          print("digest=" + (m.group(1) if m else ""))
+          print("smoke=" + ("complete" if not bad else "none" if all(s == "missing" for s in states) else "incomplete"))
+          print("smoke_detail=" + ", ".join(bad))
+          print("label=" + ("yes" if label else "no"))
+          ' "$REGISTRY") || { echo "::error title=deploy::the serving api revision $api_rev cannot be read: nothing is migrated or rolled"; exit 1; }
+          digest=$(printf '%s\n' "$facts" | sed -n 's/^digest=//p')
+          smoke=$(printf '%s\n' "$facts" | sed -n 's/^smoke=//p')
+          smoke_detail=$(printf '%s\n' "$facts" | sed -n 's/^smoke_detail=//p')
+          label=$(printf '%s\n' "$facts" | sed -n 's/^label=//p')
+          [[ $smoke =~ ^(complete|none|incomplete)$ && $label =~ ^(yes|no)$ ]] ||
+            { echo "::error title=deploy::the serving api revision $api_rev gave no facts: nothing is migrated or rolled"; exit 1; }
+          # The commits that built the image: its tags in the registry (every image is pushed as <svc>:<short sha> of
+          # the commit that built it), kept when they are commits of this history. A lookup that fails proves nothing.
+          tags=
+          if [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            lrc=0
+            tj=$(timeout -k 10 60 gcloud artifacts docker tags list "$REGISTRY/api" --format=json) || lrc=$?
+            if [ "$lrc" != 0 ]; then
+              echo "::warning title=deploy::the tags of $REGISTRY/api cannot be listed (exit $lrc): the image $digest of the serving api is not proven to be any commit"
+            elif ! tags=$(printf '%s' "$tj" | python3 -I -c '
+          import json, re, sys
+          digest = sys.argv[1]
+          entries = json.load(sys.stdin)
+          if not isinstance(entries, list):
+              sys.exit(1)
+          tags = set()
+          for e in entries:
+              if not isinstance(e, dict) or not any(digest in str(e.get(k) or "") for k in ("version", "digest")):
+                  continue
+              t = str(e.get("tag") or e.get("name") or "").rsplit("/", 1)[-1]
+              if re.fullmatch(r"[0-9a-f]{7,40}", t):
+                  tags.add(t)
+          print("\n".join(sorted(tags)))
+          ' "$digest"); then
+              tags=
+              echo "::warning title=deploy::the tag list of $REGISTRY/api cannot be read: the image $digest of the serving api is not proven to be any commit"
+            fi
+          else
+            echo "::warning title=deploy::the serving api $api_rev runs no image of $REGISTRY/api by digest: it is not proven to be any commit"
+          fi
+          image_commits=
+          image_d285=no
+          image_legacy=no
+          for t in $tags; do
+            c=$(git rev-parse --verify -q "$t^{commit}") || continue
+            [[ $c == "$t"* ]] || continue
+            git merge-base --is-ancestor "$c" HEAD || continue
+            image_commits="$image_commits ${c:0:7}"
+            if git merge-base --is-ancestor "$D285_COMMIT" "$c"; then image_d285=yes; fi
+            if git merge-base --is-ancestor "$c" "$D285_COMMIT"; then image_legacy=yes; fi
+          done
+          image_commits=${image_commits# }
+          # D286: complete settings, or none at all on an image that predates it (the bootstrap). Anything else is drift.
+          if [ "$smoke" = complete ]; then
+            d286=yes
+          elif [ "$smoke" = none ] && [ "$image_legacy" = yes ]; then
+            d286=no
+          else
+            echo "::error title=deploy::the serving api $api_rev is not proven to predate D286 (image ${digest:-none}, commit(s) ${image_commits:-none proven}) and its smoke settings are incomplete ($smoke_detail): config drift, never a bootstrap. Restore SMOKE_OIDC_* and SMOKE_USER_ID (deploy/run, config.env) or roll the api back to a revision that has them. Nothing was changed."
+            exit 1
+          fi
+          # D285: the label alone is no proof, it can outlive the image.
+          if [ "$label" = yes ] && [ "$image_d285" = yes ]; then d285=yes; else d285=no; fi
           echo "d286=$d286" >> "$GITHUB_OUTPUT"
           echo "d285=$d285" >> "$GITHUB_OUTPUT"
-          printf 'The serving api %s: D286 smoke sign-in %s, label ryft-meal-patch=d285 %s.\n' "$api_rev" "$d286" "$d285" >> "$GITHUB_STEP_SUMMARY"
+          printf 'The serving api %s: image %s (commit(s) %s), D286 smoke sign-in %s, label ryft-meal-patch=d285 %s, D285 %s.\n' "$api_rev" "${digest:-none}" "${image_commits:-none proven}" "$d286" "$label" "$d285" >> "$GITHUB_STEP_SUMMARY"
           if [ "$d285" = no ]; then
             rc=0
             writers=$(git grep -l -e portion_label_snapshot -e portion_short_label_snapshot -- backend ':!*_test.go' ':!backend/internal/db/migrations/0053_*' ':!backend/internal/db/migrations/0054_*') || rc=$?
             first=${writers%%$'\n'*}
             if [ "$rc" = 0 ]; then
-              echo "::error title=deploy::the serving api $api_rev has no label ryft-meal-patch=d285 (built before the label, #250: not known to be D285) and this commit writes the meal portion labels ($first): the rollback target would erase them on a meal PATCH. D285 requires a D285 api serving first: deploy a commit that does not write them, then this one. Nothing was changed."
+              echo "::error title=deploy::the serving api $api_rev is not proven D285 (label ryft-meal-patch=d285: $label; image ${digest:-none}, commit(s) ${image_commits:-none proven}; the proof is the label plus an image built from a commit containing $D285_COMMIT) and this commit writes the meal portion labels ($first): the rollback target would erase them on a meal PATCH. D285 requires a D285 api serving first: deploy a commit that does not write them, then this one. Nothing was changed."
               exit 1
             elif [ "$rc" != 1 ]; then
-              echo "::error title=deploy::the serving api $api_rev has no label ryft-meal-patch=d285 (built before the label, #250: not known to be D285) and whether this commit writes the meal portion labels cannot be told (git grep exit $rc), so it counts as a writer: the rollback target would erase them on a meal PATCH. D285 requires a D285 api serving first. Nothing was changed."
+              echo "::error title=deploy::the serving api $api_rev is not proven D285 (label ryft-meal-patch=d285: $label; image ${digest:-none}, commit(s) ${image_commits:-none proven}; the proof is the label plus an image built from a commit containing $D285_COMMIT) and whether this commit writes the meal portion labels cannot be told (git grep exit $rc), so it counts as a writer: the rollback target would erase them on a meal PATCH. D285 requires a D285 api serving first. Nothing was changed."
               exit 1
             fi
           fi
@@ -452,13 +544,24 @@ jobs:
       # service back to the revision recorded before the rollout, in the order api, ingest, notify, scoring,
       # and the step fails. A rollback to the recorded revision is safe whether or not that service's
       # traffic moved. The consumers before the producers: scoring and notify answer the pushes of the new
-      # code first. `services replace` waits until the new revision is ready and serving. A lookup for the
-      # summary is best effort. Then `make smoke-prod` runs (a rollout is always smoked; migrate_only skips
-      # the whole step) with a token minted afresh (the preflight's session file is not used). A rollback
-      # that itself fails does not stop the others: it is named in an ::error and the run still fails.
+      # code first. `services replace` waits until the new revision is ready and serving. The lookup of the
+      # new revision (for the summary) must succeed too: a failed one after a replace is a failed rollout and
+      # rolls back. Then `make smoke-prod` runs (a rollout is always smoked; migrate_only skips the whole
+      # step) with a token minted afresh (the preflight's session file is not used). A rollback that itself
+      # fails does not stop the others: it is named in an ::error and the run still fails.
+      # Time: the job has JOB_S seconds (its timeout-minutes) from $RUNNER_TEMP/deploy-started, and the
+      # restores need theirs when the job is cut off. Every forward call (replace, describe, the smoke) runs
+      # under `bounded`: a cap, and never past forward_end, which keeps 4 restores of RESTORE_S each and 180 s.
+      # Each restore has its own fixed budget (RESTORE_S), whatever forward_end is. The commands to restore
+      # by hand are printed first: a job killed by its timeout cannot run its own handler.
       - name: The services, then make smoke-prod, and roll back when either fails
         if: steps.tip.outputs.current == 'true' && !inputs.migrate_only
         run: |
+          JOB_S=3600
+          RESTORE_S=90
+          REPLACE_S=600
+          DESCRIBE_S=60
+          SMOKE_S=900
           touched=()
           reason="unexpected error"
           summary() { printf '%s\n' "$*" >> "$GITHUB_STEP_SUMMARY" || true; }
@@ -469,7 +572,7 @@ jobs:
               [[ $want == *" $s "* ]] || continue
               prev=$(sed -n "s/^$s //p" "$RUNNER_TEMP/previous" | head -n 1)
               if [[ $prev =~ ^$s-[0-9]{5}-[a-z0-9]{3}$ ]] &&
-                 gcloud run services update-traffic "$s" --to-revisions="$prev=100" --region="$REGION" --project="$PROJECT" --quiet; then
+                 timeout -k 10 "$RESTORE_S" gcloud run services update-traffic "$s" --to-revisions="$prev=100" --region="$REGION" --project="$PROJECT" --quiet; then
                 summary "- rolled back to $prev ($s)"
               else
                 echo "::error title=deploy rollback::the rollback of $s to '${prev:-none recorded}' failed: send its traffic back by hand (OPERATIONS.md → GCP, Deploy, roll back, rotate)"
@@ -490,18 +593,54 @@ jobs:
             exit "$rc"
           }
           trap on_exit EXIT
+          started=$(cat "$RUNNER_TEMP/deploy-started" 2>/dev/null || true)
+          [[ $started =~ ^[0-9]+$ ]] || { echo "::error title=deploy::$RUNNER_TEMP/deploy-started is missing or not a time: nothing was rolled"; exit 1; }
+          reserve=$(( 4 * RESTORE_S + 180 ))
+          forward_end=$(( started + JOB_S - reserve ))
+          # A forward call: at most <cap> seconds, and never past forward_end.
+          bounded() {
+            local cap=$1 left
+            shift
+            left=$(( forward_end - $(date +%s) ))
+            if [ "$left" -lt 1 ]; then
+              echo "the job's time for the rollout is spent: $* is not run" >&2
+              return 124
+            fi
+            timeout -k 10 "$(( cap < left ? cap : left ))" "$@"
+          }
+          # Before anything moves: the targets, to restore by hand if this job dies before its rollback ends.
+          hand_restore() {
+            local s prev
+            for s in api ingest notify scoring; do
+              prev=$(sed -n "s/^$s //p" "$RUNNER_TEMP/previous" | head -n 1)
+              printf 'gcloud run services update-traffic %s --to-revisions=%s=100 --region=%s --project=%s\n' "$s" "$prev" "$REGION" "$PROJECT"
+            done
+          }
+          by_hand="If this job dies before its rollback ends, restore by hand (OPERATIONS.md → GCP → Deploy, roll back, rotate):"
+          cmds=$(hand_restore)
+          printf '%s\n%s\n' "$by_hand" "$cmds"
+          summary "### Restore by hand"
+          summary "$by_hand"
+          summary '```'
+          summary "$cmds"
+          summary '```'
+          if [ $(( forward_end - $(date +%s) )) -lt 300 ]; then
+            echo "::error title=deploy::not enough of the job's 60 minutes is left to roll out and still restore: nothing was rolled"
+            exit 1
+          fi
           for s in scoring notify ingest api; do
             touched+=("$s")
             reason="the replace of $s failed"
-            gcloud run services replace "$RUNNER_TEMP/run/$s.yaml" --region="$REGION" --project="$PROJECT" --quiet
-            reason="unexpected error after the replace of $s"
-            rev=$(gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format='value(status.latestReadyRevisionName)') || rev="unknown"
+            bounded "$REPLACE_S" gcloud run services replace "$RUNNER_TEMP/run/$s.yaml" --region="$REGION" --project="$PROJECT" --quiet
+            reason="the lookup of $s's new revision failed"
+            rev=$(bounded "$DESCRIBE_S" gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format='value(status.latestReadyRevisionName)')
             summary "- $s: $rev"
           done
+          reason="unexpected error after the replaces"
           rm -f "$RUNNER_TEMP/ryft-smoke-auth.json"
           unset SMOKE_AUTH_FILE
           reason="make smoke-prod failed after the rollout"
-          make smoke-prod
+          bounded "$SMOKE_S" make smoke-prod
       # On success and when superseded. After a failure nothing runs (no status function in this file),
       # and the runner empties $RUNNER_TEMP, where the credentials are, at the end of the job.
       - name: Sign out
@@ -532,7 +671,7 @@ jobs:
   # `site` as the artifact `site`, kept for a day.
   site-build:
     needs: [ci]
-    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true'
+    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true' && !inputs.migrate_only
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -611,7 +750,7 @@ jobs:
   # Deploy, roll back, rotate -> The site).
   site:
     needs: [ci, site-build]
-    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true'
+    if: vars.GCP_DEPLOY == 'on' && vars.SITE_DEPLOY == 'on' && needs.ci.outputs.current == 'true' && !inputs.migrate_only
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Its own environment, main only (its deployment branch rule): its token's principal set is

@@ -35,6 +35,16 @@
 # docs/OPERATIONS.md → Beta). On GCP the invite gate is off (D241).
 set +x # the session material lives only in memory and private temporary files
 set -euo pipefail
+# An overall deadline (SMOKE_PROD_TIMEOUT seconds, 600 by default): the script runs again under `timeout`, once (the marker
+# SMOKE_PROD_DEADLINE says so). Every curl has its own limits too (--connect-timeout, --max-time). Without `timeout`
+# (macOS without coreutils) it runs unbounded, with a notice.
+if [ -z "${SMOKE_PROD_DEADLINE:-}" ]; then
+  if command -v timeout >/dev/null 2>&1; then
+    export SMOKE_PROD_DEADLINE=armed
+    exec timeout -k 10 "${SMOKE_PROD_TIMEOUT:-600}" "${BASH:-bash}" "$0" "$@"
+  fi
+  echo "! smoke-prod: no \`timeout\` on this machine: running without an overall deadline (brew install coreutils)" >&2
+fi
 HERE=$(cd "$(dirname "$0")" && pwd)
 API=${API_URL:-https://api.ryftlab.de}
 INGEST=${INGEST_URL:-https://ingest.ryftlab.de}   # its own host on Cloud Run (design §3: HTTP/2 end to end for 32 MiB syncs)
@@ -70,19 +80,19 @@ rm -f "$tmp/verified.json"
 bearer() {
   local token=$1
   shift
-  printf 'Authorization: Bearer %s\n' "$token" | curl -q -H @- "$@"
+  printf 'Authorization: Bearer %s\n' "$token" | curl -q --connect-timeout 10 --max-time 30 -H @- "$@"
 }
 # Calls made with the smoke token retry curl's transient statuses (408/429/500/502/503/504; never
 # --retry-all-errors): a new instance answers 503 while it loads its keys. Safe for every call below: the GETs,
 # POST /v1/sync (D100) and POST /v1/me/invite (a no-op once the account has access); the smoke token makes no
 # consent write (D286). The ADMIN_API_KEY calls are not retried.
-smoke_curl() { bearer "$TOKEN" --retry 3 --retry-delay 2 "$@"; }
+smoke_curl() { bearer "$TOKEN" --retry 3 --retry-delay 2 --retry-max-time 60 "$@"; }
 call() { smoke_curl -fsS -H 'Content-Type: application/json' "$@"; }
 # The admin key's other sources (the Vault root's Terraform output, the in-cluster Vault) went with
 # D3 (D246): only the environment is left, so there is nothing to look up.
 [ -n "${ADMIN_API_KEY:-}" ] || echo "! no ADMIN_API_KEY in the environment (scripts/lib/admin.sh): the beta gate is not probed"
 
-code=$(curl -s -o /dev/null -w '%{http_code}' "$API/v1/me")
+code=$(curl -s --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' "$API/v1/me")
 [ "$code" = 401 ] || fail "GET $API/v1/me without a token: $code, want 401 (api behind the edge)"
 
 code=$(smoke_curl -s -o /dev/null -w '%{http_code}' "$INGEST/v1/sync")
