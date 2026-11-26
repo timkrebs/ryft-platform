@@ -281,6 +281,7 @@ func (s *Store) PatchNutritionMeal(ctx context.Context, user, id uuid.UUID, patc
 		if err != nil {
 			return err
 		}
+		defer rows.Close()
 		stored := make(map[uuid.UUID]string, len(old.Items))
 		for rows.Next() {
 			var itemID uuid.UUID
