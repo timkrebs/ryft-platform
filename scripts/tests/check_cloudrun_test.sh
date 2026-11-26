@@ -53,6 +53,10 @@ fresh() {
   baseline config.env '^CONNECT_PROVIDERS=' 'CONNECT_PROVIDERS='
   baseline config.env '^CONNECT_GARMIN_USER_CAP=' 'CONNECT_GARMIN_USER_CAP=0'
   baseline config.env '^CONNECT_MIN_POLICY_VERSION=' 'CONNECT_MIN_POLICY_VERSION='
+  # The smoke identity (D286) starts at the bootstrap's placeholders, whether the real ids are committed or
+  # not: the lint passes FILL_ME_IN (a render refuses it, cloudrun_render_test pins that).
+  baseline config.env '^SMOKE_USER_ID=' 'SMOKE_USER_ID=FILL_ME_IN'
+  baseline config.env '^SMOKE_SA_ID=' 'SMOKE_SA_ID=FILL_ME_IN'
   for r in "$GIDROW" "$GSECROW"; do
     if grep -qF -- "$r" "$d/api.yaml"; then drop api.yaml "$r"; fi
   done
@@ -729,7 +733,8 @@ edit config.env 'SMOKE_USER_ID=' 'FILL_ME_IN' 'not-a-uuid'
 bad "a smoke user that is no UUID" "SMOKE_USER_ID='not-a-uuid' does not have the shape"
 edit config.env 'SMOKE_SA_ID=' 'FILL_ME_IN' 'ryft-smoke@ryftlab-prod.iam.gserviceaccount.com'
 bad "the smoke account's email where its ID goes" "SMOKE_SA_ID='ryft-smoke@ryftlab-prod.iam.gserviceaccount.com' does not have the shape"
-# A placeholder passes the check (the lint lets it; a deploy refuses it, the renderer's test pins that).
+# A placeholder passes the check (every fresh copy has the two, see fresh: the lint lets them; a deploy
+# refuses them, the renderer's test pins that), and so do ids of the right shape.
 edit config.env 'SMOKE_USER_ID=' 'FILL_ME_IN' '00000000-0000-4000-8000-000000000077'
 edit config.env 'SMOKE_SA_ID=' 'FILL_ME_IN' '200000000000000000000'
 ok "the smoke ids set"
