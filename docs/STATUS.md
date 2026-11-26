@@ -1,5 +1,18 @@
 # RYFT platform — status
 
+## Nutrition portions v2: clean USDA labels and 8 more staples (2026-11-26, D288)
+
+The ETL now cleans every non-curated USDA portion. Before, Apple showed `1 medium (3" dia)`, and in German it showed the same raw text. Now `1 medium` / `1 mittelgroßes Stück` with the short label `Mittel`, ordered Klein 10, Mittel 20, Groß 30, household units 40+. `undetermined` and imperial parentheticals are gone, and an unmapped qualifier leaves the German label out instead of mixing languages. New staples: Kartoffeln gekocht, Avocado (½ is the default), Tomate, Karotte/Möhre, plus Salatgurke, rote Paprika, Zwiebel and Naturjoghurt. Their portions match source rows by size key, text or grams. A `source_description` guard keeps a wrong FDC ID harmless. Defaults stay curated. No migration, no API change, no Terraform change. Portion IDs don't change. The Python tests first ran in CI: the session couldn't run Python, fetch FDC or download SR Legacy, so there is no local count of changed labels (the dry run reports it). Research for the next step (OFF portions, BLS names) is in `docs/work/2026-11-26-nutrition-portions-v2/research.md`.
+
+On merge, `deploy.yml`'s push run deploys as usual: migrate has nothing new, the services roll with unchanged backend code, then smoke-prod. The site job skips. The ETL image isn't published on push. Then, in order:
+1. `gh workflow run deploy.yml --ref main -f publish_nutrition_etl=true`. Read the digest from the run's **Nutrition ETL image** summary.
+2. In the local, git-ignored `infra/gcp/terraform.tfvars` (`nutrition_etl` isn't an HCP variable), set `image_digest`. Keep `database_secret_version = 1`, `row_limit = 1000`, `schedule_enabled` as it is. Run `terraform -chdir=infra/gcp plan -out=nutrition-portions-v2.tfplan`. Only the image of `google_cloud_run_v2_job.nutrition_etl` should change. Then `terraform -chdir=infra/gcp apply nutrition-portions-v2.tfplan`.
+3. Dry runs: `gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,sr-legacy,--limit,10000 --wait`, and the same with `--args=--source,foundation,--limit,10000`. Expect a version starting `py-etl4:staples2:`, `portions.relabelled` (the number of labels that change), `portions.raw_marker` 0, empty `staples.description_mismatch` and `staples.unmatched`, and `staple_portions` with the source grams. Send the summary lines back if anything is non-empty.
+4. Writes: `gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,sr-legacy,--write,--limit,10000 --wait`, then `--args=--source,foundation,--write,--limit,10000`. Expect about 7.7k `updated` for SR Legacy and 0 conflicts. A rerun gives `unchanged`.
+5. Optionally, the read-only count of the Go importer's raw labels (SQL in `infra/gcp/README.md` → Nutrition on Cloud Run, step 4).
+
+Roll back by re-pinning the previous digest. The new labels stay (cosmetic, same IDs), and saved meals keep their snapshots.
+
 ## The real smoke account is smoke@ryftapp.de (2026-11-26, D286 correction)
 
 Steps 1 and 2 below are done (the #250 push run stopped at "bootstrap pending", and `migrate_only` ran). Step 3 refused `5258f5d1-…` (`smoke@ryftlab.de`, created today, never used): "not in public.users". Nothing was bound, and nothing rolled. The production smoke account is `smoke@ryftapp.de`, `671779e8-9634-4964-b3a6-4445c6ad1c5f`. This PR puts that id in `config.env` and that email in both SQL scripts and the tests. No migrations.

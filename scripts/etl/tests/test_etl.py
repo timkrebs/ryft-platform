@@ -15,13 +15,90 @@ import duckdb
 import httpx
 import psycopg
 
-from categorizer import classify
+from categorizer import classify, normalize
 from download import MissingUSDATables, Release, extract_usda, resolve_off, resolve_usda, stage_usda
 from extract import connection, off_rows, usda_rows
 from generate_embeddings import DIMENSIONS, pending_batch, vectors
-from import_pg import IMPORT_NAMESPACE, load_batch, source_portion_uuid
-from transform import (STAPLES, USDA_NUTRIENTS, Nutrient, Portion, Reject, bls_food, off_food, usda_food,
-                       usda_measures, validate)
+from import_pg import IMPORT_NAMESPACE, load_batch, source_portion_uuid, staging_row
+from transform import (QUALIFIERS, SIZES, STAPLES, UNITS, USDA_NUTRIENTS, ImportNotes, Nutrient, Portion, Reject,
+                       bls_food, clean_portion, format_amount, off_food, usda_food, usda_measures, validate)
+
+FDC_NUTRIENTS = [{"id": key, "amount": amount} for key, amount in (("1008", 48), ("1003", 0), ("1004", 0), ("1005", 12))]
+
+
+def sr_row(position, modifier, grams, amount="1", source_id=None):
+    """A food_portion row shaped like SR Legacy: measure `undetermined`, the size or unit in the modifier."""
+    return {"source_id": source_id, "description": None, "amount": amount, "measure": "undetermined",
+            "modifier": modifier, "grams": grams, "priority": position}
+
+
+def pre_g1(rows):
+    """The portions the importer wrote before G1: the raw text as label, nothing localized."""
+    return tuple(Portion(" ".join(part for part in (row["amount"], row["modifier"]) if part), "portion",
+                         weight_g=row["grams"], source_portion_id=row["source_id"], sort_order=100 + row["priority"],
+                         legacy_label=" ".join(part for part in (row["amount"], row["measure"], row["modifier"]) if part))
+                 for row in rows)
+
+
+PLUM_ROWS = [
+    sr_row(1, 'medium (3" dia)', 182.0, source_id="880001"),
+    sr_row(2, "cup, chopped", 125.0, source_id="880002"),
+    sr_row(3, "slice (1 oz)", 28.0),
+    sr_row(4, "bag", 50.0),
+]
+
+# modifier, amount, grams, en, de, short_en, short_de, sort_order (None: 100 + the row's position).
+# Every row has its own grams and no two rows share a label, so the collision rule stays out of this table.
+SR_TABLE = (
+    ('small (2-3/4" dia)', "1", 149.0, "1 small", "1 kleines Stück", "Small", "Klein", 10),
+    ('medium (3" dia)', "1", 182.0, "1 medium", "1 mittelgroßes Stück", "Medium", "Mittel", 20),
+    ('large (3-1/4" dia)', "1", 223.0, "1 large", "1 großes Stück", "Large", "Groß", 30),
+    ('extra small (2-1/4" dia)', "1", 101.0, "1 extra small", "1 sehr kleines Stück", "Extra small", "Sehr klein", 5),
+    ('extra large (8" to 8-7/8" long)', "1", 250.0, "1 extra large", "1 sehr großes Stück", "Extra large", "Sehr groß", 35),
+    ('jumbo (9" or longer)', "1", 300.0, "1 jumbo", "1 Stück (Jumbo)", "Jumbo", "Jumbo", 38),
+    ('medium (3" dia)', "2", 364.0, "2 medium", "2 Stück, mittel", "2 × Medium", "2 × Mittel", 20),
+    ("cup, chopped", "1", 125.0, "1 US cup, chopped", "1 US-Tasse, gehackt", "1 US cup, chopped", "1 US-Tasse, gehackt", 80),
+    ("cup (8 fl oz)", "1", 240.0, "1 US cup", "1 US-Tasse", "1 US cup", "1 US-Tasse", 80),
+    ("cup, sliced", "1", 110.0, "1 US cup, sliced", "1 US-Tasse, in Scheiben", "1 US cup, sliced", "1 US-Tasse, in Scheiben", 80),
+    ("cup, mashed", "0.5", 105.0, "½ US cup, mashed", "½ US-Tasse, zerdrückt", "½ US cup, mashed", "½ US-Tasse, zerdrückt", 80),
+    ("cup, diced", "1.5", 150.0, "1½ US cups, diced", "1½ US-Tassen, gewürfelt", "1½ US cups, diced", "1½ US-Tassen, gewürfelt", 80),
+    ("cup, grated", "0.25", 60.0, "¼ US cup, grated", "¼ US-Tasse, gerieben", "¼ US cup, grated", "¼ US-Tasse, gerieben", 80),
+    ("cup, unpacked", "1", 95.0, "1 US cup, unpacked", None, "1 US cup, unpacked", None, 80),
+    ("slice (1 oz)", "1", 28.0, "1 slice", "1 Scheibe", "1 slice", "1 Scheibe", 42),
+    ("slice, thin", "2", 40.0, "2 slices, thin", "2 Scheiben, dünn", "2 slices, thin", "2 Scheiben, dünn", 42),
+    ("slice, medium", "1", 32.0, "1 slice, medium", "1 Scheibe, mittel", "1 slice, medium", "1 Scheibe, mittel", 42),
+    ("tbsp", "1", 15.0, "1 tbsp", "1 EL", "1 tbsp", "1 EL", 70),
+    ("tsp", "1", 5.0, "1 tsp", "1 TL", "1 tsp", "1 TL", 72),
+    ("tablespoons", "2", 30.0, "2 tbsp", "2 EL", "2 tbsp", "2 EL", 70),
+    ("fillet", "1", 140.0, "1 fillet", "1 Filet", "1 fillet", "1 Filet", 44),
+    ("breast, bone and skin removed", "0.5", 86.0, "½ breast, bone and skin removed",
+     "½ Bruststück, ohne Haut und Knochen", "½ breast, bone and skin removed", "½ Bruststück, ohne Haut und Knochen", 46),
+    ('breast (approx 2-3/4" long, 2-1/2" dia)', "1", 120.0, "1 breast", "1 Bruststück", "1 breast", "1 Bruststück", 46),
+    ("link", "1", 50.0, "1 link", "1 Würstchen", "1 link", "1 Würstchen", 48),
+    ("patty", "2", 100.0, "2 patties", "2 Pattys", "2 patties", "2 Pattys", 50),
+    ("scoop", "1", 70.0, "1 scoop", "1 Kugel", "1 scoop", "1 Kugel", 54),
+    ("bar (1.5 oz)", "1", 43.0, "1 bar", "1 Riegel", "1 bar", "1 Riegel", 52),
+    ("can (12 fl oz)", "1", 355.0, "1 can", "1 Dose", "1 can", "1 Dose", 56),
+    ("bottle (20 fl oz)", "1", 590.0, "1 bottle", "1 Flasche", "1 bottle", "1 Flasche", 58),
+    ("container (6 oz)", "1", 170.0, "1 container", "1 Becher", "1 container", "1 Becher", 60),
+    ("packet", "1", 6.0, "1 packet", "1 Päckchen", "1 packet", "1 Päckchen", 62),
+    ("serving", "1", 160.0, "1 serving", "1 Portion", "1 serving", "1 Portion", 64),
+    ("NLEA serving", "1", 85.0, "US label serving (85 g)", "US-Referenzportion (85 g)", "85 g", "85 g", 88),
+    ("oz", "1", 28.35, "28.35 g", "28.35 g", "28.35 g", "28.35 g", 90),
+    ("lb", "1", 454.0, "454 g", "454 g", "454 g", "454 g", 92),
+    ("fl oz", "1", 31.0, "30 ml", "30 ml", "30 ml", "30 ml", 85),
+    ("fl oz", "2", 61.0, "59 ml", "59 ml", "59 ml", "59 ml", 85),
+    ("piece", "1", 25.0, "1 piece", "1 Stück", "1 piece", "1 Stück", 41),
+    ("wedge", "1", 20.0, "1 wedge", None, None, None, None),
+    ('stalk, medium (7-1/2" to 8" long)', "1", 41.0, "1 stalk, medium", None, None, None, None),
+    ("loaf (1 lb)", "1", 450.0, "1 loaf", None, None, None, None),
+    ("undetermined", "1", 77.0, "77 g", "77 g", "77 g", "77 g", None),
+)
+
+
+def sr_table_rows():
+    return [sr_row(position, modifier, grams, amount)
+            for position, (modifier, amount, grams, *_) in enumerate(SR_TABLE, 1)]
 
 
 def write_fixture(directory: Path) -> tuple[Path, Path]:
@@ -86,8 +163,11 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(food.category.profile["whole_fruit_fraction"], 1)
         values = {n.code: n.amount for n in food.nutrients}
         self.assertEqual((values["carbohydrates_total"], values["sodium"]), (12, 3))
-        self.assertEqual([(p.label, p.weight_g) for p in food.portions], [("1 cup", 110), ("1 medium", 182)])
-        self.assertEqual(food.portions[0].short_label_de, "1 Tasse")
+        # G1 orders a size before a household unit (20 before 80) and calls the cup a US cup.
+        self.assertEqual([(p.label, p.weight_g) for p in food.portions], [("1 medium", 182), ("1 US cup", 110)])
+        self.assertEqual(food.portions[1].short_label_de, "1 US-Tasse")
+        self.assertEqual(food.portions[1].labels, {"en": "1 US cup", "de": "1 US-Tasse"})
+        self.assertEqual(food.portions[1].legacy_label, "1 cup")
 
     def test_staple_apple_keeps_source_weights_and_prioritizes_bounded_import(self):
         files = extract_usda(self.archive, self.directory)
@@ -121,6 +201,16 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(food.portions[1].labels["de"], "1 mittelgroßer Apfel")
         self.assertNotIn("undetermined", food.portions[1].label)
         self.assertIn("undetermined", food.portions[1].legacy_label)
+        # Klein 149 / Mittel 182 (default) / Groß 223, clean in every field and every language.
+        self.assertEqual([(p.short_label_de, p.weight_g, p.is_default) for p in food.portions],
+                         [("Klein", 149, False), ("Mittel", 182, True), ("Groß", 223, False)])
+        self.assertEqual([p.label for p in food.portions], ["1 small apple", "1 medium apple", "1 large apple"])
+        for portion in food.portions:
+            with self.subTest(portion=portion.label):
+                for text in (portion.label, *portion.labels.values(), portion.short_label_en, portion.short_label_de):
+                    self.assertNotIn("undetermined", text)
+                    self.assertNotIn('"', text)
+                self.assertEqual(portion.legacy_label.count("undetermined"), 1)  # The stored portion ID still hashes it.
         [revised] = usda_measures([{**row["portions"][1], "grams": 183}], STAPLES["usda"]["171688"]["portions"])
         self.assertEqual((revised.weight_g, revised.portion_key, revised.is_default), (183, None, False))
 
@@ -258,9 +348,301 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(foundation["categories"], legacy["categories"])
         self.assertEqual(foundation["categories"], {"whole_fruit": 1})
         self.assertEqual((bls["release"], bls["mode"], bls["counts"]["accepted"]), ("bls", "dry-run", 3))
+        # The USDA summary counts the portions: "1 cup" becomes "1 US cup", "1 medium" is already clean.
+        for usda in (foundation, legacy):
+            self.assertEqual(usda["portions"], {"total": 2, "relabelled": 1, "localized_de": 2,
+                                                "unmapped_head": 0, "raw_marker": 0})
+            self.assertEqual(usda["staples"], {"applied": 0, "description_mismatch": [], "unmatched": {}})
+        self.assertNotIn("portions", off)
+        self.assertNotIn("staples", bls)
+
+
+def labels_of(portion):
+    return [portion.label, *portion.labels.values(), portion.short_label_en, portion.short_label_de]
+
+
+class PortionLabelTests(unittest.TestCase):
+    def test_maps_are_pinned(self):
+        self.assertEqual([(size.key, size.words, size.en, size.en_short, size.de_one, size.de_adj, size.de_short, size.order)
+                          for size in SIZES], [
+            ("extra_small", ("extra small", "extra-small"), "extra small", "Extra small", "sehr kleines Stück", "sehr klein", "Sehr klein", 5),
+            ("small", ("small",), "small", "Small", "kleines Stück", "klein", "Klein", 10),
+            ("medium", ("medium",), "medium", "Medium", "mittelgroßes Stück", "mittel", "Mittel", 20),
+            ("large", ("large",), "large", "Large", "großes Stück", "groß", "Groß", 30),
+            ("extra_large", ("extra large", "extra-large"), "extra large", "Extra large", "sehr großes Stück", "sehr groß", "Sehr groß", 35),
+            ("jumbo", ("jumbo",), "jumbo", "Jumbo", "Stück (Jumbo)", "Jumbo", "Jumbo", 38),
+        ])
+        self.assertEqual([(unit.key, unit.en, unit.de, unit.order, unit.kind) for unit in UNITS], [
+            ("whole", ("whole", "whole"), ("Stück", "Stück"), 40, "count"),
+            ("piece", ("piece", "pieces"), ("Stück", "Stück"), 41, "count"),
+            ("slice", ("slice", "slices"), ("Scheibe", "Scheiben"), 42, "count"),
+            ("fillet", ("fillet", "fillets"), ("Filet", "Filets"), 44, "count"),
+            ("breast", ("breast", "breasts"), ("Bruststück", "Bruststücke"), 46, "count"),
+            ("link", ("link", "links"), ("Würstchen", "Würstchen"), 48, "count"),
+            ("patty", ("patty", "patties"), ("Patty", "Pattys"), 50, "count"),
+            ("bar", ("bar", "bars"), ("Riegel", "Riegel"), 52, "count"),
+            ("scoop", ("scoop", "scoops"), ("Kugel", "Kugeln"), 54, "count"),
+            ("can", ("can", "cans"), ("Dose", "Dosen"), 56, "count"),
+            ("bottle", ("bottle", "bottles"), ("Flasche", "Flaschen"), 58, "count"),
+            ("container", ("container", "containers"), ("Becher", "Becher"), 60, "count"),
+            ("packet", ("packet", "packets"), ("Päckchen", "Päckchen"), 62, "count"),
+            ("serving", ("serving", "servings"), ("Portion", "Portionen"), 64, "count"),
+            ("tbsp", ("tbsp", "tbsp"), ("EL", "EL"), 70, "count"),
+            ("tsp", ("tsp", "tsp"), ("TL", "TL"), 72, "count"),
+            ("cup", ("US cup", "US cups"), ("US-Tasse", "US-Tassen"), 80, "count"),
+            ("fl_oz", ("fl oz", "fl oz"), ("fl oz", "fl oz"), 85, "volume"),
+            ("nlea_serving", ("serving", "servings"), ("Portion", "Portionen"), 88, "nlea"),
+            ("oz", ("oz", "oz"), ("oz", "oz"), 90, "mass"),
+            ("lb", ("lb", "lb"), ("lb", "lb"), 92, "mass"),
+        ])
+        self.assertEqual(QUALIFIERS, {
+            "chopped": "gehackt", "diced": "gewürfelt", "cubes": "gewürfelt", "cubed": "gewürfelt",
+            "sliced": "in Scheiben", "slices": "in Scheiben", "mashed": "zerdrückt", "pureed": "püriert",
+            "shredded": "geraspelt", "grated": "gerieben", "halves": "halbiert", "pieces": "in Stücken",
+            "strips": "in Streifen", "wedges": "Spalten", "packed": "fest gedrückt", "thin": "dünn", "thick": "dick",
+            "boneless": "ohne Knochen", "bone removed": "ohne Knochen", "bone and skin removed": "ohne Haut und Knochen",
+            "skin removed": "ohne Haut", "cooked": "gegart", "raw": "roh", "drained": "abgetropft",
+            "crumbled": "zerbröselt", "melted": "geschmolzen", "ground": "gemahlen", "sifted": "gesiebt",
+            "florets": "Röschen", "small": "klein", "medium": "mittel", "large": "groß", "whole": "ganz",
+        })
+
+    def test_amounts(self):
+        for value, en, de in ((1, "1", "1"), (2, "2", "2"), (3, "3", "3"), (0.5, "½", "½"), (1.5, "1½", "1½"),
+                              (0.25, "¼", "¼"), (0.75, "¾", "¾"), (1.75, "1¾", "1¾"), (0.333, "⅓", "⅓"),
+                              (0.667, "⅔", "⅔"), (0.125, "⅛", "⅛"), (2.5, "2.5", "2,5"), (0.1, "0.1", "0,1")):
+            with self.subTest(value=value):
+                self.assertEqual((format_amount(value, "en"), format_amount(value, "de")), (en, de))
+        for text, amount, expected in (("1/2 cup", None, "½ US cup"), ("1 1/2 cup", None, "1½ US cups"),
+                                       ("cup", "2", "2 US cups"), ("cup", None, "1 US cup"),
+                                       ("cup", "not a number", "1 US cup"), ("0 cup", "3", "3 US cups")):
+            with self.subTest(text=text, amount=amount):
+                self.assertEqual(clean_portion(text, amount, 50.0).en, expected)
+
+    def test_sr_legacy_modifiers(self):
+        rows = sr_table_rows()
+        tally = {}
+        portions = usda_measures(rows, None, tally)
+        self.assertEqual(len(portions), len(SR_TABLE))
+        self.assertEqual(tally, {"unmatched": [], "unmapped_head": 3})
+        self.assertEqual([portion.sort_order for portion in portions], sorted(portion.sort_order for portion in portions))
+        by_grams = {portion.weight_g: portion for portion in portions}
+        for position, (modifier, amount, grams, en, de, short_en, short_de, order) in enumerate(SR_TABLE, 1):
+            with self.subTest(modifier=modifier, amount=amount):
+                portion = by_grams[grams]
+                self.assertEqual((portion.label, portion.labels.get("en"), portion.labels.get("de"),
+                                  portion.short_label_en, portion.short_label_de, portion.sort_order),
+                                 (en, en, de, short_en, short_de, order or 100 + position))
+                self.assertIsNone(portion.portion_key)
+                self.assertFalse(portion.is_default)
+                self.assertIn("undetermined", portion.legacy_label)  # What the stored portion ID hashes.
+        for portion in portions:
+            for text in filter(None, labels_of(portion)):
+                with self.subTest(text=text):
+                    for marker in ("undetermined", '"', " oz)", "unspecified"):
+                        self.assertNotIn(marker, text)
+                    self.assertNotRegex(text, r"(?i)\bdia\b")
+
+    def test_unmapped_heads_have_no_german_labels(self):
+        [wedge, stalk] = usda_measures([sr_row(1, "wedge", 20.0), sr_row(2, 'stalk, medium (7-1/2" to 8" long)', 41.0)])
+        self.assertEqual((wedge.label, wedge.labels, wedge.short_label_en, wedge.short_label_de, wedge.sort_order),
+                         ("1 wedge", {"en": "1 wedge"}, None, None, 101))
+        self.assertEqual((stalk.label, stalk.labels, stalk.short_label_de, stalk.sort_order),
+                         ("1 stalk, medium", {"en": "1 stalk, medium"}, None, 102))
+        # A mapped head with one unmapped qualifier part is not translated half way.
+        [cup] = usda_measures([sr_row(1, "cup, chopped, unpacked", 90.0)])
+        self.assertEqual((cup.label, cup.labels, cup.short_label_en, cup.short_label_de),
+                         ("1 US cup, chopped, unpacked", {"en": "1 US cup, chopped, unpacked"},
+                          "1 US cup, chopped, unpacked", None))
+
+    def test_description_rows_take_the_amount_from_the_row(self):
+        [medium] = usda_measures([{"source_id": None, "description": 'medium (3" dia)', "amount": "2", "measure": None,
+                                   "modifier": None, "grams": 364.0, "priority": 1}])
+        self.assertEqual((medium.label, medium.labels["de"], medium.legacy_label), ("2 medium", "2 Stück, mittel", 'medium (3" dia)'))
+
+    def test_inch_marks_outside_parentheses_and_label_limits(self):
+        [pieces] = usda_measures([sr_row(1, 'cup 1/2" pieces', 120.0)])
+        self.assertEqual((pieces.label, pieces.labels.get("de")), ("1 US cup, pieces", "1 US-Tasse, in Stücken"))
+        [ring] = usda_measures([sr_row(1, 'ring, 3" dia', 10.0)])
+        self.assertEqual(ring.labels, {"en": "1 ring"})
+        # A label the mapping would push past 200 characters falls back instead of breaking the CHECK.
+        long = clean_portion("1 cup, " + "packed, " * 24 + "packed", None, 100.0)
+        self.assertEqual(long.en, "100 g")
+        self.assertIsNone(long.de)
+        self.assertIsNone(long.short_en)
+        for text in filter(None, (pieces.label, *pieces.labels.values(), ring.label)):
+            self.assertNotRegex(text, r'(?i)"|\bdia\b')
+
+    def test_labels_that_collide_with_other_grams_name_the_grams(self):
+        slices = usda_measures([sr_row(1, "slice (1 oz)", 28.0), sr_row(2, "slice (3/4 oz)", 21.0), sr_row(3, "cup", 240.0)])
+        self.assertEqual([(p.label, p.labels["de"], p.short_label_en, p.short_label_de) for p in slices], [
+            ("1 slice (28 g)", "1 Scheibe (28 g)", "1 slice (28 g)", "1 Scheibe (28 g)"),
+            ("1 slice (21 g)", "1 Scheibe (21 g)", "1 slice (21 g)", "1 Scheibe (21 g)"),
+            ("1 US cup", "1 US-Tasse", "1 US cup", "1 US-Tasse"),
+        ])
+        sizes = usda_measures([sr_row(1, 'medium (3" dia)', 182.0), sr_row(2, "medium whole", 150.0)])
+        self.assertEqual([(p.label, p.labels["de"], p.short_label_en, p.short_label_de, p.weight_g) for p in sizes], [
+            ("1 medium (182 g)", "1 mittelgroßes Stück (182 g)", "Medium (182 g)", "Mittel (182 g)", 182),
+            ("1 medium (150 g)", "1 mittelgroßes Stück (150 g)", "Medium (150 g)", "Mittel (150 g)", 150),
+        ])
+        # Only the German label collides here: the English labels stay as they are.
+        stueck = usda_measures([sr_row(1, "whole", 200.0), sr_row(2, "piece", 25.0)])
+        self.assertEqual([(p.label, p.labels["de"], p.short_label_en, p.short_label_de) for p in stueck], [
+            ("1 whole", "1 Stück (200 g)", "1 whole", "1 Stück (200 g)"),
+            ("1 piece", "1 Stück (25 g)", "1 piece", "1 Stück (25 g)"),
+        ])
+        # The same label with the same grams is no collision.
+        twins = usda_measures([sr_row(1, "slice (1 oz)", 28.0), sr_row(2, "slice (1.0 oz)", 28.0)])
+        self.assertEqual([(p.label, p.labels["de"]) for p in twins], [("1 slice", "1 Scheibe")] * 2)
+
+    def test_summary_counts_portions_without_changing_them(self):
+        notes = ImportNotes()
+        row = {"fdc_id": "999001", "description": "Cheddar cheese", "nutrients": FDC_NUTRIENTS, "portions": sr_table_rows()}
+        food = usda_food(row, "fixture-v1", notes)
+        self.assertEqual(food.portions, usda_food(row, "fixture-v1").portions)
+        self.assertEqual(notes.summary(), {
+            "portions": {"total": len(SR_TABLE), "relabelled": len(SR_TABLE),
+                         "localized_de": sum(1 for entry in SR_TABLE if entry[4]), "unmapped_head": 3, "raw_marker": 0},
+            "staples": {"applied": 0, "description_mismatch": [], "unmatched": {}},
+            "staple_portions": {},
+        })
+
+
+class StapleTests(unittest.TestCase):
+    @staticmethod
+    def food(fdc_id, description, portions, notes=None):
+        rows = [sr_row(position, modifier, grams, source_id=str(880000 + position))
+                for position, (modifier, grams) in enumerate(portions, 1)]
+        return usda_food({"fdc_id": fdc_id, "description": description, "nutrients": FDC_NUTRIENTS, "portions": rows},
+                         "fixture-v1", notes)
+
+    @staticmethod
+    def german(food):
+        return {normalize(label) for lang, label in (*food.names, *food.aliases) if lang == "de"}
+
+    def test_potatoes_resolve_and_keep_the_source_weights(self):
+        notes = ImportNotes()
+        food = self.food("170440", "Potatoes, boiled, cooked without skin, flesh, without salt", (
+            ('small (1-3/4" to 2-1/4" dia)', 138.0), ('medium (2-1/4" to 3-1/4" dia)', 173.0),
+            ('large (3" to 4-1/4" dia)', 299.0), ("cup, mashed", 210.0), ("cup, sliced", 156.0)), notes)
+        self.assertIn(normalize("Kartoffel"), self.german(food))
+        self.assertIn(normalize("Salzkartoffeln"), self.german(food))
+        self.assertEqual((food.canonical_group_key, food.food_form, food.is_canonical_staple), ("potato", "boiled", True))
+        self.assertEqual([(p.portion_key, p.weight_g, p.is_default, p.source_portion_id) for p in food.portions], [
+            ("small", 138, False, "880001"), ("medium", 173, True, "880002"), ("large", 299, False, "880003"),
+            (None, 210, False, "880004"), (None, 156, False, "880005")])
+        medium = food.portions[1]
+        self.assertEqual((medium.label, medium.labels, medium.short_label_de, medium.short_label_en),
+                         ("1 medium potato", {"de": "1 mittelgroße Kartoffel", "en": "1 medium potato"}, "Mittel", "Medium"))
+        self.assertIn("undetermined", medium.legacy_label)
+        self.assertEqual(food.portions[3].labels, {"en": "1 US cup, mashed", "de": "1 US-Tasse, zerdrückt"})
+        # The curated portion has the normal keyed ID of the source portion.
+        namespace = uuid.uuid5(IMPORT_NAMESPACE, "usda:170440")
+        ids = {p["weight_g"]: p["id"] for p in staging_row(food, 0)[22].obj}
+        self.assertEqual(ids[173.0], str(source_portion_uuid(namespace, "880002", medium)))
+        self.assertEqual(notes.summary()["staples"], {"applied": 1, "description_mismatch": [], "unmatched": {}})
+        self.assertEqual(notes.summary()["staple_portions"], {"170440": {"small": 138, "medium": 173, "large": 299}})
+
+    def test_avocado_half_is_the_curated_default(self):
+        notes = ImportNotes()
+        food = self.food("171705", "Avocados, raw, all commercial varieties", (
+            ("cup, pureed", 230.0), ("cup, sliced", 146.0), ("avocado, NS as to Florida or California", 201.0),
+            ("cup, cubes", 150.0)), notes)
+        self.assertIn(normalize("Avocado"), self.german(food))
+        self.assertEqual([(p.portion_key, p.weight_g, p.is_default, p.source_portion_id) for p in food.portions], [
+            ("whole", 201, False, "880003"), ("half", 100.5, True, None),
+            (None, 230, False, "880001"), (None, 146, False, "880002"), (None, 150, False, "880004")])
+        whole, half = food.portions[:2]
+        self.assertEqual(half.weight_g, whole.weight_g / 2)
+        self.assertEqual((whole.label, whole.short_label_de, whole.short_label_en), ("1 avocado", "Ganz", "Whole"))
+        self.assertEqual((half.labels, half.short_label_de, half.short_label_en),
+                         ({"de": "½ Avocado", "en": "½ avocado"}, "½", "½"))
+        self.assertEqual(notes.summary()["staples"], {"applied": 1, "description_mismatch": [], "unmatched": {}})
+
+    def test_tomato_and_carrot(self):
+        for fdc_id, description, word, extra, rows, grams in (
+            ("170457", "Tomatoes, red, ripe, raw, year round average", "Tomate", None,
+             (('small (2-2/5" dia)', 91.0), ('medium (2-3/5" dia)', 123.0), ('large (3" dia)', 182.0),
+              ("cup, chopped or sliced", 180.0)), (91, 123, 182)),
+            ("170393", "Carrots, raw", "Karotte", "Möhre",
+             (('small (5-1/2" long)', 50.0), ('medium (7-1/4" to 8-1/2" long)', 61.0),
+              ('large (7-1/4" to 8-1/2" long)', 72.0), ("cup, chopped", 128.0)), (50, 61, 72)),
+        ):
+            with self.subTest(fdc_id=fdc_id):
+                notes = ImportNotes()
+                food = self.food(fdc_id, description, rows, notes)
+                self.assertIn(normalize(word), self.german(food))
+                if extra:
+                    self.assertIn(normalize(extra), self.german(food))
+                curated = [p for p in food.portions if p.portion_key]
+                self.assertEqual([(p.portion_key, p.weight_g) for p in curated], list(zip(("small", "medium", "large"), grams)))
+                self.assertEqual([p.portion_key for p in food.portions if p.is_default], ["medium"])
+                [default] = [p for p in food.portions if p.is_default]
+                self.assertEqual(default.weight_g, grams[1])
+                self.assertEqual(notes.summary()["staples"]["unmatched"], {})
+
+    def test_extras_import_with_their_names_and_no_default(self):
+        for fdc_id, description, word in (("168409", "Cucumber, with peel, raw", "Gurke"),
+                                          ("171284", "Yogurt, plain, whole milk", "Joghurt")):
+            with self.subTest(fdc_id=fdc_id):
+                food = self.food(fdc_id, description, (("cup", 245.0),))
+                self.assertIn(normalize(word), self.german(food))
+                self.assertTrue(food.is_canonical_staple)
+                self.assertFalse(any(p.is_default for p in food.portions))
+        for fdc_id, description, word in (("170108", "Peppers, sweet, red, raw", "Paprika"), ("170000", "Onions, raw", "Zwiebel")):
+            with self.subTest(fdc_id=fdc_id):
+                food = self.food(fdc_id, description, (("small", 70.0), ("medium (2-1/2\" dia)", 110.0), ("large", 150.0)))
+                self.assertIn(normalize(word), self.german(food))
+                self.assertEqual([(p.portion_key, p.weight_g) for p in food.portions if p.is_default], [("medium", 110)])
+
+    def test_a_wrong_description_imports_a_plain_food(self):
+        notes = ImportNotes()
+        description = "Potatoes, baked, flesh and skin, without salt"
+        food = self.food("170440", description, (('medium (2-1/4" to 3-1/4" dia)', 173.0),), notes)
+        self.assertEqual(food.names, [("en", description)])
+        self.assertEqual((food.is_canonical_staple, food.canonical_group_key, food.aliases), (False, None, ()))
+        self.assertEqual([(p.portion_key, p.is_default, p.label) for p in food.portions], [(None, False, "1 medium")])
+        self.assertEqual(notes.summary()["staples"], {"applied": 0, "description_mismatch": ["170440"], "unmatched": {}})
+        # The comparison is on the normalized text.
+        self.assertTrue(self.food("170393", "carrots,  RAW", ()).is_canonical_staple)
+
+    def test_a_portion_without_exactly_one_source_row_is_reported(self):
+        notes = ImportNotes()
+        food = self.food("170440", "Potatoes, boiled, cooked without skin, flesh, without salt", (
+            ('small (1-3/4" dia)', 138.0), ('small (2" dia)', 140.0), ('medium (2-1/4" dia)', 173.0)), notes)
+        # Two small rows and no large row: nothing is guessed, both small rows stay plain, the medium one applies.
+        self.assertEqual([(p.portion_key, p.weight_g, p.label) for p in food.portions], [
+            (None, 138, "1 small (138 g)"), (None, 140, "1 small (140 g)"), ("medium", 173, "1 medium potato")])
+        self.assertEqual(notes.summary()["staples"],
+                         {"applied": 1, "description_mismatch": [], "unmatched": {"170440": ["small", "large"]}})
+        # An avocado needs its base row before the half exists.
+        avocado = self.food("171705", "Avocados, raw, all commercial varieties", (("cup, sliced", 146.0),), notes)
+        self.assertEqual([p.portion_key for p in avocado.portions], [None])
+        self.assertEqual(notes.summary()["staples"]["unmatched"]["171705"], ["whole", "half"])
 
 
 class RulesTests(unittest.TestCase):
+    def test_relabelling_keeps_every_portion_id(self):
+        g1 = usda_food({"fdc_id": "880000", "description": "Plums, raw", "nutrients": FDC_NUTRIENTS,
+                        "portions": PLUM_ROWS}, "py-etl4:staples2:fixture")
+        before = replace(g1, version="py-etl4:staples1:fixture", portions=pre_g1(PLUM_ROWS))
+
+        def ids(food):
+            return {p["weight_g"]: (p["id"], p["legacy_id"]) for p in staging_row(food, 0)[22].obj}
+
+        self.assertEqual(len(ids(g1)), 4)
+        self.assertEqual(ids(g1), ids(before))
+        old, new = ({p["weight_g"]: p for p in staging_row(food, 0)[22].obj} for food in (before, g1))
+        self.assertEqual({w: p["label"] for w, p in old.items()},
+                         {182.0: '1 medium (3" dia)', 125.0: "1 cup, chopped", 28.0: "1 slice (1 oz)", 50.0: "1 bag"})
+        self.assertEqual({w: p["label"] for w, p in new.items()},
+                         {182.0: "1 medium", 125.0: "1 US cup, chopped", 28.0: "1 slice", 50.0: "1 bag"})
+        # The legacy text travels with the portion: the merge compares it with the Go importer's rows.
+        self.assertEqual({w: p["legacy_label"] for w, p in new.items()}, {w: p["legacy_label"] for w, p in old.items()})
+        self.assertEqual(new[28.0]["legacy_label"], "1 undetermined slice (1 oz)")
+        self.assertEqual(new[28.0]["id"], new[28.0]["legacy_id"])  # Unkeyed: the legacy ID is the ID.
+        self.assertNotEqual(new[182.0]["id"], new[182.0]["legacy_id"])  # Keyed: the source portion ID is.
+        self.assertNotEqual(g1.checksum, before.checksum)
+
     def test_keyed_portion_id_follows_the_measure(self):
         namespace = uuid.uuid5(IMPORT_NAMESPACE, "usda:171688")
         medium = Portion("Medium", "portion", weight_g=182.0, source_portion_id="89193")
@@ -454,6 +836,22 @@ class PostgresTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM nutrition.portions WHERE food_id=%s AND is_default",
                                         (food_id,)).fetchone(), (1,))
 
+    def test_curated_key_moves_between_surviving_portions(self):
+        # nutrition_portions_semantic_key is checked per row: the key is released before the upsert.
+        first = Portion("1 small", "portion", weight_g=60.0, source_portion_id="777201", portion_key="medium", sort_order=20)
+        second = Portion("1 medium", "portion", weight_g=90.0, source_portion_id="777202", sort_order=120)
+        food, food_id = self.keyed_food("revision-1", portions=(first, second))
+        with psycopg.connect(os.environ["RYFT_ETL_TEST_DATABASE_URL"], autocommit=True) as db:
+            db.execute("SET ROLE ryft_nutrition_etl")
+            self.assertEqual(load_batch(db, [food]), {"inserted": 1, "duplicates": 0})
+            moved = replace(food, version="revision-2", portions=(
+                replace(second, portion_key="medium", sort_order=20), replace(first, portion_key=None, sort_order=110)))
+            self.assertEqual(load_batch(db, [moved]), {"updated": 1, "duplicates": 0})
+            self.assertEqual(db.execute("""SELECT source_portion_id,portion_key FROM nutrition.portions
+                WHERE food_id=%s ORDER BY source_portion_id""", (food_id,)).fetchall(),
+                             [("777201", None), ("777202", "medium")])
+            self.assertEqual(load_batch(db, [moved]), {"unchanged": 1, "duplicates": 0})
+
     def test_one_default_per_food_across_sources(self):
         # A second source an operator linked to the same food brings its own default: the batch
         # must not violate nutrition_portions_one_default, and the food keeps exactly one default.
@@ -494,6 +892,63 @@ class PostgresTests(unittest.TestCase):
             renamed = replace(food, version="revision-2", name="Plum, raw", names=[("en", "Plum, raw")])
             self.assertEqual(load_batch(db, [renamed]), {"updated": 1, "duplicates": 0})
             self.assertEqual(self.portion_state(db, food_id), first)
+
+    @staticmethod
+    def stored_portions(db, food_id):
+        return {float(weight): (portion_id, label) for weight, portion_id, label in db.execute(
+            "SELECT weight_g, id, label FROM nutrition.portions WHERE food_id=%s AND origin='python_etl'",
+            (food_id,)).fetchall()}
+
+    def test_g1_relabels_without_changing_portion_ids(self):
+        external_id = str(uuid.uuid4().int % 10**18 + 1)
+        row = {"fdc_id": external_id, "description": "Plums, raw", "publication_date": "2026-01-01",
+               "nutrients": FDC_NUTRIENTS, "portions": PLUM_ROWS}
+        g1 = usda_food(row, "py-etl-test:staples2:sr-legacy:fixture")
+        before = replace(g1, version="py-etl-test:staples1:sr-legacy:fixture", portions=pre_g1(PLUM_ROWS))
+        food_id = uuid.uuid5(IMPORT_NAMESPACE, f"usda:{external_id}")
+        with psycopg.connect(os.environ["RYFT_ETL_TEST_DATABASE_URL"], autocommit=True) as db:
+            db.execute("SET ROLE ryft_nutrition_etl")
+            self.assertEqual(load_batch(db, [before]), {"inserted": 1, "duplicates": 0})
+            stored = self.stored_portions(db, food_id)
+            self.assertEqual({weight: label for weight, (_, label) in stored.items()},
+                             {182.0: '1 medium (3" dia)', 125.0: "1 cup, chopped", 28.0: "1 slice (1 oz)", 50.0: "1 bag"})
+            # The release is the same, the pipeline and staples version differ: one wave of updates.
+            self.assertEqual(load_batch(db, [g1]), {"updated": 1, "duplicates": 0})
+            relabelled = self.stored_portions(db, food_id)
+            self.assertEqual({weight: portion_id for weight, (portion_id, _) in relabelled.items()},
+                             {weight: portion_id for weight, (portion_id, _) in stored.items()})
+            self.assertEqual({weight: label for weight, (_, label) in relabelled.items()},
+                             {182.0: "1 medium", 125.0: "1 US cup, chopped", 28.0: "1 slice", 50.0: "1 bag"})
+            self.assertEqual(db.execute("""SELECT labels,short_label_en,short_label_de,sort_order,portion_key,is_default
+                FROM nutrition.portions WHERE food_id=%s AND weight_g=182""", (food_id,)).fetchone(),
+                             ({"en": "1 medium", "de": "1 mittelgroßes Stück"}, "Medium", "Mittel", 20, None, False))
+            self.assertEqual(db.execute("""SELECT labels,short_label_de FROM nutrition.portions
+                WHERE food_id=%s AND weight_g=50""", (food_id,)).fetchone(), ({"en": "1 bag"}, None))
+            # A second identical load changes nothing.
+            self.assertEqual(load_batch(db, [g1]), {"unchanged": 1, "duplicates": 0})
+            self.assertEqual(self.stored_portions(db, food_id), relabelled)
+
+    def test_manual_twin_is_found_by_the_legacy_label(self):
+        external_id = str(uuid.uuid4().int % 10**18 + 1)
+        row = {"fdc_id": external_id, "description": "Plums, raw", "publication_date": "2026-01-01",
+               "nutrients": FDC_NUTRIENTS,
+               "portions": [sr_row(1, "slice (1 oz)", 28.0), sr_row(2, 'medium (3" dia)', 182.0, source_id="880001")]}
+        g1 = usda_food(row, "py-etl-test:staples2:sr-legacy:twin")
+        bare = replace(g1, version="py-etl-test:staples1:sr-legacy:twin", portions=())
+        food_id = uuid.uuid5(IMPORT_NAMESPACE, f"usda:{external_id}")
+        with psycopg.connect(os.environ["RYFT_ETL_TEST_DATABASE_URL"], autocommit=True) as db:
+            db.execute("SET ROLE ryft_nutrition_etl")
+            self.assertEqual(load_batch(db, [bare]), {"inserted": 1, "duplicates": 0})
+            db.execute("RESET ROLE")
+            # The Go importer wrote the raw text (amount measure modifier) as the label.
+            db.execute("""INSERT INTO nutrition.portions (id,food_id,source_id,label,unit,quantity,weight_g)
+                VALUES (%s,%s,%s,'1 undetermined slice (1 oz)','portion',1,28)""", (uuid.uuid4(), food_id, food_id))
+            db.execute("SET ROLE ryft_nutrition_etl")
+            self.assertEqual(load_batch(db, [g1]), {"updated": 1, "duplicates": 0})
+            db.execute("RESET ROLE")
+            self.assertEqual(db.execute("""SELECT origin,label FROM nutrition.portions WHERE food_id=%s
+                ORDER BY origin,label""", (food_id,)).fetchall(),
+                             [("manual", "1 undetermined slice (1 oz)"), ("python_etl", "1 medium")])
 
     def test_embedding_store_and_resume(self):
         external_id = str(uuid.uuid4().int % 10**18 + 1)
