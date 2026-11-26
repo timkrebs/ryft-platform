@@ -103,7 +103,9 @@ test-scripts:
 	echo "✓ test-scripts: all $$n passed"
 
 # After a production deploy (docs/OPERATIONS.md → GCP → Deploy, roll back, rotate): the edge, the
-# dedicated smoke user's sign-in, /v1/me, one tiny sync, the day read back.
+# dedicated smoke user's Google ID token (gcloud auth login once; minted and sent only to the canonical
+# https://api.ryftlab.de and https://ingest.ryftlab.de), /v1/me, one tiny sync, the day read back.
+# scripts/smoke_prod.sh --auth-preflight / --auth-bootstrap are deploy.yml's pre-rollout checks.
 smoke-prod:
 	./scripts/smoke_prod.sh
 

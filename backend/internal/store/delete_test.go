@@ -88,7 +88,7 @@ func owned(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) int {
 		(SELECT count(*) FROM plans WHERE user_id=$1) + (SELECT count(*) FROM exercises WHERE user_id=$1) +
 		(SELECT count(*) FROM connections WHERE user_id=$1) + (SELECT count(*) FROM connection_tokens WHERE user_id=$1) +
 		(SELECT count(*) FROM connection_pending WHERE user_id=$1) + (SELECT count(*) FROM connection_states WHERE user_id=$1) +
-		(SELECT count(*) FROM provider_inbox WHERE user_id=$1)`, id).Scan(&n)
+		(SELECT count(*) FROM provider_inbox WHERE user_id=$1) + (SELECT count(*) FROM smoke_account WHERE user_id=$1)`, id).Scan(&n)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,6 +207,14 @@ func TestDeleteUserErasesEverythingAndStaysDeleted(t *testing.T) {
 	a, b := uuid.New(), uuid.New()
 	seedUser(t, st, pool, a)
 	seedUser(t, st, pool, b)
+	// The operator bound a as the production smoke (0060, D286). DeleteUser has no statement for the binding: it
+	// goes with the users row (ON DELETE CASCADE); owned() counts it, so "0 rows left" below covers it.
+	if _, err := pool.Exec(ctx, `INSERT INTO smoke_account (user_id) VALUES ($1)`, a); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, pool, `SELECT count(*) FROM smoke_account WHERE user_id = $1`, a); n != 1 {
+		t.Fatalf("the smoke binding of the account to delete: %d rows", n)
+	}
 	before := owned(t, pool, b)
 	if n := attestRows(t, pool, a); n != 2 {
 		t.Fatalf("seeded App Attest rows: %d, want a key and a challenge", n)

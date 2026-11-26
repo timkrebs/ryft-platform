@@ -46,9 +46,9 @@ run "the_accounts" {
 
   assert {
     condition = toset(keys(google_service_account.this)) == toset([
-      "ryft-api", "ryft-ingest", "ryft-scoring", "ryft-notify", "ryft-migrate", "ryft-push", "ryft-deployer",
+      "ryft-api", "ryft-ingest", "ryft-scoring", "ryft-notify", "ryft-migrate", "ryft-push", "ryft-deployer", "ryft-smoke",
     ])
-    error_message = "five runtime accounts, ryft-push and ryft-deployer, nothing else (grafana-reader went with Grafana Cloud, D236)"
+    error_message = "five runtime accounts, ryft-push, ryft-deployer and ryft-smoke (D286), nothing else (grafana-reader went with Grafana Cloud, D236)"
   }
 
   # The deployer bootstrap and the optional Cloud SQL client are the two project-level members.
@@ -294,11 +294,12 @@ run "deployer_holds_no_iam_admin_role" {
     error_message = "the deployer holds exactly run.developer, serviceAccountUser (runtime accounts) and artifactregistry.writer"
   }
 
-  # No binding elsewhere names the deployer: exactly the five above reference its member (code lines;
-  # a # comment may name it).
+  # No binding elsewhere names the deployer: exactly the six above reference its member (code lines;
+  # a # comment may name it). The sixth is D286's openid-token-creator on ryft-smoke, pinned in
+  # tests/smoke.tftest.hcl: it grants no right on a runtime account, a service or the project.
   assert {
-    condition     = length(regexall("(?m)^[^#\\n]*member\\[\"ryft-deployer\"\\]", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 5
-    error_message = "the deployer's member appears in exactly five bindings (run.developer project-wide, on the services, on the job; actAs; the repository)"
+    condition     = length(regexall("(?m)^[^#\\n]*member\\[\"ryft-deployer\"\\]", join("\n", [for f in fileset(path.module, "*.tf") : file("${path.module}/${f}")]))) == 6
+    error_message = "the deployer's member appears in exactly six bindings (run.developer project-wide, on the services, on the job; actAs; the repository; ID tokens of ryft-smoke)"
   }
 
   assert {

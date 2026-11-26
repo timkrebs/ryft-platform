@@ -62,6 +62,12 @@ spec:
             - { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }
             - { name: PUSH_SA_EMAIL, value: ryft-push@ryftlab-prod.iam.gserviceaccount.com }
             - { name: PUSH_SA_ID, value: "${PUSH_SA_ID}" }
+            # The production smoke (D286): a Google ID token of ryft-smoke is the smoke account's and nobody else's.
+            # All four set, as in api.yaml (check_cloudrun.py), or the service refuses to start.
+            - { name: SMOKE_OIDC_SA_EMAIL, value: ryft-smoke@ryftlab-prod.iam.gserviceaccount.com }
+            - { name: SMOKE_OIDC_SA_ID, value: "${SMOKE_SA_ID}" }
+            - { name: SMOKE_OIDC_AUDIENCE, value: ryft-smoke }
+            - { name: SMOKE_USER_ID, value: "${SMOKE_USER_ID}" }
             - { name: LOG_LEVEL, value: "${LOG_LEVEL}" }
   traffic:
     - { percent: 100, latestRevision: true }

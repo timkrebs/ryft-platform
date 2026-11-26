@@ -10,7 +10,7 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 | File | What |
 | --- | --- |
 | `project.tf` | the API keep list (`google_project_service`, `disable_on_destroy = false`; 16, and Compute Engine and Certificate Manager from `edge = "built"` on), Data Access audit logs (`DATA_READ`) for Secret Manager, STS and IAM credentials (every secret read and token mint), the Pub/Sub and Cloud Scheduler service agents |
-| `iam.tf` | the accounts `ryft-<api,ingest,scoring,notify,migrate>`, `ryft-push`, `ryft-deployer` (no key, ever; `grafana-reader` went with Grafana Cloud, D236); the deployer's rights (**The deployer**, below); Pub/Sub's token creator on `ryft-push` |
+| `iam.tf` | the accounts `ryft-<api,ingest,scoring,notify,migrate>`, `ryft-push`, `ryft-deployer`, `ryft-smoke` (no key, ever; `grafana-reader` went with Grafana Cloud, D236); the deployer's rights (**The deployer**, below); Pub/Sub's token creator on `ryft-push`; the ID-token minters of `ryft-smoke` (**The smoke identity**, below) |
 | `wif.tf` | the GitHub pool `github` and provider `github-actions` (condition by repository and owner ID, `deploy.yml` on `main`, environment `deploy` or `site`, a GitHub-hosted runner); one principal set per environment, `ryft-deployer` bound to `deploy`'s alone (D233), `site`'s for `site-deployer` in ryftlab-site (by hand, step 10a) |
 | `secrets.tf` | the 13 secret containers in use (ticket B's 10, `posthog-project-key`, D231, App Attest's token ring `app-attest-token-key`, api and ingest, D247, and Garmin's OAuth client secret `connect-garmin-client-secret`, api alone, D257: empty until phase 2), `prevent_destroy`, 30-day delayed destruction, accessors on each secret; `retired`: `otlp-token` and its accessor without `prevent_destroy`, on their way out (OPERATIONS → GCP 11.6). **No values**: they never pass through state |
 | `pubsub.tf`, `pubsub.auto.tfvars.json` | topics (messages stored in `europe-west1` only; `enforce_in_transit` stays off, so the Scheduler's publish and an operator's `gcloud pubsub` through the global endpoint still work), push and hold subscriptions, publisher bindings per topic, the agents' bindings. The JSON is written by `go run ./cmd/pubsub-topology` (PR A); do not edit it by hand once that exists |
@@ -235,6 +235,23 @@ the five runtime accounts, and `artifactregistry.writer` on `ryft`. Never an IAM
 Runbook step 9's fallback (a permission error on `run.*` after apply 2) is PR 1 alone, and nothing
 else.
 
+## The smoke identity
+
+`ryft-smoke` (D286) is the subject of the production smoke's Google ID token (audience `ryft-smoke`):
+api and ingest map that token to the smoke account and to nobody else. The account holds **no role**
+(not on the project, not on a secret, not as an actAs target) and has no key; it exists to be minted for.
+
+- Who may mint: `ryft-deployer` (`deploy.yml`'s preflight) and the members of `smoke_token_creators`
+  (operators for `make smoke-prod`), each with `roles/iam.serviceAccountOpenIdTokenCreator` on
+  `ryft-smoke`: ID tokens only. Never `serviceAccountTokenCreator`, which also gives access tokens,
+  `signBlob` and `signJwt`. `tests/smoke.tftest.hcl` pins both.
+- `smoke_token_creators` (`list(string)`, default `[]`): `user:<email>` or `group:<email>` only; a
+  service account, a domain, `allUsers` and duplicates are refused. A workspace variable (HCL on,
+  Sensitive off), never a committed file: the addresses are personal.
+- Every mint is a Data Access entry (`iam.googleapis.com`, `project.tf`), 14 days in `ryft-logs`.
+- Outputs: `smoke_sa_unique_id` (`SMOKE_SA_ID` in `deploy/run/config.env`; known only after the apply:
+  `terraform output -raw smoke_sa_unique_id`) and `smoke_sa_email`.
+
 ## The applies
 
 The arithmetic of each count is in the runbook (steps 4, 9, 11, 14a.9 and the stop line).
@@ -297,6 +314,15 @@ The arithmetic of each count is in the runbook (steps 4, 9, 11, 14a.9 and the st
    a mapping changes, or anything is destroyed. The secret's value is phase 2's (`gcloud secrets
    versions add connect-garmin-client-secret --data-file=…`), and `deploy/run/api.yaml` pins it only
    then. Cost: Cloud Armor bills the rule, $1 a month (D242 → Cost); the rest is free at RYFT's volume.
+10. **The smoke identity** (D286, before the PR's merge: `SMOKE_SA_ID` comes from this apply). 2 to add
+    (`google_service_account.this["ryft-smoke"]`, `google_service_account_iam_member.smoke_deployer_id_token`),
+    plus one `smoke_operator_id_token["user:…"]` for each member of `smoke_token_creators` set in the
+    workspace; 0 to change, 0 to destroy. Two outputs appear (`smoke_sa_unique_id`, `smoke_sa_email`).
+    **Stop if** anything is changed or destroyed, a secret, a subscription, a record set, a backend
+    service, a mapping or a project-level IAM member is touched, or a binding names a role other than
+    `roles/iam.serviceAccountOpenIdTokenCreator` on `ryft-smoke`. Cost: $0 (a service account, IAM
+    bindings and a handful of token mints are free). Then `terraform output -raw smoke_sa_unique_id`
+    into `SMOKE_SA_ID` (digits, not a secret).
 
 ```bash
 cd infra/gcp
@@ -314,6 +340,8 @@ them with placeholders. `github_repository_id`, `github_repository_owner_id` and
 resource name, `projects/<project>/notificationChannels/<number>`) is set in the workspace UI only,
 never in a committed file: it is per device. Not sensitive, an opaque id (D237), so Sensitive off in
 HCP too. Null (the default, unset) keeps every alert policy out; an empty string is refused (step 11.1).
+`smoke_token_creators` (`["user:<email>", …]`, HCL on, default `[]`) is the same kind: per person, a
+workspace variable only (**The smoke identity**).
 
 The apply account `hcp-terraform-apply` needs four Monitoring roles for `alerts.tf` and
 `monitoring.tf` beyond the bootstrap's (step 11.2): `roles/monitoring.uptimeCheckConfigEditor`,
