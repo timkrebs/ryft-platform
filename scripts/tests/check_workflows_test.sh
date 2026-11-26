@@ -204,7 +204,8 @@ grep -q "deploy2.yml: job 'site' names an environment" "$tmp/err" || fail "the s
 # --- deploy.yml (Cloud Run): the gate, the triggers, the token, the serialization, the wait.
 DEPLOY_IF="    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES == '' && needs.ci.outputs.current == 'true'"
 TIP_IF="        if: steps.tip.outputs.current == 'true'"
-SMOKE_IF="        if: steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.smoke)"
+PREFLIGHT_IF="        if: steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.auth_preflight)"
+BOOTSTRAP_IF="        if: steps.tip.outputs.current == 'true' && github.event_name == 'workflow_dispatch' && !inputs.auth_preflight"
 deploy_swap "a deploy.yml job without the gate" "must start with vars.GCP_DEPLOY" "    if: vars.GCP_DEPLOY == 'on'" "    if: always()"
 deploy_swap "the gate behind an ||" "must start with vars.GCP_DEPLOY" \
   "$DEPLOY_IF" "    if: vars.GCP_DEPLOY == 'on' || vars.DEPLOY_HOLD_SERVICES == '' && needs.ci.outputs.current == 'true'"
@@ -227,10 +228,56 @@ job_swap "the hold with a token" "has no token" held "    permissions: {}" "    
 # Only main's tip deploys: the job, and every step that changes Cloud Run or smokes.
 deploy_swap "a deploy that ignores the superseded wait" "needs.ci.outputs.current" "$DEPLOY_IF" "    if: vars.GCP_DEPLOY == 'on' && vars.DEPLOY_HOLD_SERVICES == ''"
 job_swap "migrate and the services without the tip gate" "steps.tip.outputs.current == 'true'" deploy "$TIP_IF" "        if: github.sha != ''"
-deploy_swap "the smoke's tip gate undone by a top-level ||" "no || outside parentheses" \
-  "$SMOKE_IF" "        if: steps.tip.outputs.current == 'true' && github.event_name != 'workflow_dispatch' || inputs.smoke"
-deploy_swap "smoke preflight removed" "smoke auth preflight must come before rollout" \
+deploy_swap "the preflight's tip gate undone by a top-level ||" "no || outside parentheses" \
+  "$PREFLIGHT_IF" "        if: steps.tip.outputs.current == 'true' && github.event_name != 'workflow_dispatch' || inputs.auth_preflight"
+deploy_swap "the bootstrap's tip gate undone by a top-level ||" "no || outside parentheses" \
+  "$BOOTSTRAP_IF" "        if: steps.tip.outputs.current == 'true' && github.event_name == 'workflow_dispatch' || !inputs.auth_preflight"
+deploy_swap "smoke preflight removed" "preflight and bootstrap (one step each) must come before rollout" \
   '          SMOKE_AUTH_FILE="$RUNNER_TEMP/ryft-smoke-auth.json" ./scripts/smoke_prod.sh --auth-preflight' '          true'
+deploy_swap "smoke bootstrap removed" "preflight and bootstrap (one step each) must come before rollout" \
+  '          ./scripts/smoke_prod.sh --auth-bootstrap' '          true'
+# D286 inputs and gates: auth_preflight (boolean, default true) replaced `smoke`; no input skips the post-rollout smoke.
+deploy_swap "auth_preflight defaults to false" "needs the input \`auth_preflight\`" "        default: true" "        default: false"
+deploy_swap "the old input name back" "needs the input \`auth_preflight\`" "      auth_preflight:" "      smoke:"
+fresh
+yq -i '."on".workflow_dispatch.inputs.smoke = {"type": "boolean", "default": true}' "$d/deploy.yml"
+run
+expect_fail "the input smoke next to auth_preflight" "has an input \`smoke\`"
+# set_if <step name> <condition>: that step's `if` replaced in a fresh copy (parsed, so the condition is exactly what is given).
+set_if() { fresh; step="$1" cond="$2" yq -i '(.jobs.deploy.steps[] | select(.name == strenv(step)).if) = strenv(cond)' "$d/deploy.yml"; run; }
+PRE="Verify production smoke authentication"
+POST="make smoke-prod, and roll back when it fails"
+set_if "$PRE" "steps.tip.outputs.current == 'true'"
+expect_fail "the preflight runs on every dispatch" "smoke auth preflight: its \`if\` must be exactly"
+set_if "$PRE" "steps.tip.outputs.current == 'true' && inputs.auth_preflight"
+expect_fail "the preflight skipped on a push" "smoke auth preflight: its \`if\` must be exactly"
+deploy_swap "the bootstrap runs with the preflight on" "smoke auth bootstrap: its \`if\` must be exactly" \
+  "$BOOTSTRAP_IF" "        if: steps.tip.outputs.current == 'true' && github.event_name == 'workflow_dispatch'"
+set_if "$POST" "steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.auth_preflight)"
+expect_fail "an input skips the post-rollout smoke" "no input skips it"
+set_if "$POST" "steps.tip.outputs.current == 'true' && github.event_name == 'push'"
+expect_fail "the post-rollout smoke only on a push" "no input skips it"
+# The post-rollout smoke mints afresh (the preflight's session file is not its), and rolls back inside its own step.
+deploy_swap "the post-rollout smoke reuses the session file" "mints a fresh token, not the preflight's session" \
+  '          unset SMOKE_AUTH_FILE' '          SMOKE_AUTH_FILE="$RUNNER_TEMP/ryft-smoke-auth.json"'
+deploy_swap "the post-rollout smoke leaves the session variable alone" "mints a fresh token, not the preflight's session" \
+  '          unset SMOKE_AUTH_FILE' '          true'
+deploy_swap "no rollback command in the smoke step" "the smoke step rolls back itself" \
+  '               gcloud run services update-traffic "$s" --to-revisions="$prev=100" --region="$REGION" --project="$PROJECT" --quiet; then' '               true; then'
+deploy_swap "the rollback in another order" "the smoke step rolls back itself" \
+  '          for s in api ingest notify scoring; do' '          for s in scoring notify ingest api; do'
+deploy_swap "the rollback without the recorded revisions" "the smoke step rolls back itself" \
+  '            prev=$(sed -n "s/^$s //p" "$RUNNER_TEMP/previous" | head -n 1)' '            prev=x'
+deploy_swap "the smoke step does not fail the run" "the smoke step rolls back itself" '          exit 1' '          exit 0'
+deploy_swap "a rollback outside the smoke step" "belongs in the post-rollout smoke step only" \
+  "      - name: Sign out" "      - name: Roll back early\n        if: steps.tip.outputs.current == 'true'\n        run: gcloud run services update-traffic api --to-revisions=api-00001-abc=100\n      - name: Sign out"
+# The serving revisions are recorded before anything rolls (before migrate, and so before the services).
+deploy_swap "the revisions are not read from the service" "records the serving revisions" \
+  '            json=$(gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format=json) ||' '            json=$(true) ||'
+deploy_swap "the revisions are recorded after migrate started" "records the serving revisions" \
+  "      - name: Record the revisions serving traffic" "      - name: Early migrate\n        if: steps.tip.outputs.current == 'true'\n        run: gcloud run jobs execute migrate\n      - name: Record the revisions serving traffic"
+deploy_swap "only some services are recorded" "reads status.traffic" \
+  '          for s in scoring notify ingest api; do' '          for s in scoring notify ingest; do'
 # D286: the smoke authenticates with a Google ID token of ryft-smoke, minted with the job's sign-in; neither smoke
 # step takes a secret, an env of the retired names or the anon key.
 SMOKE_NAME="      - name: Verify production smoke authentication"
@@ -264,11 +311,9 @@ deploy_swap "SMOKE_TOKEN written to GITHUB_ENV" "names SMOKE_\\* and \\\$GITHUB_
 deploy_swap "SMOKE_TOKEN written to GITHUB_ENV through a variable" "names SMOKE_\\* and \\\$GITHUB_ENV" \
   "      - name: Sign out" "      - name: Smuggle\n        run: |\n          f=\${GITHUB_ENV}\n          printf 'SMOKE_TOKEN=%s\\\\n' x >> \"\$f\"\n      - name: Sign out"
 deploy_swap "a secret in the post-rollout smoke" "it takes no secret" \
-  "      - name: make smoke-prod" "      - name: make smoke-prod\n        env:\n          X: \${{ secrets.SMOKE_EMAIL }}"
-fresh
-tip_gate="${TIP_IF#*if: }" yq -i '(.jobs.deploy.steps[] | select(.name == "Verify production smoke authentication").if) = strenv(tip_gate)' "$d/deploy.yml"
-run
-expect_fail "smoke preflight and post-rollout gates disagree" "under the same gate"
+  "      - name: make smoke-prod, and roll back when it fails" "      - name: make smoke-prod, and roll back when it fails\n        env:\n          X: \${{ secrets.SMOKE_EMAIL }}"
+deploy_swap "a secret in the bootstrap" "it takes no secret" \
+  "      - name: Bootstrap smoke authentication (the running api predates D286)" "      - name: Bootstrap smoke authentication (the running api predates D286)\n        env:\n          X: \${{ secrets.SMOKE_EMAIL }}"
 job_swap "no tip step" "deploy job has no step with id" deploy "        id: tip" "        id: tip2"
 # Build and scan before any sign-in or push, with no third-party action and no docker.sock.
 deploy_swap "setup-buildx-action back" "its only action" \
@@ -629,4 +674,4 @@ if [ "$failures" -gt 0 ]; then
   echo "✗ check_workflows_test: $failures case(s) failed" >&2
   exit 1
 fi
-echo "✓ check_workflows_test: parsed, not grepped: triggers, the environment only in deploy.yml's deploy and site, the old App key nowhere, deploy.yml's gate, status functions, continue-on-error, triggers, tokens, concurrency, the superseded and tip gates, scan before sign-in, no secret (secrets.*, SUPABASE_ANON_KEY, SMOKE_EMAIL, SMOKE_PASSWORD, SMOKE_TOKEN) in the smoke steps (D286), no third-party action or docker.sock, the site built without a token and deployed and checked only from main's tip (switch, actions by SHA, no cache, nothing signs in up to tip), ci-ok only in ci.yml, no external reusable workflows, no secrets: inherit or dynamic secrets, no test hooks"
+echo "✓ check_workflows_test: parsed, not grepped: triggers, the environment only in deploy.yml's deploy and site, the old App key nowhere, deploy.yml's gate, status functions, continue-on-error, triggers, tokens, concurrency, the superseded and tip gates, scan before sign-in, no secret (secrets.*, SUPABASE_ANON_KEY, SMOKE_EMAIL, SMOKE_PASSWORD, SMOKE_TOKEN) in the smoke steps (D286), the auth_preflight input and the exact gates of the preflight, the bootstrap and the post-rollout smoke (no input skips it, it mints afresh and rolls back inside its own step, in order), the serving revisions recorded before migrate, no third-party action or docker.sock, the site built without a token and deployed and checked only from main's tip (switch, actions by SHA, no cache, nothing signs in up to tip), ci-ok only in ci.yml, no external reusable workflows, no secrets: inherit or dynamic secrets, no test hooks"

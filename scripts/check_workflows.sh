@@ -31,7 +31,14 @@
 #      including it names gcloud, the OIDC request variables, docker login or docker push (sign-in
 #      and push come after the scan); every step that runs `gcloud run` or the smoke comes after the
 #      step `tip` and its `if` starts with steps.tip.outputs.current == 'true' (no || outside
-#      parentheses: && binds tighter and would undo the gate). The site (C1): site-build (npm runs
+#      parentheses: && binds tighter and would undo the gate). The smoke (D286): the dispatch input is
+#      `auth_preflight` (boolean, default true; no `smoke` input), the preflight runs on a push or with it
+#      on, the bootstrap only on a dispatch with it off, both before migrate; the post-rollout
+#      `make smoke-prod` has the tip gate alone (no input skips it), mints afresh (unsets
+#      SMOKE_AUTH_FILE) and rolls back inside its own step (`update-traffic` from $RUNNER_TEMP/previous,
+#      api, ingest, notify, scoring, then exit 1); the step that records the serving revisions
+#      (`services describe` into $RUNNER_TEMP/previous) comes before migrate and the services; no
+#      smoke step takes a secret. The site (C1): site-build (npm runs
 #      code there) has no id-token and no environment, and its only actions are checkout,
 #      setup-node and upload-artifact by SHA; site runs in concurrency group `site` with
 #      cancel-in-progress false, its only actions are checkout, setup-node (no cache key, and
@@ -193,7 +200,17 @@ TIP_GATE = re.compile(r"steps\.tip\.outputs\.current\s*==\s*'true'")
 SCAN = re.compile(r"\$\{?TRIVY\}?\"?\s+image\b[^\n]*\s--input\b")
 SIGNS_IN = re.compile(r"ACTIONS_ID_TOKEN_REQUEST|(?<![A-Za-z0-9_\-])gcloud(?![A-Za-z0-9_\-])|(?<![A-Za-z0-9_\-])docker\b[^\n;&|]*?\b(?:login|push)\b")
 CHANGES_RUN = re.compile(r"(?<![A-Za-z0-9_\-])gcloud\s+run\s|(?<![A-Za-z0-9_\-])make\s+smoke-prod\b")
-SMOKE_AUTH = re.compile(r"scripts/smoke_prod\.sh\s+--auth-preflight\b")
+SMOKE_AUTH = re.compile(r"scripts/smoke_prod\.sh\s+--auth-(?:preflight|bootstrap)\b")
+SMOKE_PREFLIGHT = re.compile(r"scripts/smoke_prod\.sh\s+--auth-preflight\b")
+SMOKE_BOOTSTRAP = re.compile(r"scripts/smoke_prod\.sh\s+--auth-bootstrap\b")
+# The `if` of each smoke step, exactly (D286): the preflight on a push or when the input is true, the bootstrap
+# only on a dispatch with the input off, the post-rollout smoke on the tip gate alone, no input skips it.
+PREFLIGHT_IF = "steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.auth_preflight)"
+BOOTSTRAP_IF = "steps.tip.outputs.current == 'true' && github.event_name == 'workflow_dispatch' && !inputs.auth_preflight"
+SMOKE_IF = "steps.tip.outputs.current == 'true'"
+UPDATE_TRAFFIC = re.compile(r"\bgcloud\s+run\s+services\s+update-traffic\b")
+DESCRIBE = re.compile(r"\bgcloud\s+run\s+services\s+describe\b")
+PREVIOUS_FILE = re.compile(r"\$\{?RUNNER_TEMP\}?/previous\b")
 SMOKE_RUN = re.compile(r"\bmake\s+smoke-prod\b")
 SMOKE_ENV_NAME = re.compile(r"SMOKE_(?:EMAIL|PASSWORD|TOKEN)|SUPABASE_ANON_KEY", re.I)
 SMOKE_ENV_VALUE = re.compile(r"\bsecrets\s*(?:\.\s*SMOKE_[A-Za-z0-9_]*|\[\s*['\"]SMOKE_[A-Za-z0-9_]*)|\bSUPABASE_ANON_KEY\b", re.I)
@@ -273,6 +290,14 @@ if is_deploy:
     on = wf.get("on")
     if not isinstance(on, dict) or set(on) != {"push", "workflow_dispatch"} or on.get("push") != {"branches": ["main"]}:
         fail("deploy.yml runs on exactly `push: {branches: [main]}` and `workflow_dispatch`")
+    # The dispatch's inputs: `auth_preflight` (boolean, default true) replaced `smoke`; no input skips the post-rollout smoke.
+    wd = on.get("workflow_dispatch") if isinstance(on, dict) else None
+    ins = wd.get("inputs") if isinstance(wd, dict) and isinstance(wd.get("inputs"), dict) else {}
+    ap = ins.get("auth_preflight")
+    if not (isinstance(ap, dict) and ap.get("type") == "boolean" and ap.get("default") is True):
+        fail("deploy.yml's workflow_dispatch needs the input `auth_preflight` (type boolean, default true), D286")
+    if "smoke" in ins:
+        fail("deploy.yml's workflow_dispatch has an input `smoke`: no input skips the post-rollout smoke (D286); `auth_preflight` only picks the preflight or the bootstrap")
     # D286: nothing hands the smoke helper a token, an email or a password behind the smoke steps' backs: not the
     # workflow's `env:`, not any job's, and no run script that writes a SMOKE_ name to $GITHUB_ENV (the helper
     # would use SMOKE_TOKEN instead of minting its own).
@@ -369,17 +394,52 @@ if is_deploy:
                 if not (tip is not None and n > tip and isinstance(cond, str) and TIP_GATE.match(cond.strip()) and not top_level_or(cond)):
                     fail(f"deploy.yml's deploy job, {step_label(n, steps[n])}: it changes Cloud Run or smokes, so it comes after the "
                          f"step `tip` and its `if` starts with steps.tip.outputs.current == 'true' (no || outside parentheses), is {cond!r}")
-        auth_steps = [n for n, r in enumerate(runs) if SMOKE_AUTH.search(r)]
+        pre_steps = [n for n, r in enumerate(runs) if SMOKE_PREFLIGHT.search(r)]
+        boot_steps = [n for n, r in enumerate(runs) if SMOKE_BOOTSTRAP.search(r)]
+        auth_steps = pre_steps + boot_steps
         smoke_steps = [n for n, r in enumerate(runs) if SMOKE_RUN.search(r)]
         rollout_steps = [n for n, r in enumerate(runs) if ROLLOUT.search(r)]
-        if not (len(auth_steps) == len(smoke_steps) == 1 and rollout_steps and
-                auth_steps[0] < min(rollout_steps) <= max(rollout_steps) < smoke_steps[0] and
-                steps[auth_steps[0]].get("if") == steps[smoke_steps[0]].get("if")):
-            fail("deploy.yml's smoke auth preflight must come before rollout, under the same gate as the post-rollout smoke")
+        services_steps = [n for n, r in enumerate(runs) if re.search(r"\bgcloud\s+run\s+services\s+replace\b", r)]
+        if not (len(pre_steps) == len(boot_steps) == len(smoke_steps) == 1 and rollout_steps and
+                max(auth_steps) < min(rollout_steps) <= max(rollout_steps) < smoke_steps[0]):
+            fail("deploy.yml's smoke auth preflight and bootstrap (one step each) must come before rollout, and the post-rollout smoke (one step) after it")
+        else:
+            if steps[pre_steps[0]].get("if") != PREFLIGHT_IF:
+                fail(f"deploy.yml's smoke auth preflight: its `if` must be exactly `{PREFLIGHT_IF}` (a push, or a dispatch with auth_preflight on), is {steps[pre_steps[0]].get('if')!r}")
+            if steps[boot_steps[0]].get("if") != BOOTSTRAP_IF:
+                fail(f"deploy.yml's smoke auth bootstrap: its `if` must be exactly `{BOOTSTRAP_IF}` (only a dispatch with auth_preflight off), is {steps[boot_steps[0]].get('if')!r}")
+            sm = steps[smoke_steps[0]]
+            if sm.get("if") != SMOKE_IF:
+                fail(f"deploy.yml's post-rollout smoke: its `if` must be exactly `{SMOKE_IF}` (no input skips it, D286), is {sm.get('if')!r}")
+            sr = runs[smoke_steps[0]]
+            # The session file of the preflight is not the smoke's: it mints afresh (no SMOKE_AUTH_FILE set for it).
+            if re.search(r"SMOKE_AUTH_FILE\s*=", sr) or not re.search(r"unset\s+SMOKE_AUTH_FILE\b", sr):
+                fail(f"deploy.yml's deploy job, {step_label(smoke_steps[0], sm)}: it unsets SMOKE_AUTH_FILE and never sets it: the post-rollout smoke mints a fresh token, not the preflight's session")
+            # The rollback lives inside the smoke step (no status function may run a later step after its failure).
+            if not (UPDATE_TRAFFIC.search(sr) and "--to-revisions" in sr and PREVIOUS_FILE.search(sr) and
+                    re.search(r"\bfor\s+\w+\s+in\s+api\s+ingest\s+notify\s+scoring\s*;", sr) and re.search(r"\bexit\s+1\b", sr)):
+                fail(f"deploy.yml's deploy job, {step_label(smoke_steps[0], sm)}: the smoke step rolls back itself when `make smoke-prod` fails: "
+                     "`gcloud run services update-traffic <svc> --to-revisions=<previous>=100` from $RUNNER_TEMP/previous for api, ingest, notify, "
+                     "scoring in that order, then `exit 1`")
+            for n, r in enumerate(runs):
+                if n != smoke_steps[0] and UPDATE_TRAFFIC.search(r):
+                    fail(f"deploy.yml's deploy job, {step_label(n, steps[n])}: `gcloud run services update-traffic` belongs in the post-rollout smoke step only (the rollback)")
+            # The serving revisions are recorded before anything rolls: before migrate, and so before the services.
+            prev_steps = [n for n, r in enumerate(runs) if DESCRIBE.search(r) and PREVIOUS_FILE.search(r) and not UPDATE_TRAFFIC.search(r)]
+            if len(prev_steps) != 1 or not services_steps or not prev_steps[0] < min(rollout_steps) <= min(services_steps):
+                fail("deploy.yml's deploy job needs one step before migrate and the services that records the serving revisions: "
+                     "`gcloud run services describe` into $RUNNER_TEMP/previous")
+            else:
+                pr = runs[prev_steps[0]]
+                if not (re.search(r"\bfor\s+\w+\s+in\s+scoring\s+notify\s+ingest\s+api\s*;", pr) and "--format=json" in pr and
+                        "traffic" in pr and "percent" in pr and "revisionName" in pr):
+                    fail(f"deploy.yml's deploy job, {step_label(prev_steps[0], steps[prev_steps[0]])}: it reads status.traffic (--format=json) of scoring, notify, ingest and api, "
+                         "one entry with percent 100 and its revisionName")
         # D286: the smoke's identity is a Google ID token of ryft-smoke, minted with the job's own sign-in. Neither smoke
         # step takes a secret (an expression `secrets.`, or the retired email, password, token and anon-key names).
         for n in auth_steps + smoke_steps:
-            m = SMOKE_SECRET.search(json.dumps(steps[n]))
+            # The script itself is searched as text, not through json.dumps: a "\n" escape before a name hides its \b.
+            m = SMOKE_SECRET.search(runs[n]) or SMOKE_SECRET.search(json.dumps({k: v for k, v in steps[n].items() if k != "run"}))
             if m:
                 fail(f"deploy.yml's deploy job, {step_label(n, steps[n])}: `{m.group(0)}`: the smoke authenticates with a Google ID "
                      "token of ryft-smoke minted by the job's own sign-in; it takes no secret (no secrets.*, SUPABASE_ANON_KEY, "

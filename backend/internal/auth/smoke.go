@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 )
@@ -17,13 +19,32 @@ import (
 // token itself, so a forged iss reaches a verifier that rejects it, never one that accepts it.
 type smokeVerifier struct {
 	supabase Verifier
-	google   *GoogleOIDC
+	google   atomic.Pointer[GoogleOIDC] // nil until built: a smoke token is a 503 meanwhile
 	user     uuid.UUID
 }
 
 // newSmoke wraps supabase. google must be built for the one smoke service account and audience.
 func newSmoke(supabase Verifier, google *GoogleOIDC, user uuid.UUID) Verifier {
-	return &smokeVerifier{supabase: supabase, google: google, user: user}
+	s := &smokeVerifier{supabase: supabase, user: user}
+	s.google.Store(google)
+	return s
+}
+
+// newSmokeAsync wraps supabase and builds the Google verifier in a goroutine: its constructor
+// reads Google's JWKS once, and a stalled endpoint must not hold up the service's start (D286).
+// Until build has returned, a smoke token gets 503 smoke_jwks_unavailable; Supabase tokens never
+// wait. A build error is logged once and leaves the smoke sign-in unavailable.
+func newSmokeAsync(ctx context.Context, supabase Verifier, build func(context.Context) (*GoogleOIDC, error), user uuid.UUID) Verifier {
+	s := &smokeVerifier{supabase: supabase, user: user}
+	go func() {
+		g, err := build(ctx)
+		if err != nil {
+			slog.Default().ErrorContext(ctx, "smoke sign-in unavailable: the Google verifier could not be built", "err", err)
+			return
+		}
+		s.google.Store(g)
+	}()
+	return s
 }
 
 // Verify sends a token whose payload names a Google issuer to the Google verifier and
@@ -34,7 +55,11 @@ func (s *smokeVerifier) Verify(ctx context.Context, token string) (Principal, er
 	if !googleIssued(token) {
 		return s.supabase.Verify(ctx, token)
 	}
-	if err := s.google.Verify(ctx, token); err != nil {
+	g := s.google.Load()
+	if g == nil {
+		return Principal{}, Unavailable("smoke_jwks_unavailable", errors.New("the Google verifier is not built yet"))
+	}
+	if err := g.Verify(ctx, token); err != nil {
 		var ae *Error
 		if errors.As(err, &ae) {
 			return Principal{}, &Error{Status: ae.Status, Reason: "smoke_" + ae.Reason, Err: ae.Err}

@@ -15,7 +15,11 @@
 #   python3 -I scripts/lib/smoke_auth.py mint "$f"   # $f: a path that does not exist yet
 #   SMOKE_TOKEN=$(cat "$f") make smoke-prod; rm -f "$f"
 # (or a Supabase access JWT whose sub is SMOKE_USER_ID). Against a loopback stack SMOKE_TOKEN is the
-# only way in. deploy.yml uses --auth-preflight and a private SMOKE_AUTH_FILE across rollout.
+# only way in. A Google smoke token is minted and sent only to https://api.ryftlab.de and
+# https://ingest.ryftlab.de (the helper refuses any other origin, even with a SMOKE_TOKEN of Google's);
+# another remote target needs a SMOKE_TOKEN that is a Supabase access JWT of SMOKE_USER_ID.
+# deploy.yml runs --auth-preflight before the rollout (or --auth-bootstrap, the one deploy against a
+# revision before D286, which must see 401) and a plain `make smoke-prod` after it, minting fresh.
 # With ADMIN_API_KEY, a smoke user without beta access gets a one-use invite code
 # (once; it keeps the access), so the smoke also passes with BETA_GATE on. The key comes
 # from the environment only (scripts/lib/admin.sh says how to read production's).
@@ -30,20 +34,33 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 API=${API_URL:-https://api.ryftlab.de}
 INGEST=${INGEST_URL:-https://ingest.ryftlab.de}   # its own host on Cloud Run (design §3: HTTP/2 end to end for 32 MiB syncs)
 fail() { echo "✗ smoke-prod: $*" >&2; exit 1; }
-if [ "${1:-}" = --auth-preflight ] && [ "$#" -eq 1 ]; then
-  [ -n "${SMOKE_AUTH_FILE:-}" ] || fail 'set SMOKE_AUTH_FILE for the preflight session'
-  python3 -I "$HERE/lib/smoke_auth.py" prepare "$API" "$INGEST" "$SMOKE_AUTH_FILE"
-  echo '✓ smoke-prod auth preflight: verified dedicated session'
-  exit 0
-fi
-[ "$#" -eq 0 ] || fail 'usage: smoke_prod.sh [--auth-preflight]'
-
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+# --auth-preflight: mint, check the claims, require GET /v1/me to return the smoke account (the new api
+#   accepts the token). Nothing is kept: the run after the rollout mints its own fresh token. A private
+#   SMOKE_AUTH_FILE, if set, still receives the session (compatibility; `run` reads it only when set).
+# --auth-bootstrap: only against a revision before D286 (the one deploy that has to precede the preflight):
+#   mint (the IAM binding works), then require GET /v1/me to answer 401. Writes no session.
+case "${1:-}" in
+  --auth-preflight)
+    [ "$#" -eq 1 ] || fail 'usage: smoke_prod.sh [--auth-preflight | --auth-bootstrap]'
+    python3 -I "$HERE/lib/smoke_auth.py" prepare "$API" "$INGEST" "${SMOKE_AUTH_FILE:-$tmp/preflight.json}"
+    echo '✓ smoke-prod auth preflight: the smoke token is accepted as the smoke account'
+    exit 0 ;;
+  --auth-bootstrap)
+    [ "$#" -eq 1 ] || fail 'usage: smoke_prod.sh [--auth-preflight | --auth-bootstrap]'
+    python3 -I "$HERE/lib/smoke_auth.py" bootstrap "$API" "$INGEST"
+    exit 0 ;;
+esac
+[ "$#" -eq 0 ] || fail 'usage: smoke_prod.sh [--auth-preflight | --auth-bootstrap]'
+
 json() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
 python3 -I "$HERE/lib/smoke_auth.py" run "$API" "$INGEST" "$tmp/verified.json"
 TOKEN=$(json 'd["token"]' < "$tmp/verified.json")
 me=$(json 'json.dumps(d["me"])' < "$tmp/verified.json")
+# The checked, normalised origins (https://API.ryftlab.de/ became https://api.ryftlab.de): every request below uses them.
+API=$(json 'd["api"]' < "$tmp/verified.json")
+INGEST=$(json 'd["ingest"]' < "$tmp/verified.json")
 rm -f "$tmp/verified.json"
 bearer() {
   local token=$1

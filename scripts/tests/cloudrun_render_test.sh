@@ -153,7 +153,13 @@ setcfg PUSH_SA_ID FILL_ME_IN
 setcfg APNS_KEY_ID FILL_ME_IN
 o=$(render "${R[@]}" --lint 2>&1) || fail "--lint fails on FILL_ME_IN: $o"
 case $o in *"FILL_ME_IN left (fill before the first deploy): PUSH_SA_ID, APNS_KEY_ID"*) ;; *) fail "--lint does not name what is left: $o" ;; esac
-bad "a render with FILL_ME_IN" "PUSH_SA_ID is still FILL_ME_IN" "${R[@]}" --out "$out" "${D[@]}"
+bad "a render with FILL_ME_IN" "PUSH_SA_ID is FILL_ME_IN: set it to \`terraform -chdir=infra/gcp output -raw push_sa_unique_id\`" "${R[@]}" --out "$out" "${D[@]}"
+# A key without a hint of its own gets the generic line, which still names the key and where to look.
+fresh
+setcfg XFF_TRUSTED_HOPS FILL_ME_IN
+bad "FILL_ME_IN with no hint of its own" "XFF_TRUSTED_HOPS is FILL_ME_IN: fill it in (a config PR) before a deploy; the comment above the key in deploy/run/config.env says where its value comes from" "${R[@]}" --out "$out" "${D[@]}"
+fresh
+
 
 # config.env: shapes, keys.
 setcfg LOG_LEVEL verbose
@@ -213,9 +219,12 @@ setcfg SMOKE_USER_ID FILL_ME_IN
 setcfg SMOKE_SA_ID FILL_ME_IN
 o=$(render "${R[@]}" --lint 2>&1) || fail "--lint fails on the smoke ids' FILL_ME_IN: $o"
 case $o in *"FILL_ME_IN left (fill before the first deploy): SMOKE_USER_ID, SMOKE_SA_ID"*) ;; *) fail "--lint does not name the smoke ids: $o" ;; esac
-bad "a render with the smoke user left" "SMOKE_USER_ID is still FILL_ME_IN" "${R[@]}" --out "$out" "${D[@]}"
+bad "a render with the smoke user left" "SMOKE_USER_ID is FILL_ME_IN: set it to the dedicated smoke account's Supabase UUID, the one bound by scripts/sql/bind_smoke_account.sql" "${R[@]}" --out "$out" "${D[@]}"
 setcfg SMOKE_SA_ID FILL_ME_IN
-bad "a render with the smoke account's ID left" "SMOKE_SA_ID is still FILL_ME_IN" "${R[@]}" --out "$out" "${D[@]}"
+bad "a render with the smoke account's ID left" "SMOKE_SA_ID is FILL_ME_IN: set it to \`terraform -chdir=infra/gcp output -raw smoke_sa_unique_id\`" "${R[@]}" --out "$out" "${D[@]}"
+# Each message leads with the file and the key.
+setcfg SMOKE_SA_ID FILL_ME_IN
+bad "the smoke account's ID left, the message names the file" "config.env: SMOKE_SA_ID is FILL_ME_IN" "${R[@]}" --out "$out" "${D[@]}"
 for v in "$(uid 77 | tr a-f A-F)" "${smokeuser//-/}" "${smokeuser}0" "x$smokeuser" "$(uid 77),$(uid 78)" ' '"$smokeuser"; do
   setcfg SMOKE_USER_ID "$v"
   bad "a smoke user of '$v'" "SMOKE_USER_ID='$v' does not have the shape the smoke account's Supabase user id, a lower-case UUID" "${R[@]}" --out "$out" "${D[@]}"
@@ -252,7 +261,7 @@ done
 setcfg APP_ATTEST ''
 bad "an empty App Attest mode" "APP_ATTEST is empty" "${R[@]}" --out "$out" "${D[@]}"
 setcfg APP_ATTEST FILL_ME_IN
-bad "App Attest's mode left FILL_ME_IN" "APP_ATTEST is still FILL_ME_IN" "${R[@]}" --out "$out" "${D[@]}"
+bad "App Attest's mode left FILL_ME_IN" "APP_ATTEST is FILL_ME_IN: fill it in (a config PR) before a deploy" "${R[@]}" --out "$out" "${D[@]}"
 setcfg APP_ATTEST -
 bad "no App Attest mode" "APP_ATTEST is missing" "${R[@]}" --out "$out" "${D[@]}"
 setcfg APP_ATTEST -
@@ -320,7 +329,7 @@ done
 setcfg CONNECT_GARMIN_USER_CAP ''
 bad "an empty cap" "CONNECT_GARMIN_USER_CAP is empty" "${R[@]}" --out "$out" "${D[@]}"
 setcfg CONNECT_GARMIN_USER_CAP FILL_ME_IN
-bad "the cap left FILL_ME_IN" "CONNECT_GARMIN_USER_CAP is still FILL_ME_IN" "${R[@]}" --out "$out" "${D[@]}"
+bad "the cap left FILL_ME_IN" "CONNECT_GARMIN_USER_CAP is FILL_ME_IN: fill it in (a config PR) before a deploy" "${R[@]}" --out "$out" "${D[@]}"
 setcfg CONNECT_GARMIN_USER_CAP -
 bad "no cap" "CONNECT_GARMIN_USER_CAP is missing" "${R[@]}" --lint
 # CONNECT_MIN_POLICY_VERSION (D259): the line required, its value empty or a calendar date not after the policy.

@@ -24,7 +24,8 @@ helper = sys.argv[1]
 auth = runpy.run_path(helper)
 verify = auth["verify"]
 invalid = auth["InvalidSmokeAuth"]
-api, ingest = "https://api.example.test", "https://ingest.example.test"
+api, ingest = "https://api.ryftlab.de", "https://ingest.ryftlab.de"  # the only origins a Google smoke token goes to
+remote_api, remote_ingest = "https://api.example.test", "https://ingest.example.test"
 owner, other = "20261125-0000-4000-8000-0000000000a1", "20261125-0000-4000-8000-0000000000b2"
 sa_id, other_sa_id = "104567890123456789012", "104567890123456789999"
 sa_email = "ryft-smoke@ryftlab-prod.iam.gserviceaccount.com"
@@ -374,12 +375,12 @@ class SmokeAuth(unittest.TestCase):
                 with patch.dict(verify.__globals__, {"CONFIG_ENV": str(config or self.config)}):
                     if error is None:
                         self.client.open.return_value = Response(me())
-                        verify("prepare", api, ingest, self.session)
+                        verify("prepare", remote_api, remote_ingest, self.session)
                         self.session.unlink()
                         self.client.open.reset_mock()
                     else:
                         with self.assertRaisesRegex(invalid, error):
-                            verify("prepare", api, ingest, self.session)
+                            verify("prepare", remote_api, remote_ingest, self.session)
         self.client.open.assert_not_called()
         self.gcloud.assert_not_called()
 
@@ -388,12 +389,12 @@ class SmokeAuth(unittest.TestCase):
         self.client.open.side_effect = [Response(me(other)), Response(me())]
         with patch.dict(os.environ, {"SMOKE_TOKEN": token, "SMOKE_USER_ID": owner}, clear=True):
             with self.assertRaisesRegex(invalid, "did not identify the expected smoke account"):
-                verify("prepare", api, ingest, self.session)
+                verify("prepare", remote_api, remote_ingest, self.session)
             self.assertFalse(self.session.exists())
-            verify("prepare", api, ingest, self.session)
+            verify("prepare", remote_api, remote_ingest, self.session)
         req = self.client.open.call_args.args[0]
         self.assertEqual(req.headers["Authorization"], "Bearer " + token)
-        self.assertEqual(req.full_url, api + "/v1/me")
+        self.assertEqual(req.full_url, remote_api + "/v1/me")
         self.gcloud.assert_not_called()
 
     def test_remote_google_token_by_hand_is_checked_then_bound(self):
@@ -491,6 +492,199 @@ class SmokeAuth(unittest.TestCase):
         self.client.open.assert_not_called()
         self.gcloud.assert_not_called()
 
+    # ---- canonical origins: a Google smoke token goes to api.ryftlab.de / ingest.ryftlab.de only ------
+
+    def no_calls(self):
+        self.client.open.assert_not_called()
+        self.gcloud.assert_not_called()
+
+    def test_canonical_origins_are_normalised(self):
+        for name, given_api, given_ingest in (
+            ("host case", "https://API.RyftLab.de", "https://Ingest.ryftlab.DE"),
+            ("port 443", "https://api.ryftlab.de:443", "https://ingest.ryftlab.de:443"),
+            ("trailing slash", "https://api.ryftlab.de/", "https://ingest.ryftlab.de/"),
+            ("all of it", "HTTPS://Api.RyftLab.De:443/", "https://INGEST.ryftlab.de:443/"),
+        ):
+            with self.subTest(name):
+                self.client.open.reset_mock()
+                self.client.open.side_effect = [Response({"token": google()}), Response(me())]
+                with patch.dict(os.environ, {}, clear=True):
+                    verify("run", given_api, given_ingest, self.result)
+                self.assertEqual(self.client.open.call_args.args[0].full_url, api + "/v1/me")
+                record = json.loads(self.result.read_bytes())
+                self.assertEqual((record["api"], record["ingest"]), (api, ingest))  # the shell uses these
+                self.result.unlink()
+
+    def test_lookalike_origins_are_refused_before_any_call(self):
+        def lookalikes(host):
+            return (
+                "https://%s.evil.test" % host, "https://evil-%s" % host, "https://%s." % host, "https://%s:8443" % host,
+                "https://%s:" % host, "http://%s" % host, "https://%s/v1" % host, "https://%s//" % host,
+                "https://%s@evil.test" % host, "https://evil.test@%s" % host, "https://%s?x=1" % host, "https://%s/#x" % host,
+            )
+        cases = [(bad, ingest) for bad in lookalikes("api.ryftlab.de")]
+        cases += [(api, bad) for bad in lookalikes("ingest.ryftlab.de")]
+        cases += [(ingest, ingest), (api, api), ("https://ryftlab.de", ingest), (api, "https://ryftlab.de"),
+                  ("http://localhost:8082", ingest), (api, "http://127.0.0.1:8081")]
+        regex = r"must be HTTPS or plain HTTP on loopback|no smoke token is minted|loopback target"
+        for given_api, given_ingest in cases:
+            for mode in ("prepare", "run"):
+                with self.subTest(api=given_api, ingest=given_ingest, mode=mode):
+                    with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(invalid, regex):
+                        verify(mode, given_api, given_ingest, self.result)
+        self.no_calls()
+        self.assertFalse(self.result.exists())
+
+    def test_non_canonical_remote_refuses_a_google_smoke_token(self):
+        token = google()
+        for given_api, given_ingest in ((remote_api, remote_ingest), (api, remote_ingest), (remote_api, ingest),
+                                         ("https://api.ryftlab.de.evil.test", ingest),
+                                         ("http://localhost:8082", "http://127.0.0.1:8081")):
+            with self.subTest(api=given_api, ingest=given_ingest):
+                with patch.dict(os.environ, {"SMOKE_TOKEN": token}, clear=True), \
+                        self.assertRaisesRegex(invalid, "SMOKE_TOKEN: a Google smoke token is only used against https://api.ryftlab.de") as raised:
+                    verify("prepare", given_api, given_ingest, self.session)
+                self.assertNotIn(token, str(raised.exception))
+        self.no_calls()
+        self.assertFalse(self.session.exists())
+
+    def test_non_canonical_remote_does_not_mint(self):
+        with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(invalid, "no smoke token is minted for this target"):
+            verify("prepare", remote_api, remote_ingest, self.session)
+        self.no_calls()
+
+    def test_non_canonical_remote_accepts_a_supabase_jwt_of_the_smoke_user(self):
+        self.client.open.return_value = Response(me())
+        with patch.dict(os.environ, {"SMOKE_TOKEN": bearer(), "SMOKE_USER_ID": owner}, clear=True):
+            verify("prepare", remote_api, remote_ingest, self.session)
+        self.assertEqual(self.client.open.call_args.args[0].full_url, remote_api + "/v1/me")
+        self.gcloud.assert_not_called()
+
+    def test_session_with_a_google_token_for_a_non_canonical_target_is_refused(self):
+        for given_api, given_ingest in ((remote_api, remote_ingest), (api, remote_ingest), (remote_api, ingest)):
+            with self.subTest(api=given_api, ingest=given_ingest):
+                token = google()
+                self.session.unlink(missing_ok=True)
+                with os.fdopen(os.open(self.session, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
+                    json.dump({"api": given_api, "ingest": given_ingest, "token": token, "subject": owner}, stream)
+                with patch.dict(os.environ, {"SMOKE_AUTH_FILE": str(self.session)}, clear=True), \
+                        self.assertRaisesRegex(invalid, "verified smoke session: a Google smoke token is only used against") as raised:
+                    verify("run", given_api, given_ingest, self.result)
+                self.assertNotIn(token, str(raised.exception))
+        self.no_calls()
+        self.assertFalse(self.result.exists())
+
+    def test_session_google_token_is_checked_again_and_a_non_google_one_is_not_blocked(self):
+        for name, token, regex in (("expired", google(ttl=-5), "verified smoke session token has expired"),
+                                   ("wrong audience", google(aud="other"), "verified smoke session token has the wrong audience")):
+            with self.subTest(name):
+                self.session.unlink(missing_ok=True)
+                with os.fdopen(os.open(self.session, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
+                    json.dump({"api": api, "ingest": ingest, "token": token, "subject": owner}, stream)
+                with patch.dict(os.environ, {"SMOKE_AUTH_FILE": str(self.session)}, clear=True), self.assertRaisesRegex(invalid, regex):
+                    verify("run", api, ingest, self.result)
+        self.no_calls()
+        self.session.unlink()
+        with os.fdopen(os.open(self.session, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
+            json.dump({"api": remote_api, "ingest": remote_ingest, "token": bearer(), "subject": owner}, stream)
+        self.client.open.return_value = Response(me())
+        with patch.dict(os.environ, {"SMOKE_AUTH_FILE": str(self.session)}, clear=True):
+            verify("run", remote_api, remote_ingest, self.result)
+        self.gcloud.assert_not_called()
+
+    def test_mint_sends_nowhere_but_the_mint_request(self):
+        # `mint` has no target: it asks iamcredentials and writes the file. The canonical rule is not its business.
+        self.client.open.side_effect = [Response({"token": google()})]
+        self.assertIsNone(self.run_cli("mint", str(self.tmp / "token")))
+        self.assertEqual([call.args[0].full_url for call in self.client.open.call_args_list], [iam_url])
+
+    # ---- bootstrap <api> <ingest>: the token mints, the running revision (before D286) answers 401 ------
+
+    def run_main(self, *args, env=None):
+        out, err = io.StringIO(), io.StringIO()
+        env = {"SMOKE_USER_ID": owner, "SMOKE_SA_ID": sa_id} if env is None else env
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", [helper, *args]), \
+                patch.object(sys, "stdout", out), patch.object(sys, "stderr", err):
+            try:
+                runpy.run_path(helper, run_name="__main__")
+                code = None
+            except SystemExit as stop:
+                code = str(stop)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_bootstrap_passes_on_a_401(self):
+        token = google()
+        self.client.open.side_effect = [Response({"token": token}), urllib.error.HTTPError(api, 401, "x", {}, Response(b"sensitive response body"))]
+        before = set(os.listdir(self.tmp))
+        code, out, err = self.run_main("bootstrap", api, ingest)
+        self.assertIsNone(code)
+        self.assertEqual(out, "✓ smoke-prod bootstrap: the running revision predates D286; the token mints\n")
+        self.assertEqual(err, "")
+        mint, read = (call.args[0] for call in self.client.open.call_args_list)
+        self.assertEqual(mint.full_url, iam_url)
+        self.assertEqual((read.full_url, read.get_method(), read.headers["Authorization"]), (api + "/v1/me", "GET", "Bearer " + token))
+        self.assertEqual(set(os.listdir(self.tmp)), before)  # no session file anywhere
+        self.assertNotIn(token, out + err)
+
+    def test_bootstrap_normalises_the_origin_like_every_other_mode(self):
+        self.client.open.side_effect = [Response({"token": google()}), urllib.error.HTTPError(api, 401, "x", {}, Response(b""))]
+        code, _, _ = self.run_main("bootstrap", "https://API.ryftlab.de:443/", ingest)
+        self.assertIsNone(code)
+        self.assertEqual(self.client.open.call_args.args[0].full_url, api + "/v1/me")
+
+    def test_bootstrap_refuses_a_200_the_bootstrap_is_over(self):
+        token = google()
+        self.client.open.side_effect = [Response({"token": token}), Response(me())]
+        code, out, err = self.run_main("bootstrap", api, ingest)
+        self.assertEqual(code, "smoke-prod: the running api accepts the smoke token: the bootstrap is over, run the deploy with auth_preflight on")
+        self.assertEqual(out + err, "")
+        self.assertEqual(self.client.open.call_count, 2)
+
+    def test_bootstrap_fails_on_any_other_status(self):
+        for status in (403, 404, 429, 500, 503, 307):
+            with self.subTest(status=status):
+                token = google()
+                self.client.open.side_effect = [Response({"token": token}), urllib.error.HTTPError(api, status, "x", {}, Response(b"sensitive response body"))]
+                code, out, err = self.run_main("bootstrap", api, ingest)
+                self.assertEqual(code, f"smoke-prod: GET /v1/me returned HTTP {status}, the bootstrap expects 401 from a revision before D286")
+                self.assertEqual(out, "")
+                self.assertNotIn("sensitive response body", code + err)
+        self.client.open.side_effect = [Response({"token": google()}), OSError("sensitive response body " + access)]
+        code, out, _ = self.run_main("bootstrap", api, ingest)
+        self.assertEqual((code, out), ("smoke-prod: GET /v1/me could not complete", ""))
+
+    def test_bootstrap_proves_the_mint_first(self):
+        self.client.open.side_effect = google_error(403, {"error": {"status": "PERMISSION_DENIED", "message": access}})
+        code, out, err = self.run_main("bootstrap", api, ingest)
+        self.assertIn("generateIdToken for the smoke account returned HTTP 403 (PERMISSION_DENIED); the gcloud account needs", code)
+        self.assertEqual(self.client.open.call_count, 1)  # no /v1/me without a token
+        self.assertNotIn(access, code + out + err)
+        self.client.open.reset_mock()
+        token = google(aud="other")
+        self.client.open.side_effect = [Response({"token": token})]
+        code, _, _ = self.run_main("bootstrap", api, ingest)
+        self.assertEqual(code, "smoke-prod: minted token has the wrong audience")
+        self.assertEqual(self.client.open.call_count, 1)
+
+    def test_bootstrap_needs_canonical_origins_and_ignores_smoke_token(self):
+        for given_api, given_ingest in ((remote_api, remote_ingest), ("https://api.ryftlab.de.evil.test", ingest), (api, ingest + ":8443"),
+                                         ("http://localhost:8082", "http://127.0.0.1:8081")):
+            with self.subTest(api=given_api, ingest=given_ingest):
+                code, _, _ = self.run_main("bootstrap", given_api, given_ingest, env={
+                    "SMOKE_USER_ID": owner, "SMOKE_SA_ID": sa_id, "SMOKE_TOKEN": bearer(),
+                })
+                self.assertRegex(code, "no smoke token is minted for this target|must be HTTPS")
+        self.no_calls()
+        self.client.open.side_effect = [Response({"token": google()}), urllib.error.HTTPError(api, 401, "x", {}, Response(b""))]
+        self.run_main("bootstrap", api, ingest, env={"SMOKE_USER_ID": owner, "SMOKE_SA_ID": sa_id, "SMOKE_TOKEN": "ignored"})
+        self.assertEqual(self.client.open.call_count, 2)  # it minted anyway
+
+    def test_bootstrap_needs_two_origins(self):
+        for args in (("bootstrap",), ("bootstrap", api), ("bootstrap", api, ingest, "x")):
+            with self.subTest(args=args):
+                self.assertEqual(self.run_main(*args)[0], "smoke-prod: invalid auth helper invocation")
+        self.no_calls()
+
 
 unittest.main(argv=[sys.argv[0]])
 PY
@@ -530,3 +724,56 @@ if grep -q 'fixture-secret-marker\|fixture-stderr-marker\|unexpected' "$tmp/gclo
   exit 1
 fi
 [ ! -e "$tmp/never.json" ]
+
+# A lookalike origin (API_URL or INGEST_URL) stops before gcloud or curl is ever started, in every mode.
+# The fake gcloud always fails, so a missed refusal still cannot reach the network.
+: > "$tmp/gcloud.log"
+: > "$tmp/curl.log"
+cat > "$tmp/bin/gcloud" <<'SH'
+#!/usr/bin/env bash
+echo "gcloud $*" >> "$GCLOUD_LOG"
+echo 'ya29.fixture-secret-marker'
+exit 1
+SH
+cat > "$tmp/bin/curl" <<'SH'
+#!/usr/bin/env bash
+echo "curl $*" >> "$CURL_LOG"
+exit 91
+SH
+chmod +x "$tmp/bin/gcloud" "$tmp/bin/curl"
+smoke_env=(SMOKE_USER_ID='20261125-0000-4000-8000-0000000000a1' SMOKE_SA_ID='104567890123456789012')
+for flag in none --auth-preflight --auth-bootstrap; do
+  args=()
+  [ "$flag" = none ] || args=("$flag")
+  for target in API_URL=https://api.ryftlab.de.evil.test API_URL=https://api.ryftlab.de:8443 API_URL=http://api.ryftlab.de \
+      API_URL=https://api.ryftlab.de/v1 INGEST_URL=https://ingest.ryftlab.de.evil.test INGEST_URL=https://ingest.ryftlab.de:8443; do
+    if env -i PATH="$tmp/bin:$PATH" GCLOUD_LOG="$tmp/gcloud.log" CURL_LOG="$tmp/curl.log" "$target" "${smoke_env[@]}" \
+        bash "$HERE/scripts/smoke_prod.sh" ${args[@]+"${args[@]}"} > "$tmp/lookalike" 2>&1; then
+      echo "smoke-prod accepted $target ($flag)" >&2
+      exit 1
+    fi
+    grep -q '^smoke-prod: ' "$tmp/lookalike" || { echo "no clean refusal for $target ($flag)" >&2; cat "$tmp/lookalike" >&2; exit 1; }
+    if grep -q 'fixture-secret-marker' "$tmp/lookalike"; then echo "leaked a token for $target ($flag)" >&2; exit 1; fi
+  done
+done
+[ ! -s "$tmp/gcloud.log" ] || { echo 'gcloud was started for a lookalike origin' >&2; exit 1; }
+[ ! -s "$tmp/curl.log" ] || { echo 'curl was started for a lookalike origin' >&2; exit 1; }
+
+# The canonical default reaches gcloud in both pre-rollout modes, and neither needs a session file.
+for flag in --auth-preflight --auth-bootstrap; do
+  : > "$tmp/gcloud.log"
+  if env -i PATH="$tmp/bin:$PATH" GCLOUD_LOG="$tmp/gcloud.log" CURL_LOG="$tmp/curl.log" "${smoke_env[@]}" \
+      bash "$HERE/scripts/smoke_prod.sh" "$flag" > "$tmp/wired" 2>&1; then
+    echo "smoke-prod $flag passed with a failing gcloud" >&2
+    exit 1
+  fi
+  grep -qx 'gcloud auth print-access-token' "$tmp/gcloud.log"
+  grep -qx 'smoke-prod: gcloud auth print-access-token gave no access token (run gcloud auth login once)' "$tmp/wired"
+done
+
+# Unknown flags and extra arguments.
+for args in '--nope' '--auth-bootstrap extra' '--auth-preflight extra'; do
+  # shellcheck disable=SC2086  # word splitting is the point
+  if env -i PATH="$tmp/bin:$PATH" bash "$HERE/scripts/smoke_prod.sh" $args > "$tmp/usage" 2>&1; then echo "accepted: $args" >&2; exit 1; fi
+  grep -q 'usage: smoke_prod.sh \[--auth-preflight | --auth-bootstrap\]' "$tmp/usage"
+done

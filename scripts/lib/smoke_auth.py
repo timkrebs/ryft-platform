@@ -2,6 +2,10 @@
 
 Remote default: a Google ID token of the smoke service account, minted with the operator's gcloud login
 (iamcredentials generateIdToken), its claims checked here and GET /v1/me bound to SMOKE_USER_ID.
+
+A Google smoke token is minted and sent only to the canonical production origins (https://api.ryftlab.de and
+https://ingest.ryftlab.de, after normalisation). Any other target needs SMOKE_TOKEN that is not a Google token.
+Modes: prepare <api> <ingest> <file>, run <api> <ingest> <file>, bootstrap <api> <ingest>, mint <file>.
 """
 
 import base64
@@ -32,6 +36,8 @@ GOOGLE_STATUSES = {
 GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
 DEFAULT_SERVICE_ACCOUNT = "ryft-smoke@ryftlab-prod.iam.gserviceaccount.com"
 DEFAULT_AUDIENCE = "ryft-smoke"
+CANONICAL_API = "https://api.ryftlab.de"
+CANONICAL_INGEST = "https://ingest.ryftlab.de"
 IAMCREDENTIALS = "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/"
 CONFIG_ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "deploy", "run", "config.env")
 MAX_TOKEN_LIFETIME = 3700  # Google's ID tokens last one hour
@@ -66,6 +72,36 @@ def checked_url(value, name):
     ):
         raise InvalidSmokeAuth(f"{name} must be HTTPS or plain HTTP on loopback")
     return value.rstrip("/"), host in LOOPBACK
+
+
+def canonical_origin(value, want):
+    """True when value is the origin `want` after normalisation: scheme and host in any case, no port or :443,
+    no path (one trailing slash is the origin itself), no credentials, query or fragment."""
+    try:
+        parts = urllib.parse.urlsplit(value)
+        host = urllib.parse.urlsplit(want).hostname
+        port = parts.port
+    except ValueError:
+        return False
+    return (
+        parts.scheme == "https"
+        and parts.hostname == host
+        and port in (None, 443)
+        and parts.netloc.lower() in (host, host + ":443")
+        and parts.path in ("", "/")
+        and "?" not in value
+        and "#" not in value
+    )
+
+
+def targets(api_arg, ingest_arg):
+    """(api, api is loopback, ingest, ingest is loopback, canonical). The canonical origins come back normalised."""
+    api, api_local = checked_url(api_arg, "API_URL")
+    ingest, ingest_local = checked_url(ingest_arg, "INGEST_URL")
+    canonical = canonical_origin(api_arg, CANONICAL_API) and canonical_origin(ingest_arg, CANONICAL_INGEST)
+    if canonical:
+        api, ingest = CANONICAL_API, CANONICAL_INGEST
+    return api, api_local, ingest, ingest_local, canonical
 
 
 def object_from(stream):
@@ -161,13 +197,17 @@ def canonical_user(value, message):
     raise InvalidSmokeAuth(message)
 
 
-def smoke_identity():
-    """(account UUID, service account unique ID) the smoke session must belong to."""
-    user = canonical_user(setting("SMOKE_USER_ID"), "SMOKE_USER_ID must be the dedicated account UUID")
+def smoke_sa_id():
     sa_id = setting("SMOKE_SA_ID")
     if re.fullmatch(r"[0-9]{1,32}", sa_id) is None:
         raise InvalidSmokeAuth("SMOKE_SA_ID must be the smoke service account's numeric unique ID")
-    return user, sa_id
+    return sa_id
+
+
+def smoke_identity():
+    """(account UUID, service account unique ID) the smoke session must belong to."""
+    user = canonical_user(setting("SMOKE_USER_ID"), "SMOKE_USER_ID must be the dedicated account UUID")
+    return user, smoke_sa_id()
 
 
 def smoke_target():
@@ -260,13 +300,27 @@ def mint_google_token():
     return result["token"]
 
 
+def is_google_token(token):
+    """True for a JWT whose (unverified) issuer is Google's: the kind the API maps to the smoke account."""
+    try:
+        return jwt_claims(token).get("iss") in GOOGLE_ISSUERS
+    except (ValueError, TypeError, RecursionError):
+        return False
+
+
+NOT_CANONICAL = (
+    "a Google smoke token is only used against " + CANONICAL_API + " and " + CANONICAL_INGEST
+    + " (for another target set SMOKE_TOKEN to a Supabase access JWT of SMOKE_USER_ID)"
+)
+
+
 def check_supplied_jwt(token, expected):
     # Check the expected subject before even loading /v1/me. The API still
     # authenticates the signature, issuer and audience on that request.
     try:
         claims = jwt_claims(token)
         if claims.get("iss") in GOOGLE_ISSUERS:
-            return check_google_claims(token, "SMOKE_TOKEN", smoke_identity()[1])
+            return check_google_claims(token, "SMOKE_TOKEN", smoke_sa_id())
         subject, expiry = claims["sub"], claims["exp"]
         if type(expiry) is not int:
             raise ValueError("invalid expiration")
@@ -293,8 +347,7 @@ def load_session(path, api, ingest):
 
 
 def verify(mode, api_arg, ingest_arg, output):
-    api, api_local = checked_url(api_arg, "API_URL")
-    ingest, ingest_local = checked_url(ingest_arg, "INGEST_URL")
+    api, api_local, ingest, ingest_local, canonical = targets(api_arg, ingest_arg)
     supplied = os.environ.get("SMOKE_TOKEN")
     expected = os.environ.get("SMOKE_USER_ID") or None
     if expected:
@@ -302,6 +355,10 @@ def verify(mode, api_arg, ingest_arg, output):
     if mode == "run" and (path := os.environ.get("SMOKE_AUTH_FILE")):
         session = load_session(path, api, ingest)
         token = session["token"]
+        if is_google_token(token):
+            if not canonical:
+                raise InvalidSmokeAuth("verified smoke session: " + NOT_CANONICAL)
+            check_google_claims(token, "verified smoke session token", smoke_sa_id())
         subject = canonical_user(session.get("subject"), "verified smoke session has an invalid subject")
         if expected is not None and subject != expected:
             raise InvalidSmokeAuth("verified smoke session subject differs from SMOKE_USER_ID")
@@ -310,12 +367,16 @@ def verify(mode, api_arg, ingest_arg, output):
         token = supplied
         if not valid_bearer(token):
             raise InvalidSmokeAuth("SMOKE_TOKEN has an invalid format")
+        if not canonical and is_google_token(token):
+            raise InvalidSmokeAuth("SMOKE_TOKEN: " + NOT_CANONICAL)
         if not (api_local and ingest_local):
             if expected is None:
                 expected = smoke_identity()[0]
             check_supplied_jwt(token, expected)
     elif api_local or ingest_local:
         raise InvalidSmokeAuth("set SMOKE_TOKEN for a loopback target (the Google sign-in is for the remote API)")
+    elif not canonical:
+        raise InvalidSmokeAuth("no smoke token is minted for this target: " + NOT_CANONICAL)
     else:
         expected, sa_id = smoke_identity()
         token = mint_google_token()
@@ -352,14 +413,49 @@ def mint(output):
         raise InvalidSmokeAuth("could not write protected token file (it must not exist yet)") from None
 
 
+def status_of(request, label):
+    """The HTTP status of a request, whatever it is. No body is read; a redirect is not followed."""
+    opener = urllib.request.build_opener(NoRedirect)
+    try:
+        with opener.open(request, timeout=20) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        error.close()
+        return error.code
+    except (OSError, ValueError, http.client.HTTPException):
+        raise InvalidSmokeAuth(f"{label} could not complete") from None
+
+
+def bootstrap(api_arg, ingest_arg):
+    """The first deploy of D286: mint the token (the IAM binding works), then expect the running api to refuse it
+    with 401 (the revision predates D286). Writes no session file."""
+    api, _, _, _, canonical = targets(api_arg, ingest_arg)
+    if not canonical:
+        raise InvalidSmokeAuth("no smoke token is minted for this target: " + NOT_CANONICAL)
+    sa_id = smoke_sa_id()
+    token = mint_google_token()
+    check_google_claims(token, "minted token", sa_id)
+    status = status_of(urllib.request.Request(api + "/v1/me", headers={"Authorization": f"Bearer {token}"}), "GET /v1/me")
+    if status == 200:
+        raise InvalidSmokeAuth(
+            "the running api accepts the smoke token: the bootstrap is over, run the deploy with auth_preflight on"
+        )
+    if status != 401:
+        raise InvalidSmokeAuth(f"GET /v1/me returned HTTP {status}, the bootstrap expects 401 from a revision before D286")
+    print("✓ smoke-prod bootstrap: the running revision predates D286; the token mints")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "mint":
+    args = sys.argv[1:]
+    if len(args) == 2 and args[0] == "mint":
         action = mint
-    elif len(sys.argv) == 5 and sys.argv[1] in ("prepare", "run"):
+    elif len(args) == 3 and args[0] == "bootstrap":
+        action = bootstrap
+    elif len(args) == 4 and args[0] in ("prepare", "run"):
         action = verify
     else:
         sys.exit("smoke-prod: invalid auth helper invocation")
     try:
-        action(*sys.argv[2:] if action is mint else sys.argv[1:])
+        action(*(args if action is verify else args[1:]))
     except InvalidSmokeAuth as error:
         sys.exit(f"smoke-prod: {error}")

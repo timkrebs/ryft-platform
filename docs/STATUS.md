@@ -2,7 +2,7 @@
 
 ## Production smoke without email sign-in (2026-11-26, D286)
 
-The smoke authenticates with a Google ID token for `ryft-smoke`, which api and ingest map to the smoke account and to no one else. No GitHub secret is involved any more.
+The smoke authenticates with a Google ID token for `ryft-smoke`. api and ingest map it to the smoke account only, and only if the database binds that account (`smoke_account`, migration 0060) and only on the routes the smoke uses. No GitHub secret is involved any more.
 
 Before the merge:
 1. Apply Terraform (`ryft-smoke` and its bindings).
@@ -10,8 +10,11 @@ Before the merge:
 
 After the merge:
 1. The push run stops at the preflight, because api-00044 rejects the token. Nothing rolls.
-2. Run `gh workflow run deploy.yml --ref main -f smoke=false`, then `gh workflow run deploy.yml --ref main`.
-3. Delete `SMOKE_EMAIL`, `SMOKE_PASSWORD`, `SMOKE_TOKEN`, `SMOKE_USER_ID` and `SUPABASE_ANON_KEY` from the `deploy` environment.
+2. Run `gh workflow run deploy.yml --ref main -f auth_preflight=false`. It migrates (0053, 0054, 0060) and rolls, the smoke fails `smoke_unbound`, and traffic returns to the -00044 revisions.
+3. Bind the account with `scripts/sql/bind_smoke_account.sql` (Supabase SQL editor, as `postgres`; expect 1 row).
+4. Run `gh workflow run deploy.yml --ref main -f auth_preflight=false` again. It rolls and the smoke passes.
+5. Run `gh workflow run deploy.yml --ref main` to check the gated path.
+6. Delete `SMOKE_EMAIL`, `SMOKE_PASSWORD`, `SMOKE_TOKEN`, `SMOKE_USER_ID` and `SUPABASE_ANON_KEY` from the `deploy` environment.
 
 The runbook is `docs/OPERATIONS.md` → The smoke authentication.
 

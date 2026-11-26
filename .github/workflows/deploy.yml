@@ -6,10 +6,14 @@
 # Artifact Registry, tagged with the short SHA. It renders deploy/run with their digests, checks that
 # main is still at this commit, verifies smoke authentication (a Google ID token for the service account
 # ryft-smoke, minted by ryft-deployer with its own sign-in: no secret, no repository variable; D286), runs
-# the migrate job and stops when it fails (nothing rolls, as with the old PreSync), then replaces the
-# services in the order scoring, notify, ingest, api, and runs `make smoke-prod`. A manual run (workflow_dispatch, main only: the WIF condition admits nothing
-# else) does the same; its `smoke` input skips the smoke for the first deploy, before anything is
-# public (runbook step 8).
+# the migrate job and stops when it fails (nothing rolls, as with the old PreSync), records the revision
+# serving each service, then replaces the services in the order scoring, notify, ingest, api, and runs
+# `make smoke-prod` with a freshly minted token. When that smoke fails, the same step sends the traffic of
+# api, ingest, notify and scoring back to the recorded revisions and fails the run. A manual run
+# (workflow_dispatch, main only: the WIF condition admits nothing else) does the same; its `auth_preflight`
+# input (default true) is off only for the D286 bootstrap: the preflight is then `--auth-bootstrap`, which
+# passes only while the running api still predates D286 (it must answer 401 to the smoke token), and the
+# rollout and the post-rollout smoke run as always (OPERATIONS.md → GCP).
 #
 # The site, next to the services: `site-build` builds web/ (npm ci, the export, the SUPPORT_EMAIL
 # checks) in a job without a token and hands web/out and web/firebase.json on as an artifact; `site`
@@ -30,8 +34,10 @@
 # Off until the repository variable GCP_DEPLOY is `on`: every job has that `if`, so off, this
 # workflow does nothing. DEPLOY_HOLD_SERVICES (a repository variable, the reason) holds the services:
 # nothing is built or deployed and the run ends green with a notice (D175's hold, now a variable).
-# Rollback: `gcloud run services update-traffic <svc> --to-revisions=<previous>=100` (the next deploy
-# sends all traffic to its own revision again); a revert of the merge redeploys the old code. The
+# Rollback: a failed post-rollout smoke rolls back by itself, from the revisions recorded before the
+# rollout (the step summary lists them). By hand: `gcloud run services update-traffic <svc>
+# --to-revisions=<previous>=100` (the next deploy sends all traffic to its own revision again); a revert
+# of the merge redeploys the old code. The
 # site: Firebase console -> Hosting -> Release history -> Roll back, or SITE_DEPLOY off and a revert.
 # docs/OPERATIONS.md → GCP holds the steps. scripts/check_workflows.sh pins the shape of this file: no
 # status function (always(), failure(), ...) in any `if` and no continue-on-error, so a failed step
@@ -45,8 +51,8 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      smoke:
-        description: Verify smoke authentication before rollout and run make smoke-prod after it (off only for the first deploy)
+      auth_preflight:
+        description: "Verify smoke authentication against the running revision before migrate. Off only for the D286 bootstrap: it then passes only while the running api predates D286."
         type: boolean
         default: true
       publish_nutrition_etl:
@@ -332,11 +338,42 @@ jobs:
       # deploy/run/config.env and checks the token's claims and GET /v1/me before the rollout. No secret, no
       # variable and no env here: the step reads nothing from the repository's secrets, and
       # scripts/check_workflows.sh refuses a secrets.SMOKE_* or SUPABASE_ANON_KEY in it. The first deploy of
-      # this change cannot pass it against the old revisions: dispatch with `smoke` off once (OPERATIONS.md).
+      # this change cannot pass it against the old revisions: dispatch with `auth_preflight` off once, which runs
+# the bootstrap below instead (OPERATIONS.md). The preflight leaves a session file, removed on exit.
       - name: Verify production smoke authentication
-        if: steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.smoke)
+        if: steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.auth_preflight)
         run: |
+          trap 'rm -f "$RUNNER_TEMP/ryft-smoke-auth.json"' EXIT
           SMOKE_AUTH_FILE="$RUNNER_TEMP/ryft-smoke-auth.json" ./scripts/smoke_prod.sh --auth-preflight
+      # The D286 bootstrap (a dispatch with auth_preflight off): mint a token and require the running api to
+      # answer 401, which means it predates D286. A 200 is refused ("bootstrap is over"). No session file.
+      - name: Bootstrap smoke authentication (the running api predates D286)
+        if: steps.tip.outputs.current == 'true' && github.event_name == 'workflow_dispatch' && !inputs.auth_preflight
+        run: |
+          ./scripts/smoke_prod.sh --auth-bootstrap
+      # The revision serving 100% of each service's traffic, before anything rolls: the rollback target of
+      # the post-rollout smoke. Exactly one entry at 100% with a revision name of the service, else the run
+      # stops here (a split or a tag-only state is not something to roll back to blindly).
+      - name: Record the revisions serving traffic
+        if: steps.tip.outputs.current == 'true'
+        run: |
+          : > "$RUNNER_TEMP/previous"
+          for s in scoring notify ingest api; do
+            json=$(gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format=json) ||
+              { echo "::error title=deploy::cannot describe $s: nothing is rolled"; exit 1; }
+            rev=$(printf '%s' "$json" | python3 -I -c '
+          import json, re, sys
+          svc = sys.argv[1]
+          traffic = json.load(sys.stdin).get("status", {}).get("traffic") or []
+          full = [t for t in traffic if t.get("percent") == 100]
+          name = full[0].get("revisionName", "") if len(full) == 1 else ""
+          if not re.fullmatch(re.escape(svc) + r"-[0-9]{5}-[a-z0-9]{3}", name):
+              sys.exit(1)
+          print(name)
+          ' "$s") || { echo "::error title=deploy::$s has no single revision serving 100% of traffic (status.traffic): nothing is rolled"; exit 1; }
+            echo "$s $rev" >> "$RUNNER_TEMP/previous"
+          done
+          { echo "### Serving before the rollout"; echo '```'; cat "$RUNNER_TEMP/previous"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       # Migrations first; a failed run stops the workflow here and no service rolls. The job does not
       # retry (maxRetries 0, deploy/run/migrate.yaml).
       - name: migrate (replace the job, execute it, wait)
@@ -354,11 +391,33 @@ jobs:
             rev=$(gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format='value(status.latestReadyRevisionName)')
             echo "- $s: $rev" >> "$GITHUB_STEP_SUMMARY"
           done
-      - name: make smoke-prod
-        if: steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.smoke)
+      # Always runs when main is at this commit (no input skips it), with a token minted afresh: the
+      # preflight's session file is not used. When it fails, this same script (no status function and no
+      # continue-on-error in this file) sends api, ingest, notify and scoring back to the revisions
+      # recorded before the rollout, then fails the run. A rollback that itself fails does not stop the
+      # others: it is named in an ::error and the run still fails.
+      - name: make smoke-prod, and roll back when it fails
+        if: steps.tip.outputs.current == 'true'
         run: |
-          trap 'rm -f "$RUNNER_TEMP/ryft-smoke-auth.json"' EXIT
-          SMOKE_AUTH_FILE="$RUNNER_TEMP/ryft-smoke-auth.json" make smoke-prod
+          rm -f "$RUNNER_TEMP/ryft-smoke-auth.json"
+          unset SMOKE_AUTH_FILE
+          if make smoke-prod; then exit 0; fi
+          echo "::error title=deploy::make smoke-prod failed after the rollout: the traffic goes back to the revisions recorded before it"
+          echo "### make smoke-prod failed: rolled back" >> "$GITHUB_STEP_SUMMARY"
+          failed=
+          for s in api ingest notify scoring; do
+            prev=$(sed -n "s/^$s //p" "$RUNNER_TEMP/previous" | head -n 1)
+            if [[ $prev =~ ^$s-[0-9]{5}-[a-z0-9]{3}$ ]] &&
+               gcloud run services update-traffic "$s" --to-revisions="$prev=100" --region="$REGION" --project="$PROJECT" --quiet; then
+              echo "- rolled back to $prev ($s)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error title=deploy rollback::the rollback of $s to '${prev:-none recorded}' failed: send its traffic back by hand (OPERATIONS.md → GCP, Deploy, roll back, rotate)"
+              echo "- $s: the rollback to '${prev:-none recorded}' FAILED" >> "$GITHUB_STEP_SUMMARY"
+              failed="$failed $s"
+            fi
+          done
+          [ -z "$failed" ] || echo "::error title=deploy rollback::not rolled back:$failed"
+          exit 1
       # On success and when superseded. After a failure nothing runs (no status function in this file),
       # and the runner empties $RUNNER_TEMP, where the credentials are, at the end of the job.
       - name: Sign out

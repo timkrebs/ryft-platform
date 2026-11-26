@@ -68,3 +68,29 @@ and a one-off bootstrap deploy without the auth preflight, because api-00044 doe
 ## Needs the user (in order)
 1. Terraform plan/apply (`ryft-smoke`, bindings). 2. Commit `SMOKE_USER_ID` and `SMOKE_SA_ID` into config.env on
    the PR branch. 3. Merge. 4. Dispatch `smoke=false`, then a full dispatch. 5. Delete the old secrets.
+
+## Follow-up: independent security review (Codex), 2026-11-26
+Each finding was checked in the code and holds:
+1. **high.** `DELETE /v1/me` runs `auth.Middleware` without OnAuth (`cmd/api/main.go:296-300`). A smoke principal would reach `deleteMe` for whatever UUID `config.env` names. The admin auth calls `verifier.Verify` directly (`adminauth.go:284`).
+2. **medium.** `smoke_auth.py` mints a production Google token for any HTTPS `API_URL`/`INGEST_URL`.
+3. **medium.** `smoke=false` skips both the preflight and the post-rollout smoke.
+4. **medium.** `NewGoogleOIDC` fetches the JWKS inside the constructor, so a stalled Google endpoint delays every cold start.
+
+### Contract v2
+- **Binding (S1, database-engineer).** A new migration adds table `smoke_account`:
+  - Columns: `singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton)`; `user_id uuid NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE`; `bound_at timestamptz NOT NULL DEFAULT now()`.
+  - Access: api and ingest get SELECT only, and no service role may write it. RLS is on with no policies, per the repo's conventions.
+  - The operator binds the account once with `scripts/sql/bind_smoke_account.sql`, which refuses an account with a non-email identity.
+- **Server (S2, backend-engineer).**
+  - `store.IsSmokeAccount(ctx, id) (bool, error)` lives in `store/smoke.go`.
+  - On every smoke request, ensureUser (api, ingest) requires the row to exist and to be bound. Otherwise it answers 401 `smoke_unbound`, failing closed, and a DB error is 503.
+  - `auth.Options.SmokeAllow func(*http.Request) bool` is checked in Middleware right after Verify. A nil allowlist or a route not on it gets 403 `smoke_route`, so `DELETE /v1/me`, export, merge, train import and nutrition are rejected.
+  - api allows exactly the routes `smoke_prod.sh` calls with the token. ingest allows `/v1/sync`.
+  - The admin auth rejects `p.Smoke`.
+  - The Google verifier for the smoke is built asynchronously. Until it is ready, smoke tokens get 503 `smoke_jwks_unavailable`, and Supabase tokens never wait on it.
+- **Client (S3, test-engineer).** The helper mints and sends Google tokens only when API = `https://api.ryftlab.de` and INGEST = `https://ingest.ryftlab.de`; that includes a loaded session file. Other remote targets need `SMOKE_TOKEN` that is not a Google smoke token.
+  - New mode `bootstrap`: mint a token, then require `GET /v1/me` to answer 401, which means the running revision predates D286. A 200 is refused with "bootstrap is over".
+- **Deploy (S4, gitops-engineer).**
+  - The dispatch input `auth_preflight` (default true) replaces `smoke`. Set to false, it runs `smoke_prod.sh --auth-bootstrap`, which only passes against a pre-D286 revision.
+  - Before the rollout, record each service's serving revision. After the rollout, `make smoke-prod` always runs with a freshly minted token. On failure, traffic goes back to the recorded revisions in the order api, ingest, notify, scoring, and the run fails.
+  - The render error names the missing key and its source.

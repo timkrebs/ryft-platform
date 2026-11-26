@@ -49,7 +49,7 @@ var crud = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
 var (
 	journalTables = []string{"behaviors", "user_behaviors", "journal_days", "journal_entries"}
 	betaTables    = []string{"consents", "beta_invite_codes", "user_sources", "feedback", "admin_audit", "score_queue", "outbox", "admin_accounts", "beta_invite_uses",
-		"app_attest_keys", "app_attest_challenges",
+		"app_attest_keys", "app_attest_challenges", "smoke_account",
 		"connections", "connection_tokens", "connection_pending", "connection_states", "connection_deregistrations", "provider_inbox"}
 )
 
@@ -68,6 +68,8 @@ var grants = map[string]map[string][]string{
 		// deleted_users: only the id column (below), never the stored Apple token
 		// 0042: the inbox is ingest's; connections only by column (below), never a token, pending grant or state.
 		"provider_inbox": crud,
+		// 0060: the operator writes smoke_account (scripts/sql/bind_smoke_account.sql); ingest only reads it.
+		"smoke_account": {"SELECT"},
 	},
 	"ryft_scoring": {
 		"users": {"SELECT"}, "devices": {"SELECT"}, "samples": {"SELECT"}, "sleep_segments": {"SELECT"},
@@ -91,6 +93,8 @@ var grants = map[string]map[string][]string{
 		"admin_audit": {"SELECT", "INSERT"}, "score_queue": {"SELECT", "DELETE"}, "outbox": {"SELECT", "INSERT", "DELETE"},
 		"admin_accounts":   {"SELECT"}, // 0032: the owner writes it (the SQL editor), the api only reads
 		"beta_invite_uses": crud,       // 0033: UPDATE because a merge moves rows
+		// 0060: read only; the cascade from users removes the binding, no service writes it.
+		"smoke_account": {"SELECT"},
 		// 0037: the api alone; a key's counter and last use are updated, a challenge never is.
 		"app_attest_keys": crud, "app_attest_challenges": {"SELECT", "INSERT", "DELETE"},
 		// 0042: the api alone holds the OAuth side; a state is never updated; the inbox only by column (below).
