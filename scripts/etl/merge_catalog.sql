@@ -77,7 +77,14 @@ FROM etl_delta d CROSS JOIN LATERAL jsonb_to_recordset(d.portions)
 LEFT JOIN LATERAL (
     SELECT k.id FROM nutrition.portions k
     WHERE k.food_id=d.food_id AND k.source_id=d.source_id AND k.origin='python_etl'
-      AND (k.source_portion_id=p.source_portion_id OR (k.source_portion_id IS NULL AND k.id=p.legacy_id))
+      -- A keyed row is the same portion only while its measure is the same. A changed measure
+      -- gets the new ID computed by import_pg.py and the old row is retired below, so a
+      -- selection saved against the old ID cannot log the new grams. Rows imported before
+      -- D284 have no key; their legacy ID already contains the measure.
+      AND ((k.source_portion_id=p.source_portion_id AND k.unit=p.unit
+              AND k.weight_g IS NOT DISTINCT FROM round(p.weight_g,6)
+              AND k.volume_ml IS NOT DISTINCT FROM round(p.volume_ml,6))
+           OR (k.source_portion_id IS NULL AND k.id=p.legacy_id))
     ORDER BY (k.source_portion_id IS NOT NULL) DESC, k.id
     LIMIT 1
 ) prior ON true
@@ -89,6 +96,12 @@ WHERE prior.id IS NOT NULL OR NOT EXISTS (SELECT FROM nutrition.portions known
 DELETE FROM nutrition.portions p USING etl_delta d
 WHERE p.source_id=d.source_id AND p.food_id=d.food_id AND p.origin='python_etl'
   AND NOT EXISTS (SELECT FROM etl_portions candidate WHERE candidate.id=p.id);
+
+-- At most one default per food (nutrition_portions_one_default) is checked per row, so a default
+-- that moves to another portion would collide mid-statement. Clear the flag on the rows this
+-- import owns first; the upsert below sets it again on the portion that keeps it.
+UPDATE nutrition.portions p SET is_default=false FROM etl_delta d
+WHERE p.source_id=d.source_id AND p.food_id=d.food_id AND p.origin='python_etl' AND p.is_default;
 
 INSERT INTO nutrition.portions (id,food_id,source_id,label,labels,quantity,unit,weight_g,volume_ml,origin,
     source_portion_id,portion_key,short_label_en,short_label_de,is_default,sort_order)

@@ -19,7 +19,7 @@ from categorizer import classify
 from download import MissingUSDATables, Release, extract_usda, resolve_off, resolve_usda, stage_usda
 from extract import connection, off_rows, usda_rows
 from generate_embeddings import DIMENSIONS, pending_batch, vectors
-from import_pg import IMPORT_NAMESPACE, load_batch
+from import_pg import IMPORT_NAMESPACE, load_batch, source_portion_uuid
 from transform import STAPLES, Nutrient, Portion, Reject, bls_food, off_food, usda_food, usda_measures, validate
 
 
@@ -234,6 +234,22 @@ class PipelineTests(unittest.TestCase):
 
 
 class RulesTests(unittest.TestCase):
+    def test_keyed_portion_id_follows_the_measure(self):
+        namespace = uuid.uuid5(IMPORT_NAMESPACE, "usda:171688")
+        medium = Portion("Medium", "portion", weight_g=182.0, source_portion_id="89193")
+        # The formula is pinned: production IDs must not drift between releases.
+        self.assertEqual(source_portion_uuid(namespace, "89193", medium), uuid.uuid5(
+            namespace, 'source-portion:89193|{"unit": "portion", "volume_ml": null, "weight_g": "182"}'))
+        # Spelling of the same number does not change the ID; a different number or unit does.
+        for same in (replace(medium, weight_g=182), replace(medium, weight_g=182.000)):
+            self.assertEqual(source_portion_uuid(namespace, "89193", same), source_portion_uuid(namespace, "89193", medium))
+        for other in (replace(medium, weight_g=183.0), replace(medium, weight_g=None, volume_ml=182.0),
+                      replace(medium, unit="serving")):
+            self.assertNotEqual(source_portion_uuid(namespace, "89193", other), source_portion_uuid(namespace, "89193", medium))
+        self.assertNotEqual(source_portion_uuid(namespace, "89194", medium), source_portion_uuid(namespace, "89193", medium))
+        self.assertEqual(source_portion_uuid(namespace, "glass", Portion("Glass", "portion", volume_ml=200.5)), uuid.uuid5(
+            namespace, 'source-portion:glass|{"unit": "portion", "volume_ml": "200.5", "weight_g": null}'))
+
     def test_atwater_limits_and_exceptions(self):
         def amounts(energy=100, protein=10, fat=2, carbs=10, fiber=0):
             return {key: Nutrient(key, value, "fixture") for key, value in {
@@ -367,7 +383,11 @@ class PostgresTests(unittest.TestCase):
             db.execute("RESET ROLE")
             portions = db.execute("SELECT id,weight_g,origin FROM nutrition.portions WHERE food_id=%s ORDER BY weight_g", (food_id,)).fetchall()
             self.assertEqual([(weight, origin) for _, weight, origin in portions], [(112, "python_etl"), (182, "manual")])
-            self.assertEqual(portions[0][0], portion[0])
+            # A changed measure is a new portion: the old ID is retired, not edited in place.
+            changed_id = source_portion_uuid(food_id, "99999998", replace(measured, weight_g=112.0))
+            self.assertEqual(portions[0][0], changed_id)
+            self.assertNotEqual(portions[0][0], portion[0])
+            self.assertEqual(db.execute("SELECT count(*) FROM nutrition.portions WHERE id=%s", (portion[0],)).fetchone(), (0,))
             self.assertEqual(portions[1][0], legacy_portion)
             self.assertEqual(db.execute("SELECT canonical_name FROM nutrition.foods WHERE id=%s", (food_id,)).fetchone(), ("Apple, raw",))
             self.assertEqual(db.execute("""SELECT origin, contribution_fraction FROM nutrition.classifications
@@ -375,6 +395,55 @@ class PostgresTests(unittest.TestCase):
             self.assertEqual(db.execute("""SELECT food_id,food_name,portion_id,weight_g,portion_label_snapshot,
                 portion_short_label_snapshot,nutrients FROM nutrition.meal_items WHERE id=%s""", (item,)).fetchone(),
                              (food_id, "Apples, raw", portion[0], 110, "1 cup", "Cup", {"energy_kcal": 52.8}))
+
+    @staticmethod
+    def keyed_food(version, name="Plums, raw", portions=()):
+        external_id = str(uuid.uuid4().int % 10**18 + 1)
+        row = {"fdc_id": external_id, "description": name, "publication_date": "2026-01-01", "nutrients": [
+            {"id": key, "amount": amount} for key, amount in (("1008", 48), ("1003", 0), ("1004", 0), ("1005", 12))
+        ]}
+        return replace(usda_food(row, version), portions=tuple(portions)), uuid.uuid5(IMPORT_NAMESPACE, f"usda:{external_id}")
+
+    @staticmethod
+    def portion_state(db, food_id):
+        return db.execute("""SELECT portion_key,id,is_default FROM nutrition.portions
+            WHERE food_id=%s AND origin='python_etl' ORDER BY portion_key""", (food_id,)).fetchall()
+
+    def test_default_moves_between_portions(self):
+        small = Portion("Small plum", "portion", weight_g=60.0, portion_key="small", is_default=True, sort_order=10)
+        large = Portion("Large plum", "portion", weight_g=90.0, portion_key="large", sort_order=20)
+        food, food_id = self.keyed_food("revision-1", portions=(small, large))
+        with psycopg.connect(os.environ["RYFT_ETL_TEST_DATABASE_URL"], autocommit=True) as db:
+            db.execute("SET ROLE ryft_nutrition_etl")
+            self.assertEqual(load_batch(db, [food]), {"inserted": 1, "duplicates": 0})
+            before = {key: (portion_id, default) for key, portion_id, default in self.portion_state(db, food_id)}
+            self.assertEqual({key: default for key, (_, default) in before.items()}, {"small": True, "large": False})
+            # The new default is listed first, so it is written while the old one still holds the flag.
+            moved = replace(food, version="revision-2", portions=(replace(large, is_default=True), replace(small, is_default=False)))
+            self.assertEqual(load_batch(db, [moved]), {"updated": 1, "duplicates": 0})
+            after = {key: (portion_id, default) for key, portion_id, default in self.portion_state(db, food_id)}
+            self.assertEqual(after["small"], (before["small"][0], False))
+            self.assertEqual(after["large"], (before["large"][0], True))
+            self.assertEqual(db.execute("SELECT count(*) FROM nutrition.portions WHERE food_id=%s AND is_default",
+                                        (food_id,)).fetchone(), (1,))
+
+    def test_identical_rerun_keeps_portion_ids(self):
+        cup = Portion("1 cup", "portion", weight_g=165.0, source_portion_id="777001", portion_key="cup", is_default=True)
+        pit = Portion("1 pitted plum", "portion", weight_g=66.0, source_portion_id="777002", portion_key="plum")
+        food, food_id = self.keyed_food("revision-1", portions=(cup, pit))
+        with psycopg.connect(os.environ["RYFT_ETL_TEST_DATABASE_URL"], autocommit=True) as db:
+            db.execute("SET ROLE ryft_nutrition_etl")
+            self.assertEqual(load_batch(db, [food]), {"inserted": 1, "duplicates": 0})
+            first = self.portion_state(db, food_id)
+            namespace = food_id
+            self.assertEqual({key: portion_id for key, portion_id, _ in first},
+                             {"cup": source_portion_uuid(namespace, "777001", cup), "plum": source_portion_uuid(namespace, "777002", pit)})
+            self.assertEqual(load_batch(db, [food]), {"unchanged": 1, "duplicates": 0})
+            self.assertEqual(self.portion_state(db, food_id), first)
+            # A refresh that changes the food but not the portions goes through the portion merge and keeps every ID.
+            renamed = replace(food, version="revision-2", name="Plum, raw", names=[("en", "Plum, raw")])
+            self.assertEqual(load_batch(db, [renamed]), {"updated": 1, "duplicates": 0})
+            self.assertEqual(self.portion_state(db, food_id), first)
 
     def test_embedding_store_and_resume(self):
         external_id = str(uuid.uuid4().int % 10**18 + 1)

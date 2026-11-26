@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 )
@@ -113,11 +114,71 @@ INSERT INTO nutrition.food_sources(id,food_id,provider,external_id,dataset_versi
 VALUES (gen_random_uuid(),'a7e40c6e-bfb4-47eb-ad64-aea61136db01','bls','M111300','4.0','CC-BY-4.0')`); err == nil {
 		t.Fatal("BLS accepted without named attribution")
 	}
-	if _, err := pool.Exec(ctx, `
-SET ROLE ryft_nutrition_etl;
-INSERT INTO nutrition.food_sources(id,food_id,provider,external_id,dataset_version,license_identifier,attribution)
-VALUES (gen_random_uuid(),'a7e40c6e-bfb4-47eb-ad64-aea61136db01','bls','M111300','4.0','CC-BY-4.0','Max Rubner-Institut');
-RESET ROLE`); err != nil {
+	// SET LOCAL keeps the role inside the transaction: a failed statement must never
+	// leave a pooled connection running as the ETL role.
+	asETL := func(statements ...string) error {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx) // no-op after Commit
+		if _, err := tx.Exec(ctx, "SET LOCAL ROLE ryft_nutrition_etl"); err != nil {
+			return err
+		}
+		for _, statement := range statements {
+			tag, err := tx.Exec(ctx, statement)
+			if err != nil {
+				return err
+			}
+			// Row-level security hides rows silently; every statement here must touch one.
+			if tag.RowsAffected() != 1 {
+				return fmt.Errorf("%q affected %d rows", statement, tag.RowsAffected())
+			}
+		}
+		return tx.Commit(ctx)
+	}
+	if err := asETL(`INSERT INTO nutrition.food_sources(id,food_id,provider,external_id,dataset_version,license_identifier,attribution)
+		VALUES (gen_random_uuid(),'a7e40c6e-bfb4-47eb-ad64-aea61136db01','bls','M111300','4.0','CC-BY-4.0','Max Rubner-Institut')`); err != nil {
 		t.Fatalf("ETL could not persist a public, attributed BLS source: %v", err)
+	}
+	if role := scalar[string](t, pool, "SELECT current_user"); role == "ryft_nutrition_etl" {
+		t.Fatal("the ETL role leaked onto a pooled connection")
+	}
+	const portion = `INSERT INTO nutrition.portions(id,food_id,source_id,label,quantity,unit,weight_g,origin,source_portion_id,is_default)
+		SELECT gen_random_uuid(),s.food_id,s.id,'%s',1,'portion',100,'python_etl','%s',%t
+		FROM nutrition.food_sources s WHERE s.provider='bls' AND s.external_id='M111300'`
+	// The ETL can write, clear and set the default flag on its own rows (etl_portion_update).
+	if err := asETL(fmt.Sprintf(portion, "First", "p1", true), fmt.Sprintf(portion, "Second", "p2", false),
+		"UPDATE nutrition.portions SET is_default=false WHERE origin='python_etl' AND is_default",
+		"UPDATE nutrition.portions SET is_default=true WHERE source_portion_id='p2'"); err != nil {
+		t.Fatalf("ETL could not move a default portion: %v", err)
+	}
+	// A second default for the same food is refused by nutrition_portions_one_default.
+	if err := asETL(fmt.Sprintf(portion, "Third", "p3", true)); err == nil {
+		t.Fatal("two default portions accepted for one food")
+	}
+	if scalar[bool](t, pool, "SELECT has_column_privilege('ryft_nutrition_etl','nutrition.meal_items','portion_id','SELECT')") {
+		t.Fatal("ETL can read diary items")
+	}
+	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_constraint
+		WHERE conrelid IN ('nutrition.foods'::regclass,'nutrition.portions'::regclass,'nutrition.food_sources'::regclass)
+		AND contype='c' AND NOT convalidated`); n != 0 {
+		t.Errorf("%d catalog constraints left NOT VALID", n)
+	}
+	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_constraint WHERE contype='c' AND convalidated AND conname IN (
+		'nutrition_foods_group_key_format','nutrition_foods_form_format','nutrition_foods_subtitles_shape','nutrition_staple_public',
+		'nutrition_portions_key_format','nutrition_portions_short_en_length','nutrition_portions_short_de_length',
+		'nutrition_portions_source_id_length','nutrition_default_measured','food_sources_provider_check',
+		'nutrition_sources_attribution_length','nutrition_bls_attribution')`); n != 12 {
+		t.Errorf("%d of 12 named catalog constraints are validated", n)
+	}
+	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_indexes WHERE schemaname='nutrition' AND indexname IN (
+		'nutrition_portions_source_key','nutrition_portions_semantic_key','nutrition_portions_one_default',
+		'nutrition_items_food_recent','nutrition_favorites_food')`); n != 5 {
+		t.Errorf("%d of 5 selection indexes exist", n)
+	}
+	if !scalar[bool](t, pool, `SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_schema='nutrition'
+		AND table_name='food_favorites' AND column_name='created_at' AND is_nullable='NO')`) {
+		t.Error("food_favorites has no created_at for the export")
 	}
 }

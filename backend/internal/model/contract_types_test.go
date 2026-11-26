@@ -156,6 +156,7 @@ var contractTypes = map[string]reflect.Type{
 	"NutritionMealItem":         reflect.TypeOf(NutritionMealItem{}),
 	"NutritionMeal":             reflect.TypeOf(NutritionMeal{}),
 	"NutritionMealPage":         reflect.TypeOf(NutritionMealPage{}),
+	"NutritionFavorite":         reflect.TypeOf(NutritionFavorite{}),
 	"NutritionMealExportPage":   reflect.TypeOf(NutritionMealExportPage{}),
 	"NutritionTotal":            reflect.TypeOf(NutritionTotal{}),
 	"NutritionDaily":            reflect.TypeOf(NutritionDaily{}),

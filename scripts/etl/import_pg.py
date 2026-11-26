@@ -7,6 +7,7 @@ import os
 import re
 import uuid
 from dataclasses import asdict
+from decimal import Decimal
 from pathlib import Path
 
 import psycopg
@@ -14,7 +15,7 @@ from psycopg.conninfo import conninfo_to_dict
 from psycopg.types.json import Jsonb
 
 from categorizer import normalize
-from transform import Food
+from transform import Food, Portion
 
 # Matches Go's importedFoodNamespace and nutritionImportLock.
 IMPORT_NAMESPACE = uuid.UUID("a7e40c6e-bfb4-47eb-ad64-aea61136db20")
@@ -81,6 +82,22 @@ def connect() -> psycopg.Connection:
     return psycopg.connect(dsn, autocommit=True, **options)
 
 
+def measure_text(value: float | None) -> str | None:
+    """One spelling per number, so 110, 110.0 and 1.1e2 give the same portion ID."""
+    return None if value is None else format(Decimal(str(value)).normalize(), "f")
+
+
+def source_portion_uuid(namespace: uuid.UUID, key: str, portion: Portion) -> uuid.UUID:
+    """A keyed portion keeps its ID while its measure is unchanged.
+
+    The measure is part of the ID: a source that changes a portion's grams or millilitres
+    gets a new ID and the old one is retired. A selection saved against the old ID is
+    then rejected instead of silently logging the new amount.
+    """
+    measure = {"unit": portion.unit, "weight_g": measure_text(portion.weight_g), "volume_ml": measure_text(portion.volume_ml)}
+    return uuid.uuid5(namespace, f"source-portion:{key}|{json.dumps(measure, sort_keys=True)}")
+
+
 def staging_row(food: Food, ordinal: int) -> tuple:
     off = food.provider == "off"
     if off:
@@ -108,7 +125,7 @@ def staging_row(food: Food, ordinal: int) -> tuple:
         legacy = {"label": legacy_label, "unit": portion.unit, "weight_g": portion.weight_g, "volume_ml": portion.volume_ml}
         legacy_id = uuid.uuid5(namespace, "portion:" + json.dumps(legacy, sort_keys=True))
         key = portion.source_portion_id or portion.portion_key
-        portion_id = uuid.uuid5(namespace, "source-portion:" + key) if key else legacy_id
+        portion_id = source_portion_uuid(namespace, key, portion) if key else legacy_id
         if off:
             data["labels"] = {"de": "Portion", "en": "Serving"}
         portions.append({**data, "id": str(portion_id), "legacy_id": str(legacy_id)})

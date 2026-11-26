@@ -264,10 +264,20 @@ type NutritionMealPage struct {
 	NextOffset *int            `json:"next_offset"`
 }
 
+// NutritionFavorite is one favourited food in the export. FoodName is empty when
+// the food is no longer readable (for example a retired catalog entry).
+type NutritionFavorite struct {
+	FoodID      uuid.UUID `json:"food_id"`
+	FoodName    string    `json:"food_name"`
+	FavoritedAt time.Time `json:"favorited_at"`
+}
+
 // NutritionMealExportPage returns stored diary snapshots and a stable page cursor.
+// Favorites is present (possibly empty) on the first page only and omitted on later pages.
 type NutritionMealExportPage struct {
-	Meals     []NutritionMeal `json:"meals"`
-	NextAfter *uuid.UUID      `json:"next_after"`
+	Meals     []NutritionMeal     `json:"meals"`
+	NextAfter *uuid.UUID          `json:"next_after"`
+	Favorites []NutritionFavorite `json:"favorites,omitempty"`
 }
 
 // NutritionTotal reports a known subtotal and coverage among recorded items.

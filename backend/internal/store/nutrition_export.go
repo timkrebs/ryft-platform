@@ -36,7 +36,37 @@ func (s *Store) ExportNutritionMeals(ctx context.Context, user, after uuid.UUID,
 			page.NextAfter = &after
 			page.Meals = page.Meals[:limit]
 		}
-		return nutritionMealItems(ctx, tx, user, page.Meals)
+		if err := nutritionMealItems(ctx, tx, user, page.Meals); err != nil {
+			return err
+		}
+		if after != uuid.Nil {
+			return nil
+		}
+		page.Favorites, err = exportNutritionFavorites(ctx, tx, user)
+		return err
 	})
 	return page, err
+}
+
+// exportNutritionFavorites lists the caller's favourites oldest first. The food
+// is LEFT JOINed so a retired or unreadable food still exports its ID.
+func exportNutritionFavorites(ctx context.Context, tx pgx.Tx, user uuid.UUID) ([]model.NutritionFavorite, error) {
+	rows, err := tx.Query(ctx, `SELECT fav.food_id, COALESCE(f.canonical_name,''), fav.created_at
+		FROM nutrition.food_favorites fav
+		LEFT JOIN nutrition.foods f ON f.id=fav.food_id
+		WHERE fav.user_id=$1
+		ORDER BY fav.created_at, fav.food_id`, user)
+	if err != nil {
+		return nil, err
+	}
+	favorites, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.NutritionFavorite, error) {
+		var f model.NutritionFavorite
+		err := r.Scan(&f.FoodID, &f.FoodName, &f.FavoritedAt)
+		f.FavoritedAt = f.FavoritedAt.UTC()
+		return f, err
+	})
+	if favorites == nil {
+		favorites = []model.NutritionFavorite{}
+	}
+	return favorites, err
 }

@@ -57,7 +57,8 @@ func (s *Store) HasNutritionData(ctx context.Context, user uuid.UUID) (bool, err
 			OR EXISTS (SELECT FROM nutrition.meals WHERE user_id=$1)
 			OR EXISTS (SELECT FROM nutrition.goal_revisions WHERE user_id=$1)
 			OR EXISTS (SELECT FROM nutrition.glucose_samples WHERE user_id=$1)
-			OR EXISTS (SELECT FROM nutrition.n2r_profiles WHERE user_id=$1)`, user).Scan(&exists)
+			OR EXISTS (SELECT FROM nutrition.n2r_profiles WHERE user_id=$1)
+			OR EXISTS (SELECT FROM nutrition.food_favorites WHERE user_id=$1)`, user).Scan(&exists)
 	})
 	return exists, err
 }
