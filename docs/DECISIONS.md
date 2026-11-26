@@ -6911,25 +6911,29 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   session RPE. Contract: `docs/API.md` → Recovery without a watch. Implementation outline:
   `docs/work/2026-11-26-no-watch-recovery/implementation.md`.
 - **Decision:**
-  1. **Tiers** (`RecoveryStatus.confidence`, closed): `high` = the day has a wearable recovery (`DailyScore.recovery`
-     not null); `medium` = a check-in and wearable heart rate in at least 8 distinct hours of the day before (the
-     "day watch"); `low` = a check-in only; `null` = nothing. 8 hours is a RYFT heuristic.
-  2. **Precedence:** wearable > check-in > nothing, per wake day. A later sync that brings a wearable recovery
+  1. **One rule, the wearable night:** the night ending on the day has asleep stages (not `in_bed` only) or HRV
+     readings in the sleep window, **and** `DailyScore.recovery` is not null. Recovery alone is not enough: it is
+     computed from resting heart rate too (`scoring/compute_steps.go`), which a watch worn only by day writes
+     every day (review #1). The tiers, `needs_checkin`, `superseded` and the readiness path all use this rule.
+  2. **Tiers** (`RecoveryStatus.confidence`, closed): `high` = a wearable night; `medium` = a check-in and wearable
+     heart rate in at least 8 distinct hours of the day before (the "day watch"); `low` = a check-in only;
+     `null` = nothing. 8 hours is a RYFT heuristic.
+  3. **Precedence:** wearable night > check-in > nothing, per wake day. A later sync that brings a wearable night
      **supersedes** the check-in: it stays stored (`superseded: true`, still in the history and the export) and
      every consumer (status, briefing, periodization) uses the wearable. Deleting the wearable data makes the
      check-in current again. Never averaged: a subjective score next to a measured one would read as a second
      measurement.
-  3. **`needs_checkin`:** 04:00 local or later, no wearable sleep for the night ending today (asleep stages from a
-     source that did not enter them by hand: `in_bed`-only iPhone nights and nights typed into Apple Health do
-     not count), no check-in yet, and the flag on.
-  4. **Routes, mapped to what exists** (the spec named `/api/v1/…` and other paths): `/v1/recovery/checkins/{date}`
+  4. **`needs_checkin`:** 04:00 local or later, no wearable night, no check-in yet, and the flag on. The sync
+     carries no `was_user_entered` on sleep segments, so a night typed into Apple Health with asleep stages
+     counts as measured; an additive sync field is an open question (review #2).
+  5. **Routes, mapped to what exists** (the spec named `/api/v1/…` and other paths): `/v1/recovery/checkins/{date}`
      (`PUT` upsert, `GET`, `DELETE`) and `GET /v1/recovery/checkins?from&to` with the `/v1/days` range rules;
      `{date}` is the wake day, as every day in v1.
-  5. **`GET /v1/recovery/status` next to `CoachingBriefing.recovery` (a deviation):** the briefing needs the
+  6. **`GET /v1/recovery/status` next to `CoachingBriefing.recovery` (a deviation):** the briefing needs the
      Nutrition-to-Recovery profile (`store/n2r_guidance.go`: no profile, no briefing), so it reaches only the
      protected pilot. The no-watch user is mostly not in it. The same `RecoveryStatus` object therefore has its
      own route, and the briefing embeds it.
-  6. **Suggested bed and wake times are a pre-fill** of the check-in form (median of the last 7 days' check-ins,
+  7. **Suggested bed and wake times are a pre-fill** of the check-in form (median of the last 7 days' check-ins,
      at least 3; else the N2R `expected_bedtime` and 8 h later; else none), never advice; the Sleep Planner stays
      the recommendation.
 - **Rejected:** writing a check-in score into `DailyScore.recovery` (the Today ring): it would change what an
@@ -6978,33 +6982,42 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
     mirror, and the rating is the user's input in RYFT. The workout route covers both kinds of manual workout:
     a HealthKit workout entered by hand (`was_user_entered`) and a Train session (`Session.workout_id`, its
     `ryft-session` workout when no HealthKit one matched).
-  - **Load:** the coaching load (`energy.Load`: acute 7 d, chronic 28 d, ACWR, TSB) adds `0.30 × session_rpe_load`
-    for a rated workout with neither usable heart rate (no TRIMP) nor power (no TSS). Measured load wins.
-    0.30 is a RYFT heuristic: reading RPE × 10 as the heart-rate-reserve percentage, Banister's TRIMP with the
-    default constants (`energy.Workout`: 0.75, 1.795) gives 0.28–0.32 TRIMP per AU between RPE 3 and 8. So
-    60 min at RPE 8 = 480 AU → 144.
+  - **Load:** the coaching load (`energy.Load`: acute 7 d, chronic 28 d, ACWR, TSB) counts a rated workout with
+    neither usable heart rate (no TRIMP) nor power (no TSS) as Banister's TRIMP with `r = session_rpe / 10` in
+    place of the heart-rate-reserve fraction: `minutes × r × a × e^(b·r)`, with `energy.Workout`'s constants
+    for the user's sex (0.64/1.92 male, 0.86/1.67 female, 0.75/1.795 otherwise). Measured load wins. Reading
+    RPE × 10 as the reserve percentage is a RYFT heuristic. The spec's "duration × RPE, mapped onto the
+    internal scale" is kept as `session_rpe_load` (AU) for display. A flat factor was rejected (review #4):
+    TRIMP per AU is `0.075·e^(0.1795·RPE)` with the default constants, 0.13 at RPE 3 and 0.32 at 8, so one
+    factor overstates easy sessions up to 2.3×. So 60 min at RPE 8 = 480 AU → 151 (unspecified sex),
+    143 (male), 157 (female).
   - **Day strain stays HR-based** (`DailyScore.strain`, `WorkoutDetail.trimp`): putting reported effort into the
     0–21 strain and its sleep-need top-up moves stored numbers for every user and needs its own calibration;
     open for the user.
 - **Retroactive N2R:** the N2R bedtime precedence becomes the measured sleep start (`daily_scores.sleep_start`
   of the next day, as `nutritionBedtimes` reads it) > the next morning's check-in `bedtime` > `expected_bedtime`.
-  `N2RScore.bedtime_source` (`expected`/`wearable`/`checkin`) says which. Saving or deleting a check-in for D is an
-  **explicit recompute** of D − 1's N2R night record with the reason `checkin_bedtime`, in the same request
-  through the existing nutrition recompute path (no event; D101 holds for anything that leaves the api), so the
-  alcohol, caffeine and late-meal penalties use when the user really went to bed. The N2R formula and
-  `n2rVersion` do not change; only an input does. A wearable night arriving later re-runs it with
-  `bedtime_source: "wearable"`.
+  `N2RScore.bedtime_source` (`expected`/`wearable`/`checkin`; absent when `bedtime` is null) says which.
+  **Explicit, and live rather than stored** (review #5): the N2R the app reads (`yesterday_n2r`, the Nutrition
+  daily summaries via `addN2RDays`) is computed on read from `nutritionBedtimes`, so the check-in bedtime as a
+  fallback there changes D − 1's alcohol, caffeine and late-meal penalties as soon as the check-in is saved or
+  deleted. The stored night record (`daily_biometric_baselines.n2r_score_breakdown`) is written only by the tick
+  and only for nights with overnight biometrics, i.e. wearable nights, where the measured bedtime wins anyway.
+  So it never needs the check-in bedtime, and no recompute job or event is added. The check-in path's
+  confounders are taken from the live D − 1 N2R, not from that record. What makes it explicit: `bedtime_source`
+  on the N2R and `n2r_bedtime_applied` on the check-in. The N2R formula and `n2rVersion` do not change; only an
+  input does.
 
 ## D294 — Readiness without overnight HRV: reported state names, no diagnosis (2026-11-26; contract only)
 
-- **Decision:** `CoachingBriefing.readiness` uses a check-in when the day has no overnight HRV, after the
-  availability guardrail and the HRV path as today. No `acute_drop` → `OPTIMAL`. `acute_drop` with a confounder
+- **Decision:** `CoachingBriefing.readiness` uses a current check-in where the HRV path yields `UNKNOWN` (no
+  overnight HRV, or not enough for its baseline, `availability.go`), after the availability guardrail, and only
+  with a coaching plan, as today. No `acute_drop` → `OPTIMAL`. `acute_drop` with a confounder
   of the evening before → `ACUTE_LIFESTYLE_SUPPRESSION` (the existing value; reasons the confounders, then
   `checkin_below_usual` or `checkin_low_quality_and_freshness`). `acute_drop` without one → the new
   **`LOW_RECOVERY_UNEXPLAINED`**, which `periodization.Plan` treats like the HRV path's unexplained drop
   (deficit suspended, carbohydrate floor 4.5 g/kg). `soreness` adds `soreness_reported`.
 - **Confounders:** the N2R tags the HRV path already uses (`alcohol_above_035gkg`, `caffeine_bed_high`,
-  `late_satfat_meal`, after the retroactive recompute) **and, a deviation, the journal of the day before**
+  `late_satfat_meal`, from the live D − 1 N2R with the reported bedtime, D293) **and, a deviation, the journal of the day before**
   (`alcohol`/`alcohol_drinks`, `caffeine_after_2pm` or `last_caffeine` within 8 h of the reported bedtime,
   `late_meal` → `journal_alcohol`, `journal_late_caffeine`, `journal_late_meal`): most no-watch users are not in
   the N2R pilot but can keep the journal. `sick`, `travel` and `work_stress` are not confounders here (open).
@@ -7021,8 +7034,10 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   soreness). Both writes need consent to the policy in force (`403 consent_required`, `warn` acting as `on`, as
   for Nutrition writes); the reads and deletes do not, so a user who withdrew can still see and erase.
 - **Flag:** `recovery.checkin`, enabled at 0 % (testers by the allow-list). Off: the two writes and the status
-  route answer `404` without a `code` (what an older server answers too, so the app has one rule), the briefing's
-  `recovery` is `null`; reads and deletes keep working; turning it off deletes nothing. No new error `code`.
+  route answer `404` without a `code` (what an older server answers too, so the app has one rule: hide the
+  feature, never drop local data), and the briefing's `recovery` is `null`. Reads and deletes keep working.
+  It is a **kill switch**: stored check-ins and ratings count nowhere while it is off (readiness, load, the N2R
+  bedtime), and turning it off deletes nothing. No new error `code`.
 - **Deletion and export:** `DELETE /v1/me` deletes check-ins and ratings with the account; a HealthKit deletion of
   a workout deletes its rating; the account merge moves both; `GET /v1/recovery/checkins` (≤ 400 days a call)
   feeds the app's export, and the workout export carries `session_rpe` already.
