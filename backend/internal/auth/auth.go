@@ -29,6 +29,10 @@ type Principal struct {
 	AppRole string    // app_metadata.role when it is a JSON string of at most 32 bytes; else ""
 	AAL     string    // exactly "aal1" or "aal2"; anything else ""
 	MFAAt   time.Time // the newest amr entry with method "totp"; zero when there is none
+	// Smoke marks the smoke account's Google token (D286). Its user row must already exist: the
+	// service's OnAuth refuses the token instead of creating the row, so a wrong SMOKE_USER_ID
+	// cannot pass by inserting an orphan.
+	Smoke bool
 }
 
 type principalKey struct{}
@@ -107,6 +111,10 @@ type Options struct {
 	Verifier Verifier
 	Limit    Limit  // optional; checked before OnAuth so throttled requests cost no database query
 	OnAuth   OnAuth // optional
+	// SmokeAllow says which requests the smoke principal (D286) may make. Checked right after Verify,
+	// before Limit and OnAuth: nil, or false, is a 403 smoke_route. Only the routes the production
+	// smoke needs belong on it; an app user's request never reaches it.
+	SmokeAllow func(*http.Request) bool
 }
 
 // maxTokenLen bounds the work an attacker can make us do per request.
@@ -132,6 +140,10 @@ func Middleware(o Options, next http.Handler) http.Handler {
 		}
 		if ri := httpx.Info(ctx); ri != nil {
 			ri.UserID = p.UserID.String()
+		}
+		if p.Smoke && (o.SmokeAllow == nil || !o.SmokeAllow(r)) {
+			fail(w, r, o.Log, forbidden("smoke_route"))
+			return
 		}
 		if o.Limit != nil {
 			if class, ok, wait := o.Limit(r, p); !ok {
@@ -167,6 +179,9 @@ func bearer(r *http.Request) (string, bool) {
 	return token, token != ""
 }
 
+// forbidden refuses an authenticated principal a route it may not use (403).
+func forbidden(reason string) *Error { return &Error{Status: http.StatusForbidden, Reason: reason} }
+
 func fail(w http.ResponseWriter, r *http.Request, log *slog.Logger, err error) {
 	var ae *Error
 	if !errors.As(err, &ae) {
@@ -174,6 +189,11 @@ func fail(w http.ResponseWriter, r *http.Request, log *slog.Logger, err error) {
 	}
 	metrics.AuthFailures.WithLabelValues(ae.Reason).Inc()
 	httpx.SetCode(r, ae.Reason)
+	if ae.Status == http.StatusForbidden {
+		log.InfoContext(r.Context(), "auth refused", "reason", ae.Reason)
+		httpx.WriteError(w, http.StatusForbidden, "forbidden") // no body code: it is no part of the app's contract (docs/API.md); the reason is the access line's code
+		return
+	}
 	if ae.Status == http.StatusUnauthorized {
 		log.InfoContext(r.Context(), "auth rejected", "reason", ae.Reason, "err", errString(ae.Err))
 		w.Header().Set("WWW-Authenticate", `Bearer realm="ryft", error="invalid_token"`)

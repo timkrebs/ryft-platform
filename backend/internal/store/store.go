@@ -93,6 +93,9 @@ type Identity struct {
 	Email    string // "" = unknown, keeps the stored value
 	Provider string
 	Name     string
+	// MustExist makes EnsureUser a lookup that never inserts. The smoke account's token sets it
+	// (D286), so a wrong SMOKE_USER_ID is an error and not a new orphan row.
+	MustExist bool
 }
 
 // seenEvery bounds how often an active user's row is written (last_seen_at).
@@ -102,7 +105,8 @@ const seenEvery = 5 * time.Minute
 // (users come from Supabase Auth; there is no sign-up endpoint). The common
 // case is a single read; the row is only written when it is missing, its
 // last_seen_at is older than seenEvery, or the token carries a new email,
-// provider or name. A deleted account is ErrDeleted.
+// provider or name. A deleted account is ErrDeleted. With id.MustExist a missing row is
+// ErrNotFound and nothing is inserted.
 func (s *Store) EnsureUser(ctx context.Context, id Identity) (model.User, error) {
 	var lastSeen *time.Time
 	u, err := scanUser(s.pool.QueryRow(ctx, `SELECT `+userColumns+`, last_seen_at FROM users WHERE id=$1`, id.ID), &lastSeen)
@@ -126,6 +130,13 @@ func (s *Store) EnsureUser(ctx context.Context, id Identity) (model.User, error)
 			return ErrDeleted
 		}
 		var err error
+		if id.MustExist {
+			out, err = scanUser(tx.QueryRow(ctx, `UPDATE users SET last_seen_at = now() WHERE id=$1 RETURNING `+userColumns, id.ID))
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
 		out, err = scanUser(tx.QueryRow(ctx, `INSERT INTO users (id, name, email, provider, last_seen_at)
 			VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), now())
 			ON CONFLICT (id) DO UPDATE SET last_seen_at = now(),

@@ -132,6 +132,44 @@ func ingestTicks(ping, sweep func(context.Context) error, own ...eventbus.Tick) 
 	return append(steps, eventbus.Tick{Name: "outbox sweep", Run: sweep})
 }
 
+// ensureUser finds or creates the caller's user row from the verified token. A deleted account's
+// token is a bad token. The smoke account's token (D286) never creates a row: with none (or a
+// tombstone) it is refused, so a wrong SMOKE_USER_ID cannot pass by inserting an orphan.
+// It must also be the account bound in smoke_account, checked first on every request and before any
+// write: a wrong SMOKE_USER_ID, even one naming a real user, is a 401 smoke_unbound that touches no
+// row; a database error is a 503.
+func ensureUser(st userStore) func(context.Context, auth.Principal) (model.User, error) {
+	return func(ctx context.Context, p auth.Principal) (model.User, error) {
+		if p.Smoke {
+			bound, err := st.IsSmokeAccount(ctx, p.UserID)
+			switch {
+			case err != nil:
+				return model.User{}, err
+			case !bound:
+				return model.User{}, auth.Unauthorized("smoke_unbound", nil)
+			}
+		}
+		u, err := st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name, MustExist: p.Smoke})
+		if p.Smoke && (errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrDeleted)) {
+			return u, auth.Unauthorized("smoke_unknown_user", nil)
+		}
+		if errors.Is(err, store.ErrDeleted) {
+			return u, auth.Unauthorized("deleted", err)
+		}
+		return u, err
+	}
+}
+
+// userStore is what ensureUser reads: the user row and the smoke binding (*store.Store; a fake in tests).
+type userStore interface {
+	EnsureUser(ctx context.Context, id store.Identity) (model.User, error)
+	IsSmokeAccount(ctx context.Context, id uuid.UUID) (bool, error)
+}
+
+// smokeAllow is auth.Options.SmokeAllow for ingest (D286): the one path scripts/smoke_prod.sh uses
+// with the smoke token, with any method (it also sends a GET and expects ingest's own 404).
+func smokeAllow(r *http.Request) bool { return r.URL.Path == "/v1/sync" }
+
 // newMux is ingest's routes: health, the tick, POST /v1/sync behind the auth middleware,
 // the per-user limit and the app token check (h.attest; no route exempt, the exempt
 // accounts are), and a JSON 404 for the rest. The tick sits beside /v1, outside all of
@@ -156,13 +194,7 @@ func newMux(h *handler, log *slog.Logger, verifier auth.Verifier, tick http.Hand
 	limits := ratelimit.NewUserLimits()
 	load := h.loadUser
 	if load == nil {
-		load = func(ctx context.Context, p auth.Principal) (model.User, error) {
-			u, err := st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name})
-			if errors.Is(err, store.ErrDeleted) { // a deleted account's token is a bad token
-				return u, auth.Unauthorized("deleted", err)
-			}
-			return u, err
-		}
+		load = ensureUser(st)
 	}
 	mux.Handle("/v1/", auth.Middleware(auth.Options{
 		Log:      log,
@@ -170,7 +202,8 @@ func newMux(h *handler, log *slog.Logger, verifier auth.Verifier, tick http.Hand
 		Limit: func(r *http.Request, p auth.Principal) (string, bool, time.Duration) {
 			return limits.Allow(r, p.UserID.String())
 		},
-		OnAuth: auth.LoadUser(load),
+		OnAuth:     auth.LoadUser(load),
+		SmokeAllow: smokeAllow,
 	}, gate.AppAttest(gate.AppAttestOptions{Config: h.attest, Service: "ingest", Log: log},
 		httpx.Timeout(syncTimeout, httpx.WithRoutes(api)))))
 	mux.HandleFunc("/", httpx.NotFound)

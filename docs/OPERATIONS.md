@@ -467,7 +467,7 @@ refuses to run while a placeholder is left.
 
 ### 8. First deploy
 
-Set `GCP_DEPLOY=on`, then run `deploy.yml` by hand with the `smoke` input off. The commands are
+Set `GCP_DEPLOY=on`, then run `deploy.yml` by hand. The commands are
 in **Deploy, roll back, rotate** below. **Stop if** `migrate`'s log lacks a `migration applied`
 line for each new file (`0034_outbox_available_at.sql`, `0035_float_digits.sql`), or doesn't end
 with `schema current`; or a revision isn't ready. This run
@@ -551,7 +551,7 @@ replace` on the four, each through its binding on the resource.
 
 ```bash
 gh variable delete DEPLOY_HOLD_SERVICES -R "$R"
-gh workflow run deploy.yml --ref main -f smoke=true -R "$R"
+gh workflow run deploy.yml --ref main -R "$R"                    # the smoke auth follows the serving api (D286)
 gh run list --workflow=deploy.yml -R "$R" --limit=3              # the new run on top, workflow_dispatch
 gh run watch <run id> -R "$R" --exit-status
 gh run view <run id> -R "$R" --log-failed                        # only after a red run
@@ -579,12 +579,9 @@ Then the three tests (design §3, §5.1, §4):
 ```bash
 # 1. 33 MiB through ingest.ryftlab.de must get OUR JSON 413, which proves HTTP/2 end to end.
 #    Google's front end would answer an HTML 413. The smoke user's token never reaches argv.
-read -r SMOKE_EMAIL; read -rs SMOKE_PASSWORD        # the smoke user (1Password); the password not echoed
-SUPABASE_URL=https://$REF.supabase.co; SUPABASE_ANON_KEY='<the publishable key>'
-TOKEN=$(jq -nc --arg e "$SMOKE_EMAIL" --arg p "$SMOKE_PASSWORD" '{email: $e, password: $p}' \
-  | curl -fsS -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" -H "apikey: $SUPABASE_ANON_KEY" \
-      -H 'Content-Type: application/json' --data @- | jq -r .access_token)
-unset SMOKE_PASSWORD
+#    The smoke account's token is a Google ID token of ryft-smoke (D286; Deploy, roll back, rotate →
+#    The smoke authentication): `gcloud auth login` once, and roles/iam.serviceAccountOpenIdTokenCreator on it.
+d=$(mktemp -d); python3 -I scripts/lib/smoke_auth.py mint "$d/token" && TOKEN=$(cat "$d/token"); rm -rf "$d"
 f=$(mktemp); { printf '{"pad":"'; head -c $((33 << 20)) /dev/zero | tr '\0' a; printf '"}'; } > "$f"
 printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -H @- -H 'Content-Type: application/json' \
   --data-binary @"$f" -w '\n%{http_code} %{content_type}\n' https://ingest.ryftlab.de/v1/sync
@@ -630,16 +627,13 @@ own). On both services:
   expects, so every client shares the fallback bucket: the value in `deploy/run/config.env` is wrong.
 - No line with 3 or more entries on a host: send that host's loop again.
 
-3. `make smoke-supabase` against the two hosts, as the smoke user (step 9's `REF` is still set):
-   a sign-in, `/v1/me`, a sync of synthetic days into that user, and the score read back,
-   through the services on the transaction pooler. Leave `SUPABASE_SECRET_KEY` unset (that would
-   add the throwaway-account tests).
+3. `make smoke-prod` against the two hosts, as the smoke user: the Google token of `ryft-smoke`
+   (`gcloud auth login` once), `/v1/me`, a sync into that user, and the score read back, through the
+   services on the transaction pooler. (`make smoke-supabase` is the local stack's: it signs in by
+   email, which production no longer offers.)
 
 ```bash
-read -r SMOKE_EMAIL; read -rs SMOKE_PASSWORD; echo; export SMOKE_EMAIL SMOKE_PASSWORD
-SUPABASE_URL=https://$REF.supabase.co SUPABASE_ANON_KEY='<the publishable key>' \
-  API_URL=https://api.ryftlab.de INGEST_URL=https://ingest.ryftlab.de make smoke-supabase
-unset SMOKE_PASSWORD
+make smoke-prod
 ```
 
 Undo apply 2 with a PR that sets `serve = false`, the hold set before its merge (as above). Its
@@ -1270,15 +1264,17 @@ state (the old 14.1) can't run. Two copies remain: Secret Manager's `data-key` a
 
 The one step left, after D3 is merged. The workflows on main read the variables `GCP_DEPLOY`,
 `DEPLOY_HOLD_SERVICES`, `SITE_DEPLOY`, `TESTFLIGHT_URL` and `SUPPORT_EMAIL`, and the secrets
-`SUPABASE_ANON_KEY`, `SMOKE_EMAIL` and `SMOKE_PASSWORD` (in `deploy`). These names go:
+`SUPABASE_ANON_KEY`, `SMOKE_EMAIL` and `SMOKE_PASSWORD` (in `deploy`; D286 retired these three: the smoke
+authenticates with a Google token of `ryft-smoke` and holds no secret, **Deploy, roll back, rotate → The smoke
+authentication**). These names go:
 - the secret `RYFT_DEPLOY_APP_KEY`, the old promote App's key (no job has read it since C1, #194);
 - the variable `RYFT_DEPLOY_APP_CLIENT_ID`, that App's client ID;
 - every secret named `AWS_*` or `GHCR_*`. No workflow on main has ever read one by name.
 
 The paste lists everything first, in the repository and in `deploy`. It then deletes only these
-names, each one only if no workflow on main names it, and lists again. It ends by checking that
-`deploy` still holds the smoke user's three secrets. It runs from the repository's root, on a clean,
-current main with D3 merged.
+names, each one only if no workflow on main names it, and lists again. (It used to end by checking
+that `deploy` still held the smoke user's three secrets; D286 retired them, so the check is gone.) It
+runs from the repository's root, on a clean, current main with D3 merged.
 
 ```bash
 # 14.3, GitHub: the listed secrets and variables, in the repository and in the environment deploy.
@@ -1303,10 +1299,6 @@ if [ -z "$(git status --porcelain --untracked-files=no)" ] && [ "$(git rev-parse
   done
   echo "== after"; gh secret list -R "$R"; gh secret list --env deploy -R "$R"
   gh variable list -R "$R"; gh variable list --env deploy -R "$R"
-  left=$(gh secret list --env deploy -R "$R" --json name --jq '.[].name')
-  for k in SUPABASE_ANON_KEY SMOKE_EMAIL SMOKE_PASSWORD; do
-    printf '%s\n' "$left" | grep -qx "$k" || echo "STOP: deploy no longer holds $k; deploy.yml's smoke needs it"
-  done
 else
   echo "STOP: not a clean, current main with D3 merged, or gh isn't signed in."
 fi
@@ -1724,20 +1716,14 @@ token; it refreshes once). The key's own use and `admin second factor required` 
    apply that.
    **Stop if** the second plan isn't "No changes" (a field the API rewrites: report the diff, it is this
    PR's bug), or the apply fails otherwise.
-3. **The test, each kind once.** In a new zsh, from the repository's root. Note the time. The password
-   goes through a hidden prompt and `printf` (a builtin) into `jq`'s stdin, the token through `curl -H
-   @-`: neither reaches the screen, the history or argv.
+3. **The test, each kind once.** In a new zsh, from the repository's root. Note the time. The token
+   is a Google ID token of `ryft-smoke` (D286: `gcloud auth login` once; **The smoke authentication**
+   above); it goes through `curl -H @-`, so it never reaches the screen, the history or argv.
 
    ```bash
-   # a. A feedback from the smoke user (as step 9 signs it in; the publishable key: Supabase ->
-   #    Project Settings -> API Keys).
-   REF=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env); KEY='<the publishable key>'
-   read -r "?smoke user's email: " SMOKE_EMAIL; export SMOKE_EMAIL; read -rs "?its password: " SMOKE_PASSWORD; echo
-   TOKEN=$(printf '%s' "$SMOKE_PASSWORD" | jq -Rs '{email: env.SMOKE_EMAIL, password: .}' |
-     curl -fsS "https://$REF.supabase.co/auth/v1/token?grant_type=password" -H "apikey: $KEY" \
-       -H 'Content-Type: application/json' --data-binary @- | jq -r .access_token)
-   unset SMOKE_PASSWORD SMOKE_EMAIL
-   # Sends the feedback only after a sign-in; else it prints the failure and sends nothing.
+   # a. A feedback from the smoke user (as step 9 authenticates it).
+   d=$(mktemp -d); python3 -I scripts/lib/smoke_auth.py mint "$d/token" && TOKEN=$(cat "$d/token"); rm -rf "$d"
+   # Sends the feedback only after a token; else it prints the failure and sends nothing.
    [ "${#TOKEN}" -gt 100 ] && printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS -o /dev/null -w '%{http_code}\n' -H @- \
      -H 'Content-Type: application/json' -d '{"message": "runbook 14a.9: a test of the alert, not a report", "category": "other"}' \
      https://api.ryftlab.de/v1/feedback || echo 'sign-in failed: stop here'   # 204
@@ -2478,19 +2464,44 @@ main only), and only while the repository variable `GCP_DEPLOY` is `on`. One run
    Nothing has signed in yet.
 4. Only when all five pass: the sign-in as `ryft-deployer` (WIF admits only this workflow, on main,
    in the environment `deploy`, on a GitHub-hosted runner), then the push of the same five images,
-   tagged with the short SHA.
+   tagged with the short SHA and with `<short SHA>-<run id>-<attempt>`. The second tag never moves,
+   so the image a later run finds serving still names its commit.
 5. `deploy/run` rendered with their digests.
 6. Main's head again, just before `migrate`: a commit overtaken during the build ends green as
    "superseded" here, its images pushed and nothing rolled. The smoke authentication preflight
-   validates the dedicated session through `GET /v1/me` before `migrate` and service rollout (D282).
-   That read can initialize the dedicated account. Then `migrate` runs via `gcloud run jobs replace`
-   and `execute --wait`. If either preflight or migrate fails, the run stops before service rollout.
+   validates a freshly minted token through `GET /v1/me` before `migrate` and service rollout (D282).
+   Then `migrate` runs via `gcloud run jobs replace` and `execute --wait`. If either the preflight or
+   migrate fails, the run stops before service rollout. Before both, the run records each service's
+   serving revision. It then reads the serving api revision and proves two facts from its image,
+   not from labels alone. The registry tags of the image's digest name the commits that built it,
+   and these are compared with #249 (`4bca49d`), D285's change and main's last commit before D286.
+   - **D286 sign-in.** Yes when the api's env has `SMOKE_OIDC_SA_EMAIL`, `SMOKE_OIDC_SA_ID`,
+     `SMOKE_OIDC_AUDIENCE` and `SMOKE_USER_ID`, all as literal non-empty values; the preflight runs.
+     No when it has none of the four and the image's commit is #249 or older: a dispatch runs the
+     bootstrap check instead, and a push stops here ("the D286 bootstrap is pending", **The smoke
+     authentication**). Anything else stops every mode as config drift, below.
+   - **D285.** Yes when the revision carries the label `ryft-meal-patch=d285` and the image's
+     commit contains #249. Otherwise a commit that writes the meal portion labels stops here
+     (**The D285 floor**, below).
+
+   Nothing has changed at that point. A dispatch with `-f migrate_only=true` runs `migrate` and
+   stops: no smoke authentication, no rollout, no smoke, and no site.
 7. `gcloud run services replace` for scoring, notify, ingest, api, in that order. Each waits until
    its new revision is ready. The startup probe is `/health/live` (`/health/ready` stays the
    uptime checks' target), so ready means the process serves, not that it reaches the database.
-8. `make smoke-prod` revalidates the runner's protected session against the new API before sync and
-   consent writes. It catches a revision with a broken database config. The first-deploy bootstrap
-   switch `smoke: false` covers both phases until the public API is reachable.
+   Before the first `replace`, the run records each service's serving revision.
+8. `make smoke-prod` always runs after the rollout, with a token it mints itself (no session file
+   crosses the rollout). It catches a revision with a broken database config. If it fails, traffic
+   goes back to the recorded revisions (api, ingest, notify, scoring) and the run fails: **The smoke
+   authentication** below has what that leaves. One EXIT trap does every rollback. A service is
+   listed before its `replace` is issued, so a failed replace, a failed smoke or any unexpected
+   error sends every listed service back. That includes a failed lookup of a new revision after
+   its replace, and the services after it are never replaced. No input skips this smoke.
+   `migrate_only` skips the whole rollout.
+   Before anything moves, the step prints "Restore by hand", one `update-traffic` command per
+   service, to its log and its summary. Every gcloud call and the smoke has a deadline. The
+   forward calls never run past the job's 60 minutes minus the time the four restores need (90 s
+   each, plus 180 s of slack). Every restore is tried, even when one fails or times out.
 
 Every run builds and deploys all five, whatever the merge changed, and runs `migrate` (a no-op
 when no file is new). The run summary lists the tag, the digests and each service's new revision.
@@ -2518,38 +2529,36 @@ git grep -ho 'name: [a-z0-9-]*, key: "[0-9]*"' origin/main -- deploy/run/ | tr -
 # 3. The environment deploy admits main only.
 gh api "repos/$R/environments/deploy" --jq '.deployment_branch_policy'   # protected_branches false, custom_branch_policies true
 gh api "repos/$R/environments/deploy/deployment-branch-policies" --jq '.branch_policies[] | [.name,.type]'   # ["main","branch"], nothing else
-# 4. Where password sign-in is enabled, copy each smoke setting into the protected deploy environment.
-pbpaste | gh secret set SUPABASE_ANON_KEY --env deploy -R "$R"   # Supabase -> Project Settings -> API Keys -> the publishable key
-pbpaste | gh secret set SMOKE_EMAIL --env deploy -R "$R"         # the smoke user's address (1Password)
-pbpaste | gh secret set SMOKE_PASSWORD --env deploy -R "$R"      # its password (1Password)
-pbcopy < /dev/null
-gh secret list --env deploy -R "$R"                              # the names only
+# 4. The smoke's identity is two values in deploy/run/config.env, no secret (D286, The smoke authentication below).
+git show origin/main:deploy/run/config.env | grep -c '^SMOKE_\(USER\|SA\)_ID=[^F]'        # 2 (neither is FILL_ME_IN)
+gcloud iam service-accounts describe ryft-smoke@ryftlab-prod.iam.gserviceaccount.com \
+  --project=ryftlab-prod --format='value(uniqueId)'                                       # equals SMOKE_SA_ID
+gh secret list --env deploy -R "$R"                                                       # no SMOKE_* and no SUPABASE_ANON_KEY left
 ```
 
-Where email sign-in is disabled, use a current Supabase access token acquired by signing into the
-dedicated smoke account through an approved provider. Put that token in `SMOKE_TOKEN` and the same
-account's Supabase UUID in `SMOKE_USER_ID`, both in the protected `deploy` environment. Allow enough
-token lifetime for the CI wait, migrate, rollout and post-rollout smoke. The same two settings work
-with `make smoke-prod` from an authorized shell. Remove a temporary token from the environment after
-use. The script validates the UUID before passing a supplied remote bearer to the API. Provider
-failures report the HTTP status and a known error code, such as `422 (email_provider_disabled)`.
-[Supabase Auth error codes](https://supabase.com/docs/guides/auth/debugging/error-codes)
+The deploy's smoke authentication holds no secret: see **The smoke authentication** below. Email
+sign-in is off in Supabase for good, so `SMOKE_EMAIL`, `SMOKE_PASSWORD`, `SUPABASE_ANON_KEY` and a
+hand-set `SMOKE_TOKEN` are not used any more; delete them from the `deploy` environment if they are still there.
 
 "Allow administrators to bypass" stays unchecked (Settings → Environments → `deploy`). If the
 environment is missing, create it as step 10a.1 creates `site`, with `deploy` in its place.
 
-Then switch the workflow on and run it by hand, without the smoke. Nothing is public before step 9.
+Then switch the workflow on and run it by hand. A serving api from before D286 makes a dispatch
+run the bootstrap check (**The smoke authentication** below). Nothing is public before step 9, and
+the post-rollout smoke always runs: on a project that has never served, it rolls traffic back to
+the recorded revisions and fails, which is expected here.
 
 ```bash
 gh variable set GCP_DEPLOY --body on -R "$R"
 gh variable list -R "$R"                                         # GCP_DEPLOY on, no DEPLOY_HOLD_SERVICES
-gh workflow run deploy.yml --ref main -f smoke=false -R "$R"
+gh workflow run deploy.yml --ref main -R "$R"
 gh run list --workflow=deploy.yml -R "$R" --limit=3              # the new run on top, workflow_dispatch
 gh run watch <run id> -R "$R" --exit-status
 ```
 
-It worked when the run is green, with `make smoke-prod` skipped, and `migrate` and the four
-services look like this:
+It worked when `migrate` succeeded and the four services rolled (read the summary and the services
+loop below; the smoke's verdict is the run's, and a rollback it triggered is in the summary). `migrate`
+and the four services look like this:
 
 ```bash
 EXEC=$(gcloud run jobs executions list --job=migrate --region=europe-west1 --project=ryftlab-prod \
@@ -2592,13 +2601,13 @@ pushed: fix forward, never skip the scan); `migrate`'s execution failed or its l
 current`; or a revision isn't ready. A failed `migrate` rolled nothing, and Cloud Run didn't
 retry it (`maxRetries: 0`: a retry is a second failed owner login, which feeds Supavisor's circuit
 breaker). Read its log and fix the cause. Then run
-`gh workflow run deploy.yml --ref main -f smoke=false -R "$R"`, once (never a re-run of the red
-run). If `ECIRCUITBREAKER` appears anywhere, wait it out (rotation step 4 below).
+`gh workflow run deploy.yml --ref main -R "$R"` once (never a re-run of the red run). If `ECIRCUITBREAKER`
+appears anywhere, wait it out (rotation step 4 below).
 
 Until step 9's apply and certificates are done, a push to main deploys and then fails at the
-smoke. Step 9's `serve = true` merge is such a push. Set the hold (below) before you merge it.
-Delete the hold once apply 2's mappings are Ready, then run `deploy.yml` by hand with the smoke on
-(step 9 has the commands). Merge nothing else in between.
+smoke (and rolls traffic back). Step 9's `serve = true` merge is such a push. Set the hold (below)
+before you merge it. Delete the hold once apply 2's mappings are Ready, then run `deploy.yml` by
+hand (step 9 has the commands). Merge nothing else in between.
 
 **A normal deploy** (from step 9 on). A merge to main is the deploy, in the order above. Watch it:
 
@@ -2617,16 +2626,37 @@ Alerting; the dashboard RYFT · Overview) for 30 minutes. What each outcome leav
   for main's head, deploys.
 - `ci-ok` red or late: nothing deployed. Red is fixed by a new commit, which deploys itself.
   Late: once ci is green on main's head, `gh workflow run deploy.yml --ref main -R "$R"`.
-- Smoke auth preflight failed: migrate and rollout have not started. Use the HTTP status and known
-  provider code to check the dedicated account and its session lifetime before dispatching again.
+- Smoke auth preflight failed: migrate and rollout have not started. The message names the stage
+  (gcloud, generateIdToken with its HTTP status and Google status, a claim of the minted token,
+  `GET /v1/me`, or the smoke account's consent); **The smoke authentication** below says what each
+  one means.
+- "the D286 bootstrap is pending": a push while the serving api predates D286 (the merge of D286,
+  or the first push after a traffic rollback to such a revision). Nothing changed. Follow **The
+  bootstrap**, below.
+- "… is not proven D285 …": **The D285 floor**, below. Nothing changed.
+- "… is not proven to predate D286 … config drift, never a bootstrap": the serving api runs an image
+  built after #249, but its smoke settings are missing, empty, partial or secret-backed (the message
+  names each). It stops every mode, `migrate_only` too, and nothing changed. Put all four settings
+  back in `deploy/run` and `config.env`, or move the api's traffic to a revision that has them
+  (**A rollback**, below), then dispatch. The same message with "commit(s) none proven" on an
+  api-00044-era revision means the registry no longer has that image's tags (**The D285 floor**).
+- The job died during the rollout (its 60 minutes ran out, or the runner was lost) and no "Rolled
+  back" section was written: run the commands under "Restore by hand" at the top of the rollout
+  step's log (also in the run summary, when it was saved), api first, then check `status.traffic` as in
+  **A rollback**, step 3.
+- "not enough of the job's 60 minutes is left to roll out and still restore: nothing was rolled":
+  the build or `migrate` took too long. The migrations are applied; dispatch again.
 - `migrate` failed: nothing rolled. Read its log as in step 8.
 - A revision isn't ready: Cloud Run keeps routing that service to its last ready revision
   (`latestRevision` means the latest *ready* one). The services before it run the new code, the
   ones after it the old. Fix forward or revert.
 - The smoke is red: all four rolled, and every new revision was ready. With the startup probe on
   `/health/live`, a revision whose database config is broken is ready and serving: the smoke is
-  what catches it. Run `make smoke-prod` once yourself (step 9's environment). Red again: roll
-  back.
+  what catches it. The run has already put traffic back on the recorded revisions (api, ingest,
+  notify, scoring) and failed: check `status.traffic` of the four (step 8's loop, and the run's
+  summary), then run `make smoke-prod` once yourself against that state (step 9's environment). The
+  new revisions stay, unrouted, until the next deploy. If the recorded revisions predate D286, the
+  next push stops as "bootstrap pending": dispatch (**The bootstrap**, below).
 
 Merges close together are safe. A run deploys only while its commit is main's head (checked
 when `ci-ok` is found and again before `migrate`), so an older commit never deploys over a newer
@@ -2635,6 +2665,191 @@ one. The runs in between end green as superseded, and the newest ships every mer
 **Stop if** the smoke fails twice (roll back); once every run has ended, the newest deploying
 run's tag isn't main's tip (then `gh workflow run deploy.yml --ref main -R "$R"`); or a run failed
 and you don't know why. Don't re-run to find out.
+
+**The smoke authentication** (D286). Supabase's email sign-in is off for good, so the smoke never
+signs in with a password. It is the service account `ryft-smoke@ryftlab-prod.iam.gserviceaccount.com`
+(no roles of its own), and api and ingest accept a Google ID token of that account (audience
+`ryft-smoke`) as the smoke user, `SMOKE_USER_ID`, and as nobody else. Both identifiers are in
+`deploy/run/config.env` (`SMOKE_USER_ID`, `SMOKE_SA_ID`, neither a secret).
+
+- **The one-time binding.** The services also require the account to be bound in the database
+  (table `smoke_account`, which api and ingest may only read, and no service role may write). Bind
+  it once, in the Supabase SQL editor as `postgres`, with `scripts/sql/bind_smoke_account.sql`
+  (its header has the rest):
+
+  ```bash
+  git show origin/main:deploy/run/config.env | grep '^SMOKE_USER_ID='   # the UUID to bind
+  # Supabase dashboard → SQL editor: paste the WHOLE file with <SMOKE_USER_ID> replaced by that UUID → Run.
+  # Expect 1 row (the bound user_id and bound_at). The script refuses, and changes nothing, for an account
+  # with a non-email identity, without a public.users row, or in deleted_users: stop and look.
+  ```
+
+  The script also resolves the account on its own, by its email in `auth.users`
+  (`smoke@ryftapp.de`, id `671779e8-9634-4964-b3a6-4445c6ad1c5f`, in `public.users` since
+  2026-10-20). It refuses unless exactly one row has that email (case-insensitive) and that
+  row's id is the pasted UUID. A wrong UUID copied from `config.env` therefore stops here: "… is not
+  the account with the email smoke@ryftapp.de (that is <id>)". Then fix `SMOKE_USER_ID` in a config
+  PR, not the SQL. (`smoke@ryftlab.de`, created 2026-11-26 and never used, is not the smoke account:
+  #250 first named it and its bind was refused, "not in public.users".)
+
+  The email lives in one named constant per language: `v_email` in each of the two SQL files
+  (`bind_smoke_account.sql`, `consent_smoke_account.sql`; each is pasted alone, so neither can import
+  the other) and `smokeEmail` in `backend/internal/db/migrate_smoke_test.go`, whose tests fail unless
+  both files carry exactly that value. To move the smoke account to another address, change all three
+  in one PR.
+
+  Until the row exists, every smoke request is refused `401 smoke_unbound`, the preflight and the
+  post-rollout smoke included. The migration creates the table, so the bind comes after a `migrate`
+  and before the first rollout: **The bootstrap**, below.
+- **The smoke account's consent.** A smoke token never writes consent: `POST` and `DELETE
+  /v1/me/consent` are `403 smoke_route`. Consent is a person's act, and a machine credential neither
+  gives nor withdraws it. So the smoke no longer probes the consent gate (it reports `not probed`),
+  and `SMOKE_EXPECT_GATES=on` checks the invite gate only. The preflight (before migrate) and the
+  smoke stop when the smoke account has no unrevoked consent: "the smoke account has no consent for
+  <version>: record it with scripts/sql/consent_smoke_account.sql". A consent for another version
+  than the one in force (the preflight compares with `PRIVACY_POLICY_VERSION` in the commit's
+  `config.env`) only warns, "! the smoke account's consent is for …", because the sync's gate takes
+  any unrevoked consent. So a consent recorded ahead of a bump, or for a bump that is reverted, blocks
+  nothing. When the version moves, record the account's consent for the new version before the
+  merge, in the SQL editor as `postgres`, with `scripts/sql/consent_smoke_account.sql`. Replace
+  `<PRIVACY_POLICY_VERSION>` with the new `YYYY-MM-DD`, paste the whole file and run it. Expect
+  `1 row`: that `policy_version`, `revoked_at` empty, `app_version` `operator-sql`. The script acts
+  only on the bound account, re-checks its email, and inserts nothing on a rerun.
+- **What a smoke token can reach.** Only the routes `smoke_prod.sh` calls with it. Anything else is
+  `403 smoke_route` (`DELETE /v1/me`, consent, export, merge, train import, nutrition, the admin
+  routes), and an unbound or missing account is `401 smoke_unbound`. If a new smoke step calls a
+  route, add it to the api's or ingest's smoke allowlist in the same PR.
+- **Where it is sent.** `scripts/lib/smoke_auth.py` mints and sends a Google smoke token only when
+  `API_URL` is exactly `https://api.ryftlab.de` and `INGEST_URL` exactly `https://ingest.ryftlab.de`
+  (scheme and host in any case, no port or `:443`, no path). A lookalike host, another port, `http`
+  or a path is refused before gcloud or any request, for `SMOKE_TOKEN` and a session file too. For
+  any other remote target (a staging copy), `SMOKE_TOKEN` must be a Supabase access JWT whose `sub`
+  is `SMOKE_USER_ID`.
+- **In `deploy.yml`**, the preflight (step 6) and `make smoke-prod` (step 8) run as `ryft-deployer`,
+  which holds `roles/iam.serviceAccountOpenIdTokenCreator` on `ryft-smoke`. `scripts/lib/smoke_auth.py`
+  takes the runner's access token from `gcloud auth print-access-token`, asks iamcredentials for the
+  ID token (`generateIdToken`, `includeEmail: true`), checks its claims (issuer Google, audience,
+  email and its verification, `sub` == `SMOKE_SA_ID`, expiry at most 3700 s ahead) before any API
+  call, and requires `GET /v1/me` to return `SMOKE_USER_ID`. The preflight keeps nothing: the smoke
+  after the rollout mints its own token (one hour at most), so no session file crosses the rollout
+  (`SMOKE_AUTH_FILE` still works for `run` when set, for compatibility). No repository or environment
+  secret is involved.
+- **From your shell**, `gcloud auth login` once. Your account needs
+  `roles/iam.serviceAccountOpenIdTokenCreator` on `ryft-smoke` (list it in Terraform's
+  `smoke_token_creators`; the user's apply). Then `make smoke-prod` mints by itself through the helper.
+  Don't use `gcloud auth print-identity-token --impersonate-service-account`: it asks for an access
+  token first (`generateAccessToken`), which needs `roles/iam.serviceAccountTokenCreator`, and the
+  smoke account is granted only the OpenID one. For a token by hand, the helper mints it the same
+  way (gcloud access token, then `generateIdToken`), runs the same claim checks, prints nothing and
+  writes only the token to a new `0600` file:
+
+  ```bash
+  d=$(mktemp -d); python3 -I scripts/lib/smoke_auth.py mint "$d/token"   # the file must not exist yet
+  TOKEN=$(cat "$d/token"); rm -rf "$d"
+  printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -fsS -H @- https://api.ryftlab.de/v1/me | jq .id   # SMOKE_USER_ID
+  unset TOKEN
+  ```
+
+  `SMOKE_TOKEN` (`SMOKE_TOKEN=$(cat "$d/token") make smoke-prod`, then `rm` the file, or a Supabase
+  access JWT whose `sub` is `SMOKE_USER_ID`) skips the minting for `make smoke-prod`.
+- **Failures**, as the script prints them (never a token or a response body): `gcloud auth
+  print-access-token gave no access token`: run `gcloud auth login`. `generateIdToken … HTTP 403
+  (PERMISSION_DENIED)`: the caller lacks the role on `ryft-smoke`, or `ryft-smoke` is disabled (the
+  revocation below). `… HTTP 404 (NOT_FOUND)`: the account is gone. `minted token has the wrong
+  subject (SMOKE_SA_ID)`: `SMOKE_SA_ID` isn't `ryft-smoke`'s unique ID (it changes if the account
+  is deleted and created again: `terraform output -raw smoke_sa_unique_id`, then a config PR).
+  `SMOKE_USER_ID is still FILL_ME_IN`: the config PR isn't merged. `GET /v1/me returned HTTP 401`:
+  the running api doesn't accept the token (a revision from before D286, **The bootstrap** below;
+  `SMOKE_OIDC_*` missing from its revision; or the account isn't bound: `smoke_unbound`, the
+  binding above). `HTTP 403`: `smoke_route`, the smoke called a route that isn't on the allowlist.
+  `HTTP 503`: the smoke's Google keys aren't loaded yet (`smoke_jwks_unavailable`) or the database
+  is down: retry after a minute. `no smoke token is minted for this target` / `a Google smoke token
+  is only used against …`: `API_URL`/`INGEST_URL` isn't the canonical pair, above.
+- **Rotate: nothing.** Google signs and rotates the keys, and every token is minted for one run and
+  expires within the hour. There is no password, key or secret to replace.
+- **Revoke.** Remove the IAM binding (`roles/iam.serviceAccountOpenIdTokenCreator` on `ryft-smoke`
+  for the one member, in Terraform: the user's apply) and nobody can mint a token any more. To stop
+  at once, disable the account: `gcloud iam service-accounts disable ryft-smoke@ryftlab-prod.iam.gserviceaccount.com
+  --project=ryftlab-prod` (a hand change to the production identity, yours; Terraform's next apply
+  puts it back unless you set the account disabled there). Tokens already minted work until they
+  expire (an hour), and only as the smoke account. Emptying `SMOKE_OIDC_*` in the templates turns
+  the route off in the services (a deploy).
+- **The bootstrap: the first deploy after D286's merge.** The serving api doesn't know the Google
+  token. The deploy reads that from the serving revision, not from an input: none of the four smoke
+  settings in its env, and an image whose registry tag names #249 or an older commit. api-00044-5lh
+  is 3ceca58's image. The push run of the merge stops before `migrate`: "the D286 bootstrap is pending:
+  dispatch with migrate_only, bind the smoke account (scripts/sql/bind_smoke_account.sql), then
+  dispatch". Nothing changed. Then:
+
+  ```bash
+  gh workflow run deploy.yml --ref main -f migrate_only=true -R "$R"   # migrate only: no smoke auth, no rollout
+  gh run watch <run id> -R "$R" --exit-status                           # green; notice "migrate_only: …"
+  # Supabase SQL editor as postgres: scripts/sql/bind_smoke_account.sql (The one-time binding, above) → 1 row
+  # Same editor: the bound account's consent. Expect 1 row, revoked_at empty (no row: consent_smoke_account.sql, above)
+  #   select policy_version, revoked_at from public.consents where kind = 'health_processing' and revoked_at is null
+  #     and user_id = (select user_id from public.smoke_account) order by granted_at desc limit 1;
+  gh workflow run deploy.yml --ref main -R "$R"                         # the checked deploy
+  gh run watch <run id> -R "$R" --exit-status                           # green
+  ```
+
+  The checked dispatch runs `scripts/smoke_prod.sh --auth-bootstrap` in place of the preflight,
+  because the serving api still predates D286. It mints the token (the IAM binding works), checks
+  the claims, and requires `GET /v1/me` on the running api to answer 401. Then `migrate` (nothing
+  new), the rollout, and the post-rollout smoke with a fresh token, now bound. If the smoke fails,
+  the traffic goes back and the run fails. From then on the serving api has the D286 sign-in, and
+  every run uses the preflight by itself. No input switches it back.
+- **After a rollback to a revision from before D286.** (The deploy's own rollback, or **A rollback**
+  below by hand.) The next push stops as "bootstrap pending". Dispatch `gh workflow run deploy.yml
+  --ref main -R "$R"`: the binding is already there, so no migrate-only run is needed. A rollback
+  to a D286 or later revision needs nothing special.
+- **Replacing the smoke account** *(untested; normal operation never re-creates it)*. Every run's
+  preflight requires the serving api to map the token to the commit's `SMOKE_USER_ID`. The api maps
+  it to its own `SMOKE_USER_ID`, which must also be the bound account. Only a rollout changes the
+  api's value, and a rollout needs that preflight first. So a config PR with the new UUID stops at
+  the preflight ("did not identify the expected smoke account" or `401 smoke_unbound`). Nothing
+  changes, and `migrate_only` alone doesn't help, because it rolls nothing. The way through:
+  1. The new account: `smoke@ryftapp.de` (change the old account's email or delete it first),
+     email identity only, with its `public.users` row (the bind script's check 3).
+  2. The config PR with `SMOKE_USER_ID=<new>` merges. Its push run stops at the preflight, and
+     nothing changes. If the commit carries migrations: `gh workflow run deploy.yml --ref main -f
+     migrate_only=true -R "$R"`.
+  3. Rebind: `scripts/sql/bind_smoke_account.sql` with `v_rebind` true and the new UUID (expect 1
+     row), then its consent with `scripts/sql/consent_smoke_account.sql`. From here until step 4,
+     smoke tokens get `401 smoke_unbound`. No user is affected.
+  4. api and ingest onto the new UUID, by hand (a production change, yours: the same image, so the
+     D285 and D286 proofs still hold):
+
+     ```bash
+     for S in api ingest; do
+       gcloud run services update "$S" --update-env-vars=SMOKE_USER_ID=<new> --region=europe-west1 --project=ryftlab-prod
+       gcloud run services describe "$S" --region=europe-west1 --project=ryftlab-prod --format='yaml(status.traffic)'   # 100 on the new revision
+     done
+     make smoke-prod                                   # from main's checkout: config.env has the new UUID
+     gh workflow run deploy.yml --ref main -R "$R"     # the preflight passes; a normal rollout
+     ```
+
+  To back out, rebind the old account (`v_rebind`) and set the old UUID the same way.
+
+**The D285 floor.** An api from before D285 (api-00044-5lh and older) PATCHes a meal by deleting
+and reinserting its items, which erases `portion_label_snapshot` and `portion_short_label_snapshot`.
+Every api built since #250 carries the revision label `ryft-meal-patch=d285` (`deploy/run/api.yaml`;
+`check_cloudrun.py` requires it). A label can outlive its image, though (a hand `gcloud run services
+update --image` keeps it). So the deploy also requires the serving image to be built from a commit
+that contains #249 (`4bca49d`), as the registry tags of its digest show. The serving api is the
+automatic rollback's target, and the deploy refuses before `migrate`, in every mode, when that api
+isn't proven D285 and the commit writes those columns. The test is a `git grep` of `backend/` without
+tests and without 0053/0054, and a failed grep counts as a writer. The error: "the serving api <rev>
+is not proven D285 (label ryft-meal-patch=d285: <yes|no>; image <digest>, commit(s) <sha…|none
+proven>; …) and this commit writes the meal portion labels (<file>) … Nothing was changed." The grep
+errs on the safe side: a `testdata/` fixture or a read-only query that names the columns counts as a
+writer too.
+The proof lasts as long as the image's tags. The registry deletes every version older than 30
+days unless it is one of the 5 newest (`infra/gcp/registry.tf`). An api left serving that long
+past five newer builds loses its proof, and then its image too, so new instances can't pull it. Deploy
+before that happens. A tag list that can't be read is a warning, and the floor then refuses a writer.
+So the snapshot writer (#248) ships only once a labelled api serves, as D285 orders. Fix: deploy a
+commit without the writer first (or revert it), then this one. Never move traffic by hand to an
+unlabelled api once the labels hold data.
 
 **A rollback.** There are two ways. Moving traffic takes seconds and builds nothing. A revert
 ships the old code through a normal deploy. Migrations are additive and stay either way: the older
@@ -2666,7 +2881,12 @@ By traffic:
    ```
 
    For more than one service, go api, ingest, notify, scoring: the deploy's order reversed.
-4. Run `make smoke-prod` from your shell (step 9's environment).
+4. Run `make smoke-prod` from your shell (step 9's environment). A revision from before D286
+   (api-00044 or older) rejects the smoke token (`GET /v1/me returned HTTP 401`): that is expected,
+   not a failed rollback. The next push then stops as "bootstrap pending": dispatch
+   `gh workflow run deploy.yml --ref main -R "$R"` (it runs the bootstrap check by itself, **The smoke
+   authentication**), and its post-rollout smoke runs as always. Once #248 has written meal labels,
+   don't roll the api back to such a revision at all (**The D285 floor**).
 5. Merge the fix or the revert. With the hold set, nothing deploys. Delete the hold and run
    `deploy.yml` by hand. That deploy ends the traffic pin.
 
@@ -2856,16 +3076,12 @@ the deploy goes red at api. In this order:
    gcloud run services describe api --region=europe-west1 --project=ryftlab-prod --format=json \
      | jq -c '.spec.template.spec.containers[0].env[] | select(.name == "POSTHOG_PROJECT_KEY") | .valueFrom.secretKeyRef'   # {"key":"1","name":"posthog-project-key"}
    # GET /v1/config as the smoke user. It prints the shape of `analytics`: the host, the key's
-   # prefix and its length, never the key. The password and the token go through stdin.
-   read -r "?Smoke user's email: " SMOKE_EMAIL; read -rs "?Its password: " SMOKE_PASSWORD; echo
-   read -r "?Supabase anon key (Project settings -> API): " SUPABASE_ANON_KEY
-   TOKEN=$(E="$SMOKE_EMAIL" P="$SMOKE_PASSWORD" jq -n '{email: env.E, password: env.P}' \
-     | curl -fsS -X POST "https://$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env).supabase.co/auth/v1/token?grant_type=password" \
-         -H "apikey: $SUPABASE_ANON_KEY" -H 'Content-Type: application/json' --data-binary @- | jq -r .access_token)
+   # prefix and its length, never the key. The token (a Google ID token of ryft-smoke, D286) goes through stdin.
+   d=$(mktemp -d); python3 -I scripts/lib/smoke_auth.py mint "$d/token" && TOKEN=$(cat "$d/token"); rm -rf "$d"
    printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -fsS -H @- https://api.ryftlab.de/v1/config \
      | jq -c '.analytics | if . == null then "null" else {host, key: (.project_key | .[0:4] + "… " + (length | tostring) + " chars")} end'
    #   {"host":"https://eu.i.posthog.com","key":"phc_… <n> chars"}; "null" means the revision has no key
-   unset SMOKE_EMAIL SMOKE_PASSWORD SUPABASE_ANON_KEY TOKEN
+   unset TOKEN
    ```
 
 A new key moves as **Another secret's pin** above (api only). To turn analytics off at once, use the
@@ -3073,7 +3289,7 @@ Find the cause in the billing report (Billing → Reports, group by SKU) before 
 The undo is a PR with `public_invokers = true`. Its apply puts `allUsers` back into api's and
 ingest's bindings and resumes the tick: 2 to add (the two checks; 3 with alerting on, the tick
 policy), 3 to change (2 bindings + the tick), 0 to destroy. Then delete the hold and run
-`deploy.yml` by hand with the smoke on (step 9's commands).
+`deploy.yml` by hand (step 9's commands; the smoke always runs).
 
 **While the tick is paused**, run one by hand at least once a day, so no email outlives its 30
 days and no failed deletion waits more than a day. Publish one tick message. Each service's tick
@@ -3448,16 +3664,11 @@ the iPhone, then `pbcopy < /dev/null`), or send yourself the link and open it on
 "Action needed" line means your account has access already (it existed at migration 0017, or has an
 operator grant): revoke that code instead.
 
-The smoke user's, with its token (the email, the password, the token and the code never reach argv
-or the screen; zsh, in step 1's shell):
+The smoke user's, with its token, a Google ID token of `ryft-smoke` (**Deploy, roll back, rotate →
+The smoke authentication**; the token and the code never reach argv or the screen; zsh, in step 1's shell):
 
 ```bash
-read -rs "SMOKE_EMAIL?Smoke user's email: "; echo; read -rs "SMOKE_PASSWORD?Its password: "; echo
-read -r "SUPABASE_ANON_KEY?Supabase anon key (Project settings -> API): "
-REF=$(sed -n 's/^SUPABASE_PROJECT_REF=//p' deploy/run/config.env)
-TOKEN=$(E="$SMOKE_EMAIL" P="$SMOKE_PASSWORD" jq -n '{email: env.E, password: env.P}' \
-  | curl -fsS -X POST "https://$REF.supabase.co/auth/v1/token?grant_type=password" \
-      -H "apikey: $SUPABASE_ANON_KEY" -H 'Content-Type: application/json' --data-binary @- | jq -r .access_token)
+d=$(mktemp -d); python3 -I scripts/lib/smoke_auth.py mint "$d/token" && TOKEN=$(cat "$d/token"); rm -rf "$d"
 as_smoke() { printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -sS --fail-with-body -H @- -H 'Content-Type: application/json' "$@"; }
 as_smoke "$API/v1/me" | jq .beta_access                 # false: redeem below; true: revoke its code instead
 C=$(sed -n 's#^smoke .*/invite/##p' ~/ryft-invites.txt)
@@ -3473,9 +3684,7 @@ list -w deploy.yml -L 1`): its probe takes the smoke user's access away for one 
 `on` a deploy's smoke in that second goes red:
 
 ```bash
-export SMOKE_EMAIL SMOKE_PASSWORD SUPABASE_ANON_KEY
-SUPABASE_URL=https://$REF.supabase.co make smoke-prod  # … gates: invite warn, consent on
-unset SMOKE_PASSWORD
+make smoke-prod                                        # … gates: invite warn, consent on
 ```
 
 With the key, its gate probe takes the smoke user's access away for one `GET /v1/days`, then gives it
@@ -3574,7 +3783,7 @@ for s in api ingest; do
     | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "BETA_GATE") | .value')"
 done                                                     # api on, ingest on
 # the beta line as above, --freshness=1h: gate on, consent on
-SMOKE_EXPECT_GATES=on SUPABASE_URL=https://$REF.supabase.co make smoke-prod   # … gates: invite on, consent on
+SMOKE_EXPECT_GATES=on make smoke-prod   # … gates: invite on, consent on
 # the refusals since (api's route is /v1/, its gate runs before the inner routes):
 gcloud logging read 'resource.type="cloud_run_revision" AND (resource.labels.service_name="api" OR resource.labels.service_name="ingest") AND logName="projects/ryftlab-prod/logs/run.googleapis.com%2Fstdout" AND jsonPayload.message="http" AND jsonPayload.code="invite_required"' \
   --project=ryftlab-prod --bucket=ryft-logs --location=europe-west1 --view=_AllLogs --freshness=1d --order=asc --limit=200 \

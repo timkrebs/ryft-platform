@@ -53,6 +53,10 @@ fresh() {
   baseline config.env '^CONNECT_PROVIDERS=' 'CONNECT_PROVIDERS='
   baseline config.env '^CONNECT_GARMIN_USER_CAP=' 'CONNECT_GARMIN_USER_CAP=0'
   baseline config.env '^CONNECT_MIN_POLICY_VERSION=' 'CONNECT_MIN_POLICY_VERSION='
+  # The smoke identity (D286) starts at the bootstrap's placeholders, whether the real ids are committed or
+  # not: the lint passes FILL_ME_IN (a render refuses it, cloudrun_render_test pins that).
+  baseline config.env '^SMOKE_USER_ID=' 'SMOKE_USER_ID=FILL_ME_IN'
+  baseline config.env '^SMOKE_SA_ID=' 'SMOKE_SA_ID=FILL_ME_IN'
   for r in "$GIDROW" "$GSECROW"; do
     if grep -qF -- "$r" "$d/api.yaml"; then drop api.yaml "$r"; fi
   done
@@ -152,6 +156,7 @@ printf -v s '%10s' ''; akey=${s// /A}; nkey=${s// /N}
   printf 'GCP_PROJECT_NUMBER=7%011d\nPUSH_SA_ID=1%020d\n' 0 0
   printf '%s\n' "SUPABASE_PROJECT_REF=$ref" SUPABASE_POOLER_HOST=aws-0-eu-central-1.pooler.supabase.com \
     "APPLE_KEY_ID=$akey" "APNS_KEY_ID=$nkey"
+  printf 'SMOKE_USER_ID=%s\nSMOKE_SA_ID=2%020d\n' "$(printf '%08x-0000-4000-8000-%012x' 77 77)" 0
 } > "$d/config.env"
 ok "config.env filled in"
 
@@ -168,6 +173,19 @@ edit scoring.yaml 'cpu-throttling' '"true"' '"false"'
 bad "scoring billed per instance" "cpu-throttling: 'false', want 'true'"
 drop notify.yaml 'startup-cpu-boost'
 bad "notify without the startup boost" "missing: run.googleapis.com/startup-cpu-boost"
+# D285: api's revision template carries ryft-meal-patch: d285 (deploy.yml's record step reads it from the serving
+# revision); exactly that, and on api only.
+edit api.yaml 'ryft-meal-patch: d285' 'd285' 'd284'
+bad "api's meal label at another value" "api.yaml: template.metadata.labels must be exactly {'ryft-meal-patch': 'd285'}"
+edit api.yaml 'ryft-meal-patch: d285' 'ryft-meal-patch' 'ryft-meal-patched'
+bad "api's meal label under another name" "api.yaml: template.metadata.labels must be exactly"
+add api.yaml 'ryft-meal-patch: d285' 'extra-label: x'
+bad "api with a second template label" "api.yaml: template.metadata.labels must be exactly"
+drop api.yaml 'ryft-meal-patch: d285'
+drop api.yaml '      labels:'
+bad "api without the meal label" "api.yaml template.metadata: missing: labels"
+edit ingest.yaml '    metadata:' 'metadata:' 'metadata:\n      labels: { ryft-meal-patch: d285 }'
+bad "ingest with the meal label" "ingest.yaml template.metadata: keys not allowed here: labels"
 edit ingest.yaml 'containerConcurrency' ' 4' ' 80'
 bad "ingest with 80 requests" "concurrency 80, want 4"
 edit scoring.yaml 'timeoutSeconds: 300' '300' '900'
@@ -667,6 +685,60 @@ bad "two documents" "2 YAML documents: exactly one"
 add notify.yaml 'run.googleapis.com/ingress' 'run.googleapis.com/ingress: all'
 bad "a key twice" "notify.yaml"
 
+# The smoke identity (D286): ryft-smoke's Google token is the smoke account's, in api and ingest only. All four
+# rows in both, equal: the email and the audience fixed, the two ids from config.env (SMOKE_USER_ID, and
+# SMOKE_SA_ID as SMOKE_OIDC_SA_ID), no other template with any of them, no secret behind them.
+# (fresh, run by every bad, uses f as its own loop variable: these loops take sf and sn.)
+for sn in SMOKE_OIDC_SA_EMAIL SMOKE_OIDC_SA_ID SMOKE_OIDC_AUDIENCE SMOKE_USER_ID; do
+  for sf in api ingest; do
+    drop "$sf.yaml" "name: $sn,"
+    bad "$sf without $sn" "$sf.yaml env: $sn is missing"
+  done
+done
+edit api.yaml 'name: SMOKE_OIDC_SA_EMAIL,' 'ryft-smoke@' 'ryft-push@'
+bad "api mapping ryft-push's token to the smoke account" "SMOKE_OIDC_SA_EMAIL='ryft-push@ryftlab-prod.iam.gserviceaccount.com', want 'ryft-smoke@ryftlab-prod.iam.gserviceaccount.com'"
+edit ingest.yaml 'name: SMOKE_OIDC_SA_EMAIL,' 'ryft-smoke@' 'ryft-smoke2@'
+bad "ingest with another smoke account" "SMOKE_OIDC_SA_EMAIL='ryft-smoke2@ryftlab-prod.iam.gserviceaccount.com', want"
+edit ingest.yaml 'name: SMOKE_OIDC_SA_EMAIL,' 'ryft-smoke@' 'ryft-smoke2@'
+bad "api and ingest with different smoke accounts" "SMOKE_OIDC_SA_EMAIL is 'ryft-smoke@ryftlab-prod.iam.gserviceaccount.com' in api.yaml and 'ryft-smoke2@ryftlab-prod.iam.gserviceaccount.com' in ingest.yaml: equal in both"
+edit api.yaml 'name: SMOKE_OIDC_AUDIENCE,' 'ryft-smoke' 'https://api.ryftlab.de'
+bad "api with another audience" "SMOKE_OIDC_AUDIENCE='https://api.ryftlab.de', want 'ryft-smoke'"
+edit ingest.yaml 'name: SMOKE_OIDC_AUDIENCE,' 'ryft-smoke' 'ryft-api'
+bad "ingest with another audience" "SMOKE_OIDC_AUDIENCE='ryft-api', want 'ryft-smoke'"
+edit api.yaml 'name: SMOKE_OIDC_SA_ID,' '${SMOKE_SA_ID}' '${PUSH_SA_ID}'
+bad "api trusting ryft-push's ID as the smoke account's" "SMOKE_OIDC_SA_ID='"
+edit ingest.yaml 'name: SMOKE_OIDC_SA_ID,' '${SMOKE_SA_ID}' '123456789012'
+bad "a smoke account ID written into the template" "SMOKE_OIDC_SA_ID='123456789012', want"
+edit api.yaml 'name: SMOKE_USER_ID,' '${SMOKE_USER_ID}' '00000000-0000-4000-8000-000000000001'
+bad "a smoke user written into api's template" "SMOKE_USER_ID='00000000-0000-4000-8000-000000000001', want"
+edit ingest.yaml 'name: SMOKE_USER_ID,' '${SMOKE_USER_ID}' '${APP_ATTEST_EXEMPT_USERS}'
+bad "ingest with another smoke user than config.env's" "SMOKE_USER_ID='', want"
+drop api.yaml 'name: SMOKE_OIDC_SA_ID,'
+bad "api without the smoke account's ID names the identity as a whole" "the smoke identity is all four of"
+for sf in scoring notify migrate; do
+  for sn in SMOKE_OIDC_SA_EMAIL SMOKE_OIDC_SA_ID SMOKE_OIDC_AUDIENCE SMOKE_USER_ID; do
+    add "$sf.yaml" 'name: LOG_LEVEL,' "- { name: $sn, value: \"x\" }"
+    bad "$sf with $sn" "$sf.yaml: $sn is set: the smoke identity belongs to api and ingest only"
+  done
+done
+add api.yaml 'name: SMOKE_USER_ID,' '- { name: SMOKE_TOKEN, valueFrom: { secretKeyRef: { name: smoke-token, key: "1" } } }'
+bad "a smoke token secret in api" "SMOKE_TOKEN from smoke-token is not in ticket-b.md's secret table for api"
+add api.yaml 'name: SMOKE_USER_ID,' '- { name: SMOKE_OIDC_SA_ID, value: "1" }'
+bad "the smoke account's ID twice" "SMOKE_OIDC_SA_ID is set twice"
+drop config.env 'SMOKE_USER_ID='
+bad "config.env without the smoke user" "SMOKE_USER_ID is missing"
+drop config.env 'SMOKE_SA_ID='
+bad "config.env without the smoke account's ID" "SMOKE_SA_ID is missing"
+edit config.env 'SMOKE_USER_ID=' 'FILL_ME_IN' 'not-a-uuid'
+bad "a smoke user that is no UUID" "SMOKE_USER_ID='not-a-uuid' does not have the shape"
+edit config.env 'SMOKE_SA_ID=' 'FILL_ME_IN' 'ryft-smoke@ryftlab-prod.iam.gserviceaccount.com'
+bad "the smoke account's email where its ID goes" "SMOKE_SA_ID='ryft-smoke@ryftlab-prod.iam.gserviceaccount.com' does not have the shape"
+# A placeholder passes the check (every fresh copy has the two, see fresh: the lint lets them; a deploy
+# refuses them, the renderer's test pins that), and so do ids of the right shape.
+edit config.env 'SMOKE_USER_ID=' 'FILL_ME_IN' '00000000-0000-4000-8000-000000000077'
+edit config.env 'SMOKE_SA_ID=' 'FILL_ME_IN' '200000000000000000000'
+ok "the smoke ids set"
+
 # What the renderer refuses fails the check too.
 edit config.env 'LOG_LEVEL=' 'info' 'verbose'
 bad "a config value of the wrong shape" "LOG_LEVEL='verbose' does not have the shape"
@@ -675,4 +747,4 @@ bad "a placeholder outside the list" "placeholder(s) outside the fixed list: HOM
 add migrate.yaml 'name: LOG_LEVEL,' '- { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }'
 bad "migrate with an audience" "migrate is no push target"
 
-echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env (BETA_GATE, XFF_TRUSTED_HOPS, APP_ATTEST and APP_ATTEST_EXEMPT_USERS from config.env in api and ingest only, two hops only behind the load balancer), App Attest's ring pinned in api and ingest under warn and on and readable by them only, CONNECT_PROVIDERS equal in api and ingest (items stripped) and never fake (also spaced), CONNECT_MIN_POLICY_VERSION in ingest only, empty or a date not after the policy version, Garmin's cap and the callback base in api only, CONNECT_FAKE* nowhere, garmin only with its client-secret pin (api alone), id and a cap above 0, off -> on against a base refused (off -> warn, warn -> on and back pass), the load balancer's ingress only at edge live or locked and with more than one hop, locked only behind it, P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"
+echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env (BETA_GATE, XFF_TRUSTED_HOPS, APP_ATTEST and APP_ATTEST_EXEMPT_USERS from config.env in api and ingest only, two hops only behind the load balancer), App Attest's ring pinned in api and ingest under warn and on and readable by them only, CONNECT_PROVIDERS equal in api and ingest (items stripped) and never fake (also spaced), api's template label ryft-meal-patch: d285 (D285, api only), the smoke identity (SMOKE_OIDC_SA_EMAIL, SMOKE_OIDC_SA_ID, SMOKE_OIDC_AUDIENCE, SMOKE_USER_ID: all four, fixed email and audience, ids from config.env, equal in api and ingest, nowhere else, D286), CONNECT_MIN_POLICY_VERSION in ingest only, empty or a date not after the policy version, Garmin's cap and the callback base in api only, CONNECT_FAKE* nowhere, garmin only with its client-secret pin (api alone), id and a cap above 0, off -> on against a base refused (off -> warn, warn -> on and back pass), the load balancer's ingress only at edge live or locked and with more than one hop, locked only behind it, P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"

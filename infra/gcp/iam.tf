@@ -70,3 +70,27 @@ resource "google_service_account_iam_member" "deployer_act_as" {
   role               = "roles/iam.serviceAccountUser"
   member             = local.member["ryft-deployer"]
 }
+
+# ---- ryft-smoke: the production smoke's identity (D286) -------------------------------------------
+# api and ingest accept a Google ID token of this account (audience ryft-smoke) as the smoke account
+# and nobody else. The account holds NO role anywhere and has no key: it only exists to be the subject
+# of a token that others mint for it. Whoever may mint holds roles/iam.serviceAccountOpenIdTokenCreator
+# on it, which is generateIdToken/generateIdTokenFor ID tokens only: not serviceAccountTokenCreator, which
+# would also give access tokens, signBlob and signJwt (a way to act as the account in the Google APIs).
+# Every mint is a DATA_READ entry (project.tf, iam.googleapis.com).
+#
+# ryft-deployer mints it in deploy.yml (the preflight before a rollout). Operators mint it for
+# `make smoke-prod` from var.smoke_token_creators (user: and group: members, validated).
+resource "google_service_account_iam_member" "smoke_deployer_id_token" {
+  service_account_id = local.sa_id["ryft-smoke"]
+  role               = "roles/iam.serviceAccountOpenIdTokenCreator"
+  member             = local.member["ryft-deployer"]
+}
+
+resource "google_service_account_iam_member" "smoke_operator_id_token" {
+  for_each = toset(var.smoke_token_creators)
+
+  service_account_id = local.sa_id["ryft-smoke"]
+  role               = "roles/iam.serviceAccountOpenIdTokenCreator"
+  member             = each.key
+}
