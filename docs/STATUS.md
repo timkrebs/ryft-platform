@@ -1,5 +1,29 @@
 # RYFT platform — status
 
+## Production smoke without email sign-in (2026-11-26, D286)
+
+The smoke authenticates with a Google ID token for `ryft-smoke`. api and ingest map it to the smoke account only, and only if the database binds that account (`smoke_account`, migration 0060) and only on the routes the smoke uses. No GitHub secret is involved any more.
+
+Before the merge:
+1. Apply Terraform (`ryft-smoke` and its bindings).
+2. Commit `SMOKE_USER_ID` and `SMOKE_SA_ID` into `deploy/run/config.env`.
+
+After the merge:
+1. The push run stops before migrate: "the D286 bootstrap is pending". The serving api-00044 has no D286 sign-in. Nothing changes.
+2. Run `gh workflow run deploy.yml --ref main -f migrate_only=true`. It applies 0053, 0054 and 0060 and rolls nothing.
+3. Bind the account with `scripts/sql/bind_smoke_account.sql` (Supabase SQL editor, as `postgres`; expect 1 row). The script cross-checks the UUID against `smoke@ryftlab.de` in `auth.users`.
+4. Run `gh workflow run deploy.yml --ref main`. The bootstrap check, the rollout and the smoke run, and the run is green.
+5. Run `gh workflow run deploy.yml --ref main` once more. The preflight is used by itself.
+6. Delete `SMOKE_EMAIL`, `SMOKE_PASSWORD`, `SMOKE_TOKEN`, `SMOKE_USER_ID` and `SUPABASE_ANON_KEY` from the `deploy` environment.
+
+After the second review:
+- The rollback runs from one EXIT trap.
+- The smoke token writes no consent, and `scripts/sql/consent_smoke_account.sql` covers a policy bump.
+- The D285 floor: `ryft-meal-patch=d285`. #248 ships only once a labelled api serves.
+- `migrate_only` replaces `auth_preflight`.
+
+The runbook is `docs/OPERATIONS.md` → The smoke authentication.
+
 ## Meal PATCH copies retained items as stored (2026-11-26, D285)
 
 Step 1 of the Nutrition selection release. A meal PATCH now copies each retained item row as stored, so columns and `sources` fields this build does not know survive, and only the position moves. Migration 0053 adds the empty `portion_label_snapshot` and `portion_short_label_snapshot` columns with `NOT VALID` length constraints, and 0054 validates them. There is no contract change and no `API.md` change. Merge and deploy this before the catalog selection PR (D284). That release rolls back only to this build or later. The new Postgres test (`TestNutritionPatchCopiesRetainedItemsAsStored`) first runs in CI's `test` job.

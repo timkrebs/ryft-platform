@@ -25,6 +25,7 @@ locals {
     {
       "ryft-push"     = "RYFT push and tick tokens (Pub/Sub OIDC)"
       "ryft-deployer" = "CI: deploy.yml through GitHub WIF"
+      "ryft-smoke"    = "Production smoke identity: api and ingest map its ID tokens to the smoke account (D286)"
     },
   )
   runtime_accounts = toset([for s in local.runtime : "ryft-${s}"])

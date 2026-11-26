@@ -295,7 +295,9 @@ func (a adminAuth) require(next http.Handler) http.Handler {
 			a.unavailable(w, r, reason)
 			return
 		}
-		if p.AppRole != adminRole {
+		// The smoke account (D286) is never an operator, whatever a verifier put in its principal: it
+		// is refused here as any non-operator, before the role, the allow-list or the second factor.
+		if p.Smoke || p.AppRole != adminRole {
 			a.reject(w, r, "not_admin")
 			return
 		}
