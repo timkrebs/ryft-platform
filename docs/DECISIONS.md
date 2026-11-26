@@ -6840,3 +6840,66 @@ When smoke is enabled, check the dedicated session after the tip check and befor
 ## D285 — Release Nutrition selection in two steps; a meal PATCH copies retained item rows (2026-11-26)
 
 The API before D285 deletes and reinserts every meal item on PATCH from its typed snapshot, so a rollback or a mixed-version rollout across a release that adds item columns or source fields erases them. This step copies each retained item row as stored (`to_jsonb` and `jsonb_populate_record`: every column, the sources JSON unchanged), only moves its position, and writes no new snapshot fields. It adds the two portion label columns empty (0053, constraints `NOT VALID`, validated by 0054). The catalog selection release (D284) writes the labels and ships only after this build is live; its rollback target is this build, never an earlier one.
+
+## D290 — Privacy policy 2026-11-26 and terms 2026-11-26: today's RYFT, the planned connections, no personal details (2026-11-26; supersedes the C2 draft of #228; a draft PR until the user's `TODO(user)` answers and the legal review)
+
+**Not legal advice:** the texts state facts with their sources (`docs/work/2026-11-26-legal-partners/facts.md`);
+the bases they propose and every legal reading stay with the user and their reviewer.
+
+- **Context:** the policy in force, 2026-10-26, describes the AWS era (AWS, Grafana Cloud, Google Workspace mail,
+  Vault, the site's own access log). C2 (#228, `docs/work/2026-11-20-privacy-c2/`) rewrote it for GCP but was never
+  published and still describes email and password sign-in. Since then: the user turned email sign-in off
+  (2026-11-26; sign-in is Apple or Google), nutrition landed dark (D265-D285), the Garmin and Suunto connections'
+  foundation landed dark (D257-D260), and the Garmin and Suunto partner programs need a public policy, terms and
+  contact (`…/partners.md`).
+- **Decision:**
+  1. **A new version, `2026-11-26`**, in one PR: `web/content/legal/en/privacy/2026-11-26.mdx`, appended to
+     `privacy-versions.json`, `PRIVACY_POLICY_VERSION=2026-11-26` in `deploy/run/config.env` and
+     `docker-compose.yml`. It is `status: published`, `effective: '2026-11-26'`: `scripts/check_policy_in_force.sh`
+     refuses a pull request that moves the version to a page that is not exactly published, `check-policy-version.mjs
+     --strict` needs the newest page to equal the version and the list's last entry, and `web/tests/legal.test.ts`
+     needs a date in `effective` for a published page. A draft would turn CI red; a published page with
+     `TODO(user)` passes every guard (no guard reads markers in published pages; LEGAL_CHECKLIST P7). So the PR
+     stays a draft, and the user sets `effective` to the merge date if it is later.
+  2. **Consequence: the merge puts it into force.** `deploy.yml` rolls api and ingest (the two services that read
+     `PRIVACY_POLICY_VERSION`, `deploy/run/api.yaml:55`, `ingest.yaml:45`), the `site` job deploys the page and its
+     live check expects `/privacy` to show 2026-11-26, and **every user is asked to consent again** before the next
+     upload (D78).
+  3. **The old versions stay as published:** 2026-10-20 and 2026-10-26 keep their pages and words, the record of
+     what people consented to. Privacy 2026-10-26 §1 (and terms 2026-10-20 §1) still carry the operator's name and
+     home address; they are left as they are on purpose, and not copied anywhere new.
+  4. **Against 2026-10-26** (and as C2 had it): Google Cloud in Belgium, Firebase Hosting, Microsoft 365 through
+     GoDaddy instead of AWS, Grafana Cloud and Google Workspace; App Attest, PostHog, the full feedback
+     diagnostics, Google's firewall logs; no site access log and no browser storage; the controller, the
+     authority and the transfer bases as `TODO(user)`.
+  5. **Against C2:** sign-in is Apple or Google (C2's "email and password at Supabase", the sign-up and
+     password-reset emails and `no-reply@` are gone; the Google details carry two markers, because neither the
+     app at ea52758 nor the platform has a Google sign-in yet); the analytics events, identifier and menu path
+     come from the app (two C2 markers resolved); the food diary (stored data, not live, catalog sources; CGM, N2R
+     and coaching deferred to a later version); a new §4 on the Garmin and Suunto connections; the export's real
+     contents; feedback's path; C2's "flag allow-lists keep the id" removed (D249); a sentence that unavailable
+     parts process nothing until they arrive. Sections renumbered (§4 connections; §5-§12 follow).
+  6. **The connection commitments** (privacy §4, §7, terms §7, support): only at the user's request, after the
+     app shows what is read; sleep and overnight HRV only; tokens encrypted for the api; deliveries emptied once
+     processed, failed ones ≤ 7 days, their checksum 30 days; disconnecting in the app, a revocation at the
+     provider and deleting the account each delete what the connection delivered and end RYFT's access at the
+     provider, retried up to 30 days with only the sealed tokens kept; further data from a provider needs a new
+     version first. Everything is described as not yet available (no real adapter on main,
+     `CONNECT_PROVIDERS=` empty).
+  7. **No personal details:** the Impressum (edited in place, a single page), terms 2026-11-26 §1 and privacy
+     2026-11-26 §1 carry `TODO(user)` markers that name what § 5 DDG, § 18(2) MStV, Art. 13(1)(a) GDPR and the
+     partner applications ask for, and why it is open (LEGAL_CHECKLIST section 0). Contact everywhere:
+     `support@ryftlab.de`.
+  8. **Terms 2026-11-26** (new file; `/terms/2026-10-20` stays): the provider as `TODO(user)`, minimum age 16
+     (the platform's `MinAge`, not 13), Apple or Google sign-in, the food diary and its catalog attribution, the
+     planned connections and other services (new §7, §8); §9-§12 unchanged in words.
+  9. **`CONNECT_MIN_POLICY_VERSION` stays `2026-10-26`.** The runbook moves it when a policy change touches
+     health-data processing, which this one does; no connection is live, so it changes nothing today, and the line
+     is outside this PR's scope. The user decides it before the merge (LEGAL_CHECKLIST U14).
+- **Rejected:** a draft page (CI refuses it, and the version would sit in force with a draft); editing 2026-10-26
+  in place (it is the record of consents given); describing CGM, N2R and coaching now (not in the app, and their
+  data model may still move); naming the BLS (excluded on main pending review,
+  `docs/architecture/nutrition/06-data-source-licensing.md:10`); a trademark notice for Garmin (none mandated was
+  found; the site names Garmin only as a source).
+- **Open:** the 24 `TODO(user)` in the three files (LEGAL_CHECKLIST U1-U15), Google sign-in in the app, the legal
+  review, the partner requirements still missing (partners.md).

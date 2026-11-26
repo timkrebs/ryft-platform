@@ -121,7 +121,7 @@ services:
         # BETA_GATE=warn CONSENT_ENFORCE=warn make up to try warn).
         BETA_GATE: ${BETA_GATE:-off}
         CONSENT_ENFORCE: ${CONSENT_ENFORCE:-on}
-        PRIVACY_POLICY_VERSION: "2026-10-26"
+        PRIVACY_POLICY_VERSION: "2026-11-26"
       DATABASE_URL: postgres://ryft_ingest:dev-ingest-db-password@postgres:5432/ryft?sslmode=disable
       CONNECT_FAKE: *connect-fake
       CONNECT_PROVIDERS: *connect-providers

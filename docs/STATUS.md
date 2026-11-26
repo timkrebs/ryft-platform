@@ -1,5 +1,24 @@
 # RYFT platform — status
 
+## Legal pages for today's RYFT and the partner programs (2026-11-26, D290; draft)
+
+Privacy 2026-11-26 and terms 2026-11-26 (new versions; the old ones stay), the support page and the Impressum,
+rewritten for GCP, Firebase Hosting and Supabase, Apple or Google sign-in, the dark food diary, opt-in analytics,
+the report form and the planned Garmin and Suunto connections. No personal details: the provider and controller
+are `TODO(user)` (24 markers; `web/docs/LEGAL_CHECKLIST.md`). It supersedes the C2 draft (#228). Sources:
+`docs/work/2026-11-26-legal-partners/facts.md`; partner requirements: `…/partners.md`.
+
+**Do not merge before the `TODO(user)` items and the legal review are done.** The merge puts 2026-11-26 into force:
+CI, `deploy.yml` (no migration), api and ingest roll with the new `PRIVACY_POLICY_VERSION`, the `site` job ships the
+pages and checks that `/privacy` shows 2026-11-26, and every user is asked to consent again. Decide
+`CONNECT_MIN_POLICY_VERSION` first (LEGAL_CHECKLIST U14). After the merge (read-only):
+
+```bash
+for s in api ingest; do gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod --format=json \
+  | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "PRIVACY_POLICY_VERSION") | .value'; done
+make smoke-prod
+```
+
 ## Meal PATCH copies retained items as stored (2026-11-26, D285)
 
 Step 1 of the Nutrition selection release. A meal PATCH now copies each retained item row as stored, so columns and `sources` fields this build does not know survive, and only the position moves. Migration 0053 adds the empty `portion_label_snapshot` and `portion_short_label_snapshot` columns with `NOT VALID` length constraints, and 0054 validates them. There is no contract change and no `API.md` change. Merge and deploy this before the catalog selection PR (D284). That release rolls back only to this build or later. The new Postgres test (`TestNutritionPatchCopiesRetainedItemsAsStored`) first runs in CI's `test` job.
