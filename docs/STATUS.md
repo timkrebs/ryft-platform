@@ -1,5 +1,9 @@
 # RYFT platform — status
 
+## Meal PATCH copies retained items as stored (2026-11-26, D285)
+
+Step 1 of the Nutrition selection release. A meal PATCH now copies each retained item row as stored, so columns and `sources` fields this build does not know survive, and only the position moves. Migration 0053 adds the empty `portion_label_snapshot` and `portion_short_label_snapshot` columns with `NOT VALID` length constraints, and 0054 validates them. There is no contract change and no `API.md` change. Merge and deploy this before the catalog selection PR (D284). That release rolls back only to this build or later. The new Postgres test (`TestNutritionPatchCopiesRetainedItemsAsStored`) first runs in CI's `test` job.
+
 ## Production smoke authentication (2026-11-25, D282)
 
 The workflow verifies the dedicated smoke session before migrate and rollout, then uses the same session for the post-rollout checks. The protected `deploy` environment needs an approved dedicated login or a current access token and matching account UUID. Once the reviewed change is on main and those credentials are available, use `gh workflow run deploy.yml --ref main` to verify the normal gated path.
