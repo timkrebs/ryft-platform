@@ -22,7 +22,7 @@ const ANY = '[\\s\\S]';
 const SAFE = '[A-Za-z0-9][A-Za-z0-9/._-]*';
 
 /** The first path segments of the app's universal links (the AASA); a device without the app gets open.html. */
-export const APP_LINKS = ['day', 'sleep', 'insights', 'train', 'auth', 'invite'];
+export const APP_LINKS = ['day', 'sleep', 'insights', 'journal', 'train', 'auth', 'invite'];
 
 /** Stable names in public/ (icons, screenshots, OG images, manifest, sitemap, robots.txt): a day. */
 export const DAY_EXTENSIONS = ['png', 'svg', 'avif', 'webp', 'ico', 'webmanifest', 'xml', 'txt'];

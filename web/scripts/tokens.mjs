@@ -6,6 +6,9 @@
 //   ../../app/Ryft/Design/Typography.swift      → type scale (pt → rem), weights, and the label's
 //                                                  tracking and case (ryftLabelStyle's own body)
 //   ../../app/Ryft/Design/RyftHeader.swift      → the wordmark's tracking (Wordmark.tracking, em)
+//   ../../app/Ryft/Design/Card.swift            → the card's padding (CardSpec.padding)
+//   ../../app/Ryft/Design/GlowTile.swift        → the glow tile's ellipse and stops (GlowTileSpec, the
+//                                                  `panel` kind: the one the app draws on wide tiles)
 // Writes src/styles/tokens.css (custom properties; dark-only like the app, web D20, so a light
 // block appears only if a colour set has a light value of its own), src/styles/tokens.json (the
 // same values for scripts; every colour as {light, dark}, equal when the set has one value) and
@@ -38,9 +41,13 @@ if (!existsSync(join(APP, 'Ryft/Assets.xcassets'))) {
 
 const tokens = {
   source:
-    'app/Ryft at the commit in web/.app-ref (Assets.xcassets, Design/Theme.swift, Design/Typography.swift, Design/RyftHeader.swift)',
+    'app/Ryft at the commit in web/.app-ref (Assets.xcassets, Design/Theme.swift, Design/Typography.swift, Design/RyftHeader.swift, Design/Card.swift, Design/GlowTile.swift)',
   colors: readColors(join(APP, 'Ryft/Assets.xcassets')),
-  metrics: readMetrics(readFileSync(join(APP, 'Ryft/Design/Theme.swift'), 'utf8')),
+  metrics: readMetrics(
+    readFileSync(join(APP, 'Ryft/Design/Theme.swift'), 'utf8'),
+    readFileSync(join(APP, 'Ryft/Design/Card.swift'), 'utf8'),
+  ),
+  glow: readGlow(readFileSync(join(APP, 'Ryft/Design/GlowTile.swift'), 'utf8')),
   motion: readMotion(readFileSync(join(APP, 'Ryft/Design/Theme.swift'), 'utf8')),
   type: readType(
     readFileSync(join(APP, 'Ryft/Design/Typography.swift'), 'utf8'),
@@ -138,22 +145,60 @@ function rgb(r, g, b, alpha) {
 
 // --- shapes, motion, type -------------------------------------------------------------
 
-function readMetrics(theme) {
+function readMetrics(theme, card) {
   const block = between(theme, 'enum Metrics {', '}', 'Theme.swift → Metrics');
   const out = {};
   for (const [, name, value] of block.matchAll(/static let (\w+): CGFloat = ([\d.]+)/g))
     out[kebab(name)] = +value;
+  // The card's inner padding is on CardSpec (Card.swift), not in Theme.Metrics: Card and GroupedCard
+  // share it (16, with the 22 radius).
+  const spec = body(card, 'enum CardSpec', 'Card.swift → CardSpec');
+  const padding = /static let padding: CGFloat = ([\d.]+)/.exec(spec);
+  if (!padding) throw new Error('tokens: Card.swift → CardSpec.padding not found');
+  out['card-padding'] = +padding[1];
   for (const key of [
-    'card-radius',
-    'tile-radius',
-    'card-padding',
     'screen-padding',
     'section-spacing',
     'hairline',
+    'neutral-tile-radius',
+    'glow-tile-radius',
+    'hero-tile-radius',
+    'circle-button',
+    'min-hit-target',
+    'pill-height',
+    'item-spacing',
+    'control-outline',
+    'list-row-height',
+    'card-padding',
   ]) {
     if (!(key in out)) throw new Error(`tokens: Theme.swift → Metrics has no ${key}`);
   }
   return out;
+}
+
+/**
+ * The glow tile's drawing, GlowTileSpec.shape(for: .panel): the CSS ellipse `rx × ry at 50 % cy` and the
+ * overlay's four stops, as percentages. The web draws every tile with the panel's ellipse: it is the one
+ * the app falls back to on a wide tile (GlowTile.swift's own contrast rule).
+ */
+function readGlow(glow) {
+  const stops =
+    /Stop\(location: 0, opacity: ([\d.]+)\),\s*Stop\(location: second, opacity: ([\d.]+)\),\s*Stop\(location: third, opacity: ([\d.]+)\),\s*Stop\(location: 1, opacity: ([\d.]+)\)/.exec(
+      glow,
+    );
+  const panel =
+    /case \.panel:\s*return Shape\(rx: ([\d.]+), ry: ([\d.]+), cy: ([\d.]+), stops: stops\(([\d.]+), ([\d.]+)\)/.exec(
+      glow,
+    );
+  if (!stops || !panel) throw new Error('tokens: GlowTile.swift → the panel shape or its stops not found');
+  const pct = (v) => +(+v * 100).toFixed(2);
+  return {
+    rx: pct(panel[1]),
+    ry: pct(panel[2]),
+    cy: pct(panel[3]),
+    stopAt: [0, pct(panel[4]), pct(panel[5]), 100],
+    overlayOpacity: stops.slice(1, 5).map(pct),
+  };
 }
 
 function readMotion(theme) {
@@ -275,7 +320,7 @@ function kebab(name) {
 
 // --- output ----------------------------------------------------------------------------
 
-function renderCss({ colors, metrics, motion, type }) {
+function renderCss({ colors, metrics, motion, type, glow }) {
   const names = Object.keys(colors);
   const flipping = names.filter((n) => colors[n].light !== colors[n].dark);
   const lines = [
@@ -296,6 +341,13 @@ function renderCss({ colors, metrics, motion, type }) {
       `  --type-${k}: ${v.rem}rem; /* ${v.pt} pt */`,
       `  --type-${k}-weight: ${v.weight};`,
     ]),
+    // The glow tile (GlowTileSpec, the panel kind): the ellipse, and the overlay's opacity at each stop.
+    `  --glow-rx: ${glow.rx}%;`,
+    `  --glow-ry: ${glow.ry}%;`,
+    `  --glow-cy: ${glow.cy}%;`,
+    ...glow.overlayOpacity.map((o, i) => `  --glow-opacity-${i}: ${o}%;`),
+    `  --glow-stop-1: ${glow.stopAt[1]}%;`,
+    `  --glow-stop-2: ${glow.stopAt[2]}%;`,
     // The label style (ryftLabelStyle): its tracking and its case.
     `  --tracking-label: ${type.labelTrackingEm}em;`,
     `  --label-transform: ${type.labelTransform};`,

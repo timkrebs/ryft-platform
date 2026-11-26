@@ -68,13 +68,13 @@ for (const [locale, t] of Object.entries(copy)) {
   const html = `<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><style>
 ${faces}
 *{box-sizing:border-box;margin:0}
-body{width:${WIDTH}px;height:${HEIGHT}px;background:${c('graphite')};color:${c('mist')};font-family:Satoshi;font-weight:${scale.body.weight};overflow:hidden;position:relative}
+body{width:${WIDTH}px;height:${HEIGHT}px;background:${c('background')};color:${c('text-primary')};font-family:Satoshi;font-weight:${scale.body.weight};overflow:hidden;position:relative}
 .card{position:absolute;inset:72px 80px;display:flex;flex-direction:column;justify-content:space-between}
 .logo{display:flex;align-items:center}
 .tile{display:block;box-sizing:content-box;border:1px solid ${c('separator')}}
 .logo .tile{width:${LOGO}px;height:${LOGO}px;border-radius:${radius(LOGO)}px}
 h1{font-weight:${scale.title.weight};font-size:84px;line-height:1.05;letter-spacing:-.02em;max-width:760px}
-.line{margin-top:22px;font-size:28px;color:${c('teal')}}
+.line{margin-top:22px;font-size:28px;color:${c('text-secondary')}}
 .foot{font-size:22px;letter-spacing:${labelTrackingEm}em;text-transform:${labelTransform};color:${c('text-secondary')}}
 .big{position:absolute;right:80px;top:${(HEIGHT - BIG - 2) / 2}px;width:${BIG}px;height:${BIG}px;border-radius:${radius(BIG)}px}
 .rule{position:absolute;left:80px;right:80px;bottom:132px;height:1px;background:${c('separator')}}

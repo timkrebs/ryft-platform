@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 import { satoshi } from '@/lib/fonts';
 import '@/styles/tokens.css';
+import '@/styles/nocturne.css';
 import '@/styles/globals.css';
 import '@/admin/admin.css';
 

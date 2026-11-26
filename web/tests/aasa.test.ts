@@ -66,6 +66,7 @@ describe('apple-app-site-association', () => {
       '/day/2026-10-19',
       '/sleep/plan',
       '/insights/behaviors',
+      '/journal/2026-10-19',
       '/train/history',
       '/invite/RYFT7Q2K',
       '/auth/callback',
