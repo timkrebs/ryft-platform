@@ -6844,3 +6844,14 @@ After preserving exact dictionary matches, expand prefixes of at least four norm
 ## D284 — Localize catalog selections and preserve logged portion labels (2026-11-25)
 
 Catalog metadata identifies supported staple forms and measured defaults. Prioritize whole foods on broad staple searches, preserve explicit variant intent, and rank eligible records with account-scoped favorites and 90 days of remaining diary history. Preview amounts through the meal calculator. Reuse a retired or changed portion by its stored compatible mass or volume. Snapshot item labels and only recover a linked legacy label when the existing unit and measurements still agree. Keep source IDs, BLS CC BY attribution and the old search functions through rollout.
+
+Amended 2026-11-26 after review, before release:
+- Only a staple group's name or a single word of at least four letters that starts a staple's name makes a query broad and promotes the group. An exact name match alone doesn't. An exact variant (`Milch 1,5 Prozent`) therefore ranks ahead of favourites and history. The group's other forms (apple juice) rank just below cultivars, ahead of brand and prefix matches.
+- A keyed source portion's ID includes its unit and measure. A refresh that changes the grams issues a new ID and retires the old row, so a stale selection fails with 422 instead of logging the new amount.
+- A food has at most one default portion (a partial unique index); the ETL clears its defaults before re-marking.
+- Favourites block an account merge and are exported on the first page of `GET /v1/me/nutrition-export`.
+- The schema change is split so that no file holds ACCESS EXCLUSIVE while it scans, backfills or builds an index: 0055 adds columns and `NOT VALID` checks, 0056 validates them, 0057 backfills labels, 0058 builds indexes, 0059 the ranking function. The migrator runs each file in one transaction, so indexes are built without `CONCURRENTLY`; the label columns come from D285.
+
+## D285 — Release Nutrition selection in two steps; a meal PATCH copies retained item rows (2026-11-26)
+
+The API before D285 deletes and reinserts every meal item on PATCH from its typed snapshot, so a rollback or a mixed-version rollout across a release that adds item columns or source fields erases them. This step copies each retained item row as stored (`to_jsonb` and `jsonb_populate_record`: every column, the sources JSON unchanged), only moves its position, and writes no new snapshot fields. It adds the two portion label columns empty (0053, constraints `NOT VALID`, validated by 0054). The catalog selection release (D284) writes the labels and ships only after this build is live; its rollback target is this build, never an earlier one.

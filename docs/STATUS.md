@@ -1,8 +1,12 @@
 # RYFT platform — status
 
-## Nutrition catalog selections (2026-11-25, D284)
+## Nutrition catalog selections (2026-11-26, D284)
 
-Migrations 0053–0054 introduce measured and localized portion choices, account-scoped favorites, recent diary selections and historic portion labels. Confirm catalog and iPhone acceptance before release. The normal Platform pipeline applies migrations before a reviewed API rollout. Its previous search functions remain available for a compatible binary rollback.
+Step 2 of the two-step release. Migrations 0055–0059 add measured and localized portion choices, account-scoped favourites, recent diary selections, historic portion labels, one default per food and the new ranking. Favourites are exported and block an account merge. Merge and deploy only after the D285 build is live; roll back only to that build. Confirm catalog and iPhone acceptance before release. The staples reach production with the next catalog ETL run. The previous search function stays for the binary rollback.
+
+## Meal PATCH copies retained items as stored (2026-11-26, D285)
+
+Step 1 of the Nutrition selection release. A meal PATCH now copies each retained item row as stored, so columns and `sources` fields this build does not know survive, and only the position moves. Migration 0053 adds the empty `portion_label_snapshot` and `portion_short_label_snapshot` columns with `NOT VALID` length constraints, and 0054 validates them. There is no contract change and no `API.md` change. Merge and deploy this before the catalog selection PR (D284). That release rolls back only to this build or later.
 
 ## German Nutrition food suggestions (2026-11-25, D283)
 
