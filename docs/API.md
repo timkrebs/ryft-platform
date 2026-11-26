@@ -589,7 +589,7 @@ A `FoodPortionSelection` has `quantity` and `unit` (`g`, `ml`, `portion` or `ser
 }
 ```
 
-**Detail.** `GET /v1/nutrition/foods/{id}?language=de-DE` (`language` is optional; an invalid tag returns `422`). It returns the existing `FoodDetail`, and `name` uses the matching non-alias name. `portions` are ordered by `sort_order`, then label, then ID. Each portion always has `is_default` and `sort_order`, and may have `portion_key`, `short_label_en` and `short_label_de`. At most one portion is `is_default: true`, and a default is always measured (never `estimated`). Detail also has the search fields above, plus `last_used_selection`, which has the same value as `last_used_portion`. BLS sources carry the BLS code in `external_id`, the release in `dataset_version`, and a named `attribution` (CC BY 4.0) that the app shows with the source.
+**Detail.** `GET /v1/nutrition/foods/{id}?language=de-DE` (`language` is optional; an invalid tag returns `422`). It returns the existing `FoodDetail`, and `name` uses the matching non-alias name. `portions` are ordered by `sort_order`, then label, then ID. Each portion always has `is_default` and `sort_order`, and may have `portion_key`, `short_label_en` and `short_label_de`. The catalog marks at most one portion per food `is_default: true` (if several ever appear, `default_portion` is the first in that order), and a default is always measured (never `estimated`). Detail also has the search fields above, plus `last_used_selection`, which has the same value as `last_used_portion`. BLS sources carry the BLS code in `external_id`, the release in `dataset_version`, and a named `attribution` (CC BY 4.0) that the app shows with the source.
 
 <!-- type: model.FoodDetail -->
 ```json
@@ -656,7 +656,7 @@ A `FoodPortionSelection` has `quantity` and `unit` (`g`, `ml`, `portion` or `ser
 {"revision": 1, "notes": "Before the run", "items": [{"item_id": "63cf1226-48cf-43c7-957e-c994ec3bbe61"}]}
 ```
 
-**Favourites.** `PUT /v1/nutrition/foods/{id}/favorite` and `DELETE /v1/nutrition/foods/{id}/favorite` have no body and answer `204`. Both are idempotent, so a repeat also answers `204`. PUT needs the diary gate (`nutrition.diary_enabled` or `nutrition.enabled`) and a food the caller can see (a public food, or the caller's own custom food); otherwise it returns `404`. DELETE works for any valid UUID even with the Nutrition flags off, like the other erasure routes. A malformed ID returns `404`. Favourites belong to the account, are never shown to anyone else, and are deleted with the account (`DELETE /v1/me`).
+**Favourites.** `PUT /v1/nutrition/foods/{id}/favorite` and `DELETE /v1/nutrition/foods/{id}/favorite` have no body and answer `204`. Both are idempotent, so a repeat also answers `204`. PUT needs the diary gate (`nutrition.diary_enabled` or `nutrition.enabled`) and a food the caller can see (a public food, or the caller's own custom food); otherwise it returns `404`. DELETE works for any valid UUID even with the Nutrition flags off, like the other erasure routes. A malformed ID returns `404`. Favourites belong to the account, are never shown to anyone else, and are deleted with the account (`DELETE /v1/me`). `GET /v1/me/nutrition-export` doesn't include them yet; like private foods and goals, they go through the account rights process.
 
 ```http
 PUT /v1/nutrition/foods/0f3c9a52-6a1e-4d0b-9c61-6d3f0a1b2c01/favorite
