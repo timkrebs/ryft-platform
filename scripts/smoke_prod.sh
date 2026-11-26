@@ -24,10 +24,15 @@
 # (once; it keeps the access), so the smoke also passes with BETA_GATE on. The key comes
 # from the environment only (scripts/lib/admin.sh says how to read production's).
 #
-# It then reports what the gates do (on, warn or off): it withdraws the smoke user's
-# consent for one sync and, with ADMIN_API_KEY, its beta access for one read, and
-# restores both. SMOKE_EXPECT_GATES=on fails unless both are on (EKS, before the first
-# external invite: docs/OPERATIONS.md → Beta). On GCP the invite gate is off (D241).
+# The smoke token writes no consent (D286: consent is a person's act, and the api refuses POST and DELETE
+# /v1/me/consent for it). The smoke account's consent for the current PRIVACY_POLICY_VERSION is recorded by the
+# operator with scripts/sql/consent_smoke_account.sql (docs/OPERATIONS.md); without it the smoke fails with that
+# hint, and --auth-preflight fails before the rollout when the consent is not for config.env's version.
+#
+# It then reports what the gates do (on, warn or off): with ADMIN_API_KEY it withdraws the smoke user's beta
+# access for one read and restores it (the invite gate). The consent gate is reported as not probed.
+# SMOKE_EXPECT_GATES=on fails unless the invite gate is on (EKS, before the first external invite:
+# docs/OPERATIONS.md → Beta). On GCP the invite gate is off (D241).
 set +x # the session material lives only in memory and private temporary files
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -69,8 +74,8 @@ bearer() {
 }
 # Calls made with the smoke token retry curl's transient statuses (408/429/500/502/503/504; never
 # --retry-all-errors): a new instance answers 503 while it loads its keys. Safe for every call below: the GETs,
-# POST /v1/sync (D100), POST and DELETE /v1/me/consent (grant is NOT EXISTS, revoke an UPDATE of the unrevoked
-# row) and POST /v1/me/invite (a no-op once the account has access). The ADMIN_API_KEY calls are not retried.
+# POST /v1/sync (D100) and POST /v1/me/invite (a no-op once the account has access); the smoke token makes no
+# consent write (D286). The ADMIN_API_KEY calls are not retried.
 smoke_curl() { bearer "$TOKEN" --retry 3 --retry-delay 2 "$@"; }
 call() { smoke_curl -fsS -H 'Content-Type: application/json' "$@"; }
 # The admin key's other sources (the Vault root's Terraform output, the in-cluster Vault) went with
@@ -96,9 +101,10 @@ if [ "$(echo "$me" | json 'd["beta_access"]')" != True ]; then
   fi
 fi
 policy=$(call "$API/v1/config" | json 'd["privacy_policy_version"]') || fail "GET /v1/config"
+# The smoke token writes no consent (D286: a person's act, and POST/DELETE /v1/me/consent are off the api's
+# smoke allowlist): the operator records it for the bound account with scripts/sql/consent_smoke_account.sql.
 if [ "$(echo "$me" | json '(d["consent"] or {}).get("policy_version")')" != "$policy" ]; then
-  call -X POST "$API/v1/me/consent" -d "{\"policy_version\": \"$policy\", \"app_version\": \"smoke-prod\"}" \
-    || fail "POST /v1/me/consent"
+  fail "the smoke account has no consent for $policy: record it with scripts/sql/consent_smoke_account.sql (docs/OPERATIONS.md)"
 fi
 model=$(call "$API/v1/model" | json 'd["current"]') || fail "GET /v1/model"
 call "$API/v1/me/connections" | json 'isinstance(d["connections"], list) and isinstance(d["available"], list) and {"garmin", "suunto"} <= {x["provider"] for x in d["providers"]} or sys.exit(1)' >/dev/null \
@@ -147,10 +153,7 @@ probe() {   # method url code [data] → the gate's mode for that request
     -H 'Content-Type: application/json' ${data:+-d "$data"} "$url" > "$tmp/status"
   mode_of "$tmp/status" "$tmp/hdrs" "$tmp/body" "$code"
 }
-call -X DELETE "$API/v1/me/consent" >/dev/null || fail "withdraw the smoke user's consent (gate probe)"
-consent_mode=$(probe POST "$INGEST/v1/sync" consent_required '{"device_id": "5e0c0a5e-0000-4000-8000-0000000000aa", "samples": [], "sleep": [], "workouts": []}')
-call -X POST "$API/v1/me/consent" -d "{\"policy_version\": \"$policy\", \"app_version\": \"smoke-prod\"}" >/dev/null \
-  || fail "consent again after the probe (the smoke user is left without consent)"
+consent_mode="not probed (D286: the smoke token writes no consent)"
 invite_mode="unknown (no ADMIN_API_KEY)"
 if [ -n "${ADMIN_API_KEY:-}" ]; then
   me_id=$(echo "$me" | json 'd["id"]')
@@ -160,6 +163,6 @@ if [ -n "${ADMIN_API_KEY:-}" ]; then
   admin POST >/dev/null || fail "give the smoke user its beta access back (it is left without)"
 fi
 echo "✓ smoke-prod: edge, sign-in, /v1/me, consent $policy, a sync, $today scored with model $model; gates: invite $invite_mode, consent $consent_mode"
-if [ "${SMOKE_EXPECT_GATES:-}" = on ] && { [ "$invite_mode" != on ] || [ "$consent_mode" != on ]; }; then
-  fail "SMOKE_EXPECT_GATES=on, but the gates are: invite $invite_mode, consent $consent_mode"
+if [ "${SMOKE_EXPECT_GATES:-}" = on ] && [ "$invite_mode" != on ]; then
+  fail "SMOKE_EXPECT_GATES=on, but the invite gate is: $invite_mode (the consent gate is not probed)"
 fi

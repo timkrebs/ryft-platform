@@ -169,6 +169,19 @@ edit scoring.yaml 'cpu-throttling' '"true"' '"false"'
 bad "scoring billed per instance" "cpu-throttling: 'false', want 'true'"
 drop notify.yaml 'startup-cpu-boost'
 bad "notify without the startup boost" "missing: run.googleapis.com/startup-cpu-boost"
+# D285: api's revision template carries ryft-meal-patch: d285 (deploy.yml's record step reads it from the serving
+# revision); exactly that, and on api only.
+edit api.yaml 'ryft-meal-patch: d285' 'd285' 'd284'
+bad "api's meal label at another value" "api.yaml: template.metadata.labels must be exactly {'ryft-meal-patch': 'd285'}"
+edit api.yaml 'ryft-meal-patch: d285' 'ryft-meal-patch' 'ryft-meal-patched'
+bad "api's meal label under another name" "api.yaml: template.metadata.labels must be exactly"
+add api.yaml 'ryft-meal-patch: d285' 'extra-label: x'
+bad "api with a second template label" "api.yaml: template.metadata.labels must be exactly"
+drop api.yaml 'ryft-meal-patch: d285'
+drop api.yaml '      labels:'
+bad "api without the meal label" "api.yaml template.metadata: missing: labels"
+edit ingest.yaml '    metadata:' 'metadata:' 'metadata:\n      labels: { ryft-meal-patch: d285 }'
+bad "ingest with the meal label" "ingest.yaml template.metadata: keys not allowed here: labels"
 edit ingest.yaml 'containerConcurrency' ' 4' ' 80'
 bad "ingest with 80 requests" "concurrency 80, want 4"
 edit scoring.yaml 'timeoutSeconds: 300' '300' '900'
@@ -729,4 +742,4 @@ bad "a placeholder outside the list" "placeholder(s) outside the fixed list: HOM
 add migrate.yaml 'name: LOG_LEVEL,' '- { name: PUSH_AUDIENCE, value: "${PUSH_AUDIENCE}" }'
 bad "migrate with an audience" "migrate is no push target"
 
-echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env (BETA_GATE, XFF_TRUSTED_HOPS, APP_ATTEST and APP_ATTEST_EXEMPT_USERS from config.env in api and ingest only, two hops only behind the load balancer), App Attest's ring pinned in api and ingest under warn and on and readable by them only, CONNECT_PROVIDERS equal in api and ingest (items stripped) and never fake (also spaced), the smoke identity (SMOKE_OIDC_SA_EMAIL, SMOKE_OIDC_SA_ID, SMOKE_OIDC_AUDIENCE, SMOKE_USER_ID: all four, fixed email and audience, ids from config.env, equal in api and ingest, nowhere else, D286), CONNECT_MIN_POLICY_VERSION in ingest only, empty or a date not after the policy version, Garmin's cap and the callback base in api only, CONNECT_FAKE* nowhere, garmin only with its client-secret pin (api alone), id and a cap above 0, off -> on against a base refused (off -> warn, warn -> on and back pass), the load balancer's ingress only at edge live or locked and with more than one hop, locked only behind it, P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"
+echo "✓ check_cloudrun_test: the committed deploy/run passes; limits, scaling, ingress, accounts, port, probes (startup on /health/live within 30 s), traffic, image, env (BETA_GATE, XFF_TRUSTED_HOPS, APP_ATTEST and APP_ATTEST_EXEMPT_USERS from config.env in api and ingest only, two hops only behind the load balancer), App Attest's ring pinned in api and ingest under warn and on and readable by them only, CONNECT_PROVIDERS equal in api and ingest (items stripped) and never fake (also spaced), api's template label ryft-meal-patch: d285 (D285, api only), the smoke identity (SMOKE_OIDC_SA_EMAIL, SMOKE_OIDC_SA_ID, SMOKE_OIDC_AUDIENCE, SMOKE_USER_ID: all four, fixed email and audience, ids from config.env, equal in api and ingest, nowhere else, D286), CONNECT_MIN_POLICY_VERSION in ingest only, empty or a date not after the policy version, Garmin's cap and the callback base in api only, CONNECT_FAKE* nowhere, garmin only with its client-secret pin (api alone), id and a cap above 0, off -> on against a base refused (off -> warn, warn -> on and back pass), the load balancer's ingress only at edge live or locked and with more than one hop, locked only behind it, P5, secret pins and accessors, migrate's pins and no-retry, files and YAML shape (anchors and aliases as parsed; & and * in comments and values pass) each fail"

@@ -9,12 +9,18 @@ Before the merge:
 2. Commit `SMOKE_USER_ID` and `SMOKE_SA_ID` into `deploy/run/config.env`.
 
 After the merge:
-1. The push run stops at the preflight, because api-00044 rejects the token. Nothing rolls.
-2. Run `gh workflow run deploy.yml --ref main -f auth_preflight=false`. It migrates (0053, 0054, 0060) and rolls, the smoke fails `smoke_unbound`, and traffic returns to the -00044 revisions.
-3. Bind the account with `scripts/sql/bind_smoke_account.sql` (Supabase SQL editor, as `postgres`; expect 1 row).
-4. Run `gh workflow run deploy.yml --ref main -f auth_preflight=false` again. It rolls and the smoke passes.
-5. Run `gh workflow run deploy.yml --ref main` to check the gated path.
+1. The push run stops before migrate: "the D286 bootstrap is pending". The serving api-00044 has no D286 sign-in. Nothing changes.
+2. Run `gh workflow run deploy.yml --ref main -f migrate_only=true`. It applies 0053, 0054 and 0060 and rolls nothing.
+3. Bind the account with `scripts/sql/bind_smoke_account.sql` (Supabase SQL editor, as `postgres`; expect 1 row). The script cross-checks the UUID against `smoke@ryftlab.de` in `auth.users`.
+4. Run `gh workflow run deploy.yml --ref main`. The bootstrap check, the rollout and the smoke run, and the run is green.
+5. Run `gh workflow run deploy.yml --ref main` once more. The preflight is used by itself.
 6. Delete `SMOKE_EMAIL`, `SMOKE_PASSWORD`, `SMOKE_TOKEN`, `SMOKE_USER_ID` and `SUPABASE_ANON_KEY` from the `deploy` environment.
+
+After the second review:
+- The rollback runs from one EXIT trap.
+- The smoke token writes no consent, and `scripts/sql/consent_smoke_account.sql` covers a policy bump.
+- The D285 floor: `ryft-meal-patch=d285`. #248 ships only once a labelled api serves.
+- `migrate_only` replaces `auth_preflight`.
 
 The runbook is `docs/OPERATIONS.md` → The smoke authentication.
 

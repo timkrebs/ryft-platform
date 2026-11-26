@@ -42,3 +42,21 @@ No blockers.
 | 5 | nit | A comment in deploy.yml is misindented. | gitops-engineer | Indented. |
 
 Fixed without a second review pass (the brief allows one).
+
+# Second independent review (Codex, of 609817e): do not ship
+
+The full text is in `../docs/work/2026-11-26-smoke-auth-rollout/codex-review-2.md` (root repo). The lead checked each finding against the code before assigning it.
+
+| # | Severity | Finding | Verified in code | Owner | Outcome |
+|---|---|---|---|---|---|
+| 1 | high | A failed `services describe` after a successful replace exits the step (bash `-e`) before the service is recorded, the smoke runs, or anything rolls back. | Holds: `rev=$(gcloud … describe …)` at deploy.yml:438 has no guard. | gitops-engineer | _pending_ |
+| 2 | high | `TestBindSmokeAccountScript` scans two columns with `pgx.RowTo[string]`, so it fails after a successful bind. CI's `test` job runs it (RYFT_TEST_POSTGRES_URL), and ci-ok blocks every deploy. | Holds. | database-engineer | _pending_ |
+| 3 | medium | The smoke bearer can grant and revoke consent (POST/DELETE `/v1/me/consent` are on the allowlist). | Holds: smoke.go:29-30; smoke_prod.sh:100, 150-153. | backend-engineer | _pending_ |
+| 4 | medium | The bind SQL takes its UUID from the same source as config.env, so nothing cross-checks it. | Holds. | database-engineer | _pending_ |
+| 5 | medium | The automatic rollback can restore a pre-D285 api that erases meal labels. | Holds as a narrow window. The live api is `api-00044-5lh`, from before #249: the #249 deploy (run 45777989628) failed at the preflight. If #248 reaches main before a D285 api is serving, a failed smoke rolls back to -00044. | gitops-engineer | _pending_ |
+| 6 | rec. | Replace the deliberately failing bootstrap run with a migrate-only dispatch. | Accepted. | gitops-engineer, lead (docs) | _pending_ |
+
+Hand-backs as received (unverified until the lead's runs below):
+- gitops: one `trap on_exit EXIT`, each service on `touched` before its replace; executed cases a–d plus three more. A `record` step with outputs `d286`/`d285` (yes|no). The floor uses git grep and fails closed. `api.yaml` label `ryft-meal-patch: d285`, required by check_cloudrun.py. `auth_preflight` removed, `migrate_only` added; the selection is tested row by row. Its tests passed locally (yq present).
+- database: the bind script requires exactly one `auth.users` row with `smoke@ryftlab.de` (lower()) whose id equals the pasted UUID. New `consent_smoke_account.sql` acts only on the bound account. The test now scans user_id and bound_at. NOT RUN (sandbox).
+- backend: POST/DELETE consent are off the allowlist and answer 403 (`smoke_route` metric and access reason; the body is the generic `forbidden`). smoke_prod.sh writes no consent and fails with the consent_smoke_account.sql hint. `prepare` checks consent against config.env's PRIVACY_POLICY_VERSION. NOT RUN (sandbox).

@@ -467,7 +467,7 @@ refuses to run while a placeholder is left.
 
 ### 8. First deploy
 
-Set `GCP_DEPLOY=on`, then run `deploy.yml` by hand with the `auth_preflight` input off. The commands are
+Set `GCP_DEPLOY=on`, then run `deploy.yml` by hand. The commands are
 in **Deploy, roll back, rotate** below. **Stop if** `migrate`'s log lacks a `migration applied`
 line for each new file (`0034_outbox_available_at.sql`, `0035_float_digits.sql`), or doesn't end
 with `schema current`; or a revision isn't ready. This run
@@ -551,7 +551,7 @@ replace` on the four, each through its binding on the resource.
 
 ```bash
 gh variable delete DEPLOY_HOLD_SERVICES -R "$R"
-gh workflow run deploy.yml --ref main -R "$R"                    # auth_preflight defaults to true
+gh workflow run deploy.yml --ref main -R "$R"                    # the smoke auth follows the serving api (D286)
 gh run list --workflow=deploy.yml -R "$R" --limit=3              # the new run on top, workflow_dispatch
 gh run watch <run id> -R "$R" --exit-status
 gh run view <run id> -R "$R" --log-failed                        # only after a red run
@@ -2469,9 +2469,15 @@ main only), and only while the repository variable `GCP_DEPLOY` is `on`. One run
 6. Main's head again, just before `migrate`: a commit overtaken during the build ends green as
    "superseded" here, its images pushed and nothing rolled. The smoke authentication preflight
    validates a freshly minted token through `GET /v1/me` before `migrate` and service rollout (D282).
-   That read can initialize the dedicated account. Then `migrate` runs via `gcloud run jobs replace`
-   and `execute --wait`. If either preflight or migrate fails, the run stops before service rollout.
-   With `auth_preflight=false` the step is the bootstrap check instead (**The smoke authentication**).
+   Then `migrate` runs via `gcloud run jobs replace` and `execute --wait`. If either the preflight or
+   migrate fails, the run stops before service rollout. Before both, the run records each service's
+   serving revision and reads two facts from the serving api revision: does it have the D286 sign-in
+   (`SMOKE_OIDC_SA_ID` in its env), and does it carry the label `ryft-meal-patch=d285`? Without the
+   D286 sign-in, a dispatch runs the bootstrap check instead of the preflight, and a push stops here
+   ("the D286 bootstrap is pending", **The smoke authentication**). Without the label, a commit that
+   writes the meal portion labels stops here (**The D285 floor**, below). Nothing has changed at
+   that point. A dispatch with `-f migrate_only=true` runs `migrate` and stops: no smoke
+   authentication, no rollout, no smoke.
 7. `gcloud run services replace` for scoring, notify, ingest, api, in that order. Each waits until
    its new revision is ready. The startup probe is `/health/live` (`/health/ready` stays the
    uptime checks' target), so ready means the process serves, not that it reaches the database.
@@ -2479,9 +2485,10 @@ main only), and only while the repository variable `GCP_DEPLOY` is `on`. One run
 8. `make smoke-prod` always runs after the rollout, with a token it mints itself (no session file
    crosses the rollout). It catches a revision with a broken database config. If it fails, traffic
    goes back to the recorded revisions (api, ingest, notify, scoring) and the run fails: **The smoke
-   authentication** below has what that leaves. The dispatch input `auth_preflight` (default true)
-   only governs step 6: false runs `smoke_prod.sh --auth-bootstrap` there instead, which passes only
-   against a revision from before D286 (the bootstrap, below).
+   authentication** below has what that leaves. One EXIT trap does every rollback. A service is
+   listed before its `replace` is issued, so a failed replace, a failed smoke or any unexpected
+   error sends every listed service back. A failed summary lookup does not stop the step. No input
+   skips this smoke. `migrate_only` skips the whole rollout.
 
 Every run builds and deploys all five, whatever the merge changed, and runs `migrate` (a no-op
 when no file is new). The run summary lists the tag, the digests and each service's new revision.
@@ -2523,15 +2530,15 @@ hand-set `SMOKE_TOKEN` are not used any more; delete them from the `deploy` envi
 "Allow administrators to bypass" stays unchecked (Settings → Environments → `deploy`). If the
 environment is missing, create it as step 10a.1 creates `site`, with `deploy` in its place.
 
-Then switch the workflow on and run it by hand, with the preflight off (`auth_preflight=false`: it
-passes only against a revision from before D286, **The smoke authentication** below). Nothing is
-public before step 9, and the post-rollout smoke always runs: on a project that has never served,
-it rolls traffic back to the recorded revisions and fails, which is expected here.
+Then switch the workflow on and run it by hand. A serving api from before D286 makes a dispatch
+run the bootstrap check (**The smoke authentication** below). Nothing is public before step 9, and
+the post-rollout smoke always runs: on a project that has never served, it rolls traffic back to
+the recorded revisions and fails, which is expected here.
 
 ```bash
 gh variable set GCP_DEPLOY --body on -R "$R"
 gh variable list -R "$R"                                         # GCP_DEPLOY on, no DEPLOY_HOLD_SERVICES
-gh workflow run deploy.yml --ref main -f auth_preflight=false -R "$R"
+gh workflow run deploy.yml --ref main -R "$R"
 gh run list --workflow=deploy.yml -R "$R" --limit=3              # the new run on top, workflow_dispatch
 gh run watch <run id> -R "$R" --exit-status
 ```
@@ -2581,8 +2588,7 @@ pushed: fix forward, never skip the scan); `migrate`'s execution failed or its l
 current`; or a revision isn't ready. A failed `migrate` rolled nothing, and Cloud Run didn't
 retry it (`maxRetries: 0`: a retry is a second failed owner login, which feeds Supavisor's circuit
 breaker). Read its log and fix the cause. Then run
-`gh workflow run deploy.yml --ref main -f auth_preflight=false -R "$R"` while the running api still
-predates D286, else without the flag, once (never a re-run of the red run). If `ECIRCUITBREAKER`
+`gh workflow run deploy.yml --ref main -R "$R"` once (never a re-run of the red run). If `ECIRCUITBREAKER`
 appears anywhere, wait it out (rotation step 4 below).
 
 Until step 9's apply and certificates are done, a push to main deploys and then fails at the
@@ -2609,10 +2615,12 @@ Alerting; the dashboard RYFT · Overview) for 30 minutes. What each outcome leav
   Late: once ci is green on main's head, `gh workflow run deploy.yml --ref main -R "$R"`.
 - Smoke auth preflight failed: migrate and rollout have not started. The message names the stage
   (gcloud, generateIdToken with its HTTP status and Google status, a claim of the minted token,
-  or `GET /v1/me`); **The smoke authentication** below says what each one means. The one expected
-  failure is the first deploy of D286's change, or the first after a traffic rollback to a revision
-  from before D286 (the running api doesn't know the Google token): dispatch with
-  `auth_preflight=false` (the bootstrap, below).
+  `GET /v1/me`, or the smoke account's consent); **The smoke authentication** below says what each
+  one means.
+- "the D286 bootstrap is pending": a push while the serving api predates D286 (the merge of D286,
+  or the first push after a traffic rollback to such a revision). Nothing changed. Follow **The
+  bootstrap**, below.
+- "… has no label ryft-meal-patch=d285 …": **The D285 floor**, below. Nothing changed.
 - `migrate` failed: nothing rolled. Read its log as in step 8.
 - A revision isn't ready: Cloud Run keeps routing that service to its last ready revision
   (`latestRevision` means the latest *ready* one). The services before it run the new code, the
@@ -2623,7 +2631,7 @@ Alerting; the dashboard RYFT · Overview) for 30 minutes. What each outcome leav
   notify, scoring) and failed: check `status.traffic` of the four (step 8's loop, and the run's
   summary), then run `make smoke-prod` once yourself against that state (step 9's environment). The
   new revisions stay, unrouted, until the next deploy. If the recorded revisions predate D286, the
-  next deploy needs `auth_preflight=false` again (**The smoke authentication**, below).
+  next push stops as "bootstrap pending": dispatch (**The bootstrap**, below).
 
 Merges close together are safe. A run deploys only while its commit is main's head (checked
 when `ci-ok` is found and again before `migrate`), so an older commit never deploys over a newer
@@ -2651,15 +2659,31 @@ signs in with a password. It is the service account `ryft-smoke@ryftlab-prod.iam
   # with a non-email identity, without a public.users row, or in deleted_users: stop and look.
   ```
 
+  The script also resolves the account on its own, by its email in `auth.users`
+  (`smoke@ryftlab.de`). It refuses unless exactly one row has that email (case-insensitive) and that
+  row's id is the pasted UUID. A wrong UUID copied from `config.env` therefore stops here: "… is not
+  the account with the email smoke@ryftlab.de (that is <id>)". Then fix `SMOKE_USER_ID` in a config
+  PR, not the SQL.
+
   Until the row exists, every smoke request is refused `401 smoke_unbound`, the preflight and the
-  post-rollout smoke included. The table is created by the migration, which the deploy's `migrate`
-  runs: so the first deploy of D286 can't have the binding in place before its own smoke. Expect
-  two runs (**The bootstrap**, below): the first migrates, its smoke fails `smoke_unbound` and
-  traffic goes back; you bind; the second, again with `auth_preflight=false`, passes.
+  post-rollout smoke included. The migration creates the table, so the bind comes after a `migrate`
+  and before the first rollout: **The bootstrap**, below.
+- **The smoke account's consent.** A smoke token never writes consent: `POST` and `DELETE
+  /v1/me/consent` are `403 smoke_route`. Consent is a person's act, and a machine credential neither
+  gives nor withdraws it. So the smoke no longer probes the consent gate (it reports `not probed`),
+  and `SMOKE_EXPECT_GATES=on` checks the invite gate only. The preflight and the smoke require the
+  smoke account's consent to be for the policy version in force (the preflight checks against
+  `PRIVACY_POLICY_VERSION` in the commit's `config.env`). When that version moves, record the
+  account's consent for the new version **before** the merge, in the SQL editor as `postgres`, with
+  `scripts/sql/consent_smoke_account.sql`. Replace `<PRIVACY_POLICY_VERSION>` with the new
+  `YYYY-MM-DD`, paste the whole file and run it. Expect `1 row`: that `policy_version`, `revoked_at`
+  empty, `app_version` `operator-sql`. The script acts only on the bound account, re-checks its
+  email, and inserts nothing on a rerun. Otherwise the preflight stops: "the smoke account has no
+  consent for <version>: record it with scripts/sql/consent_smoke_account.sql".
 - **What a smoke token can reach.** Only the routes `smoke_prod.sh` calls with it. Anything else is
-  `403 smoke_route` (`DELETE /v1/me`, export, merge, train import, nutrition, the admin routes), and
-  an unbound or missing account is `401 smoke_unbound`. If a new smoke step calls a route, add it to
-  the api's or ingest's smoke allowlist in the same PR.
+  `403 smoke_route` (`DELETE /v1/me`, consent, export, merge, train import, nutrition, the admin
+  routes), and an unbound or missing account is `401 smoke_unbound`. If a new smoke step calls a
+  route, add it to the api's or ingest's smoke allowlist in the same PR.
 - **Where it is sent.** `scripts/lib/smoke_auth.py` mints and sends a Google smoke token only when
   `API_URL` is exactly `https://api.ryftlab.de` and `INGEST_URL` exactly `https://ingest.ryftlab.de`
   (scheme and host in any case, no port or `:443`, no path). A lookalike host, another port, `http`
@@ -2715,30 +2739,42 @@ signs in with a password. It is the service account `ryft-smoke@ryftlab-prod.iam
   puts it back unless you set the account disabled there). Tokens already minted work until they
   expire (an hour), and only as the smoke account. Emptying `SMOKE_OIDC_*` in the templates turns
   the route off in the services (a deploy).
-- **The bootstrap: the first deploy after D286's merge.** The running api and ingest don't know the
-  Google token, so the push run stops at the preflight and rolls nothing. Dispatch it once with the
-  preflight off:
+- **The bootstrap: the first deploy after D286's merge.** The serving api doesn't know the Google
+  token. The deploy reads that from the serving revision (no `SMOKE_OIDC_SA_ID` in its env), not from
+  an input. The push run of the merge stops before `migrate`: "the D286 bootstrap is pending:
+  dispatch with migrate_only, bind the smoke account (scripts/sql/bind_smoke_account.sql), then
+  dispatch". Nothing changed. Then:
 
   ```bash
-  gh workflow run deploy.yml --ref main -f auth_preflight=false -R "$R"
-  gh run watch <run id> -R "$R" --exit-status
+  gh workflow run deploy.yml --ref main -f migrate_only=true -R "$R"   # migrate only: no smoke auth, no rollout
+  gh run watch <run id> -R "$R" --exit-status                           # green; notice "migrate_only: …"
+  # Supabase SQL editor as postgres: scripts/sql/bind_smoke_account.sql (The one-time binding, above) → 1 row
+  gh workflow run deploy.yml --ref main -R "$R"                         # the checked deploy
+  gh run watch <run id> -R "$R" --exit-status                           # green
   ```
 
-  With `auth_preflight=false` the run executes `scripts/smoke_prod.sh --auth-bootstrap` instead of
-  the preflight: it mints the token (the IAM binding works), checks the claims, and requires
-  `GET /v1/me` on the running api to answer 401 ("the running revision predates D286; the token
-  mints"). A 200 ends it with "the bootstrap is over, run the deploy with auth_preflight on", and
-  any other status fails: nothing rolled either way. It only passes against a revision from before
-  D286. The rollout then runs, and the post-rollout smoke runs with a fresh token (it always does).
-  If the smoke fails, traffic is put back on the recorded revisions and the run fails.
-  The first bootstrap run is expected to fail that way: the binding isn't there yet
-  (`smoke_unbound`, above). Bind, then dispatch with `auth_preflight=false` once more: the running
-  api is again the pre-D286 one, so the bootstrap check passes, the rollout runs, and the smoke is
-  green. From then on every deploy uses the default (`auth_preflight` true).
+  The checked dispatch runs `scripts/smoke_prod.sh --auth-bootstrap` in place of the preflight,
+  because the serving api still predates D286. It mints the token (the IAM binding works), checks
+  the claims, and requires `GET /v1/me` on the running api to answer 401. Then `migrate` (nothing
+  new), the rollout, and the post-rollout smoke with a fresh token, now bound. If the smoke fails,
+  the traffic goes back and the run fails. From then on the serving api has the D286 sign-in, and
+  every run uses the preflight by itself. No input switches it back.
 - **After a rollback to a revision from before D286.** (The deploy's own rollback, or **A rollback**
-  below by hand.) The running api predates D286, so the next deploy's preflight would stop at 401.
-  Dispatch it with `-f auth_preflight=false` again. A rollback to a D286 or later revision needs
-  nothing special.
+  below by hand.) The next push stops as "bootstrap pending". Dispatch `gh workflow run deploy.yml
+  --ref main -R "$R"`: the binding is already there, so no migrate-only run is needed. A rollback
+  to a D286 or later revision needs nothing special.
+
+**The D285 floor.** An api from before D285 (api-00044-5lh and older) PATCHes a meal by deleting
+and reinserting its items, which erases `portion_label_snapshot` and `portion_short_label_snapshot`.
+Every api built since #249 carries the revision label `ryft-meal-patch=d285` (`deploy/run/api.yaml`;
+`check_cloudrun.py` requires it). The serving api is the automatic rollback's target, and the
+deploy refuses before `migrate`, in every mode, when that api lacks the label and the commit writes
+those columns. The test is a `git grep` of `backend/` without tests and without 0053/0054, and a
+failed grep counts as a writer. The error: "the serving api <rev> has no label ryft-meal-patch=d285
+(it predates D285) and this commit writes the meal portion labels (<file>) … Nothing was changed."
+So the snapshot writer (#248) ships only once a labelled api serves, as D285 orders. Fix: deploy a
+commit without the writer first (or revert it), then this one. Never move traffic by hand to an
+unlabelled api once the labels hold data.
 
 **A rollback.** There are two ways. Moving traffic takes seconds and builds nothing. A revert
 ships the old code through a normal deploy. Migrations are additive and stay either way: the older
@@ -2772,9 +2808,10 @@ By traffic:
    For more than one service, go api, ingest, notify, scoring: the deploy's order reversed.
 4. Run `make smoke-prod` from your shell (step 9's environment). A revision from before D286
    (api-00044 or older) rejects the smoke token (`GET /v1/me returned HTTP 401`): that is expected,
-   not a failed rollback. The next deploy then needs `gh workflow run deploy.yml --ref main -R "$R"
-   -f auth_preflight=false` (the bootstrap check passes only against such a revision, **The smoke
-   authentication**), and its post-rollout smoke runs as always.
+   not a failed rollback. The next push then stops as "bootstrap pending": dispatch
+   `gh workflow run deploy.yml --ref main -R "$R"` (it runs the bootstrap check by itself, **The smoke
+   authentication**), and its post-rollout smoke runs as always. Once #248 has written meal labels,
+   don't roll the api back to such a revision at all (**The D285 floor**).
 5. Merge the fix or the revert. With the hold set, nothing deploys. Delete the hold and run
    `deploy.yml` by hand. That deploy ends the traffic pin.
 

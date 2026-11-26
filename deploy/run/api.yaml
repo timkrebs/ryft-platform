@@ -14,6 +14,12 @@ metadata:
 spec:
   template:
     metadata:
+      # The revision carries D285's meal PATCH (it copies each retained item row as stored). A revision without
+      # this label deletes and reinserts the items and so erases the meal portion labels (0053): deploy.yml reads
+      # it from the serving api before migrate and refuses a commit that writes those labels while an api
+      # without it serves (the rollback target). scripts/check_cloudrun.py requires it here.
+      labels:
+        ryft-meal-patch: d285
       annotations:
         autoscaling.knative.dev/minScale: "0"
         autoscaling.knative.dev/maxScale: "3"

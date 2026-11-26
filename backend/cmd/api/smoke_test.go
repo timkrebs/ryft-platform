@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/httpx"
+	"github.com/timkrebs/ryft/internal/metrics"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
 )
@@ -22,9 +24,11 @@ import (
 func TestSmokeAllowIsExactlyTheSmokeScript(t *testing.T) {
 	allowed := []string{
 		"GET /v1/me", "POST /v1/me/invite", "GET /v1/days", "GET /v1/days/2026-11-26", "GET /v1/config",
-		"POST /v1/me/consent", "DELETE /v1/me/consent", "GET /v1/model", "GET /v1/me/connections",
+		"GET /v1/model", "GET /v1/me/connections",
 	}
 	refused := []string{
+		// Consent is a person's act: the smoke bearer neither grants nor withdraws it (D286).
+		"POST /v1/me/consent", "DELETE /v1/me/consent", "PUT /v1/me/consent", "PATCH /v1/me/consent",
 		"DELETE /v1/me", "PATCH /v1/me", "POST /v1/me", "PUT /v1/me", "HEAD /v1/me", "GET /v1/me/", "GET /v1/me/sync",
 		"POST /v1/me/apple-authorization", "GET /v1/me/nutrition-export", "POST /v1/train/import",
 		"GET /v1/nutrition/meals", "POST /v1/nutrition/meals", "DELETE /v1/nutrition/meals/1", "POST /v1/recompute",
@@ -182,6 +186,25 @@ func TestSmokePrincipalIsRefusedOffTheAllowlist(t *testing.T) {
 		t.Fatalf("a refused route must not load the user: %d", loaded)
 	}
 
+	// Consent is a person's legal act: both writes are refused for the smoke principal with the
+	// smoke_route reason (the access line's code and the auth_failures label; the body is the plain
+	// 403), before the handler and before the user lookup.
+	refusals := func() float64 { return testutil.ToFloat64(metrics.AuthFailures.WithLabelValues("smoke_route")) }
+	for _, line := range []string{"POST /v1/me/consent", "DELETE /v1/me/consent"} {
+		method, path, _ := strings.Cut(line, " ")
+		before := refusals()
+		rec := do(smoke, method, path)
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"error":"forbidden"`) {
+			t.Errorf("%s with the smoke token: want 403 forbidden, got %d %s", line, rec.Code, rec.Body.String())
+		}
+		if got := refusals() - before; got != 1 {
+			t.Errorf("%s: smoke_route counted %v times, want 1", line, got)
+		}
+	}
+	if loaded != 0 {
+		t.Fatalf("a refused consent write must not load the user: %d", loaded)
+	}
+
 	// The allowlist lets an allowed route past the middleware, to the user lookup and the handler.
 	// (The handler has no store here: Recover turns that into a 500, which is "not the 403".)
 	if rec := do(smoke, "GET", "/v1/model"); rec.Code == http.StatusForbidden || loaded != 1 {
@@ -190,11 +213,16 @@ func TestSmokePrincipalIsRefusedOffTheAllowlist(t *testing.T) {
 
 	// An app user's DELETE /v1/me and import reach their handlers, as before.
 	app := mux(auth.Principal{UserID: uuid.New()})
-	for _, line := range []string{"DELETE /v1/me", "POST /v1/train/import", "PATCH /v1/me"} {
+	// A normal user's consent POST and DELETE are unchanged: past the middleware, no smoke_route.
+	before := refusals()
+	for _, line := range []string{"DELETE /v1/me", "POST /v1/train/import", "PATCH /v1/me", "POST /v1/me/consent", "DELETE /v1/me/consent"} {
 		method, path, _ := strings.Cut(line, " ")
 		if rec := do(app, method, path); rec.Code == http.StatusForbidden && strings.Contains(rec.Body.String(), `"error":"forbidden"`) {
 			t.Errorf("app user %s refused as the smoke: %s", line, rec.Body.String())
 		}
+	}
+	if got := refusals() - before; got != 0 {
+		t.Errorf("an app user was counted as smoke_route %v times", got)
 	}
 }
 

@@ -31,7 +31,11 @@ sa_id, other_sa_id = "104567890123456789012", "104567890123456789999"
 sa_email = "ryft-smoke@ryftlab-prod.iam.gserviceaccount.com"
 access = "ya29.fixture-access-marker"
 iam_url = "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/" + sa_email + ":generateIdToken"
-good_config = f"# comment\n\nSMOKE_USER_ID={owner}\nSMOKE_SA_ID={sa_id}\n"
+policy = "2026-10-26"  # PRIVACY_POLICY_VERSION in the fixture config.env: the version the deploy will ask for
+good_config = f"# comment\n\nSMOKE_USER_ID={owner}\nSMOKE_SA_ID={sa_id}\nPRIVACY_POLICY_VERSION={policy}\n"
+consent_hint = (
+    "the smoke account has no consent for %s: record it with scripts/sql/consent_smoke_account.sql (docs/OPERATIONS.md)"
+)
 
 
 def jwt(claims):
@@ -56,8 +60,10 @@ def google(ttl=3600, **override):
     return jwt({key: value for key, value in claims.items() if value is not None})
 
 
-def me(user=owner):
-    return {"id": user, "tz": "UTC", "beta_access": True, "consent": None}
+def me(user=owner, consent=...):
+    if consent is ...:  # the account has its consent for the policy in force, as the operator records it
+        consent = {"policy_version": policy, "granted_at": "2026-10-26T09:00:00Z"}
+    return {"id": user, "tz": "UTC", "beta_access": True, "consent": consent}
 
 
 def google_error(status, body):
@@ -338,7 +344,7 @@ class SmokeAuth(unittest.TestCase):
         self.gcloud.assert_not_called()  # a bad config stops before gcloud is asked for anything
 
     def test_environment_wins_over_a_placeholder_in_config_env(self):
-        self.config.write_text("SMOKE_USER_ID=FILL_ME_IN\nSMOKE_SA_ID=FILL_ME_IN\n")
+        self.config.write_text(f"SMOKE_USER_ID=FILL_ME_IN\nSMOKE_SA_ID=FILL_ME_IN\nPRIVACY_POLICY_VERSION={policy}\n")
         self.client.open.side_effect = [Response({"token": google()}), Response(me())]
         self.prepare({"SMOKE_USER_ID": owner, "SMOKE_SA_ID": sa_id})
         self.session.unlink()
@@ -351,6 +357,71 @@ class SmokeAuth(unittest.TestCase):
             values = verify.__globals__["read_config"]()
         self.assertIn("SMOKE_USER_ID", values)
         self.assertIn("SMOKE_SA_ID", values)
+        self.assertRegex(values["PRIVACY_POLICY_VERSION"], r"^\d{4}-\d{2}-\d{2}$")  # what prepare compares the consent with
+
+    # ---- prepare: the smoke account's consent is for config.env's PRIVACY_POLICY_VERSION (D286) -------
+    # The smoke token writes no consent; a missing or stale one fails the preflight, before the migration.
+
+    def test_prepare_passes_when_the_consent_matches_config_env(self):
+        self.client.open.side_effect = [Response({"token": google()}), Response(me())]
+        self.prepare()
+        self.assertTrue(self.session.exists())
+
+    def test_prepare_fails_on_a_missing_or_stale_consent(self):
+        for name, consent in (
+            ("none", None),
+            ("older version", {"policy_version": "2026-01-01", "granted_at": "2026-01-01T00:00:00Z"}),
+            ("newer version", {"policy_version": "2026-12-01", "granted_at": "2026-12-01T00:00:00Z"}),
+            ("no version", {"granted_at": "2026-10-26T09:00:00Z"}),
+            ("numeric version", {"policy_version": 20261026}),
+            ("not an object", "2026-10-26"),
+        ):
+            with self.subTest(name):
+                token = google()
+                self.client.open.reset_mock()
+                self.client.open.side_effect = [Response({"token": token}), Response(me(consent=consent))]
+                message = self.rejected(r"\Athe smoke account has no consent for 2026-10-26: record it with "
+                                        r"scripts/sql/consent_smoke_account\.sql \(docs/OPERATIONS\.md\)\Z", None, token, access)
+                self.assertEqual(message, consent_hint % policy)
+                self.assertEqual(self.client.open.call_count, 2)  # the mint and one read: no write of any kind
+                self.assertEqual([call.args[0].get_method() for call in self.client.open.call_args_list], ["POST", "GET"])
+                self.assertNotIn("/consent", " ".join(call.args[0].full_url for call in self.client.open.call_args_list))
+
+    def test_prepare_compares_with_the_version_in_config_env_not_a_fixed_one(self):
+        self.config.write_text(good_config.replace(policy, "2026-12-01"))
+        self.client.open.side_effect = [Response({"token": google()}), Response(me())]
+        self.assertEqual(self.rejected(r"no consent for 2026-12-01"), consent_hint % "2026-12-01")
+        self.client.open.side_effect = [Response({"token": google()}), Response(me(consent={"policy_version": "2026-12-01"}))]
+        self.prepare()
+
+    def test_prepare_environment_overrides_the_policy_in_config_env(self):
+        self.client.open.side_effect = [Response({"token": google()}), Response(me())]
+        self.rejected("no consent for 2026-12-01", {"PRIVACY_POLICY_VERSION": "2026-12-01"})
+        self.client.open.side_effect = [Response({"token": google()}), Response(me())]
+        self.prepare({"PRIVACY_POLICY_VERSION": policy})
+
+    def test_prepare_needs_a_policy_version_to_compare_with(self):
+        for name, text, regex in (
+            ("missing", f"SMOKE_USER_ID={owner}\nSMOKE_SA_ID={sa_id}\n", "PRIVACY_POLICY_VERSION is not set"),
+            ("placeholder", good_config.replace(policy, "FILL_ME_IN"), "PRIVACY_POLICY_VERSION is still FILL_ME_IN"),
+        ):
+            with self.subTest(name):
+                self.config.write_text(text)
+                self.client.open.side_effect = [Response({"token": google()}), Response(me())]
+                self.rejected(regex)
+        self.client.open.side_effect = [Response({"token": google()}), Response(me())]
+        self.rejected("PRIVACY_POLICY_VERSION has an invalid format", {"PRIVACY_POLICY_VERSION": "2026 10 26\nx"})
+
+    def test_prepare_checks_identity_before_consent(self):
+        self.client.open.side_effect = [Response({"token": google()}), Response(me(other, consent=None))]
+        self.rejected("did not identify the expected smoke account")
+
+    def test_run_does_not_check_consent_the_script_does(self):
+        # `run` hands /v1/me to smoke_prod.sh, which fails with the same text; the helper's run mode stays neutral.
+        self.client.open.side_effect = [Response({"token": google()}), Response(me(consent=None))]
+        with patch.dict(os.environ, {}, clear=True):
+            verify("run", api, ingest, self.result)
+        self.assertIsNone(json.loads(self.result.read_bytes())["me"]["consent"])
 
     def test_bad_target_settings_are_rejected(self):
         for env in ({"SMOKE_SERVICE_ACCOUNT": "x@evil.example.test"}, {"SMOKE_SERVICE_ACCOUNT": "a/../b@p.iam.gserviceaccount.com"},
@@ -638,7 +709,8 @@ class SmokeAuth(unittest.TestCase):
         token = google()
         self.client.open.side_effect = [Response({"token": token}), Response(me())]
         code, out, err = self.run_main("bootstrap", api, ingest)
-        self.assertEqual(code, "smoke-prod: the running api accepts the smoke token: the bootstrap is over, run the deploy with auth_preflight on")
+        self.assertEqual(code, "smoke-prod: the running api accepts the smoke token: the bootstrap is over (the deploy runs the preflight)")
+        self.assertNotIn("auth_preflight", code)  # that input is gone: the deploy picks the preflight by itself
         self.assertEqual(out + err, "")
         self.assertEqual(self.client.open.call_count, 2)
 
@@ -870,3 +942,111 @@ if grep -v '^smoke_curl()' "$HERE/scripts/smoke_prod.sh" | grep -q 'bearer "[$]T
   exit 1
 fi
 if grep -v '^ *#' "$HERE/scripts/smoke_prod.sh" | grep -q -e '--retry-all-errors'; then echo 'smoke_prod.sh retries all errors' >&2; exit 1; fi
+
+# D286: the smoke token writes no consent. The api refuses POST and DELETE /v1/me/consent for it, so the script
+# must never send either, and a missing or stale consent is a failure with the operator's hint, not a write.
+# No command in the script (comments aside) names the consent route at all.
+if grep -v '^ *#' "$HERE/scripts/smoke_prod.sh" | grep -q 'me/consent'; then
+  echo 'smoke_prod.sh still names /v1/me/consent' >&2
+  exit 1
+fi
+
+# The real smoke_prod.sh against a fake curl that records "METHOD host path" and a fake python3 that stands in for
+# the auth helper's `run` (the helper itself is tested above) and passes everything else to the real one.
+real_py=$(command -v python3)
+mkdir "$tmp/fake"
+cat > "$tmp/fake/python3" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = -I ] && [ "${3:-}" = run ]; then
+  printf '{"api": "%s", "ingest": "%s", "token": "fixture-token", "subject": "20261125-0000-4000-8000-0000000000a1", "me": %s}' \
+    "$4" "$5" "$FAKE_ME" > "$6"
+  exit 0
+fi
+exec "$REAL_PY" "$@"
+SH
+cat > "$tmp/fake/curl" <<'SH'
+#!/usr/bin/env bash
+cat > /dev/null   # the bearer header arrives on stdin (-H @-)
+method=GET out= hdr= fmt= url= fail=
+while [ $# -gt 0 ]; do
+  case $1 in
+    -X) method=$2; shift 2 ;;
+    -o) out=$2; shift 2 ;;
+    -D) hdr=$2; shift 2 ;;
+    -w) fmt=$2; shift 2 ;;
+    -H|-d|--retry|--retry-delay) shift 2 ;;
+    -f|-fsS) fail=1; shift ;;
+    http*) url=$1; shift ;;
+    *) shift ;;
+  esac
+done
+rest=${url#*://}
+host=${rest%%/*}
+path=/${rest#*/}
+echo "$method $host $path" >> "$CURL_LOG"
+status=200 body='{}'
+case "$method $host $path" in
+  "GET api.fake.test /v1/me") status=401 ;;
+  "GET ingest.fake.test /v1/sync") status=404 ;;
+  "GET api.fake.test /v1/config") body="{\"privacy_policy_version\": \"$FAKE_POLICY\"}" ;;
+  "GET api.fake.test /v1/model") body='{"current": "m1"}' ;;
+  "GET api.fake.test /v1/me/connections") body='{"connections": [], "available": [], "providers": [{"provider": "garmin"}, {"provider": "suunto"}]}' ;;
+  "POST ingest.fake.test /v1/sync") body="{\"days_touched\": [\"$(date -u +%F)\"]}" ;;
+  "GET api.fake.test /v1/days/"*) body='{"score": {"computed_at": "9999-01-01T00:00:00", "model_version": "m1"}}' ;;
+  "GET api.fake.test /v1/days")
+    if [ "$FAKE_INVITE" = on ]; then status=403 body='{"error": "forbidden", "code": "invite_required"}'; fi ;;
+esac
+[ -z "$hdr" ] || printf 'HTTP/1.1 %s\n' "$status" > "$hdr"
+if [ -n "$out" ] && [ "$out" != /dev/null ]; then printf '%s' "$body" > "$out"; fi
+if [ -n "$fail" ] && [ "$status" -ge 400 ]; then exit 22; fi
+if [ -n "$fmt" ]; then printf '%s' "$status"; elif [ -z "$out" ]; then printf '%s' "$body"; fi
+SH
+chmod +x "$tmp/fake/python3" "$tmp/fake/curl"
+fake_me() {  # consent JSON → the smoke account's /v1/me
+  printf '{"id": "20261125-0000-4000-8000-0000000000a1", "beta_access": true, "tz": "UTC", "consent": %s}' "$1"
+}
+consent_now='{"policy_version": "2026-10-26", "granted_at": "2026-10-26T09:00:00Z"}'
+smoke_fake() {  # NAME=value... → exit status of smoke_prod.sh; the requests are in $tmp/api.log, the output in $tmp/run.out
+  : > "$tmp/api.log"
+  env -i PATH="$tmp/fake:$PATH" REAL_PY="$real_py" CURL_LOG="$tmp/api.log" API_URL=http://api.fake.test \
+    INGEST_URL=http://ingest.fake.test FAKE_POLICY=2026-10-26 FAKE_INVITE=off FAKE_ME="$(fake_me "$consent_now")" "$@" \
+    bash "$HERE/scripts/smoke_prod.sh" < /dev/null > "$tmp/run.out" 2>&1
+}
+no_consent_write() {  # the smoke token neither grants nor withdraws consent: no request names it, nothing but the sync is written
+  if grep -q 'consent' "$tmp/api.log"; then echo 'smoke_prod.sh sent a request about consent' >&2; cat "$tmp/api.log" >&2; exit 1; fi
+  if grep -q '^DELETE api.fake.test /v1/me' "$tmp/api.log"; then echo 'smoke_prod.sh sent a DELETE to the api' >&2; exit 1; fi
+}
+
+# The consent is current: the smoke passes, reads no consent route, writes only the sync.
+smoke_fake || { echo 'smoke_prod.sh failed with a current consent' >&2; cat "$tmp/run.out" >&2; exit 1; }
+no_consent_write
+[ "$(grep '^POST' "$tmp/api.log")" = 'POST ingest.fake.test /v1/sync' ] || { echo 'smoke_prod.sh wrote something but the sync' >&2; exit 1; }
+grep -qF 'gates: invite unknown (no ADMIN_API_KEY), consent not probed (D286: the smoke token writes no consent)' "$tmp/run.out"
+
+# The gate probe takes the beta access away and gives it back (admin key); it never touches consent.
+smoke_fake ADMIN_API_KEY=fixture-admin FAKE_INVITE=on SMOKE_EXPECT_GATES=on \
+  || { echo 'smoke_prod.sh failed with the invite gate on' >&2; cat "$tmp/run.out" >&2; exit 1; }
+no_consent_write
+[ "$(grep -c '^DELETE ' "$tmp/api.log")" -eq 1 ] || { echo 'the gate probe sent more than the one admin DELETE' >&2; exit 1; }
+grep -q '^DELETE api.fake.test /v1/admin/users/.*/access$' "$tmp/api.log" || { echo 'the admin DELETE is not the access one' >&2; exit 1; }
+grep -qF 'gates: invite on, consent not probed' "$tmp/run.out"
+
+# SMOKE_EXPECT_GATES=on checks the invite gate only: off (or unknown) fails, and says so.
+smoke_fake ADMIN_API_KEY=fixture-admin FAKE_INVITE=off SMOKE_EXPECT_GATES=on && { echo 'SMOKE_EXPECT_GATES=on passed with the invite gate off' >&2; exit 1; }
+grep -qxF '✗ smoke-prod: SMOKE_EXPECT_GATES=on, but the invite gate is: off (the consent gate is not probed)' "$tmp/run.out"
+no_consent_write
+smoke_fake SMOKE_EXPECT_GATES=on && { echo 'SMOKE_EXPECT_GATES=on passed without a probe' >&2; exit 1; }
+grep -qF 'but the invite gate is: unknown (no ADMIN_API_KEY)' "$tmp/run.out"
+
+# A missing or stale consent fails with the operator's hint, before the sync, and the script writes nothing.
+for stale in null '{"policy_version": "2026-01-01", "granted_at": "2026-01-01T00:00:00Z"}' '{"policy_version": "2026-12-01"}'; do
+  smoke_fake FAKE_ME="$(fake_me "$stale")" && { echo "smoke_prod.sh passed with the consent $stale" >&2; exit 1; }
+  grep -qxF '✗ smoke-prod: the smoke account has no consent for 2026-10-26: record it with scripts/sql/consent_smoke_account.sql (docs/OPERATIONS.md)' "$tmp/run.out" \
+    || { echo "no consent message for $stale" >&2; cat "$tmp/run.out" >&2; exit 1; }
+  no_consent_write
+  if grep -q '^POST' "$tmp/api.log"; then echo "smoke_prod.sh wrote with the consent $stale" >&2; exit 1; fi
+done
+# The comparison is with /v1/config's version, whatever it is.
+smoke_fake FAKE_POLICY=2026-12-01 && { echo 'smoke_prod.sh passed with a consent for another policy than /v1/config' >&2; exit 1; }
+grep -qF 'no consent for 2026-12-01: record it with' "$tmp/run.out"
+no_consent_write

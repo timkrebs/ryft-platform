@@ -31,14 +31,19 @@
 #      including it names gcloud, the OIDC request variables, docker login or docker push (sign-in
 #      and push come after the scan); every step that runs `gcloud run` or the smoke comes after the
 #      step `tip` and its `if` starts with steps.tip.outputs.current == 'true' (no || outside
-#      parentheses: && binds tighter and would undo the gate). The smoke (D286): the dispatch input is
-#      `auth_preflight` (boolean, default true; no `smoke` input), the preflight runs on a push or with it
-#      on, the bootstrap only on a dispatch with it off, both before migrate; the post-rollout
-#      `make smoke-prod` has the tip gate alone (no input skips it), mints afresh (unsets
-#      SMOKE_AUTH_FILE) and rolls back inside its own step (`update-traffic` from $RUNNER_TEMP/previous,
-#      api, ingest, notify, scoring, then exit 1); the step that records the serving revisions
-#      (`services describe` into $RUNNER_TEMP/previous) comes before migrate and the services; no
-#      smoke step takes a secret. The site (C1): site-build (npm runs
+#      parentheses: && binds tighter and would undo the gate). The smoke (D286, D285): the dispatch input is
+#      `migrate_only` (boolean, default false: migrate only, no rollout, no smoke; no `auth_preflight`, no
+#      `smoke` input). The step `record` (before migrate, read only) records the serving revisions
+#      (`services describe` into $RUNNER_TEMP/previous), describes the serving api revision (python3 -I) into
+#      the outputs d286 (the D286 sign-in in its env) and d285 (the label ryft-meal-patch=d285), stops when the
+#      api lacks the label and `git grep` finds a meal portion label writer in backend/ (or fails: fail
+#      closed), and stops a push with d286 no (the bootstrap is pending). The preflight runs when d286 is yes,
+#      the bootstrap (it only runs the helper) when d286 is no on a dispatch, neither with migrate_only, both
+#      before migrate; migrate runs in every mode. The rollout step (`services replace`, then
+#      `make smoke-prod`, not under migrate_only) mints afresh (unsets SMOKE_AUTH_FILE), puts each service on
+#      a `touched` list before its replace and rolls back in one EXIT trap (`update-traffic` from
+#      $RUNNER_TEMP/previous, api, ingest, notify, scoring, keeps the exit status); no smoke step takes a
+#      secret. The site (C1): site-build (npm runs
 #      code there) has no id-token and no environment, and its only actions are checkout,
 #      setup-node and upload-artifact by SHA; site runs in concurrency group `site` with
 #      cancel-in-progress false, its only actions are checkout, setup-node (no cache key, and
@@ -203,13 +208,24 @@ CHANGES_RUN = re.compile(r"(?<![A-Za-z0-9_\-])gcloud\s+run\s|(?<![A-Za-z0-9_\-])
 SMOKE_AUTH = re.compile(r"scripts/smoke_prod\.sh\s+--auth-(?:preflight|bootstrap)\b")
 SMOKE_PREFLIGHT = re.compile(r"scripts/smoke_prod\.sh\s+--auth-preflight\b")
 SMOKE_BOOTSTRAP = re.compile(r"scripts/smoke_prod\.sh\s+--auth-bootstrap\b")
-# The `if` of each smoke step, exactly (D286): the preflight on a push or when the input is true, the bootstrap
-# only on a dispatch with the input off, the post-rollout smoke on the tip gate alone, no input skips it.
-PREFLIGHT_IF = "steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.auth_preflight)"
-BOOTSTRAP_IF = "steps.tip.outputs.current == 'true' && github.event_name == 'workflow_dispatch' && !inputs.auth_preflight"
-SMOKE_IF = "steps.tip.outputs.current == 'true'"
+# The `if` of each step that depends on the serving api (D286), exactly. The record step's output `d286` picks the
+# smoke authentication (the preflight when the serving api has the D286 sign-in, the bootstrap when it has not and
+# the run is a dispatch); `migrate_only` skips both and the rollout with its smoke; migrate runs in every mode.
+# No input skips the post-rollout smoke of a rollout: it is in the rollout's own step.
+RECORD_IF = "steps.tip.outputs.current == 'true'"
+PREFLIGHT_IF = "steps.tip.outputs.current == 'true' && steps.record.outputs.d286 == 'yes' && !inputs.migrate_only"
+BOOTSTRAP_IF = ("steps.tip.outputs.current == 'true' && steps.record.outputs.d286 == 'no' && "
+                "github.event_name == 'workflow_dispatch' && !inputs.migrate_only")
+MIGRATE_IF = "steps.tip.outputs.current == 'true'"
+SMOKE_IF = "steps.tip.outputs.current == 'true' && !inputs.migrate_only"
+RECORD_ENV = {"EVENT": "${{ github.event_name }}", "MIGRATE_ONLY": "${{ inputs.migrate_only && 'true' || 'false' }}"}
+# The D285 floor's search (the files of backend/ that name the meal portion labels, tests and the two migrations
+# that add the columns aside), exactly.
+FLOOR_GREP = ("git grep -l -e portion_label_snapshot -e portion_short_label_snapshot -- backend ':!*_test.go' "
+              "':!backend/internal/db/migrations/0053_*' ':!backend/internal/db/migrations/0054_*'")
 UPDATE_TRAFFIC = re.compile(r"\bgcloud\s+run\s+services\s+update-traffic\b")
 DESCRIBE = re.compile(r"\bgcloud\s+run\s+services\s+describe\b")
+REVISION_DESCRIBE = re.compile(r"\bgcloud\s+run\s+revisions\s+describe\b")
 PREVIOUS_FILE = re.compile(r"\$\{?RUNNER_TEMP\}?/previous\b")
 SMOKE_RUN = re.compile(r"\bmake\s+smoke-prod\b")
 SMOKE_ENV_NAME = re.compile(r"SMOKE_(?:EMAIL|PASSWORD|TOKEN)|SUPABASE_ANON_KEY", re.I)
@@ -290,14 +306,19 @@ if is_deploy:
     on = wf.get("on")
     if not isinstance(on, dict) or set(on) != {"push", "workflow_dispatch"} or on.get("push") != {"branches": ["main"]}:
         fail("deploy.yml runs on exactly `push: {branches: [main]}` and `workflow_dispatch`")
-    # The dispatch's inputs: `auth_preflight` (boolean, default true) replaced `smoke`; no input skips the post-rollout smoke.
+    # The dispatch's inputs: `migrate_only` (boolean, default false: the migrations only, no rollout and no smoke).
+    # `auth_preflight` is gone (the smoke authentication follows the serving api revision) and so is `smoke`: no
+    # input skips the smoke of a rollout.
     wd = on.get("workflow_dispatch") if isinstance(on, dict) else None
     ins = wd.get("inputs") if isinstance(wd, dict) and isinstance(wd.get("inputs"), dict) else {}
-    ap = ins.get("auth_preflight")
-    if not (isinstance(ap, dict) and ap.get("type") == "boolean" and ap.get("default") is True):
-        fail("deploy.yml's workflow_dispatch needs the input `auth_preflight` (type boolean, default true), D286")
+    mo = ins.get("migrate_only")
+    if not (isinstance(mo, dict) and mo.get("type") == "boolean" and mo.get("default") is False):
+        fail("deploy.yml's workflow_dispatch needs the input `migrate_only` (type boolean, default false), D286")
+    if "auth_preflight" in ins:
+        fail("deploy.yml's workflow_dispatch has an input `auth_preflight`: the smoke authentication follows the serving api revision "
+             "(the record step's d286 output), not an input (D286)")
     if "smoke" in ins:
-        fail("deploy.yml's workflow_dispatch has an input `smoke`: no input skips the post-rollout smoke (D286); `auth_preflight` only picks the preflight or the bootstrap")
+        fail("deploy.yml's workflow_dispatch has an input `smoke`: no input skips the smoke of a rollout (D286); `migrate_only` skips the rollout and its smoke together")
     # D286: nothing hands the smoke helper a token, an email or a password behind the smoke steps' backs: not the
     # workflow's `env:`, not any job's, and no run script that writes a SMOKE_ name to $GITHUB_ENV (the helper
     # would use SMOKE_TOKEN instead of minting its own).
@@ -398,72 +419,117 @@ if is_deploy:
         boot_steps = [n for n, r in enumerate(runs) if SMOKE_BOOTSTRAP.search(r)]
         auth_steps = pre_steps + boot_steps
         smoke_steps = [n for n, r in enumerate(runs) if SMOKE_RUN.search(r)]
+        migrate_steps = [n for n, r in enumerate(runs) if re.search(r"\bgcloud\s+run\s+jobs\s+(?:replace|execute)\b", r)]
         rollout_steps = [n for n, r in enumerate(runs) if ROLLOUT.search(r)]
         services_steps = [n for n, r in enumerate(runs) if re.search(r"\bgcloud\s+run\s+services\s+replace\b", r)]
+        record_steps = [n for n, s in enumerate(steps) if s.get("id") == "record"]
         prev_steps = [n for n, r in enumerate(runs) if DESCRIBE.search(r) and PREVIOUS_FILE.search(r) and not UPDATE_TRAFFIC.search(r)]
-        if not (len(pre_steps) == len(boot_steps) == len(smoke_steps) == 1 and rollout_steps and
-                max(auth_steps) < min(rollout_steps) <= max(rollout_steps) == smoke_steps[0]):
-            fail("deploy.yml's smoke auth preflight and bootstrap (one step each) must come before rollout, and the post-rollout smoke (one step) after migrate, as the last rollout step")
+        if not (len(pre_steps) == len(boot_steps) == len(smoke_steps) == len(migrate_steps) == len(record_steps) == 1 and
+                record_steps[0] < min(auth_steps) and max(auth_steps) < migrate_steps[0] < smoke_steps[0] and
+                migrate_steps[0] in rollout_steps and record_steps[0] < min(rollout_steps) and max(rollout_steps) == smoke_steps[0]):
+            fail("deploy.yml needs one step each, in this order: `record` (id, the serving revisions and the serving api's facts), the smoke auth "
+                 "preflight and the bootstrap (both after it), migrate, and the services with the post-rollout smoke as the last rollout step")
         elif services_steps != smoke_steps:
             fail("deploy.yml's `gcloud run services replace` and `make smoke-prod` live in one step (the services, then the smoke): a failed replace or smoke is never followed by another step, so that step rolls back itself")
         else:
-            # The bootstrap refuses a D286 api (it answers 401 for an unbound account too, and the helper passes on any 401):
-            # the serving api revision's env is read (python3 -I, not grep) and a SMOKE_OIDC_SA_ID in it ends the run, before the helper.
+            # The record step: the serving revisions, then the serving api revision's facts (python3 -I, not grep), the D285
+            # floor, and the selection by mode. All before migrate, read only.
+            rec = steps[record_steps[0]]
+            rl = step_label(record_steps[0], rec)
+            rr = runs[record_steps[0]]
+            if rec.get("if") != RECORD_IF:
+                fail(f"deploy.yml's deploy job, {rl}: its `if` must be exactly `{RECORD_IF}`, is {rec.get('if')!r}")
+            if rec.get("env") != RECORD_ENV:
+                fail(f"deploy.yml's deploy job, {rl}: its env must be exactly EVENT (github.event_name) and MIGRATE_ONLY "
+                     f"(inputs.migrate_only as 'true' or 'false'), is {rec.get('env')!r}")
+            if prev_steps != record_steps:
+                fail("deploy.yml's deploy job needs one step before migrate and the services (id `record`) that records the serving revisions: "
+                     "`gcloud run services describe` into $RUNNER_TEMP/previous")
+            elif not (re.search(r"\bfor\s+\w+\s+in\s+scoring\s+notify\s+ingest\s+api\s*;", rr) and "--format=json" in rr and
+                      "traffic" in rr and "percent" in rr and "revisionName" in rr):
+                fail(f"deploy.yml's deploy job, {rl}: it reads status.traffic (--format=json) of scoring, notify, ingest and api, "
+                     "one entry with percent 100 and its revisionName")
+            # The serving api revision: described (a failure ends the run, nothing migrated), parsed with python3 -I, and its two facts
+            # written to the step's outputs.
+            rd = REVISION_DESCRIBE.search(rr)
+            after = rr[rd.start():] if rd else ""
+            if not (rd and PREVIOUS_FILE.search(rr[:rd.start()]) and re.search(r"--format=json\b", after) and re.search(r"\bpython3\s+-I\b", after) and
+                    "SMOKE_OIDC_SA_ID" in after and "ryft-meal-patch" in after and re.search(r"== \"d285\"", after) and
+                    re.search(r"cannot describe the serving api revision", after) and
+                    re.search(r'echo\s+"d286=\$d286"\s*>>\s*"\$GITHUB_OUTPUT"', after) and
+                    re.search(r'echo\s+"d285=\$d285"\s*>>\s*"\$GITHUB_OUTPUT"', after)):
+                fail(f"deploy.yml's deploy job, {rl}: after recording the revisions it reads the serving api revision "
+                     "(`gcloud run revisions describe --format=json`, a failure ends the run with ::error; parsed with python3 -I) and writes "
+                     "the step outputs d286 (SMOKE_OIDC_SA_ID in a container's env) and d285 (label ryft-meal-patch == d285) to $GITHUB_OUTPUT")
+            # The D285 floor: an api without the label, and a tree that writes the meal portion labels, stop the run before migrate; a
+            # git grep that fails (exit 2 and up, not 0 or 1) counts as a writer.
+            if not (FLOOR_GREP in rr and re.search(r'\[\s*"\$d285"\s*=\s*no\s*\]', rr) and
+                    re.search(r'\[\s*"\$rc"\s*!=\s*1\s*\]', rr) and "D285 requires a D285 api serving first" in rr and
+                    re.search(r"\bexit\s+1\b", rr[rr.find("D285 requires"):])):
+                fail(f"deploy.yml's deploy job, {rl}: the D285 floor: while the serving api lacks the label ryft-meal-patch=d285, `{FLOOR_GREP}` "
+                     "finding a file (or failing: exit other than 1) ends the run with an ::error ('D285 requires a D285 api serving first') before migrate")
+            # The selection by mode: migrate_only is a notice; d286 no on anything but a dispatch ends the run before migrate.
+            if not (re.search(r'\[\s*"\$MIGRATE_ONLY"\s*=\s*true\s*\]', rr) and
+                    re.search(r'\[\s*"\$d286"\s*=\s*no\s*\]\s*&&\s*\[\s*"\$EVENT"\s*!=\s*workflow_dispatch\s*\]', rr) and
+                    "the D286 bootstrap is pending: dispatch with migrate_only, bind the smoke account (scripts/sql/bind_smoke_account.sql), then dispatch" in rr and
+                    re.search(r"\bexit\s+1\b", rr[rr.find("bootstrap is pending"):])):
+                fail(f"deploy.yml's deploy job, {rl}: with migrate_only it goes on (a notice), and on a push with d286 no it ends the run before migrate "
+                     "with the ::error 'the D286 bootstrap is pending: dispatch with migrate_only, bind the smoke account (scripts/sql/bind_smoke_account.sql), then dispatch'")
+            # The bootstrap step only runs the helper: which smoke authentication runs is decided above, by the serving api.
             br = runs[boot_steps[0]]
-            helper = SMOKE_BOOTSTRAP.search(br)
-            guard = br[:helper.start()]
-            if not (re.search(r"\bgcloud\s+run\s+revisions\s+describe\b", guard) and re.search(r"--format=json\b", guard) and
-                    re.search(r"\bpython3\s+-I\b", guard) and "SMOKE_OIDC_SA_ID" in guard and re.search(r"\bexit\s+1\b", guard) and
-                    re.search(r"already has the D286 smoke sign-in", guard)):
-                fail(f"deploy.yml's deploy job, {step_label(boot_steps[0], steps[boot_steps[0]])}: before `smoke_prod.sh --auth-bootstrap` it reads the serving api revision "
-                     "(`gcloud run revisions describe --format=json`, parsed with python3 -I) and fails with an ::error when its env has SMOKE_OIDC_SA_ID "
-                     "(a D286 api answers 401 for an unbound account too: the bootstrap is over)")
-            if not prev_steps or prev_steps[0] > boot_steps[0]:
-                fail("deploy.yml's bootstrap reads the api revision from $RUNNER_TEMP/previous, so the step that records it comes before the bootstrap")
+            if re.search(r"\bgcloud\b", br) or re.search(r"\bpython3\b", br) or "SMOKE_OIDC_SA_ID" in br:
+                fail(f"deploy.yml's deploy job, {step_label(boot_steps[0], steps[boot_steps[0]])}: the bootstrap step only runs "
+                     "`smoke_prod.sh --auth-bootstrap`; the serving api revision is read in the record step, whose d286 output picks the step")
             if steps[pre_steps[0]].get("if") != PREFLIGHT_IF:
-                fail(f"deploy.yml's smoke auth preflight: its `if` must be exactly `{PREFLIGHT_IF}` (a push, or a dispatch with auth_preflight on), is {steps[pre_steps[0]].get('if')!r}")
+                fail(f"deploy.yml's smoke auth preflight: its `if` must be exactly `{PREFLIGHT_IF}` (the serving api has the D286 sign-in; not with migrate_only), is {steps[pre_steps[0]].get('if')!r}")
             if steps[boot_steps[0]].get("if") != BOOTSTRAP_IF:
-                fail(f"deploy.yml's smoke auth bootstrap: its `if` must be exactly `{BOOTSTRAP_IF}` (only a dispatch with auth_preflight off), is {steps[boot_steps[0]].get('if')!r}")
+                fail(f"deploy.yml's smoke auth bootstrap: its `if` must be exactly `{BOOTSTRAP_IF}` (the serving api lacks the D286 sign-in; a dispatch, not migrate_only), is {steps[boot_steps[0]].get('if')!r}")
+            if steps[migrate_steps[0]].get("if") != MIGRATE_IF:
+                fail(f"deploy.yml's migrate step: its `if` must be exactly `{MIGRATE_IF}` (it runs in every mode, migrate_only too), is {steps[migrate_steps[0]].get('if')!r}")
             sm = steps[smoke_steps[0]]
             if sm.get("if") != SMOKE_IF:
-                fail(f"deploy.yml's post-rollout smoke: its `if` must be exactly `{SMOKE_IF}` (no input skips it, D286), is {sm.get('if')!r}")
+                fail(f"deploy.yml's rollout step (the services and the smoke): its `if` must be exactly `{SMOKE_IF}` (migrate_only skips it; no other input does, D286), is {sm.get('if')!r}")
             sr = runs[smoke_steps[0]]
+            sl = step_label(smoke_steps[0], sm)
             # The session file of the preflight is not the smoke's: it mints afresh (no SMOKE_AUTH_FILE set for it).
             if re.search(r"SMOKE_AUTH_FILE\s*=", sr) or not re.search(r"unset\s+SMOKE_AUTH_FILE\b", sr):
-                fail(f"deploy.yml's deploy job, {step_label(smoke_steps[0], sm)}: it unsets SMOKE_AUTH_FILE and never sets it: the post-rollout smoke mints a fresh token, not the preflight's session")
-            # The rollback lives inside the smoke step (no status function may run a later step after its failure).
+                fail(f"deploy.yml's deploy job, {sl}: it unsets SMOKE_AUTH_FILE and never sets it: the post-rollout smoke mints a fresh token, not the preflight's session")
+            # The rollback lives inside the rollout step (no status function may run a later step after its failure), as ONE
+            # handler, an EXIT trap: it sends every touched service back to its recorded revision, api, ingest, notify, scoring.
+            rep = re.search(r"\bgcloud\s+run\s+services\s+replace\b", sr)
+            trap = re.search(r"^\s*trap\s+[A-Za-z_]\w*\s+EXIT\s*$", sr, re.M)  # a handler's name; `trap - EXIT` inside it resets
+            touch = re.search(r"\btouched\+=\(", sr)
+            mk = re.search(r"^\s*make\s+smoke-prod\s*$", sr, re.M)
             if not (UPDATE_TRAFFIC.search(sr) and "--to-revisions" in sr and PREVIOUS_FILE.search(sr) and
-                    re.search(r"\bfor\s+\w+\s+in\s+api\s+ingest\s+notify\s+scoring\s*;", sr) and
-                    re.search(r"^\s*rollback\s+api\s+ingest\s+notify\s+scoring\s*\n\s*exit\s+1\b", sr, re.M)):
-                fail(f"deploy.yml's deploy job, {step_label(smoke_steps[0], sm)}: the smoke step rolls back itself when `make smoke-prod` fails: "
-                     "`gcloud run services update-traffic <svc> --to-revisions=<previous>=100` from $RUNNER_TEMP/previous for api, ingest, notify, "
-                     "scoring in that order, then `exit 1`")
+                    re.search(r"\bfor\s+\w+\s+in\s+api\s+ingest\s+notify\s+scoring\s*;", sr) and trap and
+                    re.search(r'\brollback\s+"\$\{touched\[@\]\}"', sr) and re.search(r'\bexit\s+"\$rc"', sr)):
+                fail(f"deploy.yml's deploy job, {sl}: the rollout step rolls back itself through one EXIT trap: it sends every service on the `touched` list back "
+                     "(`gcloud run services update-traffic <svc> --to-revisions=<previous>=100` from $RUNNER_TEMP/previous, api, ingest, notify, "
+                     "scoring in that order) and keeps the exit status (`rollback \"${touched[@]}\"`, `exit \"$rc\"`)")
+            # Each service is on the list BEFORE its replace is issued, and the trap is set before the first one.
+            if not (rep and touch and trap and trap.start() < touch.start() < rep.start() and
+                    re.search(r"\bfor\s+\w+\s+in\s+scoring\s+notify\s+ingest\s+api\s*;", sr)):
+                fail(f"deploy.yml's deploy job, {sl}: `touched+=(\"$s\")` comes before `gcloud run services replace` in the loop (scoring, notify, ingest, api), "
+                     "and the trap is set before the loop: a failure at any point after the first replace was issued rolls back")
+            # No comparison of the live traffic with the recorded revision (a rollback to it is safe either way), no early success,
+            # and the lookups for the summary are best effort.
+            if "status.traffic" in sr or re.search(r"\bcur=", sr) or re.search(r"\bexit\s+0\b", sr):
+                fail(f"deploy.yml's deploy job, {sl}: no `cur=` comparison of the live traffic (a rollback to the recorded revision is safe whether or not "
+                     "the traffic moved) and no `exit 0`: the smoke is always the last command")
+            if not re.search(r"latestReadyRevisionName[^\n]*\|\|\s*rev=\"?unknown", sr):
+                fail(f"deploy.yml's deploy job, {sl}: the summary's lookup of the new revision is best effort (`|| rev=\"unknown\"`): a failed lookup after a good replace must not end the step")
+            # The smoke is a plain command after the loop (a failure ends the step through -e and the trap); no `if` around it.
+            if not (mk and rep and mk.start() > rep.start() and "touched" in sr[:mk.start()] and
+                    not re.search(r"\b(?:if|while|until)\s+!?\s*make\s+smoke-prod\b|make\s+smoke-prod\s*(?:\|\||&&)", sr)):
+                fail(f"deploy.yml's deploy job, {sl}: `make smoke-prod` is a plain command line after the services (no `if`, `||` or `&&` around it): "
+                     "when it fails the trap rolls all four back")
             for n, r in enumerate(runs):
                 if n != smoke_steps[0] and UPDATE_TRAFFIC.search(r):
-                    fail(f"deploy.yml's deploy job, {step_label(n, steps[n])}: `gcloud run services update-traffic` belongs in the post-rollout smoke step only (the rollback)")
-            # A failed replace is rolled back inside the same step: after `services replace` and before the smoke, a
-            # call of the rollback and an `exit 1` (the services already replaced go back, then the run fails).
-            rep = re.search(r"\bgcloud\s+run\s+services\s+replace\b", sr)
-            ex = re.search(r"\bexit\s+1\b", sr[rep.end():]) if rep else None
-            mk = SMOKE_RUN.search(sr)
-            if not (rep and ex and mk and rep.end() + ex.start() < mk.start() and
-                    re.search(r"^\s*rollback\b", sr[rep.end():rep.end() + ex.start()], re.M) and
-                    re.search(r"\bfor\s+\w+\s+in\s+scoring\s+notify\s+ingest\s+api\s*;", sr)):
-                fail(f"deploy.yml's deploy job, {step_label(smoke_steps[0], sm)}: a failed `services replace` (loop: scoring, notify, ingest, api) is rolled back in the same "
-                     "step: the services already replaced (and the failed one if its traffic moved) go back to $RUNNER_TEMP/previous with `rollback ...`, then `exit 1`, before `make smoke-prod`")
-            # The serving revisions are recorded before anything rolls: before migrate, and so before the services.
-            if len(prev_steps) != 1 or not prev_steps[0] < min(rollout_steps):
-                fail("deploy.yml's deploy job needs one step before migrate and the services that records the serving revisions: "
-                     "`gcloud run services describe` into $RUNNER_TEMP/previous")
-            else:
-                pr = runs[prev_steps[0]]
-                if not (re.search(r"\bfor\s+\w+\s+in\s+scoring\s+notify\s+ingest\s+api\s*;", pr) and "--format=json" in pr and
-                        "traffic" in pr and "percent" in pr and "revisionName" in pr):
-                    fail(f"deploy.yml's deploy job, {step_label(prev_steps[0], steps[prev_steps[0]])}: it reads status.traffic (--format=json) of scoring, notify, ingest and api, "
-                         "one entry with percent 100 and its revisionName")
+                    fail(f"deploy.yml's deploy job, {step_label(n, steps[n])}: `gcloud run services update-traffic` belongs in the rollout step only (the one rollback handler)")
         # D286: the smoke's identity is a Google ID token of ryft-smoke, minted with the job's own sign-in. Neither smoke
-        # step takes a secret (an expression `secrets.`, or the retired email, password, token and anon-key names).
-        for n in auth_steps + smoke_steps:
+        # step takes a secret (an expression `secrets.`, or the retired email, password, token and anon-key names), nor does
+        # the step that records the serving revisions.
+        for n in auth_steps + smoke_steps + record_steps:
             # The script itself is searched as text, not through json.dumps: a "\n" escape before a name hides its \b.
             m = SMOKE_SECRET.search(runs[n]) or SMOKE_SECRET.search(json.dumps({k: v for k, v in steps[n].items() if k != "run"}))
             if m:

@@ -6,6 +6,10 @@ Remote default: a Google ID token of the smoke service account, minted with the 
 A Google smoke token is minted and sent only to the canonical production origins (https://api.ryftlab.de and
 https://ingest.ryftlab.de, after normalisation). Any other target needs SMOKE_TOKEN that is not a Google token.
 Modes: prepare <api> <ingest> <file>, run <api> <ingest> <file>, bootstrap <api> <ingest>, mint <file>.
+
+prepare (the preflight before the migration) also requires the smoke account's consent to be for the
+PRIVACY_POLICY_VERSION in deploy/run/config.env, the version the commit being deployed asks for. The smoke token
+writes no consent (D286): scripts/sql/consent_smoke_account.sql records it.
 """
 
 import base64
@@ -382,6 +386,27 @@ def me_status(api, token):
         SLEEP(wait)
 
 
+def policy_version():
+    """The privacy policy version the commit being deployed asks for (PRIVACY_POLICY_VERSION: the environment's
+    value, else deploy/run/config.env's)."""
+    value = setting("PRIVACY_POLICY_VERSION")
+    if re.fullmatch(r"[0-9A-Za-z._-]{1,32}", value) is None:
+        raise InvalidSmokeAuth("PRIVACY_POLICY_VERSION has an invalid format")
+    return value
+
+
+def require_consent(me):
+    """The smoke token writes no consent (D286): the operator records it for the bound account with
+    scripts/sql/consent_smoke_account.sql. Fail before the rollout when it is missing or for another version."""
+    policy = policy_version()
+    consent = me.get("consent")
+    if not isinstance(consent, dict) or consent.get("policy_version") != policy:
+        raise InvalidSmokeAuth(
+            f"the smoke account has no consent for {policy}: record it with scripts/sql/consent_smoke_account.sql"
+            " (docs/OPERATIONS.md)"
+        )
+
+
 def verify(mode, api_arg, ingest_arg, output):
     api, api_local, ingest, ingest_local, canonical = targets(api_arg, ingest_arg)
     supplied = os.environ.get("SMOKE_TOKEN")
@@ -422,6 +447,8 @@ def verify(mode, api_arg, ingest_arg, output):
     subject = canonical_user(me.get("id"), "GET /v1/me did not return an account UUID (HTTP 200)")
     if expected is not None and subject != expected:
         raise InvalidSmokeAuth("GET /v1/me did not identify the expected smoke account (HTTP 200)")
+    if mode == "prepare":
+        require_consent(me)
 
     record = {"api": api, "ingest": ingest, "token": token, "subject": subject}
     if mode == "run":
@@ -474,7 +501,7 @@ def bootstrap(api_arg, ingest_arg):
     status = me_status(api, token)
     if status == 200:
         raise InvalidSmokeAuth(
-            "the running api accepts the smoke token: the bootstrap is over, run the deploy with auth_preflight on"
+            "the running api accepts the smoke token: the bootstrap is over (the deploy runs the preflight)"
         )
     if status != 401:
         raise InvalidSmokeAuth(f"GET /v1/me returned HTTP {status}, the bootstrap expects 401 from a revision before D286")

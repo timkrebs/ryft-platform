@@ -122,6 +122,9 @@ for f in scoring notify migrate; do
   # The smoke identity likewise (D286): only the two services that verify the smoke's token carry it.
   if grep -q 'SMOKE_' "$out/$f.yaml"; then fail "$f.yaml has a SMOKE_ variable: only api and ingest map the smoke token"; fi
 done
+# D285: api's revision template label survives the render untouched (deploy.yml reads it from the serving revision).
+has api.yaml 'ryft-meal-patch: d285'
+if grep -q 'ryft-meal-patch' "$out/ingest.yaml" "$out/scoring.yaml" "$out/notify.yaml" "$out/migrate.yaml"; then fail "only api's template carries the meal label (D285)"; fi
 # Garmin's cap and the callback base in api only; the fake provider's env in no template (compose only).
 has api.yaml "name: CONNECT_GARMIN_USER_CAP, value: \"$gcap\" }"
 has api.yaml 'name: CONNECT_CALLBACK_BASE, value: "https://api.ryftlab.de" }'

@@ -16,6 +16,9 @@ renderer deploy.yml uses), parses the result with yq (mikefarah v4) and asserts,
     probe both on /health/live, the startup probe within 30 s (an instance must start while the
     database is down, so its tick logs result error; /health/ready is the uptime checks' target);
     all traffic to the latest revision;
+  - api's revision template labels are exactly ryft-meal-patch: d285 (D285: deploy.yml's record step reads the
+    label from the serving api revision, and refuses a commit that writes the meal portion labels while an api
+    without it serves); no other service has template labels;
   - api's and ingest's ingress against the gate edge in infra/gcp/gates.auto.tfvars (D242): all, or
     internal-and-cloud-load-balancing only while edge is live or locked (before that api. and ingest.
     reach Cloud Run through the domain mappings, which that ingress refuses), and locked only with
@@ -154,6 +157,8 @@ ACCESSORS = {**{f"db-password-{s}": {s, "migrate"} for s in SERVICES}, "db-passw
 P5 = ("ALLOW_INSECURE_APIKEY_AUTH", "API_KEY", "USER_ID", "ALLOW_INSECURE_PUSH", "PORT")
 P5_RE = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(P5) + r")(?![A-Za-z0-9_])")
 VERSION = re.compile(r"[1-9][0-9]*")
+# D285: api's revisions carry this label; deploy.yml's record step reads it from the serving revision.
+MEAL_PATCH_LABELS = {"ryft-meal-patch": "d285"}
 SVC_ANN = {"autoscaling.knative.dev/minScale", "autoscaling.knative.dev/maxScale",
            "run.googleapis.com/cpu-throttling", "run.googleapis.com/startup-cpu-boost"}
 PROBE_KEYS = {"httpGet", "initialDelaySeconds", "periodSeconds", "timeoutSeconds", "failureThreshold"}
@@ -565,7 +570,14 @@ def check_service(name, doc, cfg, digest, edge):
     t = spec["template"]
     if not keys_exactly(f"{w} template", t, ("metadata", "spec")):
         return {}
-    if keys_exactly(f"{w} template.metadata", t["metadata"], ("annotations",)) and \
+    # D285: api's revision template carries the label deploy.yml reads from the serving revision (the floor of the
+    # meal portion labels); no other service has template labels.
+    tm_keys = ("annotations", "labels") if name == "api" else ("annotations",)
+    if name == "api" and isinstance(t.get("metadata"), dict) and "labels" in t["metadata"] and \
+            t["metadata"]["labels"] != MEAL_PATCH_LABELS:
+        fail(w, f"template.metadata.labels must be exactly {MEAL_PATCH_LABELS!r} (D285: deploy.yml's floor reads it from the "
+                f"serving api revision), is {t['metadata'].get('labels')!r}")
+    if keys_exactly(f"{w} template.metadata", t["metadata"], tm_keys) and \
             keys_exactly(f"{w} template annotations", t["metadata"]["annotations"], SVC_ANN):
         ann = t["metadata"]["annotations"]
         want = {"autoscaling.knative.dev/minScale": "0", "autoscaling.knative.dev/maxScale": e["max_scale"],

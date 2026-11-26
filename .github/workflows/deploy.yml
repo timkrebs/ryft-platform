@@ -4,16 +4,22 @@
 # image. A manual dispatch can include the Nutrition ETL image in the same scan. After the scan it
 # signs in to Google Cloud and pushes those same images to
 # Artifact Registry, tagged with the short SHA. It renders deploy/run with their digests, checks that
-# main is still at this commit, verifies smoke authentication (a Google ID token for the service account
-# ryft-smoke, minted by ryft-deployer with its own sign-in: no secret, no repository variable; D286), runs
-# the migrate job and stops when it fails (nothing rolls, as with the old PreSync), records the revision
-# serving each service, then replaces the services in the order scoring, notify, ingest, api, and runs
-# `make smoke-prod` with a freshly minted token. When that smoke fails, the same step sends the traffic of
-# api, ingest, notify and scoring back to the recorded revisions and fails the run. A manual run
-# (workflow_dispatch, main only: the WIF condition admits nothing else) does the same; its `auth_preflight`
-# input (default true) is off only for the D286 bootstrap: the preflight is then `--auth-bootstrap`, which
-# passes only while the running api still predates D286 (it must answer 401 to the smoke token), and the
-# rollout and the post-rollout smoke run as always (OPERATIONS.md → GCP).
+# main is still at this commit, records the revision serving each service and the facts of the serving api
+# revision (step `record`: does it carry the D286 smoke sign-in, and the label ryft-meal-patch=d285), verifies
+# smoke authentication (a Google ID token for the service account ryft-smoke, minted by ryft-deployer with its
+# own sign-in: no secret, no repository variable; D286), runs the migrate job and stops when it fails (nothing
+# rolls, as with the old PreSync), then replaces the services in the order scoring, notify, ingest, api, and
+# runs `make smoke-prod` with a freshly minted token. When a replace or that smoke fails (or anything else
+# in that step does), the same step sends the traffic of every service it touched back to the recorded
+# revisions, api, ingest, notify, scoring, and fails the run. A manual run (workflow_dispatch, main only: the
+# WIF condition admits nothing else) does the same, with one input, `migrate_only` (default false): the
+# migrations only, no service rolls and no smoke runs. The smoke authentication follows the SERVING api
+# revision, not an input: with the D286 sign-in the preflight (`--auth-preflight`) runs; without it a push
+# stops before migrate (nothing changes: the D286 bootstrap is pending), and a dispatch without migrate_only
+# runs the bootstrap (`--auth-bootstrap`: the old api must answer 401 to the smoke token). The D285 floor
+# applies in every mode: an api revision without the label ryft-meal-patch=d285 (deploy/run/api.yaml) must
+# not serve while this commit's backend writes the meal portion labels, because the rollback target would
+# erase them (OPERATIONS.md → GCP).
 #
 # The site, next to the services: `site-build` builds web/ (npm ci, the export, the SUPPORT_EMAIL
 # checks) in a job without a token and hands web/out and web/firebase.json on as an artifact; `site`
@@ -34,8 +40,8 @@
 # Off until the repository variable GCP_DEPLOY is `on`: every job has that `if`, so off, this
 # workflow does nothing. DEPLOY_HOLD_SERVICES (a repository variable, the reason) holds the services:
 # nothing is built or deployed and the run ends green with a notice (D175's hold, now a variable).
-# Rollback: a failed post-rollout smoke rolls back by itself, from the revisions recorded before the
-# rollout (the step summary lists them). By hand: `gcloud run services update-traffic <svc>
+# Rollback: a failed rollout or post-rollout smoke rolls back by itself, from the revisions recorded before
+# the rollout (the step summary lists them). By hand: `gcloud run services update-traffic <svc>
 # --to-revisions=<previous>=100` (the next deploy sends all traffic to its own revision again); a revert
 # of the merge redeploys the old code. The
 # site: Firebase console -> Hosting -> Release history -> Roll back, or SITE_DEPLOY off and a revert.
@@ -51,10 +57,10 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      auth_preflight:
-        description: "Verify smoke authentication against the running revision before migrate. Off only for the D286 bootstrap: it then passes only while the running api predates D286."
+      migrate_only:
+        description: Apply the migrations only, no service rolls, no smoke
         type: boolean
-        default: true
+        default: false
       publish_nutrition_etl:
         description: Also publish a scanned Nutrition ETL image for the Terraform-managed job
         type: boolean
@@ -332,12 +338,28 @@ jobs:
           else
             echo "current=true" >> "$GITHUB_OUTPUT"
           fi
-      # The revision serving 100% of each service's traffic, before anything rolls: the rollback target of
-      # a failed rollout or smoke, and the api revision the bootstrap inspects. Exactly one entry at 100%
-      # with a revision name of the service, else the run stops here (a split or a tag-only state is not
-      # something to roll back to blindly).
+      # The revision serving 100% of each service's traffic, before anything changes: the rollback target of
+      # a failed rollout or smoke. Exactly one entry at 100% with a revision name of the service, else the
+      # run stops here (a split or a tag-only state is not something to roll back to blindly). Read only.
+      # Then the serving api revision itself (`gcloud run revisions describe`, parsed with python3 -I), two
+      # facts, both step outputs: `d286` (yes when a container's env has SMOKE_OIDC_SA_ID: the api verifies
+      # the smoke account's Google ID token, D286) and `d285` (yes when the revision carries the label
+      # ryft-meal-patch=d285, set by deploy/run/api.yaml: a meal PATCH that copies stored item rows, D285).
+      # A revision that cannot be described stops the run with nothing migrated. Then:
+      #  - The D285 floor, in every mode: an api without the label erases the meal portion labels on a
+      #    PATCH (it deletes and reinserts the items), so while it serves, and is the rollback target, this
+      #    commit may not write those labels. `git grep` finds the files of backend/ (tests and the two
+      #    migrations that add the columns aside) that name them; a git grep that fails counts as a writer
+      #    (fail closed). The run stops before migrate.
+      #  - migrate_only: a notice, and the steps after this one skip the smoke authentication and the rollout.
+      #  - d286=no on a push: the bootstrap is pending, the run stops before migrate (nothing changes).
+      #    A dispatch runs the bootstrap (d286=no) or the preflight (d286=yes) in the steps below.
       - name: Record the revisions serving traffic
+        id: record
         if: steps.tip.outputs.current == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+          MIGRATE_ONLY: ${{ inputs.migrate_only && 'true' || 'false' }}
         run: |
           : > "$RUNNER_TEMP/previous"
           for s in scoring notify ingest api; do
@@ -356,95 +378,129 @@ jobs:
             echo "$s $rev" >> "$RUNNER_TEMP/previous"
           done
           { echo "### Serving before the rollout"; echo '```'; cat "$RUNNER_TEMP/previous"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          api_rev=$(sed -n 's/^api //p' "$RUNNER_TEMP/previous" | head -n 1)
+          rjson=$(gcloud run revisions describe "$api_rev" --region="$REGION" --project="$PROJECT" --format=json) ||
+            { echo "::error title=deploy::cannot describe the serving api revision $api_rev: nothing is migrated or rolled"; exit 1; }
+          facts=$(printf '%s' "$rjson" | python3 -I -c '
+          import json, sys
+          rev = json.load(sys.stdin)
+          containers = rev.get("spec", {}).get("containers") or []
+          d286 = any(e.get("name") == "SMOKE_OIDC_SA_ID" for c in containers for e in (c.get("env") or []))
+          d285 = (rev.get("metadata", {}).get("labels") or {}).get("ryft-meal-patch") == "d285"
+          print("d286=" + ("yes" if d286 else "no"))
+          print("d285=" + ("yes" if d285 else "no"))
+          ') || { echo "::error title=deploy::the serving api revision $api_rev cannot be read: nothing is migrated or rolled"; exit 1; }
+          d286=$(printf '%s\n' "$facts" | sed -n 's/^d286=//p')
+          d285=$(printf '%s\n' "$facts" | sed -n 's/^d285=//p')
+          [[ $d286 =~ ^(yes|no)$ && $d285 =~ ^(yes|no)$ ]] ||
+            { echo "::error title=deploy::the serving api revision $api_rev gave no d286/d285 facts: nothing is migrated or rolled"; exit 1; }
+          echo "d286=$d286" >> "$GITHUB_OUTPUT"
+          echo "d285=$d285" >> "$GITHUB_OUTPUT"
+          printf 'The serving api %s: D286 smoke sign-in %s, label ryft-meal-patch=d285 %s.\n' "$api_rev" "$d286" "$d285" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$d285" = no ]; then
+            rc=0
+            writers=$(git grep -l -e portion_label_snapshot -e portion_short_label_snapshot -- backend ':!*_test.go' ':!backend/internal/db/migrations/0053_*' ':!backend/internal/db/migrations/0054_*') || rc=$?
+            first=${writers%%$'\n'*}
+            if [ "$rc" = 0 ]; then
+              echo "::error title=deploy::the serving api $api_rev has no label ryft-meal-patch=d285 (it predates D285) and this commit writes the meal portion labels ($first): the rollback target would erase them on a meal PATCH. D285 requires a D285 api serving first: deploy a commit that does not write them, then this one. Nothing was changed."
+              exit 1
+            elif [ "$rc" != 1 ]; then
+              echo "::error title=deploy::the serving api $api_rev has no label ryft-meal-patch=d285 (it predates D285) and whether this commit writes the meal portion labels cannot be told (git grep exit $rc), so it counts as a writer: the rollback target would erase them on a meal PATCH. D285 requires a D285 api serving first. Nothing was changed."
+              exit 1
+            fi
+          fi
+          if [ "$MIGRATE_ONLY" = true ]; then
+            echo "::notice title=deploy migrate_only::migrate_only: only the migrations are applied; no smoke authentication, no service rolls, no smoke"
+            printf '### migrate_only\nOnly the migrations are applied: no smoke authentication, no service rolls, no smoke.\n' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$d286" = no ] && [ "$EVENT" != workflow_dispatch ]; then
+            echo "::error title=deploy::the D286 bootstrap is pending: dispatch with migrate_only, bind the smoke account (scripts/sql/bind_smoke_account.sql), then dispatch. The serving api $api_rev predates D286. Nothing was changed."
+            exit 1
+          fi
       # Smoke authentication (D286): a Google ID token for ryft-smoke, which api and ingest map to the smoke
       # account only. The helper mints it with the gcloud sign-in of this job (ryft-deployer holds
       # roles/iam.serviceAccountOpenIdTokenCreator on ryft-smoke), reads SMOKE_USER_ID and SMOKE_SA_ID from
       # deploy/run/config.env and checks the token's claims and GET /v1/me before the rollout. No secret, no
       # variable and no env here: the step reads nothing from the repository's secrets, and
-      # scripts/check_workflows.sh refuses a secrets.SMOKE_* or SUPABASE_ANON_KEY in it. The first deploy of
-      # this change cannot pass it against the old revisions: dispatch with `auth_preflight` off once, which runs
-      # the bootstrap below instead (OPERATIONS.md). The preflight leaves a session file, removed on exit.
+      # scripts/check_workflows.sh refuses a secrets.SMOKE_* or SUPABASE_ANON_KEY in it. It runs when the
+      # SERVING api has the D286 sign-in (steps.record.outputs.d286), unless migrate_only. The preflight
+      # leaves a session file, removed on exit.
       - name: Verify production smoke authentication
-        if: steps.tip.outputs.current == 'true' && (github.event_name != 'workflow_dispatch' || inputs.auth_preflight)
+        if: steps.tip.outputs.current == 'true' && steps.record.outputs.d286 == 'yes' && !inputs.migrate_only
         run: |
           trap 'rm -f "$RUNNER_TEMP/ryft-smoke-auth.json"' EXIT
           SMOKE_AUTH_FILE="$RUNNER_TEMP/ryft-smoke-auth.json" ./scripts/smoke_prod.sh --auth-preflight
-      # The D286 bootstrap (a dispatch with auth_preflight off): mint a token and require the running api to
-      # answer 401, which means it predates D286. A 200 is refused ("bootstrap is over"). But a D286 api
-      # answers 401 too, for an unbound account, so the serving api revision's env is read first: one with
-      # SMOKE_OIDC_SA_ID is a D286 api and the bootstrap is refused. No session file.
+      # The D286 bootstrap: the serving api predates D286 (steps.record.outputs.d286 is no, and the record
+      # step has already refused a push, so this is a dispatch without migrate_only). It mints a token and
+      # requires the running api to answer 401, which means it predates D286; a 200 is refused ("bootstrap is
+      # over"). A D286 api answers 401 for an unbound account too, which is why the record step reads the
+      # revision's env, not this one. No session file.
       - name: Bootstrap smoke authentication (the running api predates D286)
-        if: steps.tip.outputs.current == 'true' && github.event_name == 'workflow_dispatch' && !inputs.auth_preflight
+        if: steps.tip.outputs.current == 'true' && steps.record.outputs.d286 == 'no' && github.event_name == 'workflow_dispatch' && !inputs.migrate_only
         run: |
-          rev=$(sed -n 's/^api //p' "$RUNNER_TEMP/previous" | head -n 1)
-          [[ $rev =~ ^api-[0-9]{5}-[a-z0-9]{3}$ ]] || { echo "::error title=deploy::no serving api revision recorded"; exit 1; }
-          rjson=$(gcloud run revisions describe "$rev" --region="$REGION" --project="$PROJECT" --format=json) ||
-            { echo "::error title=deploy::cannot describe the api revision $rev"; exit 1; }
-          if printf '%s' "$rjson" | python3 -I -c '
-          import json, sys
-          containers = json.load(sys.stdin).get("spec", {}).get("containers") or []
-          sys.exit(0 if any(e.get("name") == "SMOKE_OIDC_SA_ID" for c in containers for e in (c.get("env") or [])) else 1)
-          '; then
-            echo "::error title=deploy::the running api already has the D286 smoke sign-in: the bootstrap is over; dispatch with auth_preflight on (an unbound account: scripts/sql/bind_smoke_account.sql)"
-            exit 1
-          fi
           ./scripts/smoke_prod.sh --auth-bootstrap
-      # Migrations first; a failed run stops the workflow here and no service rolls. The job does not
-      # retry (maxRetries 0, deploy/run/migrate.yaml).
+      # Migrations first, in every mode (migrate_only too); a failed run stops the workflow here and no
+      # service rolls. The job does not retry (maxRetries 0, deploy/run/migrate.yaml).
       - name: migrate (replace the job, execute it, wait)
         if: steps.tip.outputs.current == 'true'
         run: |
           gcloud run jobs replace "$RUNNER_TEMP/run/migrate.yaml" --region="$REGION" --project="$PROJECT" --quiet
           gcloud run jobs execute migrate --region="$REGION" --project="$PROJECT" --wait --quiet
       # The rollout and its smoke in one step, because nothing after a failed step runs (no status function
-      # and no continue-on-error in this file): so this script rolls back itself. The consumers before the
-      # producers: scoring and notify answer the pushes of the new code first. `services replace` waits
-      # until the new revision is ready and serving. When the replace of a service fails, the services
-      # already replaced go back to the revisions recorded before the rollout, and so does the failed one
-      # when its traffic moved. Then `make smoke-prod` always runs (no input skips it) with a token minted
-      # afresh (the preflight's session file is not used); when it fails, all four go back. The order of a
-      # rollback is api, ingest, notify, scoring. A rollback that itself fails does not stop the others:
-      # it is named in an ::error and the run still fails.
+      # and no continue-on-error in this file): so this script rolls back itself, with ONE handler, an EXIT
+      # trap. Each service goes on the `touched` list BEFORE its `services replace` is issued, so whatever
+      # fails from then on (a replace, the smoke, anything unexpected) the handler sends every touched
+      # service back to the revision recorded before the rollout, in the order api, ingest, notify, scoring,
+      # and the step fails. A rollback to the recorded revision is safe whether or not that service's
+      # traffic moved. The consumers before the producers: scoring and notify answer the pushes of the new
+      # code first. `services replace` waits until the new revision is ready and serving. A lookup for the
+      # summary is best effort. Then `make smoke-prod` runs (a rollout is always smoked; migrate_only skips
+      # the whole step) with a token minted afresh (the preflight's session file is not used). A rollback
+      # that itself fails does not stop the others: it is named in an ::error and the run still fails.
       - name: The services, then make smoke-prod, and roll back when either fails
-        if: steps.tip.outputs.current == 'true'
+        if: steps.tip.outputs.current == 'true' && !inputs.migrate_only
         run: |
+          touched=()
+          reason="unexpected error"
+          summary() { printf '%s\n' "$*" >> "$GITHUB_STEP_SUMMARY" || true; }
           rollback() {
             local want=" $* " s prev failed=
-            echo "### Rolled back" >> "$GITHUB_STEP_SUMMARY"
+            summary "### Rolled back"
             for s in api ingest notify scoring; do
               [[ $want == *" $s "* ]] || continue
               prev=$(sed -n "s/^$s //p" "$RUNNER_TEMP/previous" | head -n 1)
               if [[ $prev =~ ^$s-[0-9]{5}-[a-z0-9]{3}$ ]] &&
                  gcloud run services update-traffic "$s" --to-revisions="$prev=100" --region="$REGION" --project="$PROJECT" --quiet; then
-                echo "- rolled back to $prev ($s)" >> "$GITHUB_STEP_SUMMARY"
+                summary "- rolled back to $prev ($s)"
               else
                 echo "::error title=deploy rollback::the rollback of $s to '${prev:-none recorded}' failed: send its traffic back by hand (OPERATIONS.md → GCP, Deploy, roll back, rotate)"
-                echo "- $s: the rollback to '${prev:-none recorded}' FAILED" >> "$GITHUB_STEP_SUMMARY"
+                summary "- $s: the rollback to '${prev:-none recorded}' FAILED"
                 failed="$failed $s"
               fi
             done
             [ -z "$failed" ] || echo "::error title=deploy rollback::not rolled back:$failed"
           }
-          replaced=()
-          for s in scoring notify ingest api; do
-            if ! gcloud run services replace "$RUNNER_TEMP/run/$s.yaml" --region="$REGION" --project="$PROJECT" --quiet; then
-              echo "::error title=deploy::the replace of $s failed: the services already replaced go back to the revisions recorded before the rollout"
-              prev=$(sed -n "s/^$s //p" "$RUNNER_TEMP/previous" | head -n 1)
-              cur=$(gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format='value(status.traffic.revisionName)') || cur=unknown
-              [ "$cur" = "$prev" ] || replaced+=("$s")
-              rollback "${replaced[@]}"
-              exit 1
+          on_exit() {
+            local rc=$?
+            trap - EXIT
+            if [ "$rc" -ne 0 ] && [ "${#touched[@]}" -gt 0 ]; then
+              echo "::error title=deploy::$reason (exit $rc): ${touched[*]} go back to the revisions recorded before the rollout"
+              rollback "${touched[@]}"
             fi
-            rev=$(gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format='value(status.latestReadyRevisionName)')
-            echo "- $s: $rev" >> "$GITHUB_STEP_SUMMARY"
-            replaced+=("$s")
+            exit "$rc"
+          }
+          trap on_exit EXIT
+          for s in scoring notify ingest api; do
+            touched+=("$s")
+            reason="the replace of $s failed"
+            gcloud run services replace "$RUNNER_TEMP/run/$s.yaml" --region="$REGION" --project="$PROJECT" --quiet
+            reason="unexpected error after the replace of $s"
+            rev=$(gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format='value(status.latestReadyRevisionName)') || rev="unknown"
+            summary "- $s: $rev"
           done
           rm -f "$RUNNER_TEMP/ryft-smoke-auth.json"
           unset SMOKE_AUTH_FILE
-          if make smoke-prod; then exit 0; fi
-          echo "::error title=deploy::make smoke-prod failed after the rollout: the traffic goes back to the revisions recorded before it"
-          rollback api ingest notify scoring
-          exit 1
+          reason="make smoke-prod failed after the rollout"
+          make smoke-prod
       # On success and when superseded. After a failure nothing runs (no status function in this file),
       # and the runner empties $RUNNER_TEMP, where the credentials are, at the end of the job.
       - name: Sign out
