@@ -12,8 +12,8 @@
   color: var(--text-secondary);
 }
 
-.tone-accent {
-  color: var(--accent);
+.tone-tertiary {
+  color: var(--text-tertiary);
 }
 
 .tone-warning {
@@ -24,16 +24,52 @@
   color: var(--alert);
 }
 
+/* Card.swift: surface, radius 22, 16 inside, no stroke and no shadow. */
 .card {
   background: var(--surface);
-  border-radius: var(--card-radius);
+  border-radius: var(--neutral-tile-radius);
   padding: var(--card-padding);
 }
 
+/* NeutralTile.swift: 80 high, 14 / 16 / 12 inside, the label above a Light 24 value. */
 .tile {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 4px;
+  min-height: 80px;
+  padding: 14px var(--card-padding) 12px;
+  border-radius: var(--neutral-tile-radius);
   background: var(--surface);
-  border-radius: var(--tile-radius);
-  padding: 14px;
+}
+
+.tileLabel {
+  margin: 0;
+  font-size: var(--type-label);
+  color: var(--text-secondary);
+}
+
+.tileValueLine {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  margin: 0;
+}
+
+.tileValue {
+  font-size: 1.5rem;
+  font-weight: var(--type-metric-weight);
+  line-height: 1.1;
+}
+
+.tileUnit,
+.tileNote {
+  font-size: var(--type-caption);
+  color: var(--text-tertiary);
+}
+
+.tileNote {
+  margin-left: auto;
 }
 
 .container {
@@ -47,11 +83,11 @@
   max-width: 46rem;
 }
 
+/* Sections are spaced, not ruled: the app has hairlines only inside lists and above the tab bar. */
 .section {
   display: grid;
   gap: calc(var(--section-spacing) * 1.25);
-  padding-block: calc(var(--section-spacing) * 3);
-  border-top: var(--hairline) solid var(--separator);
+  padding-block: calc(var(--section-spacing) * 2.5);
 }
 
 .sectionHeader {
@@ -70,47 +106,71 @@
   margin-top: 0.75em;
 }
 
+/* PillButton.swift: at least 52 high, round ends, the title in Medium 16. */
 .button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 48px;
-  padding: 12px 24px;
+  gap: var(--item-spacing);
+  min-height: var(--pill-height);
   border-radius: 999px;
-  font-size: var(--type-body);
-  font-weight: var(--type-headline-weight);
-  line-height: 1.2;
+  font-size: var(--type-button);
+  font-weight: var(--type-button-weight);
+  line-height: 1.25;
   text-decoration: none;
   transition:
     background-color var(--motion-quick) ease-out,
-    color var(--motion-quick) ease-out;
+    opacity var(--motion-quick) ease-out;
 }
 
+/* Primary: an ink fill, the title in the background's ink, a 40 px background circle with the glyph
+   trailing (20 leading, 6 trailing: the circle's inset). */
 .button-primary {
-  background: var(--accent);
-  color: var(--on-accent);
+  justify-content: space-between;
+  padding: 6px 6px 6px 20px;
+  background: var(--text-primary);
+  color: var(--background);
 }
 
 .button-primary:hover {
-  background: color-mix(in srgb, var(--accent) 88%, var(--text-primary));
+  opacity: 0.85;
 }
 
+.circle {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: var(--circle-button);
+  height: var(--circle-button);
+  border-radius: 50%;
+  background: var(--background);
+  color: var(--text-primary);
+}
+
+/* Secondary: a 1 px outline in ink at 20 %, the title centred in ink. */
 .button-secondary {
-  background: var(--surface-raised);
+  padding: 12px 22px;
+  border: var(--hairline) solid var(--ink-outline);
   color: var(--text-primary);
 }
 
 .button-secondary:hover {
-  background: color-mix(in srgb, var(--surface-raised) 85%, var(--text-primary));
+  background: var(--ink-pressed);
 }
 
+/* The text link: ink, underlined, 44 high (RyftLinkLabel). */
 .button-quiet {
+  min-height: var(--min-hit-target);
   padding-inline: 4px;
+  border-radius: 4px;
   color: var(--text-primary);
   text-decoration: underline;
-  text-decoration-color: var(--text-tertiary);
+  text-decoration-color: var(--ink-underline);
   text-underline-offset: 0.25em;
+}
+
+.button-quiet:hover {
+  text-decoration-color: currentColor;
 }
 
 .todo {
@@ -127,5 +187,97 @@
   margin: 0;
   font-size: var(--type-caption);
   color: var(--text-tertiary);
-  letter-spacing: 0.02em;
+}
+
+/* The grouped list (GroupedList.swift). */
+.group {
+  display: grid;
+  gap: 8px;
+}
+
+.groupTitle {
+  margin: 0;
+  font-size: var(--type-label);
+  color: var(--text-tertiary);
+}
+
+.groupCard {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+  border-radius: var(--neutral-tile-radius);
+  background: var(--surface);
+}
+
+.groupFooter {
+  font-size: var(--type-caption);
+  color: var(--text-tertiary);
+}
+
+/* A row: at least 46 high, 16 at the sides, the hairline above it inset 16 (the card clips the first). */
+.row,
+.rowLi {
+  position: relative;
+  min-height: var(--list-row-height);
+}
+
+.row {
+  padding: 10px var(--card-padding);
+}
+
+.groupCard > li + li::before,
+.groupCard > div + div::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: var(--card-padding);
+  right: var(--card-padding);
+  height: var(--hairline);
+  background: var(--separator);
+}
+
+.rowLink {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--item-spacing);
+  min-height: var(--list-row-height);
+  padding: 10px var(--card-padding);
+  font-size: var(--type-callout);
+  text-decoration: none;
+}
+
+.rowLink:hover,
+.rowLink[aria-current='page'] {
+  background: var(--ink-pressed);
+}
+
+.rowText {
+  display: grid;
+  gap: 2px;
+}
+
+.rowDetail {
+  font-size: var(--type-caption);
+  color: var(--text-tertiary);
+}
+
+/* The chevron and the arrow out are decoration: ink at 35 %, about 3:1. */
+.accessory {
+  display: inline-flex;
+  flex: none;
+  color: var(--ink-accessory);
+}
+
+/* IconDisc.swift: 36, no fill, a 1 px ring in ink at 16 %, a thin ink glyph. */
+.disc {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: var(--hairline) solid var(--ink-ring);
+  color: var(--text-primary);
 }

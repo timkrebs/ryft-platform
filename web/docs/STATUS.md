@@ -1,5 +1,27 @@
 # Status — ryftapp.de (web/)
 
+## 2026-11-26 — The site in Nocturne (branch `web/nocturne`, draft PR "web: the site in Nocturne")
+
+D26: every page takes the app's Nocturne components (`docs/NOCTURNE.md`, derived from the app: there was
+no web spec), and the pin moves `7358f0c` → `ea52758` in this PR. Merging publishes the site (`deploy.yml`'s
+`site` job, once `SITE_DEPLOY` is `on`); no service rolls and nothing migrates.
+
+- **Done.** Tokens regenerated (16 colour sets, the new metrics and glow tokens; `make web-tokens` twice, no
+  diff). New components: dot numeral, ruler, day dots, glow tile, orbit gauge v3, sparkline, insight card,
+  grouped list, icon disc, the pill button. Header, footer, prose, the home page (Today drawn natively),
+  Science, Beta, the legal pages, Licences, Open, the 404 and the styleguide follow. The AASA and the app-link
+  fallback cover `/journal/*` (the pin's `AppRoute`).
+- **Ran locally** (app at the pin): `make web-test` (typecheck, ESLint, Prettier, brand, Vitest), `make web-build`,
+  `make web-e2e` (Playwright with axe on every page under both settings, check-hosting, links, Lighthouse:
+  all assertions passed). 54 review images, personal details masked, under
+  `docs/work/2026-11-26-web-nocturne-legal/shots/`.
+- **Refused in the session, so left to the user or CI:** `npm run og` (the OG PNG is the one D22 made) and
+  `npm run screenshots`; the commands that carry `RYFT_APP_DIR=…` were refused too, so the session ran the
+  `make` targets with the variable exported from an uncommitted line in the Makefile.
+- **Open.** The OG card needs `npm run og` with the app at the pin. The app's header still draws the orbit mark
+  next to the wordmark and its icon is M1; the site's tab icon stays the orbit mark (D23). `/privacy`, `/terms`
+  and the Impressum still carry the operator's name, address and phone (PR B replaces them); the images mask them.
+
 ## 2026-11-19 — The nginx image is gone (branch `remove/eks-era`, platform PR D3)
 
 D25 (platform D246): `Dockerfile`, `.dockerignore`, `nginx/`, `scripts/container.mjs`, `scripts/csp.mjs`, `scripts/precompress.mjs` and `docs/handoff/` are removed, with `npm run image`, `serve` and `serve:stop`. The CSPs are written into `firebase.json` only; the built file is byte-identical to the one before (SHA-256 `e3c66711…`). The policy check reads `deploy/run/config.env` and `docker-compose.yml`. Where older entries below name the image, `nginx/csp*.conf` or `csp.mjs`, they record the site as it was. Locally: `make web-test` (22 files, 301 tests passed, 5 skipped) and `make web-build` passed, with the app at the pinned commit (`RYFT_APP_DIR`); `make web-e2e` did not run (CI's `web-e2e` is the test bed; the pages and `firebase.json` are unchanged).

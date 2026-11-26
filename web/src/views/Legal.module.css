@@ -4,11 +4,12 @@
   padding-block: calc(var(--section-spacing) * 2) var(--section-spacing);
 }
 
+/* The draft notice is a notice card (InlineMessage): surface, radius 22, amber for "fix this". */
 .draft {
   display: grid;
   gap: 6px;
-  padding: 14px 16px;
-  border-radius: var(--tile-radius);
+  padding: 14px var(--card-padding);
+  border-radius: var(--neutral-tile-radius);
   border: var(--hairline) solid color-mix(in srgb, var(--warning) 55%, transparent);
   background: color-mix(in srgb, var(--warning) 12%, var(--background));
   font-size: var(--type-callout);
@@ -31,25 +32,17 @@
 .meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 18px;
+  gap: 4px 24px;
   margin: 0;
   font-size: var(--type-callout);
   color: var(--text-secondary);
 }
 
-.meta a {
-  color: var(--accent);
-}
-
 .archived {
-  padding: 10px 14px;
-  border-radius: var(--tile-radius);
+  padding: 10px var(--card-padding);
+  border-radius: var(--neutral-tile-radius);
   background: var(--surface);
   font-size: var(--type-callout);
-}
-
-.archived a {
-  color: var(--accent);
 }
 
 .extra {
@@ -57,7 +50,6 @@
   gap: 16px;
   margin-top: var(--section-spacing);
   padding-top: var(--section-spacing);
-  border-top: var(--hairline) solid var(--separator);
 }
 
 .extra h2 {
@@ -67,16 +59,14 @@
 .stepsGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-  gap: 12px;
+  gap: var(--item-spacing);
 }
 
 .stepBlock {
   display: grid;
   gap: 10px;
   align-content: start;
-  padding: var(--card-padding);
-  border-radius: var(--card-radius);
-  background: var(--surface);
+  padding: 20px;
 }
 
 .stepBlock ol {
@@ -88,16 +78,10 @@
   margin-top: 6px;
 }
 
-.shot {
-  margin: 0;
-  max-width: 34rem;
-  overflow: hidden;
-  border-radius: var(--card-radius);
-  box-shadow: 0 0 0 var(--hairline) var(--separator);
-}
-
-.meta > span + span::before {
-  content: '·';
-  margin-right: 18px;
-  color: var(--text-tertiary);
+/* The version, the date in force and the earlier versions are three facts, not one sentence: they wrap
+   as lines, with no separator that could start one. */
+@media (max-width: 40rem) {
+  .meta {
+    flex-direction: column;
+  }
 }

@@ -26,9 +26,8 @@ test('the site stays dark under a light system setting, with no switch and nothi
   await expect(themeColor).toHaveAttribute('content', BACKGROUND_HEX);
   await expect(page.locator('[data-theme-switch], [data-theme-option]')).toHaveCount(0);
   await expect(page.locator('script')).toHaveCount(0);
-  const img = page.locator('#scores picture img').first();
-  await img.scrollIntoViewIfNeeded();
-  await expect.poll(() => img.evaluate((i: HTMLImageElement) => i.currentSrc)).toContain('-dark-');
+  // The home page draws the app's screens itself (web D26): no capture to pick a dark variant of.
+  await expect(page.locator('picture')).toHaveCount(0);
   expect(await page.evaluate(() => localStorage.length)).toBe(0);
   expect(await context.cookies()).toEqual([]);
 });

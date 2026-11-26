@@ -1,8 +1,9 @@
 // The frame around every page: skip link, header and footer. No theme switch: the site is
-// dark-only, like the app (web D20).
+// dark-only, like the app (web D20). The header is the app's: the lock-up leading, the dot tab bar
+// as the navigation; the footer is the app's grouped list (web/docs/NOCTURNE.md).
 import type { ReactNode } from 'react';
 import { Logo, Lockup } from './Brand';
-import { Container } from './ui';
+import { Container, Group, GroupLink } from './ui';
 import { format, localePath, messages, type Locale } from '@/lib/i18n';
 import { BUILD_YEAR } from '@/lib/site';
 import styles from './chrome.module.css';
@@ -39,21 +40,27 @@ function Header({ locale, path }: Omit<ShellProps, 'children'>) {
         <a href={home} className={styles.home} aria-label={t.a11y.home}>
           <Logo />
         </a>
+        {/* The app's tab bar as a nav: a dot above each label, the current page's dot is Volt. */}
         <nav aria-label={t.a11y.mainNav} className={styles.nav}>
           <ul>
             <li>
-              <a href={home === '/' ? '/#how' : `${home}#how`}>{t.nav.how}</a>
+              <a href={home === '/' ? '/#how' : `${home}#how`}>
+                <span className={styles.dot} aria-hidden="true" />
+                {t.nav.how}
+              </a>
             </li>
             <li>
               <a
                 href={localePath(locale, '/science')}
                 aria-current={path === '/science' ? 'page' : undefined}
               >
+                <span className={styles.dot} aria-hidden="true" />
                 {t.nav.science}
               </a>
             </li>
             <li>
               <a href={localePath(locale, '/beta')} aria-current={path === '/beta' ? 'page' : undefined}>
+                <span className={styles.dot} aria-hidden="true" />
                 {t.nav.beta}
               </a>
             </li>
@@ -81,16 +88,15 @@ function Footer({ locale, path }: Omit<ShellProps, 'children'>) {
           <Lockup tagline={t.site.tagline} />
           <p className={styles.wellness}>{t.footer.wellness}</p>
         </div>
+        {/* Profile's grouped list: a surface card of rows, a hairline between them, a chevron each. */}
         <nav aria-label={t.a11y.footerNav} className={styles.footerNav}>
-          <ul>
+          <Group>
             {items.map(([href, label]) => (
-              <li key={href}>
-                <a href={href} aria-current={href === link(path) ? 'page' : undefined}>
-                  {label}
-                </a>
-              </li>
+              <GroupLink key={href} href={href} current={href === link(path)}>
+                {label}
+              </GroupLink>
             ))}
-          </ul>
+          </Group>
         </nav>
         <div className={styles.footerMeta}>
           <p>{format(t.footer.copyright, { year: BUILD_YEAR })}</p>

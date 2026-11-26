@@ -21,23 +21,34 @@
   display: grid;
   gap: 12px;
   padding-top: var(--section-spacing);
-  border-top: var(--hairline) solid var(--separator);
 }
 
 .group h2 {
   font-size: var(--type-title);
 }
 
+/* The grouped list: a surface card, rows with a hairline between them inset by 16. */
 .list {
   margin: 0;
   padding: 0;
   list-style: none;
-  border-radius: var(--card-radius);
+  overflow: hidden;
+  border-radius: var(--neutral-tile-radius);
   background: var(--surface);
 }
 
-.list li + li {
-  border-top: var(--hairline) solid var(--separator);
+.list li {
+  position: relative;
+}
+
+.list li + li::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: var(--card-padding);
+  right: var(--card-padding);
+  height: var(--hairline);
+  background: var(--separator);
 }
 
 .item summary {
@@ -45,7 +56,7 @@
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: baseline;
   gap: 4px 16px;
-  min-height: 48px;
+  min-height: var(--list-row-height);
   padding: 12px var(--card-padding);
   cursor: pointer;
   list-style: none;
@@ -74,7 +85,6 @@
 }
 
 .body a {
-  color: var(--accent);
   overflow-wrap: anywhere;
 }
 
@@ -83,7 +93,7 @@
   max-height: 22rem;
   overflow: auto;
   padding: 12px;
-  border-radius: 10px;
+  border-radius: 14px;
   background: var(--background);
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   font-size: var(--type-caption);

@@ -1,7 +1,7 @@
 import { PageShell } from '@/components/chrome';
 import { Mark } from '@/components/Mark';
 import { Prose, mdxComponents } from '@/components/prose';
-import { Container, Label } from '@/components/ui';
+import { Container, Group, GroupLink, Label } from '@/components/ui';
 import { loadMdx } from '@/lib/content';
 import { format, intlLocale, messages, type Locale } from '@/lib/i18n';
 import { pageMetadata } from '@/lib/metadata';
@@ -36,7 +36,7 @@ export async function SciencePage({ locale }: { locale: Locale }) {
     <PageShell locale={locale} path="/science">
       <Container className={styles.layout}>
         <header className={styles.header}>
-          <Label tone="accent">{t.science.label}</Label>
+          <Label>{t.science.label}</Label>
           <h1>{data.title}</h1>
           <p className={styles.meta}>
             <Mark size={16} />
@@ -44,16 +44,16 @@ export async function SciencePage({ locale }: { locale: Locale }) {
           </p>
         </header>
         <nav aria-labelledby="toc-title" className={styles.toc}>
-          <Label as="h2" id="toc-title">
+          <Label as="h2" id="toc-title" tone="tertiary">
             {t.science.onThisPage}
           </Label>
-          <ol>
+          <Group as="ol">
             {SECTIONS.map((id) => (
-              <li key={id}>
-                <a href={`#${id}`}>{t.science.toc[id]}</a>
-              </li>
+              <GroupLink key={id} href={`#${id}`}>
+                {t.science.toc[id]}
+              </GroupLink>
             ))}
-          </ol>
+          </Group>
         </nav>
         <article className={styles.article}>
           <Prose>

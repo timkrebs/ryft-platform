@@ -2,7 +2,7 @@
 
 .hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
   align-items: center;
   gap: calc(var(--section-spacing) * 2);
   padding-block: calc(var(--section-spacing) * 2.5) calc(var(--section-spacing) * 3);
@@ -31,10 +31,15 @@
 .actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: var(--item-spacing);
   margin-top: 8px;
 }
 
+.actions > a {
+  min-width: 11rem;
+}
+
+/* Neutral dots, like the day dots: the legend's colours belong to the metrics. */
 .heroFacts {
   display: flex;
   flex-wrap: wrap;
@@ -57,90 +62,114 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--text-primary);
 }
 
+/* Today, as the app draws it: padding 20, items 12 apart. */
 .today {
   margin: 0;
   display: grid;
-  gap: 12px;
+  gap: var(--item-spacing);
   justify-items: center;
 }
 
 .todayFrame {
-  max-width: 340px;
+  max-width: 360px;
 }
 
 .todayScreen {
   display: grid;
-  gap: 14px;
-  padding: 28px 16px 18px;
-  text-align: center;
+  gap: var(--item-spacing);
+  padding: 28px var(--screen-padding) var(--screen-padding);
+}
+
+.todayHead {
+  display: grid;
+  gap: 2px;
 }
 
 .greeting {
   font-size: var(--type-title);
   font-weight: var(--type-title-weight);
-  line-height: 1.1;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
 }
 
 .state {
-  margin-top: -8px;
   font-size: var(--type-callout);
   color: var(--text-secondary);
 }
 
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
+.band {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 14px;
   margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.tiles li {
-  display: grid;
-  justify-items: center;
-  gap: 4px;
-  padding: 12px 6px;
-  border-radius: var(--tile-radius);
-  background: var(--surface);
-}
-
-.tileLabel {
-  font-size: var(--type-axis);
-  font-weight: var(--type-label-weight);
-  text-transform: var(--label-transform);
-  letter-spacing: var(--tracking-label);
+  font-size: var(--type-callout);
   color: var(--text-secondary);
 }
 
-/* A number under 20 px is Regular, not Light: the app's lightFloor (ADR 0016 §3). */
+/* The readiness delta: recovery's colour with a triangle (shape, not hue alone). */
+.delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--recovery);
+}
+
+.delta path {
+  fill: currentColor;
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--item-spacing);
+}
+
+.tileHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
 .tileValue {
-  font-size: var(--type-headline);
-  font-weight: var(--type-body-weight);
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin: 20px 0 0;
   white-space: nowrap;
 }
 
-.trendCard {
-  padding: 12px 12px 6px;
-  border-radius: var(--tile-radius);
-  background: var(--surface);
-  text-align: left;
+.number {
+  font-size: var(--type-number-large);
+  font-weight: var(--type-number-large-weight);
+  line-height: 1.1;
 }
 
-.trendHeader {
+.unit {
+  font-size: var(--type-caption);
+  color: var(--glow-label);
+}
+
+.tileBand {
+  margin-left: auto;
+  font-size: var(--type-caption);
+  color: var(--text-primary);
+}
+
+.strainRow {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 4px;
-  font-size: var(--type-caption);
-  font-weight: var(--type-label-weight);
+  align-items: baseline;
+  gap: 12px;
 }
 
-.trendHeader span:last-child {
-  color: var(--text-secondary);
-  font-weight: var(--type-caption-weight);
+.strainRow .tileValue {
+  margin: 0;
 }
 
 /* How it works ---------------------------------------------------------------------- */
@@ -148,11 +177,10 @@
 .steps {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--section-spacing);
+  gap: var(--item-spacing);
   margin: 0;
   padding: 0;
   list-style: none;
-  counter-reset: step;
 }
 
 @media (max-width: 52rem) {
@@ -161,39 +189,20 @@
   }
 }
 
-.step {
+.steps li {
   display: grid;
-  grid-template-columns: auto 1fr;
-  align-content: start;
-  gap: 10px 14px;
-  padding-top: 20px;
-  border-top: var(--hairline) solid var(--accent);
 }
 
-.step h3,
-.step p {
-  grid-column: 1 / -1;
+.step {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 20px;
 }
 
 .step p {
   color: var(--text-secondary);
-}
-
-.stepIcon {
-  display: inline-grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: var(--surface);
-  color: var(--accent);
-}
-
-.stepNumber {
-  align-self: center;
-  justify-self: end;
-  font-size: var(--type-caption);
-  color: var(--text-tertiary);
+  font-size: var(--type-callout);
 }
 
 /* Scores ----------------------------------------------------------------------------- */
@@ -201,7 +210,7 @@
 .scores {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: var(--item-spacing);
 }
 
 @media (max-width: 52rem) {
@@ -214,8 +223,8 @@
   display: grid;
   align-content: start;
   gap: 18px;
-  padding: var(--card-padding) calc(var(--card-padding) + 4px) calc(var(--card-padding) + 2px);
-  border-radius: var(--card-radius);
+  padding: 20px;
+  border-radius: var(--neutral-tile-radius);
   background: var(--surface);
 }
 
@@ -230,12 +239,13 @@
 
 .scoreHeader h3 {
   font-size: var(--type-title);
+  font-weight: var(--type-title-weight);
 }
 
+/* A number is Light ink; no metric colour unless the value is that metric. */
 .range {
   font-size: var(--type-title);
   font-weight: var(--type-metric-weight);
-  color: var(--accent);
   white-space: nowrap;
 }
 
@@ -278,8 +288,9 @@
   fill: var(--surface-raised);
 }
 
+/* The weights are recovery's inputs, and readiness is recovery's band: recovery's colour. */
 .barFill {
-  fill: var(--accent);
+  fill: var(--recovery);
 }
 
 .note {
@@ -301,14 +312,14 @@
   font-size: var(--type-callout);
 }
 
-.band dt {
+.bands dt {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   white-space: nowrap;
 }
 
-.band dd {
+.bands dd {
   margin: 0;
   color: var(--text-secondary);
 }
@@ -321,7 +332,7 @@
 }
 
 .dot-good {
-  background: var(--accent);
+  background: var(--recovery);
 }
 
 .dot-mid {
@@ -332,62 +343,45 @@
   background: var(--alert);
 }
 
-.dot-ramp1 {
+.dot-sleep1 {
+  background: var(--metric-sleep);
+}
+
+.dot-sleep2 {
+  background: color-mix(in srgb, var(--metric-sleep) 65%, transparent);
+}
+
+.dot-sleep3 {
+  background: color-mix(in srgb, var(--metric-sleep) 35%, transparent);
+}
+
+.dot-strain1 {
   background: color-mix(in srgb, var(--metric-strain) 35%, transparent);
 }
 
-.dot-ramp2 {
+.dot-strain2 {
   background: color-mix(in srgb, var(--metric-strain) 60%, transparent);
 }
 
-.dot-ramp3 {
+.dot-strain3 {
   background: color-mix(in srgb, var(--metric-strain) 80%, transparent);
 }
 
-.dot-ramp4 {
+.dot-strain4 {
   background: var(--metric-strain);
 }
 
 .more a {
-  color: var(--accent);
   font-weight: var(--type-headline-weight);
-  text-decoration: none;
-}
-
-.more a:hover {
-  text-decoration: underline;
-}
-
-.phones {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 300px)) minmax(0, 1fr);
-  align-items: end;
-  gap: var(--section-spacing);
-  margin-top: var(--section-spacing);
-}
-
-@media (max-width: 52rem) {
-  .phones {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .disclaimer {
-    grid-column: 1 / -1;
-  }
-}
-
-.phone {
-  margin: 0;
 }
 
 .disclaimer {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  align-self: end;
-  max-width: 24rem;
-  padding: 14px 16px;
-  border-radius: var(--tile-radius);
+  max-width: 46rem;
+  padding: 14px var(--card-padding);
+  border-radius: var(--neutral-tile-radius);
   border: var(--hairline) solid var(--separator);
   font-size: var(--type-callout);
   color: var(--text-secondary);
@@ -396,7 +390,7 @@
 .disclaimer svg {
   flex: none;
   margin-top: 2px;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
 }
 
 /* Train, Journal, Insights ---------------------------------------------------------- */
@@ -428,28 +422,140 @@
 }
 
 .panel {
+  display: grid;
+  align-content: start;
+  gap: var(--item-spacing);
   margin: 0 0 8px;
-  overflow: hidden;
-  border-radius: var(--card-radius);
-  background: var(--background);
-  box-shadow: 0 0 0 var(--hairline) var(--separator);
 }
 
-.journal {
+.caption {
+  margin: 0;
+  font-size: var(--type-caption);
+  color: var(--text-tertiary);
+}
+
+.rest {
   display: grid;
-  align-content: center;
-  gap: 12px;
-  padding: 28px 22px 18px;
-  overflow: visible;
+  gap: 6px;
+}
+
+.restTime {
+  font-size: var(--type-number-large);
+  font-weight: var(--type-number-large-weight);
+  line-height: 1.1;
+}
+
+.restActions {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+.chip,
+.skip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding-inline: 18px;
+  border-radius: 999px;
+  font-size: var(--type-callout);
+}
+
+/* The sheet's compact pill: the one secondary control is an outline, the commit is the light pill. */
+.chip {
+  border: var(--hairline) solid var(--ink-outline);
+}
+
+.skip {
+  margin-left: auto;
+  background: var(--text-primary);
+  color: var(--background);
+  font-weight: var(--type-button-weight);
+}
+
+.sets {
+  display: grid;
+  gap: 10px;
+}
+
+.exerciseName {
+  font-size: var(--type-headline);
+  font-weight: var(--type-headline-weight);
+}
+
+.setTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--type-callout);
+}
+
+.setTable th {
+  padding: 8px 4px;
+  text-align: left;
+  font-size: var(--type-label);
+  font-weight: var(--type-label-weight);
+  color: var(--text-secondary);
+}
+
+.setTable td {
+  padding: 8px 4px;
+  border-top: var(--hairline) solid var(--separator);
+}
+
+.setTable tbody th {
+  border-top: var(--hairline) solid var(--separator);
+  font-size: var(--type-callout);
+  color: var(--text-secondary);
+}
+
+.setTable td:last-child {
+  text-align: right;
+}
+
+.setTable thead td {
+  border-top: 0;
+}
+
+/* A set that is done is the inverse fill with a check; the next one an outline (shape, not hue). */
+.checkDone,
+.checkOpen {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+}
+
+.checkDone {
+  background: var(--text-primary);
+  color: var(--background);
+}
+
+.checkOpen {
+  border: var(--hairline) solid var(--ink-outline);
+  color: var(--ink-accessory);
 }
 
 .journalCard {
   display: grid;
   gap: 6px;
-  padding: var(--card-padding);
-  border-radius: var(--card-radius);
-  background: var(--surface);
-  border-left: 3px solid var(--warning);
+}
+
+.journalWord {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--type-label);
+  color: var(--text-secondary);
+}
+
+.journalDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
 }
 
 .journalBehavior {
@@ -492,37 +598,29 @@
 /* Principles, privacy, FAQ, CTA ----------------------------------------------------- */
 
 .principles {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
-  gap: 0 var(--section-spacing);
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  max-width: 48rem;
 }
 
 .principles li {
   display: grid;
-  align-content: start;
-  gap: 8px;
-  padding-block: 20px;
-  border-top: var(--hairline) solid var(--separator);
+  gap: 4px;
+  padding-block: 14px;
+}
+
+.principles h3 {
+  font-size: var(--type-headline);
 }
 
 .principles p,
-.facts p {
+.fact p {
   color: var(--text-secondary);
   font-size: var(--type-callout);
-}
-
-.principleNumber {
-  font-size: var(--type-caption);
-  color: var(--accent);
 }
 
 .facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  gap: 12px;
+  gap: var(--item-spacing);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -530,30 +628,41 @@
 
 .facts li {
   display: grid;
+}
+
+.fact {
+  display: grid;
   align-content: start;
   gap: 8px;
-  padding: var(--card-padding);
-  border-radius: var(--card-radius);
-  background: var(--surface);
+  padding: 20px;
 }
 
 .faq {
   max-width: 48rem;
-  border-bottom: var(--hairline) solid var(--separator);
 }
 
 .question {
-  border-top: var(--hairline) solid var(--separator);
+  position: relative;
+}
+
+.question + .question::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: var(--card-padding);
+  right: var(--card-padding);
+  height: var(--hairline);
+  background: var(--separator);
 }
 
 .question summary {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 16px;
-  min-height: 56px;
-  padding-block: 14px;
-  font-size: var(--type-headline);
+  gap: var(--item-spacing);
+  min-height: var(--list-row-height);
+  padding: 12px var(--card-padding);
+  font-size: var(--type-callout);
   font-weight: var(--type-headline-weight);
   cursor: pointer;
   list-style: none;
@@ -569,8 +678,9 @@
   width: 24px;
   text-align: center;
   font-size: var(--type-metric);
-  font-weight: var(--type-body-weight);
-  color: var(--text-secondary);
+  font-weight: var(--type-metric-weight);
+  line-height: 1;
+  color: var(--ink-accessory);
   transition: transform var(--motion-quick) ease-out;
 }
 
@@ -580,7 +690,8 @@
 
 .question p {
   max-width: 42rem;
-  padding-bottom: 18px;
+  padding: 0 var(--card-padding) 16px;
+  font-size: var(--type-callout);
   color: var(--text-secondary);
 }
 
@@ -589,7 +700,6 @@
   justify-items: center;
   gap: 14px;
   padding: calc(var(--section-spacing) * 3) var(--card-padding);
-  border-top: var(--hairline) solid var(--separator);
   text-align: center;
 }
 
@@ -597,6 +707,6 @@
   color: var(--text-secondary);
 }
 
-.cta svg {
-  color: var(--accent);
+.cta > a {
+  min-width: 14rem;
 }
