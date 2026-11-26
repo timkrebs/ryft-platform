@@ -15,11 +15,16 @@ const (
 
 // FoodSummary is a catalog match. Nutrient profiles are fetched by ID.
 type FoodSummary struct {
-	ID      uuid.UUID `json:"id"`
-	Name    string    `json:"name"`
-	Brand   string    `json:"brand"`
-	Type    string    `json:"type"`
-	Quality string    `json:"quality"`
+	ID               uuid.UUID             `json:"id"`
+	Name             string                `json:"name"`
+	Brand            string                `json:"brand"`
+	Type             string                `json:"type"`
+	Quality          string                `json:"quality"`
+	Subtitle         string                `json:"subtitle,omitempty"`
+	DefaultPortion   *FoodPortionSelection `json:"default_portion,omitempty"`
+	LastUsedPortion  *FoodPortionSelection `json:"last_used_portion,omitempty"`
+	ReferencePortion *FoodPortionSelection `json:"reference_portion,omitempty"`
+	Favorited        *bool                 `json:"favorited,omitempty"`
 }
 
 // FoodName is a localized name or alias used by catalog search.
@@ -37,6 +42,7 @@ type FoodSource struct {
 	DatasetVersion  string     `json:"dataset_version"`
 	URL             string     `json:"source_url"`
 	License         string     `json:"license_identifier"`
+	Attribution     string     `json:"attribution,omitempty"`
 	SourceUpdatedAt *time.Time `json:"source_updated_at,omitempty"`
 }
 
@@ -54,8 +60,28 @@ type FoodPortionInput struct {
 // FoodPortion is a saved portion with a stable ID and provenance.
 type FoodPortion struct {
 	FoodPortionInput
-	ID       uuid.UUID `json:"id"`
-	SourceID uuid.UUID `json:"source_id"`
+	ID           uuid.UUID `json:"id"`
+	SourceID     uuid.UUID `json:"source_id"`
+	PortionKey   string    `json:"portion_key,omitempty"`
+	ShortLabelEN string    `json:"short_label_en,omitempty"`
+	ShortLabelDE string    `json:"short_label_de,omitempty"`
+	IsDefault    bool      `json:"is_default"`
+	SortOrder    int       `json:"sort_order"`
+}
+
+// FoodPortionSelection is a compatible quantity and its calculated nutrition preview.
+type FoodPortionSelection struct {
+	PortionID  *uuid.UUID `json:"portion_id,omitempty"`
+	Quantity   float64    `json:"quantity"`
+	Unit       string     `json:"unit"`
+	Label      string     `json:"label,omitempty"`
+	ShortLabel string     `json:"short_label,omitempty"`
+	GramWeight *float64   `json:"gram_weight,omitempty"`
+	VolumeML   *float64   `json:"volume_ml,omitempty"`
+	Kcal       *float64   `json:"kcal,omitempty"`
+	ProteinG   *float64   `json:"protein_g,omitempty"`
+	CarbsG     *float64   `json:"carbs_g,omitempty"`
+	FatG       *float64   `json:"fat_g,omitempty"`
 }
 
 // FoodNutrientInput is an amount on an explicit mass, volume or serving basis.
@@ -78,12 +104,13 @@ type FoodNutrient struct {
 // FoodDetail contains catalog names, values, portions and their sources.
 type FoodDetail struct {
 	FoodSummary
-	QualityProfile *NutritionQualityProfile `json:"quality_profile,omitempty"`
-	Density        *float64                 `json:"density_g_ml,omitempty"`
-	Names          []FoodName               `json:"names"`
-	Sources        []FoodSource             `json:"sources"`
-	Portions       []FoodPortion            `json:"portions"`
-	Nutrients      []FoodNutrient           `json:"nutrients"`
+	QualityProfile    *NutritionQualityProfile `json:"quality_profile,omitempty"`
+	Density           *float64                 `json:"density_g_ml,omitempty"`
+	Names             []FoodName               `json:"names"`
+	Sources           []FoodSource             `json:"sources"`
+	Portions          []FoodPortion            `json:"portions"`
+	Nutrients         []FoodNutrient           `json:"nutrients"`
+	LastUsedSelection *FoodPortionSelection    `json:"last_used_selection,omitempty"`
 }
 
 // FoodSearch bounds and localizes a lexical catalog query.
@@ -156,6 +183,7 @@ type NutritionMealItemInput struct {
 	Quantity float64    `json:"quantity,omitempty"`
 	Unit     string     `json:"unit,omitempty"`
 	Portion  *uuid.UUID `json:"portion_id,omitempty"`
+	Language string     `json:"language,omitempty"`
 }
 
 // NutritionMealInput creates a meal from reviewed food selections.
@@ -203,6 +231,8 @@ type NutritionMealItem struct {
 	Quantity           float64                       `json:"quantity"`
 	Unit               string                        `json:"unit"`
 	Portion            *uuid.UUID                    `json:"portion_id,omitempty"`
+	PortionLabel       *string                       `json:"portion_label,omitempty"`
+	PortionShortLabel  *string                       `json:"portion_short_label,omitempty"`
 	WeightG            *float64                      `json:"weight_g"`
 	VolumeML           *float64                      `json:"volume_ml"`
 	Nutrients          map[string]NutritionSnapValue `json:"nutrients"`
@@ -234,10 +264,20 @@ type NutritionMealPage struct {
 	NextOffset *int            `json:"next_offset"`
 }
 
+// NutritionFavorite is one favourited food in the export. FoodName is empty when
+// the food is no longer readable (for example a retired catalog entry).
+type NutritionFavorite struct {
+	FoodID      uuid.UUID `json:"food_id"`
+	FoodName    string    `json:"food_name"`
+	FavoritedAt time.Time `json:"favorited_at"`
+}
+
 // NutritionMealExportPage returns stored diary snapshots and a stable page cursor.
+// Favorites is present (possibly empty) on the first page only and omitted on later pages.
 type NutritionMealExportPage struct {
-	Meals     []NutritionMeal `json:"meals"`
-	NextAfter *uuid.UUID      `json:"next_after"`
+	Meals     []NutritionMeal     `json:"meals"`
+	NextAfter *uuid.UUID          `json:"next_after"`
+	Favorites []NutritionFavorite `json:"favorites,omitzero"` // nil (later pages) is omitted, [] is sent
 }
 
 // NutritionTotal reports a known subtotal and coverage among recorded items.

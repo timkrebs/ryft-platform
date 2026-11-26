@@ -8,6 +8,9 @@
       "format": "uuid",
       "type": "string"
     },
+    "is_default": {
+      "type": "boolean"
+    },
     "label": {
       "type": "string"
     },
@@ -18,8 +21,20 @@
       "nullable": true,
       "type": "object"
     },
+    "portion_key": {
+      "type": "string"
+    },
     "quantity": {
       "type": "number"
+    },
+    "short_label_de": {
+      "type": "string"
+    },
+    "short_label_en": {
+      "type": "string"
+    },
+    "sort_order": {
+      "type": "integer"
     },
     "source_id": {
       "format": "uuid",
@@ -40,8 +55,10 @@
   "required": [
     "estimated",
     "id",
+    "is_default",
     "label",
     "quantity",
+    "sort_order",
     "source_id",
     "unit"
   ],

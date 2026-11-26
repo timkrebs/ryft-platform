@@ -35,6 +35,14 @@
       "nullable": true,
       "type": "string"
     },
+    "portion_label": {
+      "nullable": true,
+      "type": "string"
+    },
+    "portion_short_label": {
+      "nullable": true,
+      "type": "string"
+    },
     "quality_profile": {
       "$ref": "NutritionQualityProfile",
       "nullable": true

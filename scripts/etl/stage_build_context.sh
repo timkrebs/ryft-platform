@@ -10,7 +10,7 @@ if [[ -n $(find "$destination" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
   exit 2
 fi
 files=(Dockerfile .dockerignore .gcloudignore requirements.txt run_etl.py download.py
-       extract.py transform.py categorizer.py import_pg.py merge_catalog.sql)
+       extract.py transform.py categorizer.py import_pg.py merge_catalog.sql staples.v1.json)
 for i in "${!files[@]}"; do files[i]="$directory/${files[i]}"; done
 cp "${files[@]}" "$destination"
 cp "$directory/../../backend/certs/supabase-ca.crt" "$destination/supabase-ca.crt"

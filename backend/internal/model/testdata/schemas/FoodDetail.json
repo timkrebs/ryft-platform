@@ -4,13 +4,29 @@
     "brand": {
       "type": "string"
     },
+    "default_portion": {
+      "$ref": "FoodPortionSelection",
+      "nullable": true
+    },
     "density_g_ml": {
       "nullable": true,
       "type": "number"
     },
+    "favorited": {
+      "nullable": true,
+      "type": "boolean"
+    },
     "id": {
       "format": "uuid",
       "type": "string"
+    },
+    "last_used_portion": {
+      "$ref": "FoodPortionSelection",
+      "nullable": true
+    },
+    "last_used_selection": {
+      "$ref": "FoodPortionSelection",
+      "nullable": true
     },
     "name": {
       "type": "string"
@@ -43,12 +59,19 @@
       "$ref": "NutritionQualityProfile",
       "nullable": true
     },
+    "reference_portion": {
+      "$ref": "FoodPortionSelection",
+      "nullable": true
+    },
     "sources": {
       "items": {
         "$ref": "FoodSource"
       },
       "nullable": true,
       "type": "array"
+    },
+    "subtitle": {
+      "type": "string"
     },
     "type": {
       "type": "string"

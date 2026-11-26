@@ -4,14 +4,33 @@
     "brand": {
       "type": "string"
     },
+    "default_portion": {
+      "$ref": "FoodPortionSelection",
+      "nullable": true
+    },
+    "favorited": {
+      "nullable": true,
+      "type": "boolean"
+    },
     "id": {
       "format": "uuid",
       "type": "string"
+    },
+    "last_used_portion": {
+      "$ref": "FoodPortionSelection",
+      "nullable": true
     },
     "name": {
       "type": "string"
     },
     "quality": {
+      "type": "string"
+    },
+    "reference_portion": {
+      "$ref": "FoodPortionSelection",
+      "nullable": true
+    },
+    "subtitle": {
       "type": "string"
     },
     "type": {

@@ -8,4 +8,5 @@
 !categorizer.py
 !import_pg.py
 !merge_catalog.sql
+!staples.v1.json
 !supabase-ca.crt

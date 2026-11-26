@@ -8,7 +8,7 @@ from pathlib import Path
 
 import duckdb
 
-from transform import OFF_MARKETS, USDA_NUTRIENTS
+from transform import OFF_MARKETS, STAPLES, USDA_NUTRIENTS
 
 OFF_REQUIRED = ("code", "countries_tags", "categories_tags", "product_name", "nutriments", "nutrition_data_per")
 OFF_OPTIONAL = ("lang", "brands", "no_nutrition_data", "product_quantity_unit", "serving_size", "last_modified_t")
@@ -85,8 +85,8 @@ def usda_rows(db: duckdb.DuckDBPyConnection, files: dict[str, Path],
         params.append(data_type)
     row_limit = ""
     if limit is not None:
-        row_limit = "LIMIT ?"
-        params.append(limit)
+        row_limit = "ORDER BY list_contains(?::VARCHAR[], fdc_id) DESC, fdc_id LIMIT ?"
+        params.extend([list(STAPLES["usda"]), limit])
     unit_join = ""
     unit_expr = "NULL"
     params.append(str(values))
@@ -104,6 +104,7 @@ def usda_rows(db: duckdb.DuckDBPyConnection, files: dict[str, Path],
             desc = "nullif(trim(p.portion_description),'')" if "portion_description" in columns else "NULL"
             amount = "nullif(trim(p.amount),'')" if "amount" in columns else "NULL"
             modifier = "nullif(trim(p.modifier),'')" if "modifier" in columns else "NULL"
+            source_id = "nullif(trim(p.id),'')" if "id" in columns else "NULL"
             seq = "try_cast(p.seq_num AS INTEGER)" if "seq_num" in columns else "NULL"
             label_join, label = "", "NULL"
             params.append(str(portion_file))
@@ -114,15 +115,15 @@ def usda_rows(db: duckdb.DuckDBPyConnection, files: dict[str, Path],
                     label = "nullif(trim(m.name),'')"
                     params.append(str(measure))
             portion_cte = f""", measured AS (
-                SELECT p.fdc_id, {desc} AS description, {amount} AS amount, {modifier} AS modifier,
+                SELECT p.fdc_id, {source_id} AS source_id, {desc} AS description, {amount} AS amount, {modifier} AS modifier,
                        {label} AS measure, try_cast(p.gram_weight AS DOUBLE) AS grams,
                        row_number() OVER (PARTITION BY p.fdc_id ORDER BY {seq} NULLS LAST,
-                           {desc}, {amount}, {modifier}, {label}, p.gram_weight) AS priority
+                           {desc}, {amount}, {modifier}, {label}, p.gram_weight, {source_id}) AS priority
                 FROM {CSV} p JOIN selected f USING(fdc_id) {label_join}
                 WHERE try_cast(p.gram_weight AS DOUBLE) > 0 AND try_cast(p.gram_weight AS DOUBLE) <= 100000
             ), measures AS (
-                SELECT fdc_id, list(struct_pack(description := description, amount := amount, modifier := modifier,
-                       measure := measure, grams := grams) ORDER BY priority) AS portions
+                SELECT fdc_id, list(struct_pack(source_id := source_id, description := description, amount := amount,
+                       modifier := modifier, measure := measure, grams := grams, priority := priority) ORDER BY priority) AS portions
                 FROM measured WHERE priority <= 50 GROUP BY fdc_id
             )"""
             portion_join = "LEFT JOIN measures pr USING(fdc_id)"

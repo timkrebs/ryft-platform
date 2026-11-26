@@ -1,0 +1,23 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "favorited_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "food_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "food_name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "favorited_at",
+    "food_id",
+    "food_name"
+  ],
+  "title": "NutritionFavorite",
+  "type": "object"
+}

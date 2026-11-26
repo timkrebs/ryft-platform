@@ -6880,3 +6880,14 @@ Correction (2026-11-26, after step 2). #250 named the smoke account `smoke@ryftl
 ## D283 — Use one bilingual catalog term for Nutrition suggestions (2026-11-25)
 
 After preserving exact dictionary matches, expand prefixes of at least four normalized characters when the shortest alternate is a prefix of every other alternate. This lets `Apfe` find English apple and apple juice entries without requiring German catalog labels. Competing alternates without a shared dictionary term fall back to primary search. The existing query ranks direct lexical matches ahead of the generic-only alternate and returns catalog labels and IDs.
+
+## D284 — Localize catalog selections and preserve logged portion labels (2026-11-25)
+
+Catalog metadata identifies supported staple forms and measured defaults. Prioritize whole foods on broad staple searches, preserve explicit variant intent, and rank eligible records with account-scoped favorites and 90 days of remaining diary history. Preview amounts through the meal calculator. Reuse a retired or changed portion by its stored compatible mass or volume. Snapshot item labels and only recover a linked legacy label when the existing unit and measurements still agree. Keep source IDs, BLS CC BY attribution and the old search functions through rollout.
+
+Amended 2026-11-26 after review, before release:
+- Only a staple group's name or a single word of at least four letters that starts a staple's name makes a query broad and promotes the group. An exact name match alone doesn't. An exact variant (`Milch 1,5 Prozent`) therefore ranks ahead of favourites and history. The group's other forms (apple juice) rank just below cultivars, ahead of brand and prefix matches.
+- A keyed source portion's ID includes its unit and measure. A refresh that changes the grams issues a new ID and retires the old row, so a stale selection fails with 422 instead of logging the new amount.
+- A food has at most one default portion (a partial unique index); the ETL clears its defaults before re-marking.
+- Favourites block an account merge and are exported on the first page of `GET /v1/me/nutrition-export`.
+- The schema change is split so that no file holds ACCESS EXCLUSIVE while it scans, backfills or builds an index: 0055 adds columns and `NOT VALID` checks, 0056 validates them, 0057 backfills labels, 0058 builds indexes, 0059 the ranking function. The migrator runs each file in one transaction, so indexes are built without `CONCURRENTLY`; the label columns come from D285.
