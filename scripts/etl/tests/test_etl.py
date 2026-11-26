@@ -20,7 +20,8 @@ from download import MissingUSDATables, Release, extract_usda, resolve_off, reso
 from extract import connection, off_rows, usda_rows
 from generate_embeddings import DIMENSIONS, pending_batch, vectors
 from import_pg import IMPORT_NAMESPACE, load_batch, source_portion_uuid
-from transform import STAPLES, Nutrient, Portion, Reject, bls_food, off_food, usda_food, usda_measures, validate
+from transform import (STAPLES, USDA_NUTRIENTS, Nutrient, Portion, Reject, bls_food, off_food, usda_food,
+                       usda_measures, validate)
 
 
 def write_fixture(directory: Path) -> tuple[Path, Path]:
@@ -156,6 +157,32 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(food.category.profile["whole_fruit_fraction"], 0)
         [cup] = food.portions
         self.assertEqual((cup.source_portion_id, cup.weight_g, cup.is_default), ("93494", 248, True))
+
+    def test_sr_legacy_sized_release_fits_the_smallest_memory_limit(self):
+        """SR Legacy has ~7.8k foods with ~30 tracked nutrients each. An ordered list() aggregate keeps a
+        non-spillable buffer per group past 16 rows, which ran out of the 768 MB limit at --limit 10000."""
+        files = extract_usda(self.archive, self.directory)
+        foods, ids = 8_000, list(USDA_NUTRIENTS)[:30]
+        files["food.csv"].write_text("fdc_id,data_type,description,food_category_id,publication_date\n" + "".join(
+            f"{100_000 + i},sr_legacy_food,Food {i},9,2019-04-01\n" for i in range(foods)), encoding="utf-8")
+        files["nutrient.csv"].write_text("id,unit_name\n" + "".join(
+            f"{nutrient},{USDA_NUTRIENTS[nutrient][1].upper()}\n" for nutrient in ids), encoding="utf-8")
+        files["food_nutrient.csv"].write_text("fdc_id,nutrient_id,amount\n" + "".join(
+            f"{100_000 + i},{nutrient},{(i + j) % 7}\n" for i in range(foods) for j, nutrient in enumerate(ids))
+            + "100001,1003,\n100001,1003,9\n", encoding="utf-8")
+        files["food_portion.csv"].write_text("id,fdc_id,seq_num,amount,measure_unit_id,portion_description,gram_weight\n"
+            + "".join(f"{1 + i * 3 + k},{100_000 + i},{k + 1},1,1,{k + 1} piece,{10 * (k + 1)}\n"
+                      for i in range(foods) for k in range(3))
+            + "".join(f"{900_000 + k},100002,{20 - k},1,1,size {k},{k + 1}\n" for k in range(20)), encoding="utf-8")
+        with connection(self.directory, 128) as db:
+            rows = {row["fdc_id"]: row for batch in usda_rows(db, files, 10_000, 2_000, data_type="sr_legacy_food")
+                    for row in batch}
+        self.assertEqual(len(rows), foods)
+        self.assertTrue(all(len(row["nutrients"]) == 30 for fdc_id, row in rows.items() if fdc_id != "100001"))
+        duplicate = [entry["amount"] for entry in rows["100001"]["nutrients"] if entry["id"] == "1003"]
+        self.assertEqual(duplicate, ["9", str((1 + ids.index("1003")) % 7), None])
+        self.assertEqual([entry["id"] for entry in rows["100001"]["nutrients"]], sorted(ids + ["1003", "1003"]))
+        self.assertEqual([portion["priority"] for portion in rows["100002"]["portions"]], list(range(1, 24)))
 
     def test_usda_filters_supporting_foods_before_limit(self):
         files = extract_usda(self.archive, self.directory)

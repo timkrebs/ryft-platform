@@ -119,6 +119,32 @@ Cloud Run service revisions. Production partner onboarding requires approved rel
 provider-account links and matching consent. The webhook routes default to disabled.
 
 
+## Nutrition ETL SR Legacy memory (2026-11-26, D287)
+
+P4's dry run `--source sr-legacy --limit 10000` on image `d53bb29` (`nutrition-etl-job-q6v66`) ran out of DuckDB
+memory. The cause is the ordered `list(… ORDER BY …)` aggregates in `extract.usda_rows`. Each SR Legacy food has
+more than 16 nutrient rows, so each got a fixed, non-spillable buffer, ~1.1 GB for 7,793 foods against the
+768 MB `--memory-mb`. The 2026-11-24 run used `--limit 1000`. The aggregates are now unordered and Python sorts
+each row with the same keys. A CI test runs 8,000 foods × 30 nutrients at 128 MB. Nothing was written. Terraform
+keeps 2 CPU, 4 GiB.
+All 13 USDA staples are SR Legacy foods, ordered first, so `row_limit = 1000` reaches them. `--limit 10000` is
+the whole release.
+
+On merge, `deploy.yml`'s push run deploys as usual: migrate (nothing new) and scoring, notify, ingest, api rolled
+with unchanged backend code, then smoke-prod. The site job skips because `web/` is unchanged. The ETL image is not
+published on push. Then, in order:
+1. `gh workflow run deploy.yml --ref main -f publish_nutrition_etl=true` (rolls the services once more with the
+   same code, then publishes the scanned ETL image). Read the digest from the run's **Nutrition ETL image** summary.
+2. Set `image_digest` in the local, git-ignored `infra/gcp/terraform.tfvars` (`nutrition_etl` is not an HCP
+   variable). Keep `database_secret_version = 1`, `row_limit = 1000`, `schedule_enabled = false`.
+   `terraform -chdir=infra/gcp plan -out=nutrition-etl-memory.tfplan`. The plan should change only the image of
+   `google_cloud_run_v2_job.nutrition_etl`. Then `terraform -chdir=infra/gcp apply nutrition-etl-memory.tfplan`.
+3. Dry run: `gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,sr-legacy,--limit,10000 --wait`
+   (and `--args=--source,foundation,--limit,10000`). Expect `"mode": "dry-run"` and SR Legacy `accepted` close to 7,793.
+4. Write: `gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --wait`
+   (the pinned `--source all --write --limit 1000`, staples included). For the whole SR Legacy release, add
+   `--args=--source,sr-legacy,--write,--limit,10000`.
+
 ## Nutrition ETL USDA recovery (2026-11-24)
 
 The first bounded Cloud Run execution inserted 138 Open Food Facts rows. Its task retry found the same

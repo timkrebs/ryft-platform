@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -123,7 +124,7 @@ def usda_rows(db: duckdb.DuckDBPyConnection, files: dict[str, Path],
                 WHERE try_cast(p.gram_weight AS DOUBLE) > 0 AND try_cast(p.gram_weight AS DOUBLE) <= 100000
             ), measures AS (
                 SELECT fdc_id, list(struct_pack(source_id := source_id, description := description, amount := amount,
-                       modifier := modifier, measure := measure, grams := grams, priority := priority) ORDER BY priority) AS portions
+                       modifier := modifier, measure := measure, grams := grams, priority := priority)) AS portions
                 FROM measured WHERE priority <= 50 GROUP BY fdc_id
             )"""
             portion_join = "LEFT JOIN measures pr USING(fdc_id)"
@@ -139,8 +140,7 @@ def usda_rows(db: duckdb.DuckDBPyConnection, files: dict[str, Path],
             FROM {CSV} {data_type_filter} {row_limit}
         ), labels AS (
             SELECT n.fdc_id,
-                   list(struct_pack(id := n.nutrient_id, amount := n.amount, unit := {unit_expr})
-                        ORDER BY n.nutrient_id, try_cast(n.amount AS DOUBLE) DESC NULLS LAST) AS nutrients
+                   list(struct_pack(id := n.nutrient_id, amount := n.amount, unit := {unit_expr})) AS nutrients
             FROM {CSV} n JOIN selected f USING(fdc_id) {unit_join}
             WHERE n.nutrient_id IN (SELECT unnest(?::VARCHAR[]))
             GROUP BY n.fdc_id
@@ -148,4 +148,30 @@ def usda_rows(db: duckdb.DuckDBPyConnection, files: dict[str, Path],
         SELECT f.fdc_id, f.description, f.publication_date, {cat_expr}, l.nutrients, {portion_expr}
         FROM selected f LEFT JOIN labels l USING(fdc_id) {portion_join} {cat_join}
     """
-    yield from batches(db.execute(sql, params), size)
+    for batch in batches(db.execute(sql, params), size):
+        for row in batch:
+            if row["nutrients"]:
+                row["nutrients"].sort(key=nutrient_order)
+            if row["portions"]:
+                row["portions"].sort(key=lambda portion: portion["priority"])
+        yield batch
+
+
+def nutrient_order(entry: dict) -> tuple:
+    """The order of the former ORDER BY n.nutrient_id, try_cast(n.amount AS DOUBLE) DESC NULLS LAST.
+
+    usda_food keeps the first entry per nutrient code, so a duplicate nutrient row keeps resolving to the
+    larger measured amount. DuckDB sorts NaN above every number, so it comes first in descending order.
+    Underscores are treated as unparseable on the assumption that try_cast rejects them, unlike float().
+    Values where the two parsers differ (non-finite, Unicode whitespace) fail transform.number() either way.
+    """
+    raw = entry["amount"]
+    try:
+        value = float(raw) if raw is not None and "_" not in raw else None
+    except ValueError:
+        value = None
+    if value is None:
+        return (entry["id"], 2, 0.0)
+    if math.isnan(value):
+        return (entry["id"], 0, 0.0)
+    return (entry["id"], 1, -value)
