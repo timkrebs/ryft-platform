@@ -2671,15 +2671,17 @@ signs in with a password. It is the service account `ryft-smoke@ryftlab-prod.iam
 - **The smoke account's consent.** A smoke token never writes consent: `POST` and `DELETE
   /v1/me/consent` are `403 smoke_route`. Consent is a person's act, and a machine credential neither
   gives nor withdraws it. So the smoke no longer probes the consent gate (it reports `not probed`),
-  and `SMOKE_EXPECT_GATES=on` checks the invite gate only. The preflight and the smoke require the
-  smoke account's consent to be for the policy version in force (the preflight checks against
-  `PRIVACY_POLICY_VERSION` in the commit's `config.env`). When that version moves, record the
-  account's consent for the new version **before** the merge, in the SQL editor as `postgres`, with
-  `scripts/sql/consent_smoke_account.sql`. Replace `<PRIVACY_POLICY_VERSION>` with the new
-  `YYYY-MM-DD`, paste the whole file and run it. Expect `1 row`: that `policy_version`, `revoked_at`
-  empty, `app_version` `operator-sql`. The script acts only on the bound account, re-checks its
-  email, and inserts nothing on a rerun. Otherwise the preflight stops: "the smoke account has no
-  consent for <version>: record it with scripts/sql/consent_smoke_account.sql".
+  and `SMOKE_EXPECT_GATES=on` checks the invite gate only. The preflight (before migrate) and the
+  smoke stop when the smoke account has no unrevoked consent: "the smoke account has no consent for
+  <version>: record it with scripts/sql/consent_smoke_account.sql". A consent for another version
+  than the one in force (the preflight compares with `PRIVACY_POLICY_VERSION` in the commit's
+  `config.env`) only warns, "! the smoke account's consent is for …", because the sync's gate takes
+  any unrevoked consent. So a consent recorded ahead of a bump, or for a bump that is reverted, blocks
+  nothing. When the version moves, record the account's consent for the new version before the
+  merge, in the SQL editor as `postgres`, with `scripts/sql/consent_smoke_account.sql`. Replace
+  `<PRIVACY_POLICY_VERSION>` with the new `YYYY-MM-DD`, paste the whole file and run it. Expect
+  `1 row`: that `policy_version`, `revoked_at` empty, `app_version` `operator-sql`. The script acts
+  only on the bound account, re-checks its email, and inserts nothing on a rerun.
 - **What a smoke token can reach.** Only the routes `smoke_prod.sh` calls with it. Anything else is
   `403 smoke_route` (`DELETE /v1/me`, consent, export, merge, train import, nutrition, the admin
   routes), and an unbound or missing account is `401 smoke_unbound`. If a new smoke step calls a
@@ -2749,6 +2751,9 @@ signs in with a password. It is the service account `ryft-smoke@ryftlab-prod.iam
   gh workflow run deploy.yml --ref main -f migrate_only=true -R "$R"   # migrate only: no smoke auth, no rollout
   gh run watch <run id> -R "$R" --exit-status                           # green; notice "migrate_only: …"
   # Supabase SQL editor as postgres: scripts/sql/bind_smoke_account.sql (The one-time binding, above) → 1 row
+  # Same editor: the bound account's consent. Expect 1 row, revoked_at empty (no row: consent_smoke_account.sql, above)
+  #   select policy_version, revoked_at from public.consents where kind = 'health_processing' and revoked_at is null
+  #     and user_id = (select user_id from public.smoke_account) order by granted_at desc limit 1;
   gh workflow run deploy.yml --ref main -R "$R"                         # the checked deploy
   gh run watch <run id> -R "$R" --exit-status                           # green
   ```
@@ -2766,12 +2771,14 @@ signs in with a password. It is the service account `ryft-smoke@ryftlab-prod.iam
 
 **The D285 floor.** An api from before D285 (api-00044-5lh and older) PATCHes a meal by deleting
 and reinserting its items, which erases `portion_label_snapshot` and `portion_short_label_snapshot`.
-Every api built since #249 carries the revision label `ryft-meal-patch=d285` (`deploy/run/api.yaml`;
+Every api built since #250 carries the revision label `ryft-meal-patch=d285` (`deploy/run/api.yaml`;
 `check_cloudrun.py` requires it). The serving api is the automatic rollback's target, and the
 deploy refuses before `migrate`, in every mode, when that api lacks the label and the commit writes
 those columns. The test is a `git grep` of `backend/` without tests and without 0053/0054, and a
 failed grep counts as a writer. The error: "the serving api <rev> has no label ryft-meal-patch=d285
-(it predates D285) and this commit writes the meal portion labels (<file>) … Nothing was changed."
+(built before the label, #250: not known to be D285) and this commit writes the meal portion labels
+(<file>) … Nothing was changed." The grep errs on the safe side: a `testdata/` fixture or a
+read-only query that names the columns counts as a writer too.
 So the snapshot writer (#248) ships only once a labelled api serves, as D285 orders. Fix: deploy a
 commit without the writer first (or revert it), then this one. Never move traffic by hand to an
 unlabelled api once the labels hold data.

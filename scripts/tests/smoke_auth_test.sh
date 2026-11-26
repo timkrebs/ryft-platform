@@ -359,20 +359,35 @@ class SmokeAuth(unittest.TestCase):
         self.assertIn("SMOKE_SA_ID", values)
         self.assertRegex(values["PRIVACY_POLICY_VERSION"], r"^\d{4}-\d{2}-\d{2}$")  # what prepare compares the consent with
 
-    # ---- prepare: the smoke account's consent is for config.env's PRIVACY_POLICY_VERSION (D286) -------
-    # The smoke token writes no consent; a missing or stale one fails the preflight, before the migration.
+    # ---- prepare: the smoke account holds a consent; config.env's PRIVACY_POLICY_VERSION or a warning (D286) --
+    # The smoke token writes no consent; a missing one fails the preflight, before the migration. One for another
+    # version warns only: the sync's gate takes any unrevoked consent, and /v1/me shows the newest.
 
     def test_prepare_passes_when_the_consent_matches_config_env(self):
         self.client.open.side_effect = [Response({"token": google()}), Response(me())]
-        self.prepare()
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.prepare()
         self.assertTrue(self.session.exists())
+        self.assertEqual(err.getvalue(), "")
 
-    def test_prepare_fails_on_a_missing_or_stale_consent(self):
+    def test_prepare_warns_on_a_consent_for_another_version(self):
+        for version in ("2026-01-01", "2026-12-01"):
+            with self.subTest(version):
+                self.client.open.reset_mock()
+                self.client.open.side_effect = [Response({"token": google()}),
+                                                Response(me(consent={"policy_version": version, "granted_at": "2026-01-01T00:00:00Z"}))]
+                self.session.unlink(missing_ok=True)
+                with patch("sys.stderr", new_callable=io.StringIO) as err:
+                    self.prepare()
+                self.assertEqual(err.getvalue(), f"! the smoke account's consent is for {version}, the policy in force is {policy}:"
+                                 f" record {policy} with scripts/sql/consent_smoke_account.sql (docs/OPERATIONS.md)\n")
+                self.assertEqual([call.args[0].get_method() for call in self.client.open.call_args_list], ["POST", "GET"])
+
+    def test_prepare_fails_on_a_missing_consent(self):
         for name, consent in (
             ("none", None),
-            ("older version", {"policy_version": "2026-01-01", "granted_at": "2026-01-01T00:00:00Z"}),
-            ("newer version", {"policy_version": "2026-12-01", "granted_at": "2026-12-01T00:00:00Z"}),
             ("no version", {"granted_at": "2026-10-26T09:00:00Z"}),
+            ("an odd version", {"policy_version": "2026 10 26\n"}),
             ("numeric version", {"policy_version": 20261026}),
             ("not an object", "2026-10-26"),
         ):
@@ -390,15 +405,28 @@ class SmokeAuth(unittest.TestCase):
     def test_prepare_compares_with_the_version_in_config_env_not_a_fixed_one(self):
         self.config.write_text(good_config.replace(policy, "2026-12-01"))
         self.client.open.side_effect = [Response({"token": google()}), Response(me())]
-        self.assertEqual(self.rejected(r"no consent for 2026-12-01"), consent_hint % "2026-12-01")
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.prepare()
+        self.assertIn(f"consent is for {policy}, the policy in force is 2026-12-01: record 2026-12-01", err.getvalue())
+        self.session.unlink()
         self.client.open.side_effect = [Response({"token": google()}), Response(me(consent={"policy_version": "2026-12-01"}))]
-        self.prepare()
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.prepare()
+        self.assertEqual(err.getvalue(), "")
+        self.session.unlink()
+        self.client.open.side_effect = [Response({"token": google()}), Response(me(consent=None))]
+        self.assertEqual(self.rejected(r"no consent for 2026-12-01"), consent_hint % "2026-12-01")
 
     def test_prepare_environment_overrides_the_policy_in_config_env(self):
         self.client.open.side_effect = [Response({"token": google()}), Response(me())]
-        self.rejected("no consent for 2026-12-01", {"PRIVACY_POLICY_VERSION": "2026-12-01"})
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.prepare({"PRIVACY_POLICY_VERSION": "2026-12-01"})
+        self.assertIn("the policy in force is 2026-12-01", err.getvalue())
+        self.session.unlink()
         self.client.open.side_effect = [Response({"token": google()}), Response(me())]
-        self.prepare({"PRIVACY_POLICY_VERSION": policy})
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.prepare({"PRIVACY_POLICY_VERSION": policy})
+        self.assertEqual(err.getvalue(), "")
 
     def test_prepare_needs_a_policy_version_to_compare_with(self):
         for name, text, regex in (
@@ -1038,15 +1066,22 @@ no_consent_write
 smoke_fake SMOKE_EXPECT_GATES=on && { echo 'SMOKE_EXPECT_GATES=on passed without a probe' >&2; exit 1; }
 grep -qF 'but the invite gate is: unknown (no ADMIN_API_KEY)' "$tmp/run.out"
 
-# A missing or stale consent fails with the operator's hint, before the sync, and the script writes nothing.
-for stale in null '{"policy_version": "2026-01-01", "granted_at": "2026-01-01T00:00:00Z"}' '{"policy_version": "2026-12-01"}'; do
+# A missing consent fails with the operator's hint, before the sync, and the script writes nothing.
+for stale in null '{"granted_at": "2026-01-01T00:00:00Z"}' '{"policy_version": 20261026}' '"2026-10-26"'; do
   smoke_fake FAKE_ME="$(fake_me "$stale")" && { echo "smoke_prod.sh passed with the consent $stale" >&2; exit 1; }
   grep -qxF '✗ smoke-prod: the smoke account has no consent for 2026-10-26: record it with scripts/sql/consent_smoke_account.sql (docs/OPERATIONS.md)' "$tmp/run.out" \
     || { echo "no consent message for $stale" >&2; cat "$tmp/run.out" >&2; exit 1; }
   no_consent_write
   if grep -q '^POST' "$tmp/api.log"; then echo "smoke_prod.sh wrote with the consent $stale" >&2; exit 1; fi
 done
-# The comparison is with /v1/config's version, whatever it is.
-smoke_fake FAKE_POLICY=2026-12-01 && { echo 'smoke_prod.sh passed with a consent for another policy than /v1/config' >&2; exit 1; }
-grep -qF 'no consent for 2026-12-01: record it with' "$tmp/run.out"
+# A consent for another version than /v1/config's warns and the smoke goes on (the gate takes any unrevoked
+# consent; one recorded ahead of a version bump is the newest), still writing nothing but the sync.
+for other in '{"policy_version": "2026-01-01", "granted_at": "2026-01-01T00:00:00Z"}' '{"policy_version": "2026-12-01"}'; do
+  smoke_fake FAKE_ME="$(fake_me "$other")" || { echo "smoke_prod.sh failed with the consent $other" >&2; cat "$tmp/run.out" >&2; exit 1; }
+  grep -qE "^! the smoke account's consent is for 2026-(01|12)-01, the policy in force is 2026-10-26: record 2026-10-26 with scripts/sql/consent_smoke_account.sql" "$tmp/run.out" \
+    || { echo "no consent warning for $other" >&2; cat "$tmp/run.out" >&2; exit 1; }
+  no_consent_write
+done
+smoke_fake FAKE_POLICY=2026-12-01 || { echo 'smoke_prod.sh failed with a consent for an older policy than /v1/config' >&2; cat "$tmp/run.out" >&2; exit 1; }
+grep -qF "consent is for 2026-10-26, the policy in force is 2026-12-01" "$tmp/run.out"
 no_consent_write

@@ -342,7 +342,7 @@ jobs:
       # a failed rollout or smoke. Exactly one entry at 100% with a revision name of the service, else the
       # run stops here (a split or a tag-only state is not something to roll back to blindly). Read only.
       # Then the serving api revision itself (`gcloud run revisions describe`, parsed with python3 -I), two
-      # facts, both step outputs: `d286` (yes when a container's env has SMOKE_OIDC_SA_ID: the api verifies
+      # facts, both step outputs: `d286` (yes when a container's env has a non-empty SMOKE_OIDC_SA_ID: the api verifies
       # the smoke account's Google ID token, D286) and `d285` (yes when the revision carries the label
       # ryft-meal-patch=d285, set by deploy/run/api.yaml: a meal PATCH that copies stored item rows, D285).
       # A revision that cannot be described stops the run with nothing migrated. Then:
@@ -385,7 +385,7 @@ jobs:
           import json, sys
           rev = json.load(sys.stdin)
           containers = rev.get("spec", {}).get("containers") or []
-          d286 = any(e.get("name") == "SMOKE_OIDC_SA_ID" for c in containers for e in (c.get("env") or []))
+          d286 = any(e.get("name") == "SMOKE_OIDC_SA_ID" and (e.get("value") or "").strip() for c in containers for e in (c.get("env") or []))
           d285 = (rev.get("metadata", {}).get("labels") or {}).get("ryft-meal-patch") == "d285"
           print("d286=" + ("yes" if d286 else "no"))
           print("d285=" + ("yes" if d285 else "no"))
@@ -402,10 +402,10 @@ jobs:
             writers=$(git grep -l -e portion_label_snapshot -e portion_short_label_snapshot -- backend ':!*_test.go' ':!backend/internal/db/migrations/0053_*' ':!backend/internal/db/migrations/0054_*') || rc=$?
             first=${writers%%$'\n'*}
             if [ "$rc" = 0 ]; then
-              echo "::error title=deploy::the serving api $api_rev has no label ryft-meal-patch=d285 (it predates D285) and this commit writes the meal portion labels ($first): the rollback target would erase them on a meal PATCH. D285 requires a D285 api serving first: deploy a commit that does not write them, then this one. Nothing was changed."
+              echo "::error title=deploy::the serving api $api_rev has no label ryft-meal-patch=d285 (built before the label, #250: not known to be D285) and this commit writes the meal portion labels ($first): the rollback target would erase them on a meal PATCH. D285 requires a D285 api serving first: deploy a commit that does not write them, then this one. Nothing was changed."
               exit 1
             elif [ "$rc" != 1 ]; then
-              echo "::error title=deploy::the serving api $api_rev has no label ryft-meal-patch=d285 (it predates D285) and whether this commit writes the meal portion labels cannot be told (git grep exit $rc), so it counts as a writer: the rollback target would erase them on a meal PATCH. D285 requires a D285 api serving first. Nothing was changed."
+              echo "::error title=deploy::the serving api $api_rev has no label ryft-meal-patch=d285 (built before the label, #250: not known to be D285) and whether this commit writes the meal portion labels cannot be told (git grep exit $rc), so it counts as a writer: the rollback target would erase them on a meal PATCH. D285 requires a D285 api serving first. Nothing was changed."
               exit 1
             fi
           fi
@@ -482,6 +482,7 @@ jobs:
           on_exit() {
             local rc=$?
             trap - EXIT
+            set +e # every rollback is attempted, whatever fails in between
             if [ "$rc" -ne 0 ] && [ "${#touched[@]}" -gt 0 ]; then
               echo "::error title=deploy::$reason (exit $rc): ${touched[*]} go back to the revisions recorded before the rollout"
               rollback "${touched[@]}"

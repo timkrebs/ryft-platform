@@ -3,9 +3,11 @@
 -- WHO RUNS IT: the operator, in the Supabase SQL editor of the production project as `postgres` (the owner).
 --   The smoke bearer cannot write consent (POST/DELETE /v1/me/consent are not on its allowlist), so this
 --   file is the only way the smoke account consents to a new version.
--- BEFORE: the smoke account is bound (scripts/sql/bind_smoke_account.sql). Run this whenever
---   PRIVACY_POLICY_VERSION moves (deploy/run/config.env), before or right after the deploy that ships it:
---   until then the smoke's health-data requests answer with a missing consent.
+-- BEFORE: the smoke account is bound (scripts/sql/bind_smoke_account.sql). Run this once after the bind if the
+--   account has no consent yet (the preflight and the smoke fail without one), and whenever
+--   PRIVACY_POLICY_VERSION moves (deploy/run/config.env), before the merge that moves it. The smoke only warns
+--   on a consent for another version (the sync's gate takes any unrevoked consent), so recording one ahead,
+--   or for a bump that is then reverted, blocks nothing.
 -- HOW: replace the one marked literal (<PRIVACY_POLICY_VERSION>) with the new version (YYYY-MM-DD, the
 --   value of PRIVACY_POLICY_VERSION), paste the WHOLE file, run it. The editor sends the file as one
 --   query, which Postgres runs as one transaction: all or nothing. In psql use

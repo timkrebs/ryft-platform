@@ -337,7 +337,7 @@ deploy_swap "the services in a step of their own" "live in one step" \
   "      - name: Early replace\n        if: steps.tip.outputs.current == 'true'\n        run: gcloud run services replace x.yaml\n      - name: The services, then make smoke-prod, and roll back when either fails"
 # The record step reads the serving api revision (python3 -I, not grep) and writes d286 and d285 to its outputs, before migrate.
 deploy_swap "the record step without the D286 fact" "after recording the revisions it reads the serving api revision" \
-  '          d286 = any(e.get("name") == "SMOKE_OIDC_SA_ID" for c in containers for e in (c.get("env") or []))' '          d286 = False'
+  '          d286 = any(e.get("name") == "SMOKE_OIDC_SA_ID" and (e.get("value") or "").strip() for c in containers for e in (c.get("env") or []))' '          d286 = False'
 deploy_swap "the record step without the label fact" "after recording the revisions it reads the serving api revision" \
   '          d285 = (rev.get("metadata", {}).get("labels") or {}).get("ryft-meal-patch") == "d285"' '          d285 = True'
 deploy_swap "the record step's guard by grep" "after recording the revisions it reads the serving api revision" \
@@ -555,6 +555,7 @@ printf '%s\n' '{"metadata":{"labels":{"serving.knative.dev/service":"api","ryft-
 printf '%s\n' '{"metadata":{"labels":{"ryft-meal-patch":"d285"}},"spec":{"containers":[{"name":"api","env":[{"name":"SMOKE_OIDC_SA_ID","value":"1"}]}]}}' > "$x/rev_both.json"
 printf '%s\n' '{"metadata":{"labels":{"ryft-meal-patch":"d284"}},"spec":{"containers":[{"name":"api","env":[]}]}}' > "$x/rev_wrong.json"
 printf '%s\n' '{"metadata":{"labels":{}},"spec":{"containers":[{"name":"api","env":[{"name":"SMOKE_OIDC_SA_ID","value":"1"}]}]}}' > "$x/rev_d286only.json"
+printf '%s\n' '{"metadata":{"labels":{"ryft-meal-patch":"d285"}},"spec":{"containers":[{"name":"api","env":[{"name":"SMOKE_OIDC_SA_ID","value":""}]}]}}' > "$x/rev_d286empty.json"
 printf '%s\n' '[]' > "$x/rev_bad.json"
 treedir="$x/tree"
 tree() { # [path]...: a fresh git repository: an innocent file and each path naming the meal portion label column
@@ -581,6 +582,10 @@ tree "${NOWRITER[@]}" backend/internal/store/meals.go
 run_record "$x/rev_both.json"
 ex_ok "a labelled api with the D286 sign-in on a push"
 eq "the facts of a labelled D286 api" "$(outputs)" "d286=yes d285=yes "
+# The route turned off (SMOKE_OIDC_SA_ID emptied in the templates) is no D286 api: the bootstrap stays reachable.
+run_record "$x/rev_d286empty.json" EVENT=workflow_dispatch
+ex_ok "an emptied SMOKE_OIDC_SA_ID on a dispatch"
+eq "an emptied SMOKE_OIDC_SA_ID is not the D286 sign-in" "$(outputs)" "d286=no d285=yes "
 run_record "$x/rev_both.json" EVENT=workflow_dispatch MIGRATE_ONLY=true
 ex_ok "a labelled api under migrate_only, whatever the tree writes"
 ex_out "migrate_only is announced" "migrate_only: only the migrations are applied"

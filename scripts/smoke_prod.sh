@@ -25,9 +25,9 @@
 # from the environment only (scripts/lib/admin.sh says how to read production's).
 #
 # The smoke token writes no consent (D286: consent is a person's act, and the api refuses POST and DELETE
-# /v1/me/consent for it). The smoke account's consent for the current PRIVACY_POLICY_VERSION is recorded by the
-# operator with scripts/sql/consent_smoke_account.sql (docs/OPERATIONS.md); without it the smoke fails with that
-# hint, and --auth-preflight fails before the rollout when the consent is not for config.env's version.
+# /v1/me/consent for it). The smoke account's consent is recorded by the operator with
+# scripts/sql/consent_smoke_account.sql (docs/OPERATIONS.md). Without any, the smoke and --auth-preflight fail
+# with that hint (the preflight before the migration); a consent for another version than the one in force warns.
 #
 # It then reports what the gates do (on, warn or off): with ADMIN_API_KEY it withdraws the smoke user's beta
 # access for one read and restores it (the invite gate). The consent gate is reported as not probed.
@@ -103,8 +103,12 @@ fi
 policy=$(call "$API/v1/config" | json 'd["privacy_policy_version"]') || fail "GET /v1/config"
 # The smoke token writes no consent (D286: a person's act, and POST/DELETE /v1/me/consent are off the api's
 # smoke allowlist): the operator records it for the bound account with scripts/sql/consent_smoke_account.sql.
-if [ "$(echo "$me" | json '(d["consent"] or {}).get("policy_version")')" != "$policy" ]; then
-  fail "the smoke account has no consent for $policy: record it with scripts/sql/consent_smoke_account.sql (docs/OPERATIONS.md)"
+# None at all fails (the sync's consent gate needs an unrevoked one); another version only warns: the gate
+# accepts any unrevoked consent, and /v1/me shows the newest (one recorded ahead of a version bump, say).
+consented=$(echo "$me" | json 'd["consent"]["policy_version"] if isinstance(d.get("consent"), dict) and isinstance(d["consent"].get("policy_version"), str) else ""')
+[ -n "$consented" ] || fail "the smoke account has no consent for $policy: record it with scripts/sql/consent_smoke_account.sql (docs/OPERATIONS.md)"
+if [ "$consented" != "$policy" ]; then
+  echo "! the smoke account's consent is for $consented, the policy in force is $policy: record $policy with scripts/sql/consent_smoke_account.sql (docs/OPERATIONS.md)"
 fi
 model=$(call "$API/v1/model" | json 'd["current"]') || fail "GET /v1/model"
 call "$API/v1/me/connections" | json 'isinstance(d["connections"], list) and isinstance(d["available"], list) and {"garmin", "suunto"} <= {x["provider"] for x in d["providers"]} or sys.exit(1)' >/dev/null \

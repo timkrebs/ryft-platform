@@ -59,4 +59,21 @@ The full text is in `../docs/work/2026-11-26-smoke-auth-rollout/codex-review-2.m
 Hand-backs as received (unverified until the lead's runs below):
 - gitops: one `trap on_exit EXIT`, each service on `touched` before its replace; executed cases a–d plus three more. A `record` step with outputs `d286`/`d285` (yes|no). The floor uses git grep and fails closed. `api.yaml` label `ryft-meal-patch: d285`, required by check_cloudrun.py. `auth_preflight` removed, `migrate_only` added; the selection is tested row by row. Its tests passed locally (yq present).
 - database: the bind script requires exactly one `auth.users` row with `smoke@ryftlab.de` (lower()) whose id equals the pasted UUID. New `consent_smoke_account.sql` acts only on the bound account. The test now scans user_id and bound_at. NOT RUN (sandbox).
+- Lead's local runs: `go vet ./...` and `go test` (cmd, auth, db, config, store; the DB cases skip without Postgres), `smoke_auth_test.sh` (56 tests), `check_workflows_test.sh`, `make cloudrun-check`, `check_cloudrun_test.sh` and `cloudrun_render_test.sh` all passed. No Postgres could be started, so the DB tests run first in CI.
 - backend: POST/DELETE consent are off the allowlist and answer 403 (`smoke_route` metric and access reason; the body is the generic `forbidden`). smoke_prod.sh writes no consent and fails with the consent_smoke_account.sql hint. `prepare` checks consent against config.env's PRIVACY_POLICY_VERSION. NOT RUN (sandbox).
+
+# Review of the second-review fixes (code-reviewer, the one pass on 40c29f1)
+
+No blockers.
+
+| # | Severity | Finding | Outcome |
+|---|---|---|---|
+| 1 | should-fix | The consent check wants an exact match with the newest consent. A consent recorded ahead for a bump that is later reverted, or recorded before the merge, blocks every deploy. | Fixed (lead). Only a missing consent fails. Another version warns, since the sync gate takes any unrevoked consent. Tests in smoke_auth_test.sh (python and shell). |
+| 2 | should-fix | The bootstrap runbook has no consent check between the bind and the dispatch. | Fixed: a SQL check in OPERATIONS → The bootstrap, plus the consent script's header. |
+| 3 | should-fix | `d286` counts an empty `SMOKE_OIDC_SA_ID` as D286. After the route is turned off by emptying it, every preflight answers 401 and no bootstrap is offered. | Fixed: a non-empty value is required. New `rev_d286empty` case in check_workflows_test.sh. |
+| 4 | should-fix | The docs say "every api since #249 carries the label". It is since #250. | Fixed in the docs and in the floor's error text. |
+| 5 | nit | The consent SQL header says "before or right after the deploy". | Fixed. |
+| 6 | nit | errexit inside `on_exit` could skip later rollbacks; the step has no time budget of its own. | `set +e` in the trap. No step timeout: the runner would kill the trap too, and the job limit (60 min) stays. |
+| 7 | nit | The floor's grep also counts `testdata/` and read-only queries (safe side). | Documented in OPERATIONS. |
+
+CI on 40c29f1: `TestBindSmokeAccountScript` and `TestConsentSmokeAccountScript` passed (finding 2 is proven). `TestMigrateSupabaseShape` failed ("want a service policy on each of the 43 tables, got 42"), as it already did on 609817e: 0060 named its policy `smoke_account_read`. It was renamed `smoke_account_services`, like every service policy (0032's is SELECT only too). 0060 has never been applied anywhere, so editing it is allowed.

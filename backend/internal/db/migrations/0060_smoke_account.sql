@@ -38,8 +38,9 @@ GRANT SELECT ON smoke_account TO ryft_api, ryft_ingest;
 -- On Supabase RLS applies to the service roles (they do not own the tables, 0009), so the read needs a
 -- policy; FOR SELECT only, so even a later over-broad grant could not let a service write. On plain Postgres
 -- RLS is off and the policy is inert.
-DROP POLICY IF EXISTS smoke_account_read ON smoke_account;
-CREATE POLICY smoke_account_read ON smoke_account FOR SELECT TO ryft_api, ryft_ingest USING (true);
+-- Named <table>_services like every service policy (0009 on; admin_accounts_services in 0032 is SELECT only too).
+DROP POLICY IF EXISTS smoke_account_services ON smoke_account;
+CREATE POLICY smoke_account_services ON smoke_account FOR SELECT TO ryft_api, ryft_ingest USING (true);
 
 -- Supabase only, as in 0007, 0017, 0033 and 0037: RLS on, nothing for the Data API roles.
 DO $$

@@ -7,9 +7,9 @@ A Google smoke token is minted and sent only to the canonical production origins
 https://ingest.ryftlab.de, after normalisation). Any other target needs SMOKE_TOKEN that is not a Google token.
 Modes: prepare <api> <ingest> <file>, run <api> <ingest> <file>, bootstrap <api> <ingest>, mint <file>.
 
-prepare (the preflight before the migration) also requires the smoke account's consent to be for the
-PRIVACY_POLICY_VERSION in deploy/run/config.env, the version the commit being deployed asks for. The smoke token
-writes no consent (D286): scripts/sql/consent_smoke_account.sql records it.
+prepare (the preflight before the migration) also requires the smoke account to hold a consent, and warns
+when it is not for the PRIVACY_POLICY_VERSION in deploy/run/config.env (the version the commit being deployed
+asks for). The smoke token writes no consent (D286): scripts/sql/consent_smoke_account.sql records it.
 """
 
 import base64
@@ -397,13 +397,23 @@ def policy_version():
 
 def require_consent(me):
     """The smoke token writes no consent (D286): the operator records it for the bound account with
-    scripts/sql/consent_smoke_account.sql. Fail before the rollout when it is missing or for another version."""
+    scripts/sql/consent_smoke_account.sql. Fail before the rollout when there is none (the sync's consent gate
+    needs an unrevoked one). A consent for another version only warns: the gate accepts any unrevoked consent,
+    and /v1/me shows the newest one, so an exact match would block every deploy after a consent recorded ahead
+    of a version bump, or for a bump that was reverted."""
     policy = policy_version()
     consent = me.get("consent")
-    if not isinstance(consent, dict) or consent.get("policy_version") != policy:
+    got = consent.get("policy_version") if isinstance(consent, dict) else None
+    if not isinstance(got, str) or re.fullmatch(r"[0-9A-Za-z._-]{1,32}", got) is None:
         raise InvalidSmokeAuth(
             f"the smoke account has no consent for {policy}: record it with scripts/sql/consent_smoke_account.sql"
             " (docs/OPERATIONS.md)"
+        )
+    if got != policy:
+        print(
+            f"! the smoke account's consent is for {got}, the policy in force is {policy}:"
+            f" record {policy} with scripts/sql/consent_smoke_account.sql (docs/OPERATIONS.md)",
+            file=sys.stderr,
         )
 
 
