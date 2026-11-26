@@ -79,7 +79,9 @@ class SmokeAuth(unittest.TestCase):
         self.result = Path(tmp, "verified.json")
         self.config = Path(tmp, "config.env")
         self.config.write_text(good_config)
-        self.enterContext(patch.dict(verify.__globals__, {"CONFIG_ENV": str(self.config)}))
+        self.sleep = Mock()  # no test waits: the helper's retry pause is this, also in modules run as __main__
+        self.enterContext(patch.dict(verify.__globals__, {"CONFIG_ENV": str(self.config), "SLEEP": self.sleep}))
+        self.enterContext(patch.object(time, "sleep", self.sleep))
         self.client = Mock()
         factory = self.enterContext(patch.object(urllib.request, "build_opener", return_value=self.client))
         self.addCleanup(self.check_no_redirects, factory)
@@ -641,7 +643,7 @@ class SmokeAuth(unittest.TestCase):
         self.assertEqual(self.client.open.call_count, 2)
 
     def test_bootstrap_fails_on_any_other_status(self):
-        for status in (403, 404, 429, 500, 503, 307):
+        for status in (403, 404, 429, 500, 502, 307):  # 503 has its own tests: it is retried first
             with self.subTest(status=status):
                 token = google()
                 self.client.open.side_effect = [Response({"token": token}), urllib.error.HTTPError(api, status, "x", {}, Response(b"sensitive response body"))]
@@ -678,6 +680,71 @@ class SmokeAuth(unittest.TestCase):
         self.client.open.side_effect = [Response({"token": google()}), urllib.error.HTTPError(api, 401, "x", {}, Response(b""))]
         self.run_main("bootstrap", api, ingest, env={"SMOKE_USER_ID": owner, "SMOKE_SA_ID": sa_id, "SMOKE_TOKEN": "ignored"})
         self.assertEqual(self.client.open.call_count, 2)  # it minted anyway
+
+    # ---- GET /v1/me retries a 503 (a new instance loading its keys) and nothing else -------------------
+
+    def unavailable(self):
+        return urllib.error.HTTPError(api, 503, "x", {}, Response({"error": "smoke_jwks_unavailable"}))
+
+    def test_me_retries_503_with_the_pauses_and_then_succeeds(self):
+        for attempts in (1, 2, 5):
+            with self.subTest(attempts=attempts):
+                self.sleep.reset_mock()
+                self.client.open.reset_mock()
+                self.client.open.side_effect = [Response({"token": google()})] + [self.unavailable() for _ in range(attempts - 1)] + [Response(me())]
+                self.prepare()
+                self.assertEqual(self.client.open.call_count, 1 + attempts)
+                self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [2, 4, 4, 4][:attempts - 1])
+                self.session.unlink()
+        self.assertEqual(self.gcloud.call_count, 3)  # one mint per subtest
+
+    def test_me_gives_up_after_five_503s(self):
+        self.client.open.side_effect = [Response({"token": google()})] + [self.unavailable() for _ in range(5)]
+        self.rejected(r"GET /v1/me returned HTTP 503$")
+        self.assertEqual(self.client.open.call_count, 1 + 5)  # the mint and exactly five reads
+        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [2, 4, 4, 4])
+
+    def test_me_does_not_retry_anything_but_503(self):
+        for status in (401, 403, 404, 429, 500, 502, 504):
+            with self.subTest(status=status):
+                self.sleep.reset_mock()
+                self.client.open.reset_mock()
+                self.client.open.side_effect = [Response({"token": google()}), urllib.error.HTTPError(api, status, "x", {}, Response(b""))]
+                self.rejected(r"GET /v1/me returned HTTP %d$" % status)
+                self.assertEqual(self.client.open.call_count, 2)
+                self.sleep.assert_not_called()
+        self.client.open.reset_mock()
+        self.client.open.side_effect = [Response({"token": google()}), OSError("down")]
+        self.rejected("GET /v1/me could not complete")
+        self.sleep.assert_not_called()
+
+    def test_run_retries_503_too(self):
+        self.client.open.side_effect = [Response({"token": google()}), self.unavailable(), Response(me())]
+        with patch.dict(os.environ, {}, clear=True):
+            verify("run", api, ingest, self.result)
+        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [2])
+        self.assertEqual(json.loads(self.result.read_bytes())["me"], me())
+
+    def test_bootstrap_retries_503_then_sees_the_expected_401(self):
+        denied = urllib.error.HTTPError(api, 401, "x", {}, Response(b""))
+        self.client.open.side_effect = [Response({"token": google()}), self.unavailable(), self.unavailable(), denied]
+        code, out, _ = self.run_main("bootstrap", api, ingest)
+        self.assertIsNone(code)
+        self.assertTrue(out.startswith("✓ smoke-prod bootstrap:"))
+        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [2, 4])
+
+    def test_bootstrap_still_fails_on_a_persistent_503_and_never_treats_it_as_401(self):
+        self.client.open.side_effect = [Response({"token": google()})] + [self.unavailable() for _ in range(5)]
+        code, out, _ = self.run_main("bootstrap", api, ingest)
+        self.assertEqual(code, "smoke-prod: GET /v1/me returned HTTP 503, the bootstrap expects 401 from a revision before D286")
+        self.assertEqual(out, "")
+        self.assertEqual(self.client.open.call_count, 1 + 5)
+        self.assertEqual([call.args[0] for call in self.sleep.call_args_list], [2, 4, 4, 4])
+
+    def test_bootstrap_a_200_after_a_503_is_still_over(self):
+        self.client.open.side_effect = [Response({"token": google()}), self.unavailable(), Response(me())]
+        code, _, _ = self.run_main("bootstrap", api, ingest)
+        self.assertRegex(code, "the bootstrap is over")
 
     def test_bootstrap_needs_two_origins(self):
         for args in (("bootstrap",), ("bootstrap", api), ("bootstrap", api, ingest, "x")):
@@ -777,3 +844,29 @@ for args in '--nope' '--auth-bootstrap extra' '--auth-preflight extra'; do
   if env -i PATH="$tmp/bin:$PATH" bash "$HERE/scripts/smoke_prod.sh" $args > "$tmp/usage" 2>&1; then echo "accepted: $args" >&2; exit 1; fi
   grep -q 'usage: smoke_prod.sh \[--auth-preflight | --auth-bootstrap\]' "$tmp/usage"
 done
+
+# Every curl made with the smoke token retries curl's transient statuses, and only those. The real definitions
+# of bearer, smoke_curl and call are run here against a fake curl that records its arguments.
+cat > "$tmp/bin/curl" <<'SH'
+#!/usr/bin/env bash
+cat > /dev/null   # the header file arrives on stdin (-H @-)
+echo "$*" >> "$CURL_LOG"
+SH
+chmod +x "$tmp/bin/curl"
+: > "$tmp/curl.log"
+{
+  sed -n '/^bearer() {/,/^}/p' "$HERE/scripts/smoke_prod.sh"
+  grep '^smoke_curl()' "$HERE/scripts/smoke_prod.sh"
+  grep '^call()' "$HERE/scripts/smoke_prod.sh"
+  echo 'TOKEN=fixture-token; call -X POST http://x.test/a; smoke_curl -s http://x.test/b'
+} > "$tmp/defs.sh"
+env -i PATH="$tmp/bin:$PATH" CURL_LOG="$tmp/curl.log" bash "$tmp/defs.sh"
+[ "$(wc -l < "$tmp/curl.log")" -eq 2 ]
+[ "$(grep -c -e '--retry 3 --retry-delay 2' "$tmp/curl.log")" -eq 2 ]
+if grep -q -e '--retry-all-errors' "$tmp/curl.log"; then echo 'curl retries all errors' >&2; exit 1; fi
+# No other call in the script sends TOKEN around smoke_curl, and nothing asks for --retry-all-errors.
+if grep -v '^smoke_curl()' "$HERE/scripts/smoke_prod.sh" | grep -q 'bearer "[$]TOKEN"'; then
+  echo 'a smoke-token call bypasses smoke_curl' >&2
+  exit 1
+fi
+if grep -v '^ *#' "$HERE/scripts/smoke_prod.sh" | grep -q -e '--retry-all-errors'; then echo 'smoke_prod.sh retries all errors' >&2; exit 1; fi

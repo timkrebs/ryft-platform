@@ -53,9 +53,11 @@ type smokeStore struct {
 	bound    bool
 	boundErr error
 	boundFor []uuid.UUID
+	ensured  int // EnsureUser calls: it locks and writes the row, so a refused principal must make none
 }
 
 func (s *smokeStore) EnsureUser(_ context.Context, id store.Identity) (model.User, error) {
+	s.ensured++
 	if s.ensure != nil {
 		return model.User{}, s.ensure
 	}
@@ -69,8 +71,9 @@ func (s *smokeStore) IsSmokeAccount(_ context.Context, id uuid.UUID) (bool, erro
 	return s.bound, s.boundErr
 }
 
-// D286: the smoke principal must be the bound account, checked after the user row loads and on every
-// request; a database error is not a pass. App users never ask.
+// D286: the smoke principal must be the bound account, checked first (an unbound or unreadable
+// binding never reaches EnsureUser, which would write a real user's row) and on every request; a
+// database error is not a pass. App users never ask.
 func TestEnsureUserSmokeBinding(t *testing.T) {
 	ctx := context.Background()
 	id := uuid.New()
@@ -97,6 +100,9 @@ func TestEnsureUserSmokeBinding(t *testing.T) {
 	if status, reason := reasonOf(err); status != http.StatusUnauthorized || reason != "smoke_unbound" || u.ID != uuid.Nil {
 		t.Fatalf("an existing user that is not bound: want 401 smoke_unbound and no user, got %d %q %+v", status, reason, u)
 	}
+	if unbound.ensured != 0 {
+		t.Fatalf("an unbound principal must not reach EnsureUser, it ran %d times", unbound.ensured)
+	}
 
 	for name, st := range map[string]*smokeStore{
 		"no users row": {ensure: store.ErrNotFound, bound: true},
@@ -106,8 +112,8 @@ func TestEnsureUserSmokeBinding(t *testing.T) {
 		if status, reason := reasonOf(err); status != http.StatusUnauthorized || reason != "smoke_unknown_user" {
 			t.Errorf("%s: want 401 smoke_unknown_user, got %d %q", name, status, reason)
 		}
-		if len(st.boundFor) != 0 {
-			t.Errorf("%s: the binding was read for a user that is not there", name)
+		if len(st.boundFor) != 1 || st.ensured != 1 {
+			t.Errorf("%s: the binding is read first, then the row: %d reads, %d loads", name, len(st.boundFor), st.ensured)
 		}
 	}
 
@@ -117,6 +123,9 @@ func TestEnsureUserSmokeBinding(t *testing.T) {
 		t.Fatalf("binding lookup error must fail the request: %+v %v", u, err)
 	} else if status, _ := reasonOf(err); status != 0 {
 		t.Fatalf("it is no *auth.Error, so Middleware answers 503, got %v", err)
+	}
+	if down.ensured != 0 {
+		t.Fatalf("an unreadable binding must not reach EnsureUser, it ran %d times", down.ensured)
 	}
 
 	app := &smokeStore{}

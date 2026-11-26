@@ -6852,7 +6852,8 @@ After an independent security review:
 - **Where tokens go.** The helper mints and sends a Google smoke token only to `https://api.ryftlab.de` and `https://ingest.ryftlab.de`.
 - **The deploy.**
   - The post-rollout smoke always runs, with a fresh token. When it fails, traffic returns to the revisions recorded before the rollout.
-  - The dispatch input `auth_preflight=false` only swaps the preflight for a bootstrap check, which passes only while the running api rejects the token (a pre-D286 revision). Once D286 is live the flag cannot be used.
+  - A replace that fails part-way is also rolled back, because the replace, the smoke and the rollback run in one step.
+  - The dispatch input `auth_preflight=false` only swaps the preflight for a bootstrap check. That check passes only when two things hold: the serving api revision has no `SMOKE_OIDC_SA_ID` in its env, and it rejects the token. Once D286 is live, the flag cannot be used; an unbound account on a D286 api is refused too.
   - Skipping the check against the old revision is safe because the new revisions are still smoked, and rolled back on failure.
 
 Rejected:

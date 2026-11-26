@@ -400,10 +400,26 @@ if is_deploy:
         smoke_steps = [n for n, r in enumerate(runs) if SMOKE_RUN.search(r)]
         rollout_steps = [n for n, r in enumerate(runs) if ROLLOUT.search(r)]
         services_steps = [n for n, r in enumerate(runs) if re.search(r"\bgcloud\s+run\s+services\s+replace\b", r)]
+        prev_steps = [n for n, r in enumerate(runs) if DESCRIBE.search(r) and PREVIOUS_FILE.search(r) and not UPDATE_TRAFFIC.search(r)]
         if not (len(pre_steps) == len(boot_steps) == len(smoke_steps) == 1 and rollout_steps and
-                max(auth_steps) < min(rollout_steps) <= max(rollout_steps) < smoke_steps[0]):
-            fail("deploy.yml's smoke auth preflight and bootstrap (one step each) must come before rollout, and the post-rollout smoke (one step) after it")
+                max(auth_steps) < min(rollout_steps) <= max(rollout_steps) == smoke_steps[0]):
+            fail("deploy.yml's smoke auth preflight and bootstrap (one step each) must come before rollout, and the post-rollout smoke (one step) after migrate, as the last rollout step")
+        elif services_steps != smoke_steps:
+            fail("deploy.yml's `gcloud run services replace` and `make smoke-prod` live in one step (the services, then the smoke): a failed replace or smoke is never followed by another step, so that step rolls back itself")
         else:
+            # The bootstrap refuses a D286 api (it answers 401 for an unbound account too, and the helper passes on any 401):
+            # the serving api revision's env is read (python3 -I, not grep) and a SMOKE_OIDC_SA_ID in it ends the run, before the helper.
+            br = runs[boot_steps[0]]
+            helper = SMOKE_BOOTSTRAP.search(br)
+            guard = br[:helper.start()]
+            if not (re.search(r"\bgcloud\s+run\s+revisions\s+describe\b", guard) and re.search(r"--format=json\b", guard) and
+                    re.search(r"\bpython3\s+-I\b", guard) and "SMOKE_OIDC_SA_ID" in guard and re.search(r"\bexit\s+1\b", guard) and
+                    re.search(r"already has the D286 smoke sign-in", guard)):
+                fail(f"deploy.yml's deploy job, {step_label(boot_steps[0], steps[boot_steps[0]])}: before `smoke_prod.sh --auth-bootstrap` it reads the serving api revision "
+                     "(`gcloud run revisions describe --format=json`, parsed with python3 -I) and fails with an ::error when its env has SMOKE_OIDC_SA_ID "
+                     "(a D286 api answers 401 for an unbound account too: the bootstrap is over)")
+            if not prev_steps or prev_steps[0] > boot_steps[0]:
+                fail("deploy.yml's bootstrap reads the api revision from $RUNNER_TEMP/previous, so the step that records it comes before the bootstrap")
             if steps[pre_steps[0]].get("if") != PREFLIGHT_IF:
                 fail(f"deploy.yml's smoke auth preflight: its `if` must be exactly `{PREFLIGHT_IF}` (a push, or a dispatch with auth_preflight on), is {steps[pre_steps[0]].get('if')!r}")
             if steps[boot_steps[0]].get("if") != BOOTSTRAP_IF:
@@ -417,16 +433,26 @@ if is_deploy:
                 fail(f"deploy.yml's deploy job, {step_label(smoke_steps[0], sm)}: it unsets SMOKE_AUTH_FILE and never sets it: the post-rollout smoke mints a fresh token, not the preflight's session")
             # The rollback lives inside the smoke step (no status function may run a later step after its failure).
             if not (UPDATE_TRAFFIC.search(sr) and "--to-revisions" in sr and PREVIOUS_FILE.search(sr) and
-                    re.search(r"\bfor\s+\w+\s+in\s+api\s+ingest\s+notify\s+scoring\s*;", sr) and re.search(r"\bexit\s+1\b", sr)):
+                    re.search(r"\bfor\s+\w+\s+in\s+api\s+ingest\s+notify\s+scoring\s*;", sr) and
+                    re.search(r"^\s*rollback\s+api\s+ingest\s+notify\s+scoring\s*\n\s*exit\s+1\b", sr, re.M)):
                 fail(f"deploy.yml's deploy job, {step_label(smoke_steps[0], sm)}: the smoke step rolls back itself when `make smoke-prod` fails: "
                      "`gcloud run services update-traffic <svc> --to-revisions=<previous>=100` from $RUNNER_TEMP/previous for api, ingest, notify, "
                      "scoring in that order, then `exit 1`")
             for n, r in enumerate(runs):
                 if n != smoke_steps[0] and UPDATE_TRAFFIC.search(r):
                     fail(f"deploy.yml's deploy job, {step_label(n, steps[n])}: `gcloud run services update-traffic` belongs in the post-rollout smoke step only (the rollback)")
+            # A failed replace is rolled back inside the same step: after `services replace` and before the smoke, a
+            # call of the rollback and an `exit 1` (the services already replaced go back, then the run fails).
+            rep = re.search(r"\bgcloud\s+run\s+services\s+replace\b", sr)
+            ex = re.search(r"\bexit\s+1\b", sr[rep.end():]) if rep else None
+            mk = SMOKE_RUN.search(sr)
+            if not (rep and ex and mk and rep.end() + ex.start() < mk.start() and
+                    re.search(r"^\s*rollback\b", sr[rep.end():rep.end() + ex.start()], re.M) and
+                    re.search(r"\bfor\s+\w+\s+in\s+scoring\s+notify\s+ingest\s+api\s*;", sr)):
+                fail(f"deploy.yml's deploy job, {step_label(smoke_steps[0], sm)}: a failed `services replace` (loop: scoring, notify, ingest, api) is rolled back in the same "
+                     "step: the services already replaced (and the failed one if its traffic moved) go back to $RUNNER_TEMP/previous with `rollback ...`, then `exit 1`, before `make smoke-prod`")
             # The serving revisions are recorded before anything rolls: before migrate, and so before the services.
-            prev_steps = [n for n, r in enumerate(runs) if DESCRIBE.search(r) and PREVIOUS_FILE.search(r) and not UPDATE_TRAFFIC.search(r)]
-            if len(prev_steps) != 1 or not services_steps or not prev_steps[0] < min(rollout_steps) <= min(services_steps):
+            if len(prev_steps) != 1 or not prev_steps[0] < min(rollout_steps):
                 fail("deploy.yml's deploy job needs one step before migrate and the services that records the serving revisions: "
                      "`gcloud run services describe` into $RUNNER_TEMP/previous")
             else:

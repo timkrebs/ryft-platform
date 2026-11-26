@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -12,8 +13,9 @@ import (
 	"github.com/timkrebs/ryft/internal/store"
 )
 
-// D286: the smoke principal never creates a users row. A missing or deleted user is a 401
-// smoke_unknown_user; an existing one loads, with its stored identity untouched.
+// D286: the smoke principal never creates a users row and never touches one it is not bound to. The
+// binding is checked first, so a missing, deleted or merely unbound user is a 401 smoke_unbound with
+// the row untouched; the bound one loads, with its stored identity untouched.
 func TestEnsureUserSmokePrincipalNeverInserts(t *testing.T) {
 	pool := testPool(t)
 	st := store.New(pool)
@@ -31,11 +33,11 @@ func TestEnsureUserSmokePrincipalNeverInserts(t *testing.T) {
 		var ae *auth.Error
 		return errors.As(err, &ae) && ae.Status == http.StatusUnauthorized && ae.Reason == reason
 	}
-	refused := func(err error) bool { return refusedAs(err, "smoke_unknown_user") }
+	refused := func(err error) bool { return refusedAs(err, "smoke_unbound") }
 
 	missing := uuid.New()
 	if _, err := load(ctx, auth.Principal{UserID: missing, Smoke: true}); !refused(err) {
-		t.Fatalf("a missing smoke user: want 401 smoke_unknown_user, got %v", err)
+		t.Fatalf("a missing smoke user: want 401 smoke_unbound, got %v", err)
 	}
 	if rows(missing) != 0 {
 		t.Fatal("the smoke principal inserted a users row")
@@ -49,7 +51,7 @@ func TestEnsureUserSmokePrincipalNeverInserts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := load(ctx, auth.Principal{UserID: gone, Smoke: true}); !refused(err) {
-		t.Fatalf("a deleted smoke user: want 401 smoke_unknown_user, got %v", err)
+		t.Fatalf("a deleted smoke user: want 401 smoke_unbound, got %v", err)
 	}
 
 	id := uuid.New()
@@ -73,11 +75,26 @@ func TestEnsureUserSmokePrincipalNeverInserts(t *testing.T) {
 	if _, err := st.EnsureUser(ctx, store.Identity{ID: other}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(ctx, `UPDATE users SET last_seen_at = now() - interval '1 day' WHERE id=$1`, other); err != nil {
+		t.Fatal(err)
+	}
+	seen := func() time.Time {
+		t.Helper()
+		var at time.Time
+		if err := pool.QueryRow(ctx, `SELECT last_seen_at FROM users WHERE id=$1`, other).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	before := seen()
 	if _, err := load(ctx, auth.Principal{UserID: other, Smoke: true}); !refusedAs(err, "smoke_unbound") {
 		t.Fatalf("another existing user: want 401 smoke_unbound, got %v", err)
 	}
+	if !seen().Equal(before) {
+		t.Fatal("a refused smoke request wrote to a user it is not bound to (last_seen_at moved)")
+	}
 	if _, err := load(ctx, auth.Principal{UserID: uuid.New(), Smoke: true}); !refused(err) {
-		t.Fatalf("a Supabase-only ID: want 401 smoke_unknown_user, got %v", err)
+		t.Fatalf("a Supabase-only ID: want 401 smoke_unbound, got %v", err)
 	}
 
 	// An app user's token still creates the row, as before.

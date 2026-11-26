@@ -28,3 +28,17 @@ There were no blockers. The checks came back sound in these areas:
 | 3 | medium | `smoke=false` skips verifying the new revisions. | Holds: the input gated both steps. | Fixed. `auth_preflight` only swaps the preflight for a bootstrap check that passes only against a pre-D286 api. The post-rollout smoke always runs with a fresh token and rolls traffic back on failure. |
 | 4 | medium | A slow Google JWKS fetch can fail cold starts. | Holds: `NewGoogleOIDC` blocked for 10 s on a stalled server, measured. | Fixed: built in the background; a smoke token gets 503 until ready; tested with a stalled server (returns in 0.08 s). |
 | — | — | Render error for placeholders. | — | It now names the key and its source. |
+
+# Review of the follow-up (code-reviewer, the one pass on c0f44fa)
+
+No blockers.
+
+| # | Severity | Finding | Owner | Outcome |
+|---|---|---|---|---|
+| 1 | should-fix | The bootstrap passes on any 401, and a D286 api answers 401 for an unbound account too. | gitops-engineer | The bootstrap step also refuses when the serving api revision's env has `SMOKE_OIDC_SA_ID`. |
+| 2 | should-fix | A rollout that fails partway is not rolled back. | gitops-engineer | The replace, the smoke and the rollback now run in one step; a failed replace rolls back what moved. |
+| 3 | nit | An unbound smoke token touches the user's row before the 401. | backend-engineer | The binding is checked before EnsureUser. |
+| 4 | nit | A 503 while the key set is loading fails the smoke and rolls back a good release. | test-engineer | The `/v1/me` check retries a 503; idempotent curl calls get `--retry 3`. |
+| 5 | nit | A comment in deploy.yml is misindented. | gitops-engineer | Indented. |
+
+Fixed without a second review pass (the brief allows one).

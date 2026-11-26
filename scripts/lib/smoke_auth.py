@@ -47,7 +47,19 @@ MAX_BEARER_LENGTH = 16 * 1024
 
 
 class InvalidSmokeAuth(Exception):
-    pass
+    status = None  # the HTTP status behind the failure, when there was one
+
+
+def http_failure(message, status):
+    failure = InvalidSmokeAuth(message)
+    failure.status = status
+    return failure
+
+
+# A new api instance answers 503 smoke_jwks_unavailable for about 10 s while its Google keys load, so a read of
+# GET /v1/me retries on 503 only: 5 attempts, these waits between them. Tests replace SLEEP.
+RETRY_WAITS = (2, 4, 4, 4)
+SLEEP = time.sleep
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -122,7 +134,7 @@ def request_json(request, label, known_codes=()):
     try:
         with opener.open(request, timeout=20) as response:
             if response.status != 200:
-                raise InvalidSmokeAuth(f"{label} returned HTTP {response.status}")
+                raise http_failure(f"{label} returned HTTP {response.status}", response.status)
             try:
                 return object_from(response)
             except ValueError:
@@ -141,7 +153,7 @@ def request_json(request, label, known_codes=()):
             except (OSError, ValueError, http.client.HTTPException):
                 pass
         suffix = f" ({code})" if code else ""
-        raise InvalidSmokeAuth(f"{label} returned HTTP {error.code}{suffix}") from None
+        raise http_failure(f"{label} returned HTTP {error.code}{suffix}", error.code) from None
     except (OSError, ValueError, http.client.HTTPException):
         raise InvalidSmokeAuth(f"{label} could not complete") from None
 
@@ -346,6 +358,30 @@ def load_session(path, api, ingest):
     raise InvalidSmokeAuth("verified smoke session file is missing, invalid or for another target")
 
 
+def me_request(api, token):
+    return urllib.request.Request(api + "/v1/me", headers={"Authorization": f"Bearer {token}"})
+
+
+def read_me(api, token):
+    """GET /v1/me as JSON; a 503 (an instance still loading its keys) is retried, nothing else is."""
+    for wait in (*RETRY_WAITS, None):
+        try:
+            return request_json(me_request(api, token), "GET /v1/me")
+        except InvalidSmokeAuth as error:
+            if wait is None or error.status != 503:
+                raise
+        SLEEP(wait)
+
+
+def me_status(api, token):
+    """GET /v1/me's HTTP status, with the same 503 retry; the status after the last attempt is returned."""
+    for wait in (*RETRY_WAITS, None):
+        status = status_of(me_request(api, token), "GET /v1/me")
+        if status != 503 or wait is None:
+            return status
+        SLEEP(wait)
+
+
 def verify(mode, api_arg, ingest_arg, output):
     api, api_local, ingest, ingest_local, canonical = targets(api_arg, ingest_arg)
     supplied = os.environ.get("SMOKE_TOKEN")
@@ -382,7 +418,7 @@ def verify(mode, api_arg, ingest_arg, output):
         token = mint_google_token()
         check_google_claims(token, "minted token", sa_id)
 
-    me = request_json(urllib.request.Request(api + "/v1/me", headers={"Authorization": f"Bearer {token}"}), "GET /v1/me")
+    me = read_me(api, token)
     subject = canonical_user(me.get("id"), "GET /v1/me did not return an account UUID (HTTP 200)")
     if expected is not None and subject != expected:
         raise InvalidSmokeAuth("GET /v1/me did not identify the expected smoke account (HTTP 200)")
@@ -435,7 +471,7 @@ def bootstrap(api_arg, ingest_arg):
     sa_id = smoke_sa_id()
     token = mint_google_token()
     check_google_claims(token, "minted token", sa_id)
-    status = status_of(urllib.request.Request(api + "/v1/me", headers={"Authorization": f"Bearer {token}"}), "GET /v1/me")
+    status = me_status(api, token)
     if status == 200:
         raise InvalidSmokeAuth(
             "the running api accepts the smoke token: the bootstrap is over, run the deploy with auth_preflight on"

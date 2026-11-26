@@ -67,7 +67,12 @@ bearer() {
   shift
   printf 'Authorization: Bearer %s\n' "$token" | curl -q -H @- "$@"
 }
-call() { bearer "$TOKEN" -fsS -H 'Content-Type: application/json' "$@"; }
+# Calls made with the smoke token retry curl's transient statuses (408/429/500/502/503/504; never
+# --retry-all-errors): a new instance answers 503 while it loads its keys. Safe for every call below: the GETs,
+# POST /v1/sync (D100), POST and DELETE /v1/me/consent (grant is NOT EXISTS, revoke an UPDATE of the unrevoked
+# row) and POST /v1/me/invite (a no-op once the account has access). The ADMIN_API_KEY calls are not retried.
+smoke_curl() { bearer "$TOKEN" --retry 3 --retry-delay 2 "$@"; }
+call() { smoke_curl -fsS -H 'Content-Type: application/json' "$@"; }
 # The admin key's other sources (the Vault root's Terraform output, the in-cluster Vault) went with
 # D3 (D246): only the environment is left, so there is nothing to look up.
 [ -n "${ADMIN_API_KEY:-}" ] || echo "! no ADMIN_API_KEY in the environment (scripts/lib/admin.sh): the beta gate is not probed"
@@ -75,7 +80,7 @@ call() { bearer "$TOKEN" -fsS -H 'Content-Type: application/json' "$@"; }
 code=$(curl -s -o /dev/null -w '%{http_code}' "$API/v1/me")
 [ "$code" = 401 ] || fail "GET $API/v1/me without a token: $code, want 401 (api behind the edge)"
 
-code=$(bearer "$TOKEN" -s -o /dev/null -w '%{http_code}' "$INGEST/v1/sync")
+code=$(smoke_curl -s -o /dev/null -w '%{http_code}' "$INGEST/v1/sync")
 [ "$code" = 404 ] || fail "GET $INGEST/v1/sync: $code, want ingest's own 404 (only POST exists)"
 
 if [ "$(echo "$me" | json 'd["beta_access"]')" != True ]; then
@@ -84,7 +89,7 @@ if [ "$(echo "$me" | json 'd["beta_access"]')" != True ]; then
       -d '{"note": "smoke-prod", "max_uses": 1}' | json 'd["code"]') || fail "create an invite code (ADMIN_API_KEY)"
     call -X POST "$API/v1/me/invite" -d "{\"code\": \"$code\"}" || fail "redeem the invite code"
     echo "→ smoke user: beta access with a one-use invite code"
-  elif [ "$(bearer "$TOKEN" -s -o /dev/null -w '%{http_code}' "$API/v1/days")" = 403 ]; then
+  elif [ "$(smoke_curl -s -o /dev/null -w '%{http_code}' "$API/v1/days")" = 403 ]; then
     fail "BETA_GATE is on and the smoke user has no access: run again with ADMIN_API_KEY (the Secret Manager secret admin-api-key: scripts/lib/admin.sh)"
   else
     echo "! the smoke user has no beta access: fine while BETA_GATE is off; run once with ADMIN_API_KEY before turning it on"
@@ -138,7 +143,7 @@ PY
 }
 probe() {   # method url code [data] → the gate's mode for that request
   local method=$1 url=$2 code=$3 data=${4:-}
-  bearer "$TOKEN" -s -o "$tmp/body" -D "$tmp/hdrs" -w '%{http_code}' -X "$method" \
+  smoke_curl -s -o "$tmp/body" -D "$tmp/hdrs" -w '%{http_code}' -X "$method" \
     -H 'Content-Type: application/json' ${data:+-d "$data"} "$url" > "$tmp/status"
   mode_of "$tmp/status" "$tmp/hdrs" "$tmp/body" "$code"
 }

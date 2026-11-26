@@ -345,24 +345,25 @@ func requestID(r *http.Request) string {
 // ensureUser finds or creates the caller's user row from the verified token.
 // A deleted account's token is rejected like any other bad token.
 // The smoke account's token (D286) never creates a row and must be the account bound in
-// smoke_account, checked on every request: a wrong SMOKE_USER_ID is a 401, never a pass.
+// smoke_account, checked first on every request and before any write: a wrong SMOKE_USER_ID is a
+// 401 that touches no user's row, never a pass.
 func ensureUser(st userStore) func(context.Context, auth.Principal) (model.User, error) {
 	return func(ctx context.Context, p auth.Principal) (model.User, error) {
+		if p.Smoke {
+			bound, err := st.IsSmokeAccount(ctx, p.UserID)
+			switch {
+			case err != nil:
+				return model.User{}, err // a 503: cannot tell, so no pass
+			case !bound:
+				return model.User{}, auth.Unauthorized("smoke_unbound", nil)
+			}
+		}
 		u, err := st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name, MustExist: p.Smoke})
 		if p.Smoke && (errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrDeleted)) {
 			return u, auth.Unauthorized("smoke_unknown_user", nil)
 		}
 		if errors.Is(err, store.ErrDeleted) {
 			return u, auth.Unauthorized("deleted", err)
-		}
-		if err == nil && p.Smoke {
-			bound, berr := st.IsSmokeAccount(ctx, p.UserID)
-			switch {
-			case berr != nil:
-				return model.User{}, berr // a 503: cannot tell, so no pass
-			case !bound:
-				return model.User{}, auth.Unauthorized("smoke_unbound", nil)
-			}
 		}
 		return u, err
 	}

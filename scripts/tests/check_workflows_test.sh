@@ -246,7 +246,7 @@ expect_fail "the input smoke next to auth_preflight" "has an input \`smoke\`"
 # set_if <step name> <condition>: that step's `if` replaced in a fresh copy (parsed, so the condition is exactly what is given).
 set_if() { fresh; step="$1" cond="$2" yq -i '(.jobs.deploy.steps[] | select(.name == strenv(step)).if) = strenv(cond)' "$d/deploy.yml"; run; }
 PRE="Verify production smoke authentication"
-POST="make smoke-prod, and roll back when it fails"
+POST="The services, then make smoke-prod, and roll back when either fails"
 set_if "$PRE" "steps.tip.outputs.current == 'true'"
 expect_fail "the preflight runs on every dispatch" "smoke auth preflight: its \`if\` must be exactly"
 set_if "$PRE" "steps.tip.outputs.current == 'true' && inputs.auth_preflight"
@@ -263,18 +263,33 @@ deploy_swap "the post-rollout smoke reuses the session file" "mints a fresh toke
 deploy_swap "the post-rollout smoke leaves the session variable alone" "mints a fresh token, not the preflight's session" \
   '          unset SMOKE_AUTH_FILE' '          true'
 deploy_swap "no rollback command in the smoke step" "the smoke step rolls back itself" \
-  '               gcloud run services update-traffic "$s" --to-revisions="$prev=100" --region="$REGION" --project="$PROJECT" --quiet; then' '               true; then'
+  '                 gcloud run services update-traffic "$s" --to-revisions="$prev=100" --region="$REGION" --project="$PROJECT" --quiet; then' '                 true; then'
 deploy_swap "the rollback in another order" "the smoke step rolls back itself" \
-  '          for s in api ingest notify scoring; do' '          for s in scoring notify ingest api; do'
+  '            for s in api ingest notify scoring; do' '            for s in scoring notify ingest api; do'
 deploy_swap "the rollback without the recorded revisions" "the smoke step rolls back itself" \
-  '            prev=$(sed -n "s/^$s //p" "$RUNNER_TEMP/previous" | head -n 1)' '            prev=x'
+  '              prev=$(sed -n "s/^$s //p" "$RUNNER_TEMP/previous" | head -n 1)' '              prev=x'
 deploy_swap "the smoke step does not fail the run" "the smoke step rolls back itself" '          exit 1' '          exit 0'
+deploy_swap "a failed smoke rolls back only some services" "the smoke step rolls back itself" \
+  '          rollback api ingest notify scoring' '          rollback api ingest'
+# A failed rollout is rolled back too: the replace and the rollback are in one step (nothing runs after a failed step).
+deploy_swap "a failed replace is not rolled back" "a failed \`services replace\`" '              rollback "${replaced[@]}"' '              true'
+deploy_swap "a failed replace does not stop the run" "a failed \`services replace\`" '              exit 1' '              true'
+deploy_swap "the services in a step of their own" "live in one step" \
+  "      - name: The services, then make smoke-prod, and roll back when either fails" \
+  "      - name: Early replace\n        if: steps.tip.outputs.current == 'true'\n        run: gcloud run services replace x.yaml\n      - name: The services, then make smoke-prod, and roll back when either fails"
+# The bootstrap refuses a D286 api (its env has SMOKE_OIDC_SA_ID) before the helper, parsed with python3 -I.
+deploy_swap "the bootstrap without the env guard" "before \`smoke_prod.sh --auth-bootstrap\` it reads the serving api revision" \
+  '          sys.exit(0 if any(e.get("name") == "SMOKE_OIDC_SA_ID" for c in containers for e in (c.get("env") or [])) else 1)' '          sys.exit(1)'
+deploy_swap "the bootstrap's guard by grep" "before \`smoke_prod.sh --auth-bootstrap\` it reads the serving api revision" \
+  "          if printf '%s' \"\$rjson\" | python3 -I -c '" "          if printf '%s' \"\$rjson\" | grep -q SMOKE_OIDC_SA_ID; then"
+deploy_swap "the bootstrap's guard after the helper" "before \`smoke_prod.sh --auth-bootstrap\` it reads the serving api revision" \
+  "          rev=\$(sed -n 's/^api //p' \"\$RUNNER_TEMP/previous\" | head -n 1)" "          ./scripts/smoke_prod.sh --auth-bootstrap\n          rev=\$(sed -n 's/^api //p' \"\$RUNNER_TEMP/previous\" | head -n 1)"
 deploy_swap "a rollback outside the smoke step" "belongs in the post-rollout smoke step only" \
   "      - name: Sign out" "      - name: Roll back early\n        if: steps.tip.outputs.current == 'true'\n        run: gcloud run services update-traffic api --to-revisions=api-00001-abc=100\n      - name: Sign out"
 # The serving revisions are recorded before anything rolls (before migrate, and so before the services).
 deploy_swap "the revisions are not read from the service" "records the serving revisions" \
   '            json=$(gcloud run services describe "$s" --region="$REGION" --project="$PROJECT" --format=json) ||' '            json=$(true) ||'
-deploy_swap "the revisions are recorded after migrate started" "records the serving revisions" \
+deploy_swap "a rollout step before the recording and the smoke auth steps" "must come before rollout" \
   "      - name: Record the revisions serving traffic" "      - name: Early migrate\n        if: steps.tip.outputs.current == 'true'\n        run: gcloud run jobs execute migrate\n      - name: Record the revisions serving traffic"
 deploy_swap "only some services are recorded" "reads status.traffic" \
   '          for s in scoring notify ingest api; do' '          for s in scoring notify ingest; do'
@@ -311,7 +326,7 @@ deploy_swap "SMOKE_TOKEN written to GITHUB_ENV" "names SMOKE_\\* and \\\$GITHUB_
 deploy_swap "SMOKE_TOKEN written to GITHUB_ENV through a variable" "names SMOKE_\\* and \\\$GITHUB_ENV" \
   "      - name: Sign out" "      - name: Smuggle\n        run: |\n          f=\${GITHUB_ENV}\n          printf 'SMOKE_TOKEN=%s\\\\n' x >> \"\$f\"\n      - name: Sign out"
 deploy_swap "a secret in the post-rollout smoke" "it takes no secret" \
-  "      - name: make smoke-prod, and roll back when it fails" "      - name: make smoke-prod, and roll back when it fails\n        env:\n          X: \${{ secrets.SMOKE_EMAIL }}"
+  "      - name: The services, then make smoke-prod, and roll back when either fails" "      - name: The services, then make smoke-prod, and roll back when either fails\n        env:\n          X: \${{ secrets.SMOKE_EMAIL }}"
 deploy_swap "a secret in the bootstrap" "it takes no secret" \
   "      - name: Bootstrap smoke authentication (the running api predates D286)" "      - name: Bootstrap smoke authentication (the running api predates D286)\n        env:\n          X: \${{ secrets.SMOKE_EMAIL }}"
 job_swap "no tip step" "deploy job has no step with id" deploy "        id: tip" "        id: tip2"
