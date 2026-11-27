@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "last_sync_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "reason": {
+      "nullable": true,
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "last_sync_at",
+    "reason",
+    "source",
+    "status"
+  ],
+  "title": "SyncSource",
+  "type": "object"
+}

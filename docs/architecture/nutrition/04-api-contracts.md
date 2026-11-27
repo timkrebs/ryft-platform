@@ -6,8 +6,9 @@ Base path is `/v1/nutrition` on the API host. Routes use the existing bearer, Ap
 | --- | --- | --- |
 | POST `/foods/search` | `FoodSearch` with `query`, optional `language`, `market`, `limit`, `offset` | 200 `FoodSearchPage` |
 | POST `/foods/barcode` | `FoodBarcodeQuery` with string `barcode` and optional `market` | 200 `FoodBarcodeResult` |
-| GET `/foods/{id}` | Food UUID | 200 `FoodDetail` |
+| GET `/foods/{id}` | Food UUID, optional `language` | 200 `FoodDetail` |
 | GET `/foods/{id}/portions` | Food UUID | 200 `FoodPortion[]` |
+| PUT, DELETE `/foods/{id}/favorite` | Food UUID | 204 for either operation, including repeats |
 | POST `/foods/custom` | `FoodCustomInput` | 200 `FoodDetail` |
 | POST `/foods/submissions` | `{"food_id":"…","status":"draft"}` or status `submitted` | 200 `FoodSubmission` |
 | POST `/meals` | `NutritionMealInput` | 201 `NutritionMeal`, or 200 replay |
@@ -40,7 +41,15 @@ Content-Type: application/json
 {"foods":[{"id":"a7e40c6e-bfb4-47eb-ad64-aea61136db03","name":"Hähnchenbrust","brand":"","type":"generic","quality":"source_reported"}],"next_offset":null}
 ```
 
-Search bodies carry food names and barcode digits to keep them out of access URLs. Search defaults to 20, supports 1–50, and caps offsets at 1,000. `language` prefers matching translations and supports German/English stemming for regional codes such as `de-DE`. `market` is a two-letter country preference. Exact labels precede prefixes, brand prefixes and full-text matches. Common German and English generic food terms can match the alternate term before typo matches. Results retain the catalog ID and the matched name supplied by the catalog. Match quality precedes market and language preferences. Text is accent- and punctuation-folded. An empty results array is a successful search.
+Search bodies carry food names and barcode digits to keep them out of access URLs. Search defaults to 20, supports 1–50, and caps offsets at 1,000. `language` prefers matching translations and supports German/English stemming for regional codes such as `de-DE`. `market` is a two-letter country preference. Exact labels precede prefixes, brand prefixes and full-text matches. With a German or English language or a DE, AT or CH market, common generic food terms can match the alternate term before typo matches. A normalized prefix of at least four characters can use this fallback when one alternate term covers all dictionary matches. For example, `Apfe` can match `Apple` and `Apple juice` in an English catalog, while `Apfels` narrows the fallback to `Apple juice`. Results retain the catalog ID and the matched name supplied by the catalog. Match quality precedes market and language preferences. Text is accent- and punctuation-folded. An empty results array is a successful search.
+
+A broad query is the name of a staple group, or a single word of at least four letters that starts a staple's name. It ranks the group's staples first, then its whole forms, exact name matches, cultivars, and the group's other forms (for example apple juice), which still precede brand and prefix matches. A query for an exact variant such as `Milch 1,5 Prozent` is not broad: its exact match ranks first even when another variant is a favorite. Within a rank, the caller's favorites, number of logged items in the last 90 days and most recent selection influence order. Food IDs break remaining ties. Search and food detail return `favorited` as a Boolean and may include `subtitle`, `default_portion`, `last_used_portion` and `reference_portion`. Detail also exposes the last-used value as `last_used_selection`. A selected catalog default carries a real `portion_id`. A reference uses 100 g or 100 ml on a compatible basis. If a previous portion has changed or disappeared, the server reuses the saved grams or milliliters when compatible. It omits an unusable selection. Counts and selections are derived from the caller's remaining diary items.
+
+```json
+{"portion_id":"a7e40c6e-bfb4-47eb-ad64-aea61136db04","quantity":1,"unit":"portion","label":"Mittelgroßer Apfel","short_label":"Mittel","gram_weight":150,"kcal":78,"protein_g":0.45,"fat_g":0}
+```
+
+`PUT /foods/{id}/favorite` requires a visible active food and the diary write gate. Otherwise it answers 404. `DELETE` erases the caller's favorite even with the diary flag off. It is idempotent for any valid UUID. A malformed ID answers 404. Favorites disappear on account deletion. `GET /v1/me/nutrition-export` lists them as `favorites` on its first page only (`food_id`, `food_name`, `favorited_at`), as `[]` when there are none; later pages omit the field. Barcode matches and `POST /foods/custom` don't carry the selection fields. The app contract with full examples is [API.md → Nutrition food selection](../../API.md#nutrition-food-selection).
 
 ```http
 POST /v1/nutrition/foods/barcode
@@ -54,6 +63,8 @@ Content-Type: application/json
 ```
 
 A valid, unknown barcode has an empty `matches` array. `conflicted` signals two or more catalog IDs. Show candidates for review, and honor the 20-match cap indicated by `truncated`. Food detail returns a canonical name, optional verified density, names, source IDs, local labels for portions and nutrient references. An absent nutrient code is unknown. Portions are reported as measured weight, volume or servings with explicit IDs. The public catalog imports USDA household measures with source gram weights and Open Food Facts servings with a declared mass or volume compatible with the item's reference basis. Use grams or milliliters where no measured portion is available. Mass-to-volume conversion requires a verified density.
+
+When `language` is supplied on detail, a matching non-alias name is preferred. Catalog portions can carry `portion_key`, `short_label_en`, `short_label_de`, `is_default` and `sort_order`. The backend returns them in ascending sort order with label and ID tie-breaks. BLS foods carry the BLS code in source `external_id`, release in `dataset_version`, DOI or source link in `source_url`, and named publisher credit in `attribution` alongside `license_identifier`.
 
 The development seed can return the following food detail. This example shows one name and one nutrient. `GET /foods/{id}/portions` returns the `portions` array on its own.
 
@@ -84,6 +95,8 @@ Content-Type: application/json
 ```
 
 The response stores `local_date: "2026-10-25"`, revision 1, UTC consumption and creation timestamps, and an item with the food snapshot, resolved weight and nutrient provenance. Meal types are `breakfast`, `lunch`, `dinner`, `snack` and `other`. Input methods are `manual_search`, `barcode`, `photo_capture`, `photo_import`, `natural_language`, `nutrition_label`, `external_import` and `manual_entry`. They are provenance values for already reviewed food selections. Meals contain 1–50 items. Supply `g` or `ml` directly, or `portion` or `serving` with the corresponding `portion_id`. The backend recomputes values for new items. A matching POST replay returns the current saved meal, including any later edits. Deleted meals retain only a request ID marker until account deletion.
+
+New meal items accept optional `language` to resolve food and portion labels from the server catalog. The saved item's optional `portion_label` and `portion_short_label` stay unchanged on retained items, including after a catalog rename or retirement. Legacy items can gain the linked base label when their saved food, portion ID, unit and measure still match. Missing labels or nutrient values are omitted in previews.
 
 ```json
 {"revision":1,"notes":"Prepped at home","items":[{"item_id":"63cf1226-48cf-43c7-957e-c994ec3bbe61"}]}

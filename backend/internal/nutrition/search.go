@@ -2,6 +2,8 @@ package nutrition
 
 import "strings"
 
+const minimumCatalogAliasPrefix = 4 // D283
+
 // The normalized pairs cover common generic foods. They supply a fallback query
 // only; catalog labels, source claims and food IDs still come from the database.
 var commonGermanEnglish = [][2]string{
@@ -17,13 +19,49 @@ var commonGermanEnglish = [][2]string{
 	{"ei", "egg"}, {"olivenol", "olive oil"}, {"rapsol", "canola oil"},
 }
 
-// CatalogSearchAlias returns one secondary term for an exact DE or EN food word.
-// Short prefixes retain the existing indexed search for type-ahead.
+// CatalogSearchAlias returns one secondary term for a known DE or EN food name.
+// It preserves explicit qualifiers and only expands an unambiguous prefix.
 func CatalogSearchAlias(query, language, market string) string {
 	base, _, _ := strings.Cut(language, "-")
 	if base != "de" && base != "en" && market != "DE" && market != "AT" && market != "CH" {
 		return ""
 	}
+	if alias := exactCatalogAlias(query); alias != "" {
+		return alias
+	}
+	if first, qualifiers, ok := strings.Cut(query, " "); ok {
+		if alias := exactCatalogAlias(first); alias != "" {
+			return alias + " " + qualifiers
+		}
+	}
+	if len(query) < minimumCatalogAliasPrefix {
+		return ""
+	}
+	var alternatives []string
+	var shortest string
+	for _, pair := range commonGermanEnglish {
+		for i, term := range pair {
+			if !strings.HasPrefix(term, query) {
+				continue
+			}
+			alternative := pair[1-i]
+			alternatives = append(alternatives, alternative)
+			if shortest == "" || len(alternative) < len(shortest) {
+				shortest = alternative
+			}
+		}
+	}
+	// "apfe" covers both "apple" and "apple juice". Unrelated alternates
+	// such as those for "sweet" stay on the primary search alone.
+	for _, alternative := range alternatives {
+		if !strings.HasPrefix(alternative, shortest) {
+			return ""
+		}
+	}
+	return shortest
+}
+
+func exactCatalogAlias(query string) string {
 	for _, pair := range commonGermanEnglish {
 		switch query {
 		case pair[0]:

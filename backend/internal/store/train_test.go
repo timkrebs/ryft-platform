@@ -298,7 +298,10 @@ func TestSessionWorkoutsAndAccountDeletion(t *testing.T) {
 	if err := st.EnsureSessionWorkout(ctx, a, wid, s.ID, t0, t0.Add(time.Hour), 42); err != nil {
 		t.Fatal(err)
 	}
-	// New times replace the workout.
+	// New times replace the workout: the session's, which 0065's function reads (it takes none).
+	if _, err := pool.Exec(ctx, `UPDATE sessions SET ended_at=$3 WHERE user_id=$1 AND id=$2`, a, s.ID, t0.Add(50*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.EnsureSessionWorkout(ctx, a, wid, s.ID, t0, t0.Add(50*time.Minute), 40); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +310,7 @@ func TestSessionWorkoutsAndAccountDeletion(t *testing.T) {
 		t.Fatalf("session workout: %+v %v", w, err)
 	}
 	// Kept while chosen, gone once its session is deleted.
-	if err := st.ReleaseSessionWorkouts(ctx, a, []uuid.UUID{s.ID}, map[uuid.UUID]uuid.UUID{s.ID: wid}); err != nil {
+	if err := st.ReleaseSessionWorkouts(ctx, a, []uuid.UUID{s.ID}, map[uuid.UUID]uuid.UUID{s.ID: wid}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.Workout(ctx, a, wid); err != nil {
@@ -316,7 +319,7 @@ func TestSessionWorkoutsAndAccountDeletion(t *testing.T) {
 	if _, err := st.DeleteSession(ctx, a, s.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ReleaseSessionWorkouts(ctx, a, nil, nil); err != nil {
+	if err := st.ReleaseSessionWorkouts(ctx, a, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.Workout(ctx, a, wid); !errors.Is(err, ErrNotFound) {

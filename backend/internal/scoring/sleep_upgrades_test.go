@@ -2,6 +2,7 @@ package scoring
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -305,10 +306,14 @@ func TestChangelog(t *testing.T) {
 	if err != nil || len(c) == 0 || c[0].Version != ModelVersion {
 		t.Fatalf("changelog: %v %v", c, err)
 	}
-	// 2026.10.3 (the workout rules) moves stored numbers but no trend metric:
-	// affects is [] on the wire, never null (the app decodes [String]).
-	if c[0].Version != "2026.10.3" || c[0].Affects == nil || len(c[0].Affects) != 0 {
-		t.Fatalf("2026.10.3 affects: %#v", c[0].Affects)
+	// 2026.10.3 (the workout rules) moves stored numbers but no trend metric,
+	// and 2026.11.1 (check-ins, session RPE) no daily number at all: affects is
+	// [] on the wire, never null (the app decodes [String]).
+	for _, v := range []string{"2026.11.1", "2026.10.3"} {
+		k := slices.IndexFunc(c, func(e ModelChange) bool { return e.Version == v })
+		if k < 0 || c[k].Affects == nil || len(c[k].Affects) != 0 {
+			t.Fatalf("%s affects: %v", v, k)
+		}
 	}
 	for _, e := range c {
 		if b, _ := json.Marshal(e.Affects); string(b) == "null" {

@@ -4,6 +4,9 @@
     "expected_within_sec": {
       "type": "integer"
     },
+    "freshness": {
+      "type": "string"
+    },
     "gate": {
       "nullable": true,
       "type": "string"
@@ -37,18 +40,33 @@
       "nullable": true,
       "type": "string"
     },
+    "scores_pending_since": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "SyncSource"
+      },
+      "nullable": true,
+      "type": "array"
+    },
     "today": {
       "$ref": "TodayState"
     }
   },
   "required": [
     "expected_within_sec",
+    "freshness",
     "gate",
     "last_sync_at",
     "last_sync_device",
     "latest",
     "pending_days",
     "resync_requested_at",
+    "scores_pending_since",
+    "sources",
     "today"
   ],
   "title": "SyncStatus",

@@ -41,7 +41,8 @@ func nutritionMealItems(ctx context.Context, tx pgx.Tx, user uuid.UUID, meals []
 		ids[i], byID[meals[i].ID] = meals[i].ID.String(), &meals[i]
 	}
 	rows, err := tx.Query(ctx, `SELECT meal_id, id, food_id, food_name, brand, quantity, unit, portion_id,
-		weight_g, volume_ml, nutrients, sources, calculation_version, created_at, quality_profile FROM nutrition.meal_items
+		weight_g, volume_ml, nutrients, sources, calculation_version, created_at, quality_profile,
+		portion_label_snapshot, portion_short_label_snapshot FROM nutrition.meal_items
 		WHERE user_id=$1 AND meal_id=ANY($2::text[]::uuid[]) ORDER BY meal_id,position`, user, ids)
 	if err != nil {
 		return err
@@ -51,7 +52,8 @@ func nutritionMealItems(ctx context.Context, tx pgx.Tx, user uuid.UUID, meals []
 		var id uuid.UUID
 		var i model.NutritionMealItem
 		if err := rows.Scan(&id, &i.ID, &i.FoodID, &i.FoodName, &i.Brand, &i.Quantity, &i.Unit, &i.Portion,
-			&i.WeightG, &i.VolumeML, &i.Nutrients, &i.Sources, &i.CalculationVersion, &i.CreatedAt, &i.QualityProfile); err != nil {
+			&i.WeightG, &i.VolumeML, &i.Nutrients, &i.Sources, &i.CalculationVersion, &i.CreatedAt, &i.QualityProfile,
+			&i.PortionLabel, &i.PortionShortLabel); err != nil {
 			return err
 		}
 		i.CreatedAt = i.CreatedAt.UTC()
@@ -155,7 +157,7 @@ func makeNutritionItems(ctx context.Context, tx pgx.Tx, user uuid.UUID, inputs [
 	for _, in := range inputs {
 		if in.ItemID != nil {
 			item, ok := old[*in.ItemID]
-			if !ok || in.FoodID != uuid.Nil || in.Quantity != 0 || in.Unit != "" || in.Portion != nil {
+			if !ok || in.FoodID != uuid.Nil || in.Quantity != 0 || in.Unit != "" || in.Portion != nil || in.Language != "" {
 				return nil, nutrition.ErrInvalid
 			}
 			newItems = append(newItems, item)
@@ -216,10 +218,12 @@ func insertNutritionItems(ctx context.Context, tx pgx.Tx, user, meal uuid.UUID, 
 			qualityProfile = &value
 		}
 		batch.Queue(`INSERT INTO nutrition.meal_items (id,meal_id,user_id,position,food_id,food_name,brand,quantity,unit,
-			portion_id,weight_g,volume_ml,nutrients,sources,calculation_version,created_at,quality_profile)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,$15,$16,$17::jsonb)`,
+			portion_id,weight_g,volume_ml,nutrients,sources,calculation_version,created_at,quality_profile,
+			portion_label_snapshot,portion_short_label_snapshot)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,$15,$16,$17::jsonb,$18,$19)`,
 			item.ID, meal, user, pos, item.FoodID, item.FoodName, item.Brand, item.Quantity, item.Unit, item.Portion,
-			item.WeightG, item.VolumeML, string(nutrients), string(sources), item.CalculationVersion, item.CreatedAt, qualityProfile)
+			item.WeightG, item.VolumeML, string(nutrients), string(sources), item.CalculationVersion, item.CreatedAt, qualityProfile,
+			item.PortionLabel, item.PortionShortLabel)
 	}
 	return tx.SendBatch(ctx, batch).Close()
 }

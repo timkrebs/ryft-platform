@@ -84,7 +84,7 @@ type measures struct {
 
 func resolve(food model.FoodDetail, in model.NutritionMealItemInput) (measures, error) {
 	m := measures{preferred: in.Unit}
-	if !Quantity(in.Quantity) || in.FoodID != food.ID {
+	if !Quantity(in.Quantity) || in.FoodID != food.ID || (in.Language != "" && !Language(strings.ToLower(in.Language))) {
 		return m, ErrInvalid
 	}
 	switch in.Unit {
@@ -193,7 +193,7 @@ func Calculate(food model.FoodDetail, in model.NutritionMealItemInput) (model.Nu
 	}
 	id := food.ID
 	item := model.NutritionMealItem{
-		FoodID: &id, FoodName: food.Name, Brand: food.Brand, Quantity: in.Quantity, Unit: in.Unit, Portion: in.Portion,
+		FoodID: &id, FoodName: CatalogFoodName(food, in.Language), Brand: food.Brand, Quantity: in.Quantity, Unit: in.Unit, Portion: in.Portion,
 		Nutrients: make(map[string]model.NutritionSnapValue, len(chosen)), Sources: []model.FoodSource{},
 		CalculationVersion: CalculationVersion,
 	}
@@ -221,7 +221,15 @@ func Calculate(food model.FoodDetail, in model.NutritionMealItemInput) (model.Nu
 	}
 	if in.Portion != nil {
 		i := slices.IndexFunc(food.Portions, func(p model.FoodPortion) bool { return p.ID == *in.Portion })
-		used[food.Portions[i].SourceID] = true
+		p := food.Portions[i]
+		used[p.SourceID] = true
+		label, short := portionLabels(p, in.Language)
+		if label != "" {
+			item.PortionLabel = &label
+		}
+		if short != "" {
+			item.PortionShortLabel = &short
+		}
 	}
 	for _, source := range food.Sources {
 		if used[source.ID] || len(chosen) == 0 {

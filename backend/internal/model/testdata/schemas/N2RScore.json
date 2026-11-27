@@ -15,6 +15,9 @@
       "nullable": true,
       "type": "string"
     },
+    "bedtime_source": {
+      "type": "string"
+    },
     "budget": {
       "$ref": "N2RBudget"
     },

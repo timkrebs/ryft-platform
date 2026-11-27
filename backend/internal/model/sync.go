@@ -152,6 +152,10 @@ type Workout struct {
 	SessionID    *uuid.UUID `json:"session_id,omitempty"`
 	// Read-only: the scoring model of strain (ignored on upload).
 	ModelVersion *string `json:"model_version,omitempty"`
+	// Read-only (ignored on upload, D293): the user's session RPE (PUT /v1/workouts/{id}/rpe) and Foster's session
+	// load, the duration in whole minutes × the rating; omitted without a rating.
+	SessionRPE     *float64 `json:"session_rpe,omitempty"`
+	SessionRPELoad *int     `json:"session_rpe_load,omitempty"`
 	// Read-only: the sources of other recordings of this workout the server hid
 	// (cross-source duplicates), distinct and sorted; omitted when none.
 	AlsoRecordedBy []string `json:"also_recorded_by,omitempty"`
@@ -270,6 +274,35 @@ type TodayState struct {
 	ModelVersion string     `json:"model_version"`
 }
 
+// SyncSourceHealthKit is the HealthKit source of SyncStatus.sources; the others are provider ids of Connections
+// (an open set, D297).
+const SyncSourceHealthKit = "healthkit"
+
+// SyncSource.status; closed.
+const (
+	SyncSourceOK      = "ok"
+	SyncSourcePending = "pending"
+	SyncSourceError   = "error"
+)
+
+// SyncStatus.freshness; closed. scores_pending: the server holds data that today's scores do not include yet.
+const (
+	FreshnessCurrent       = "current"
+	FreshnessScoresPending = "scores_pending"
+)
+
+// SyncReasonNeedsReauth is a provider's SyncSource.reason; the set is open. A gate's reason is its code
+// (CodeConsentRequired, CodeInviteRequired).
+const SyncReasonNeedsReauth = "needs_reauth"
+
+// SyncSource is one way data reaches RYFT, in SyncStatus.sources (D297).
+type SyncSource struct {
+	Source     string     `json:"source"`
+	LastSyncAt *time.Time `json:"last_sync_at"`
+	Status     string     `json:"status"`
+	Reason     *string    `json:"reason"`
+}
+
 // SyncStatus is GET /v1/me/sync.
 type SyncStatus struct {
 	Gate              *string              `json:"gate"`
@@ -280,6 +313,10 @@ type SyncStatus struct {
 	PendingDays       []string             `json:"pending_days"`
 	ExpectedWithinSec int                  `json:"expected_within_sec"`
 	ResyncRequestedAt *time.Time           `json:"resync_requested_at"`
+	// D297: the sync button. Sources is never null (healthkit at least), ScoresPendingSince is null while current.
+	Sources            []SyncSource `json:"sources"`
+	Freshness          string       `json:"freshness"`
+	ScoresPendingSince *time.Time   `json:"scores_pending_since"`
 }
 
 // RecomputeRequest is POST /v1/recompute: the range of local days (YYYY-MM-DD) to score

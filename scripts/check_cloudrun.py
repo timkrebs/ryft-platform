@@ -16,6 +16,9 @@ renderer deploy.yml uses), parses the result with yq (mikefarah v4) and asserts,
     probe both on /health/live, the startup probe within 30 s (an instance must start while the
     database is down, so its tick logs result error; /health/ready is the uptime checks' target);
     all traffic to the latest revision;
+  - api's revision template labels are exactly ryft-meal-patch: d285 (D285: deploy.yml's record step reads the
+    label from the serving api revision, and refuses a commit that writes the meal portion labels while an api
+    without it serves); no other service has template labels;
   - api's and ingest's ingress against the gate edge in infra/gcp/gates.auto.tfvars (D242): all, or
     internal-and-cloud-load-balancing only while edge is live or locked (before that api. and ingest.
     reach Cloud Run through the domain mappings, which that ingress refuses), and locked only with
@@ -93,6 +96,13 @@ GATES = ROOT / "infra/gcp/gates.auto.tfvars"
 EDGE_PHASES = ("off", "built", "live", "locked")
 EDGE_LIVE = ("live", "locked")
 EDGE_LINE = re.compile(r'\s*edge\s*=\s*"([^"]*)"\s*(?:(?:#|//).*)?')
+# The production smoke's identity (D286), api and ingest only, all four or none: a Google ID token of ryft-smoke
+# is mapped to SMOKE_USER_ID. The email and the audience are fixed here and in the templates; the two ids come
+# from config.env (SMOKE_USER_ID, and SMOKE_SA_ID as SMOKE_OIDC_SA_ID). check_smoke compares the pair and keeps
+# the rows out of every other template.
+SMOKE_ENV = {"SMOKE_OIDC_SA_EMAIL": f"ryft-smoke@{PROJECT}.iam.gserviceaccount.com", "SMOKE_OIDC_SA_ID": None,
+             "SMOKE_OIDC_AUDIENCE": "ryft-smoke", "SMOKE_USER_ID": None}
+SMOKE_SERVICES = ("api", "ingest")
 # Direct connections (D257, design §9): the providers served, one config.env line for both public services
 # (check_connect compares the rendered pair as well), and in api the Garmin cap and the redirect URI's base.
 CONNECT_PUBLIC = {"CONNECT_PROVIDERS": None}
@@ -103,9 +113,9 @@ CONNECT_INGEST = {CUTOFF_ENV: None}
 CALLBACK_BASE = "https://api.ryftlab.de"
 CONNECT_API = {"CONNECT_GARMIN_USER_CAP": None, "CONNECT_CALLBACK_BASE": CALLBACK_BASE}
 PLAIN = {
-    "api": {**SHARED, **PUBLIC, **CONNECT_PUBLIC, **CONNECT_API, "ADMIN_WEB_ORIGINS": "https://ryftlab.de",
+    "api": {**SHARED, **PUBLIC, **SMOKE_ENV, **CONNECT_PUBLIC, **CONNECT_API, "ADMIN_WEB_ORIGINS": "https://ryftlab.de",
             "APPLE_TEAM_ID": "M77SKHKG63", "APPLE_KEY_ID": None, "APPLE_CLIENT_ID": "dev.timkrebs.ryft"},
-    "ingest": {**SHARED, **PUBLIC, **CONNECT_PUBLIC, **CONNECT_INGEST},
+    "ingest": {**SHARED, **PUBLIC, **SMOKE_ENV, **CONNECT_PUBLIC, **CONNECT_INGEST},
     "scoring": dict(SHARED),
     "notify": {**SHARED, "APNS_TOPIC": "dev.timkrebs.ryft", "APNS_KEY_ID": None, "APNS_TEAM_ID": "M77SKHKG63"},
     "migrate": {"DATABASE_URL": None, "LOG_LEVEL": None},
@@ -147,6 +157,8 @@ ACCESSORS = {**{f"db-password-{s}": {s, "migrate"} for s in SERVICES}, "db-passw
 P5 = ("ALLOW_INSECURE_APIKEY_AUTH", "API_KEY", "USER_ID", "ALLOW_INSECURE_PUSH", "PORT")
 P5_RE = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(P5) + r")(?![A-Za-z0-9_])")
 VERSION = re.compile(r"[1-9][0-9]*")
+# D285: api's revisions carry this label; deploy.yml's record step reads it from the serving revision.
+MEAL_PATCH_LABELS = {"ryft-meal-patch": "d285"}
 SVC_ANN = {"autoscaling.knative.dev/minScale", "autoscaling.knative.dev/maxScale",
            "run.googleapis.com/cpu-throttling", "run.googleapis.com/startup-cpu-boost"}
 PROBE_KEYS = {"httpGet", "initialDelaySeconds", "periodSeconds", "timeoutSeconds", "failureThreshold"}
@@ -181,7 +193,9 @@ def fakes(committed):
     digits = "".join(str(i % 10) for i in range(1, 22))
     v = {"GCP_PROJECT_NUMBER": digits[:12], "PUSH_SA_ID": digits, "SUPABASE_PROJECT_REF": "q" * 20,
          "SUPABASE_POOLER_HOST": "aws-0-eu-central-1.pooler.supabase.com", "APPLE_KEY_ID": "A" * 10,
-         "APNS_KEY_ID": "N" * 10, "LOG_LEVEL": "info"}
+         "APNS_KEY_ID": "N" * 10, "LOG_LEVEL": "info",
+         # The smoke identity (D286): fakes of the right shape, apart from every other id, so a swapped row differs.
+         "SMOKE_USER_ID": "00000000-0000-4000-8000-0000000000a5", "SMOKE_SA_ID": digits[::-1]}
     m = re.search(r"^PRIVACY_POLICY_VERSION=(.*)$", committed, re.M)
     v["PRIVACY_POLICY_VERSION"] = m.group(1) if m else "2026-01-01"
     # The committed gate mode (the lint before this has checked its shape), so the render is what deploys.
@@ -279,6 +293,27 @@ def check_connect(cfg, pins):
     if not cap.isdigit() or int(cap) < 1:
         fail("config.env", f"garmin in CONNECT_PROVIDERS with CONNECT_GARMIN_USER_CAP={cap}: a cap above 0 (the "
              "programme's number, design §6.1) in the same PR; at 0 api refuses to start (D257)")
+
+
+def check_smoke():
+    """D286: the smoke identity as rendered: all four env rows in api and ingest, equal in both (the fixed email
+    and audience, config.env's two ids), and in no other template (check_env holds the values)."""
+    for s in SMOKE_SERVICES:
+        for n in SMOKE_ENV:
+            if s in plains and n not in plains[s]:
+                fail(f"{s}.yaml", f"{n} is missing: the smoke identity is all four of {', '.join(SMOKE_ENV)} in api and "
+                     "ingest (a service with some of them refuses to start, D286)")
+    for n in SMOKE_ENV:
+        vals = {s: plains[s].get(n) for s in SMOKE_SERVICES if s in plains}
+        if len(set(vals.values())) > 1:
+            fail("api.yaml / ingest.yaml", f"{n} is {vals.get('api')!r} in api.yaml and {vals.get('ingest')!r} in "
+                 "ingest.yaml: equal in both (one smoke account for the two services)")
+    for s, env in sorted(plains.items()):
+        if s in SMOKE_SERVICES:
+            continue
+        for n in SMOKE_ENV:
+            if n in env:
+                fail(f"{s}.yaml", f"{n} is set: the smoke identity belongs to api and ingest only (D286)")
 
 
 def check_cutoff():
@@ -535,7 +570,14 @@ def check_service(name, doc, cfg, digest, edge):
     t = spec["template"]
     if not keys_exactly(f"{w} template", t, ("metadata", "spec")):
         return {}
-    if keys_exactly(f"{w} template.metadata", t["metadata"], ("annotations",)) and \
+    # D285: api's revision template carries the label deploy.yml reads from the serving revision (the floor of the
+    # meal portion labels); no other service has template labels.
+    tm_keys = ("annotations", "labels") if name == "api" else ("annotations",)
+    if name == "api" and isinstance(t.get("metadata"), dict) and "labels" in t["metadata"] and \
+            t["metadata"]["labels"] != MEAL_PATCH_LABELS:
+        fail(w, f"template.metadata.labels must be exactly {MEAL_PATCH_LABELS!r} (D285: deploy.yml's floor reads it from the "
+                f"serving api revision), is {t['metadata'].get('labels')!r}")
+    if keys_exactly(f"{w} template.metadata", t["metadata"], tm_keys) and \
             keys_exactly(f"{w} template annotations", t["metadata"]["annotations"], SVC_ANN):
         ann = t["metadata"]["annotations"]
         want = {"autoscaling.knative.dev/minScale": "0", "autoscaling.knative.dev/maxScale": e["max_scale"],
@@ -675,6 +717,7 @@ def main(argv):
                 per["DATABASE_URL"] = (f"postgresql://ryft_{n}.{ref}@{host}:6543/postgres?sslmode=verify-full"
                                        "&sslrootcert=/etc/ryft/supabase-ca.crt&default_query_exec_mode=exec")
                 per["PUSH_AUDIENCE"] = f"https://{n}-{pn}.europe-west1.run.app"
+            per["SMOKE_OIDC_SA_ID"] = cfg["SMOKE_SA_ID"]  # config.env's key under the env name api and ingest read
             doc = load(yq, out / f"{n}.yaml")
             if doc is None:
                 continue
@@ -688,6 +731,7 @@ def main(argv):
     check_app_attest(cfg["APP_ATTEST"], pins, base)
     check_connect(cfg, pins)
     check_cutoff()
+    check_smoke()
     if not a.base_config:
         print("check_cloudrun: no --base-config, so the APP_ATTEST order against a base (off -> warn -> on, D245) "
               "is skipped (CI passes the base on a pull request)")
@@ -703,7 +747,8 @@ def report(based=False):
     order = ", APP_ATTEST's order against the base" if based else ""
     print("check_cloudrun: api, ingest, scoring, notify and migrate render; limits, ingress (against the gate edge), "
           "accounts, h2c, probes, env, secret pins (by number, migrate = the services), accessors, P5, the "
-          "connection switch (api = ingest, no fake, garmin only with its pin, id and cap), the consent cutoff "
+          "connection switch (api = ingest, no fake, garmin only with its pin, id and cap), the smoke identity "
+          "(four rows, equal in api and ingest, nowhere else), the consent cutoff "
           "(ingest only, not after the policy version) and App Attest's ring "
           f"under warn and on{order} hold")
     return 0

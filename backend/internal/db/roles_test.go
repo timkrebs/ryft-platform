@@ -49,8 +49,9 @@ var crud = []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
 var (
 	journalTables = []string{"behaviors", "user_behaviors", "journal_days", "journal_entries"}
 	betaTables    = []string{"consents", "beta_invite_codes", "user_sources", "feedback", "admin_audit", "score_queue", "outbox", "admin_accounts", "beta_invite_uses",
-		"app_attest_keys", "app_attest_challenges",
-		"connections", "connection_tokens", "connection_pending", "connection_states", "connection_deregistrations", "provider_inbox"}
+		"app_attest_keys", "app_attest_challenges", "smoke_account",
+		"connections", "connection_tokens", "connection_pending", "connection_states", "connection_deregistrations", "provider_inbox",
+		"recovery_checkins", "workout_ratings"}
 )
 
 // trainTables are migration 0011's.
@@ -68,6 +69,10 @@ var grants = map[string]map[string][]string{
 		// deleted_users: only the id column (below), never the stored Apple token
 		// 0042: the inbox is ingest's; connections only by column (below), never a token, pending grant or state.
 		"provider_inbox": crud,
+		// 0060: the operator writes smoke_account (scripts/sql/bind_smoke_account.sql); ingest only reads it.
+		"smoke_account": {"SELECT"},
+		// 0065 (D293): the same-source fold, run by ingest's sync, moves a dropped duplicate's rating to the
+		// survivor: column grants only (below), no table-level privilege, no DELETE. recovery_checkins: none.
 	},
 	"ryft_scoring": {
 		"users": {"SELECT"}, "devices": {"SELECT"}, "samples": {"SELECT"}, "sleep_segments": {"SELECT"},
@@ -91,11 +96,15 @@ var grants = map[string]map[string][]string{
 		"admin_audit": {"SELECT", "INSERT"}, "score_queue": {"SELECT", "DELETE"}, "outbox": {"SELECT", "INSERT", "DELETE"},
 		"admin_accounts":   {"SELECT"}, // 0032: the owner writes it (the SQL editor), the api only reads
 		"beta_invite_uses": crud,       // 0033: UPDATE because a merge moves rows
+		// 0060: read only; the cascade from users removes the binding, no service writes it.
+		"smoke_account": {"SELECT"},
 		// 0037: the api alone; a key's counter and last use are updated, a challenge never is.
 		"app_attest_keys": crud, "app_attest_challenges": {"SELECT", "INSERT", "DELETE"},
 		// 0042: the api alone holds the OAuth side; a state is never updated; the inbox only by column (below).
 		"connections": crud, "connection_tokens": crud, "connection_pending": crud, "connection_deregistrations": crud,
 		"connection_states": {"SELECT", "INSERT", "DELETE"}, "provider_inbox": {"DELETE"},
+		// 0064, 0065 (D291–D293): the api alone writes a check-in and a rating; no other service reads a check-in.
+		"recovery_checkins": crud, "workout_ratings": crud,
 		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
@@ -143,13 +152,25 @@ func TestServiceRoleGrants(t *testing.T) {
 	}
 	// scoring may write only the load columns of a workout, and of a session.
 	for col, want := range map[string]bool{"strain": true, "trimp": true, "zone_minutes": true, "muscular_load": true,
-		"session_id": true, "model_version": true, "start_at": false, "avg_hr": false, "activity": false} {
+		"session_id": true, "model_version": true, "avg_hr": false, "activity": false, "source": false, "user_id": false,
+		// 0065: no grant on the times; a session's own workout follows its session through scoring_follow_session_times (D300)
+		"start_at": false, "end_at": false} {
 		var has bool
 		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_scoring', 'public.workouts', $1, 'UPDATE')`, col).Scan(&has); err != nil {
 			t.Fatal(err)
 		}
 		if has != want {
 			t.Errorf("ryft_scoring UPDATE workouts.%s: %v, want %v", col, has, want)
+		}
+	}
+	// ...and the function that moves them is scoring's alone.
+	for role, want := range map[string]bool{"ryft_scoring": true, "ryft_api": false, "ryft_ingest": false} {
+		var has bool
+		if err := pool.QueryRow(ctx, `SELECT has_function_privilege($1, 'public.scoring_follow_session_times(uuid, uuid)', 'EXECUTE')`, role).Scan(&has); err != nil {
+			t.Fatal(err)
+		}
+		if has != want {
+			t.Errorf("%s EXECUTE scoring_follow_session_times: %v, want %v", role, has, want)
 		}
 	}
 	// api may move a merged account's raw data: the owner column only (0024, D90).
@@ -183,7 +204,8 @@ func TestServiceRoleGrants(t *testing.T) {
 			}
 		}
 	}
-	for col, want := range map[string]bool{"scored_at": true, "queued_at": false, "day": false, "user_id": false} {
+	// 0067 (D301): scoring also writes why it closed a row without scoring it.
+	for col, want := range map[string]bool{"scored_at": true, "closed_reason": true, "queued_at": false, "day": false, "user_id": false} {
 		var has bool
 		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_scoring', 'public.score_queue', $1, 'UPDATE')`, col).Scan(&has); err != nil {
 			t.Fatal(err)
@@ -314,6 +336,60 @@ func TestServiceRoleGrants(t *testing.T) {
 		}
 		if has != c.want {
 			t.Errorf("%s %s %s.%s: %v, want %v", c.role, c.priv, c.table, c.col, has, c.want)
+		}
+	}
+	// 0067 (D297, D301): the api reads when an inbox row arrived and still never a payload or a record id, and
+	// still writes nothing of the inbox; scoring writes the queue's closed_reason (and nothing of the key); the
+	// api only reads it (it has no UPDATE of the column), ingest's table-wide UPDATE is unchanged and notify
+	// sees neither table.
+	for _, c := range []struct {
+		role, table, col, priv string
+		want                   bool
+	}{
+		{"ryft_api", "provider_inbox", "received_at", "SELECT", true}, {"ryft_api", "provider_inbox", "received_at", "UPDATE", false},
+		{"ryft_api", "provider_inbox", "received_at", "INSERT", false}, {"ryft_api", "provider_inbox", "payload", "SELECT", false},
+		{"ryft_api", "provider_inbox", "record_id", "SELECT", false}, {"ryft_api", "provider_inbox", "payload_sha256", "SELECT", false},
+		{"ryft_api", "provider_inbox", "error", "SELECT", false}, {"ryft_api", "provider_inbox", "processed_at", "SELECT", false},
+		{"ryft_scoring", "provider_inbox", "received_at", "SELECT", false}, {"ryft_notify", "provider_inbox", "received_at", "SELECT", false},
+		{"ryft_ingest", "provider_inbox", "received_at", "SELECT", true}, {"ryft_ingest", "provider_inbox", "received_at", "UPDATE", true},
+		{"ryft_scoring", "score_queue", "closed_reason", "UPDATE", true}, {"ryft_scoring", "score_queue", "closed_reason", "SELECT", true},
+		{"ryft_scoring", "score_queue", "closed_reason", "INSERT", false}, {"ryft_scoring", "score_queue", "scored_at", "UPDATE", true},
+		{"ryft_scoring", "score_queue", "queued_at", "UPDATE", false}, {"ryft_scoring", "score_queue", "user_id", "UPDATE", false},
+		{"ryft_api", "score_queue", "closed_reason", "SELECT", true}, {"ryft_api", "score_queue", "closed_reason", "UPDATE", false},
+		{"ryft_api", "score_queue", "closed_reason", "INSERT", false},
+		{"ryft_ingest", "score_queue", "closed_reason", "SELECT", true}, {"ryft_ingest", "score_queue", "closed_reason", "UPDATE", true},
+		{"ryft_notify", "score_queue", "closed_reason", "SELECT", false}, {"ryft_notify", "score_queue", "closed_reason", "UPDATE", false},
+	} {
+		var has bool
+		if err := pool.QueryRow(ctx, `SELECT has_column_privilege($1, $2, $3, $4)`, c.role, "public."+c.table, c.col, c.priv).Scan(&has); err != nil {
+			t.Fatal(err)
+		}
+		if has != c.want {
+			t.Errorf("%s %s %s.%s: %v, want %v", c.role, c.priv, c.table, c.col, has, c.want)
+		}
+	}
+	// 0065: ingest's fold may read the key columns and updated_at and repoint a rating (workout_id, updated_at); it
+	// never reads or writes a value, creates one or deletes one (a dropped copy's rating goes with its workout).
+	for _, c := range []struct {
+		role, col, priv string
+		want            bool
+	}{
+		{"ryft_ingest", "user_id", "SELECT", true}, {"ryft_ingest", "workout_id", "SELECT", true}, {"ryft_ingest", "updated_at", "SELECT", true},
+		{"ryft_ingest", "session_rpe", "SELECT", false}, {"ryft_ingest", "created_at", "SELECT", false},
+		{"ryft_ingest", "workout_id", "UPDATE", true}, {"ryft_ingest", "updated_at", "UPDATE", true},
+		{"ryft_ingest", "session_rpe", "UPDATE", false}, {"ryft_ingest", "user_id", "UPDATE", false},
+		{"ryft_ingest", "session_rpe", "INSERT", false}, {"ryft_ingest", "workout_id", "INSERT", false},
+		{"ryft_api", "session_rpe", "UPDATE", true}, {"ryft_api", "session_rpe", "INSERT", true},
+		{"ryft_scoring", "session_rpe", "SELECT", false}, {"ryft_notify", "session_rpe", "SELECT", false},
+		// scoring's re-attach moves a rating off a workout it deletes: the key columns, never the value.
+		{"ryft_scoring", "workout_id", "SELECT", true}, {"ryft_scoring", "user_id", "SELECT", true},
+		{"ryft_scoring", "workout_id", "UPDATE", true}, {"ryft_scoring", "updated_at", "UPDATE", true},
+		{"ryft_scoring", "session_rpe", "UPDATE", false}, {"ryft_scoring", "user_id", "UPDATE", false},
+		{"ryft_scoring", "session_rpe", "INSERT", false}, {"ryft_scoring", "workout_id", "INSERT", false},
+		{"ryft_notify", "workout_id", "SELECT", false},
+	} {
+		if has := scalar[bool](t, pool, `SELECT has_column_privilege($1, 'public.workout_ratings', $2, $3)`, c.role, c.col, c.priv); has != c.want {
+			t.Errorf("%s %s workout_ratings.%s: %v, want %v", c.role, c.priv, c.col, has, c.want)
 		}
 	}
 	// 0042: each queue's sequence belongs to its one writer.

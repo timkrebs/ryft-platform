@@ -1,6 +1,13 @@
 {
   "additionalProperties": false,
   "properties": {
+    "favorites": {
+      "items": {
+        "$ref": "NutritionFavorite"
+      },
+      "nullable": true,
+      "type": "array"
+    },
     "meals": {
       "items": {
         "$ref": "NutritionMeal"

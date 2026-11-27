@@ -6912,3 +6912,567 @@ the bases they propose and every legal reading stay with the user and their revi
   asks for it and #248 carries it.
 - **Open:** the 28 `TODO(user)` in the four files (LEGAL_CHECKLIST U1-U15), Google sign-in in the app, the legal
   review, the partner requirements still missing (partners.md).
+
+## D286 — The production smoke signs in as a Google service account, mapped to the smoke account only (2026-11-26)
+
+Supabase's email provider is off for good (the user's decision, 2026-11-26), so the smoke account cannot get a Supabase session and every deploy stopped in its auth preflight (run 45777989628). api and ingest now also accept a Google-signed ID token of the service account `ryft-smoke` (RS256 from Google's JWKS, `aud` exactly `ryft-smoke`, `email` and `sub` the account's, `email_verified`, `exp`) and treat it as `SMOKE_USER_ID` and nothing else: no email, provider, operator role or second factor. The route is chosen from the unverified `iss` (Google's or not), and each verifier checks the whole token, so a forged `iss` can only fail. All four settings or none. `/readyz` stays the Supabase verifier's. `ryft-smoke` holds no role; `roles/iam.serviceAccountOpenIdTokenCreator` on it goes to ryft-deployer and to the operators in `smoke_token_creators`. The smoke mints its token through `generateIdToken` and checks the claims before any call. There is no secret: Google rotates the keys, and revoking means removing a binding or disabling the account. A leaked token is good for at most an hour, and only as the smoke account. Its worst case is writing synthetic data into that account through the smoke's own routes (it can neither give nor withdraw consent); it cannot delete the account (see the allowlist below). The smoke principal never creates a users row: a missing or deleted account is a 401 (`smoke_unknown_user`).
+
+After an independent security review:
+- **Server-side binding.** The UUID in config.env is not trusted alone. The database must also name the account in `smoke_account` (migration 0060): one row at most, readable by api and ingest, writable by no service role. The operator writes it once with `scripts/sql/bind_smoke_account.sql`, which refuses an account without a users row, with a non-email identity, or tombstoned. Every smoke request checks it and fails closed with 401 `smoke_unbound`. A real user's UUID copied into config.env therefore yields only 401s. The script does not trust the pasted UUID either, since it comes from the same place as config.env. It resolves the account on its own, by its email `smoke@ryftapp.de` in `auth.users`, and refuses unless exactly one row has that email and its id is the pasted one (second review).
+- **Route allowlist.** A smoke principal reaches only the routes `smoke_prod.sh` calls (api: me, invite, days, config, model, connections; ingest: `/v1/sync`). Everything else gets 403 `smoke_route`, including `DELETE /v1/me`, export, train import and nutrition. The admin auth refuses the smoke principal outright.
+- **No consent by machine** (second review). POST and DELETE `/v1/me/consent` are off the allowlist. Consent is a person's act, and with a wrong binding a machine credential would fabricate one. The smoke no longer probes the consent gate (it reports `not probed`; `SMOKE_EXPECT_GATES=on` checks the invite gate only). The preflight requires the account to hold an unrevoked consent, so a missing one stops a run before migrate. A consent for another version than the commit's `PRIVACY_POLICY_VERSION` only warns. The sync's gate takes any unrevoked consent, and an exact match would let a consent recorded ahead of a bump, or for a reverted one, block every deploy (the code review). When the version moves, the operator records the smoke account's consent before the merge with `scripts/sql/consent_smoke_account.sql`, which writes only for the bound account and re-checks its email. Rejected: an admin consent route, because an operator key that can create consent for any user is worse; and exempting the smoke principal from the consent gate, because a gate bypass in production would then go unsmoked.
+- **Startup.** The Google key set loads in the background, so a slow Google never delays a cold start or a Supabase request. Smoke tokens get 503 until it is in.
+- **Where tokens go.** The helper mints and sends a Google smoke token only to `https://api.ryftlab.de` and `https://ingest.ryftlab.de`.
+- **The deploy.**
+  - The post-rollout smoke always runs, with a fresh token. When it fails, traffic returns to the revisions recorded before the rollout.
+  - The replace, the smoke and the rollback run in one step, with one EXIT trap as the only rollback handler. Each service is recorded before its replace is issued. A failed replace, a failed smoke or any unexpected error (a failed `describe`, say) therefore sends every recorded service back. The lookup of a new revision is no longer best effort (third review): a failed one rolls back, and no later replace starts.
+  - **Bounded** (third review). Every gcloud call of the record step, the rollout and the rollback runs under `timeout`. The forward calls (replace, lookup, smoke) never run past the job's 60 minutes minus the restores' reserve (4 × 90 s + 180 s). Each restore has its own 90 s and is tried whatever the others did. `smoke_prod.sh` bounds every curl and itself (600 s). Persisting the rollback state across a killed runner was ruled out of scope. Instead the step prints the hand-restore commands before anything moves.
+  - **Proof from the image** (third review). Labels and env can drift from the code, so the record step reads which commits built the serving api image: the registry tags of its digest (`<sha7>`, plus a run-unique `<sha7>-<run>-<attempt>` that a rebuild of the same commit can't move), each resolved in the full history. #249 (`4bca49d`) is the pin: D285's change and main's last commit before #250. D285 = the label AND an image commit containing #249. The bootstrap = none of the four smoke settings AND an image commit at #249 or older. A newer image with missing, empty, partial or secret-backed settings is config drift, an error in every mode, never a bootstrap. Rejected: pinning api-00044-5lh's digest (one more value to copy by hand, and it proves nothing for the next rollback target); image labels read by a pull (the legacy image has none, so the tags would be needed anyway). Limit: the proof lives as long as the tags, which the registry's 30-day rule deletes with the image (OPERATIONS → The D285 floor).
+  - `migrate_only` also skips site-build and site (third review): a migrations-only run publishes nothing.
+  - **Replacing the smoke account** is a deadlock by design: the preflight compares the serving api with the commit's `SMOKE_USER_ID`, and only a rollout changes the api's. The way out (OPERATIONS → Replacing the smoke account; untested): the config PR, `migrate_only` for its migrations, the rebind, and the env of api and ingest set by hand. It is rare enough not to warrant a bypass in the workflow.
+  - No input picks the smoke authentication (`auth_preflight` is gone; second review). The record step reads the serving api revision before migrate. With `SMOKE_OIDC_SA_ID` in its env the run uses the preflight. Without it, a dispatch runs the bootstrap check, which also requires the running api to reject the token, and a push stops before migrate ("the D286 bootstrap is pending"). So once D286 serves, the bootstrap cannot be chosen. Skipping the preflight against the old revision is safe because the new revisions are still smoked, and rolled back on failure.
+  - The dispatch input `migrate_only` runs migrate and stops: no smoke authentication, no rollout, no smoke. Migrations are expand-only and run before every rollout anyway, so it opens nothing new.
+  - **The D285 floor** (second review). An api from before D285 erases the meal portion labels on PATCH, and the serving api is the automatic rollback's target. Every api built from #250 on carries the revision label `ryft-meal-patch=d285` (a #249 build is D285 but unlabelled; none ever served, since its deploy failed) (`deploy/run/api.yaml`, required by `check_cloudrun.py`). The record step refuses before migrate, in every mode, when the serving api lacks the label and the commit writes `portion_label_snapshot`/`portion_short_label_snapshot`. That is a `git grep` of `backend/` without tests and without 0053/0054, and a failed grep counts as a writer. Today no file writes them, so a rollback to api-00044 stays allowed. #248 can ship only after a labelled api serves. A label rather than a revision number or commit, because a label states the property itself and survives a rebuild.
+
+Rejected:
+- A signing key imported into Supabase. Standby keys are published in the JWKS, so it would have worked against the running API at once, but it can mint any user, any `app_metadata` role and `role: service_role` for the Data API.
+- The legacy HS256 secret. The API accepts no HS256, and it is the same kind of master key.
+- Admin `generate_link` plus `verify`. It needs the service-role key in the deploy job, and nobody confirmed without a production test whether `verify` works with email off.
+- Supabase's `id_token` grant with a service-account token. It needs a provider change and a second identity on the smoke account, and it depends on GoTrue accepting such a token.
+
+Cost: api-00044 does not know the new token, and the binding table exists only once a migrate has run. The bootstrap is therefore four steps, and the only red run is the push run, which changes nothing:
+1. The push run of the merge stops before migrate ("bootstrap pending"). Nothing changes.
+2. `gh workflow run deploy.yml --ref main -f migrate_only=true` applies 0053, 0054 and 0060.
+3. The operator binds the account.
+4. `gh workflow run deploy.yml --ref main` runs the bootstrap check, the rollout and the smoke.
+The next run uses the preflight by itself. The other way, running 0060 by hand in the SQL editor before the merge, would also work, since the migrate job runs as the same owner, `postgres`. It was not chosen: schema changes reach production only through the migrate job. The first version, two dispatches of which the first rolled, failed `smoke_unbound` and rolled back, was replaced after the second review.
+
+Correction (2026-11-26, after step 2). #250 named the smoke account `smoke@ryftlab.de` (from an old `smoke_prod.sh` comment) and `SMOKE_USER_ID=5258f5d1-…`. That account was created on 2026-11-26 and never used, and step 3 refused it ("not in public.users"). The production smoke account is `smoke@ryftapp.de`, `671779e8-9634-4964-b3a6-4445c6ad1c5f`, in `public.users` since 2026-10-20. `config.env` and the `v_email` of both SQL scripts now name it. The bind's refusal worked as designed: nothing was bound, and no rollout had happened (the #250 push run stopped at "bootstrap pending", api-00044-5lh still serves), so this is still the bootstrap and not **Replacing the smoke account**. The email is one constant per language: `v_email` in each SQL file (each is pasted alone) and `smokeEmail` in the Go test, which pins both files to it. A test now also refuses an otherwise valid account that holds the retired address or a near-miss of the right one.
+
+## D283 — Use one bilingual catalog term for Nutrition suggestions (2026-11-25)
+
+After preserving exact dictionary matches, expand prefixes of at least four normalized characters when the shortest alternate is a prefix of every other alternate. This lets `Apfe` find English apple and apple juice entries without requiring German catalog labels. Competing alternates without a shared dictionary term fall back to primary search. The existing query ranks direct lexical matches ahead of the generic-only alternate and returns catalog labels and IDs.
+
+## D284 — Localize catalog selections and preserve logged portion labels (2026-11-25)
+
+Catalog metadata identifies supported staple forms and measured defaults. Prioritize whole foods on broad staple searches, preserve explicit variant intent, and rank eligible records with account-scoped favorites and 90 days of remaining diary history. Preview amounts through the meal calculator. Reuse a retired or changed portion by its stored compatible mass or volume. Snapshot item labels and only recover a linked legacy label when the existing unit and measurements still agree. Keep source IDs, BLS CC BY attribution and the old search functions through rollout.
+
+Amended 2026-11-26 after review, before release:
+- Only a staple group's name or a single word of at least four letters that starts a staple's name makes a query broad and promotes the group. An exact name match alone doesn't. An exact variant (`Milch 1,5 Prozent`) therefore ranks ahead of favourites and history. The group's other forms (apple juice) rank just below cultivars, ahead of brand and prefix matches.
+- A keyed source portion's ID includes its unit and measure. A refresh that changes the grams issues a new ID and retires the old row, so a stale selection fails with 422 instead of logging the new amount.
+- A food has at most one default portion (a partial unique index); the ETL clears its defaults before re-marking.
+- Favourites block an account merge and are exported on the first page of `GET /v1/me/nutrition-export`.
+- The schema change is split so that no file holds ACCESS EXCLUSIVE while it scans, backfills or builds an index: 0055 adds columns and `NOT VALID` checks, 0056 validates them, 0057 backfills labels, 0058 builds indexes, 0059 the ranking function. The migrator runs each file in one transaction, so indexes are built without `CONCURRENTLY`; the label columns come from D285.
+
+## D287 — The USDA extract aggregates without ORDER BY and sorts in Python (2026-11-26)
+
+The SR Legacy dry run `--source sr-legacy --limit 10000` on image `d53bb29` (execution `nutrition-etl-job-q6v66`) failed both attempts after ~15 s with DuckDB `OutOfMemoryException`. The cause is the ordered aggregate `list(… ORDER BY …)` in `extract.usda_rows`. DuckDB keeps each group's rows in a small linked list up to 16 rows. Past that it allocates a pair of 2048-row chunk buffers for the group (arguments and sort keys, ~150 KB with the struct's three VARCHARs). These buffers come from the buffer allocator, count against `memory_limit` and can't spill. An SR Legacy food has ~30 of the 39 tracked nutrients, so every group crosses the threshold. At 7,793 foods that's ~1.1 GB, over the ETL's explicit `--memory-mb 768` (the default; `temp_directory` on `/tmp` and `max_temp_directory_size` were already set, so DuckDB's 80 % default isn't involved). The 2026-11-24 run succeeded at `--limit 1000` (~150 MB). The step that matters is the tenfold limit. #248 added struct fields and the staples-first `ORDER BY … LIMIT` in `selected` (a top-N, bounded by the limit). The ordered `measures` aggregate already existed, and its groups are mostly under 16 rows.
+
+`labels` and `measures` now use plain `list()`, which appends to arena-backed segments in proportion to the data. `usda_rows` sorts each row's lists in Python with the old keys: nutrients by `(nutrient_id, amount DESC NULLS LAST)` (NaN first, as DuckDB orders it), so `usda_food`'s first-entry-wins rule still picks the larger amount of a duplicate row; portions by their window `priority`. The container stays at 4 GiB and DuckDB at 768 MB: the data doesn't need more, and a larger `memory_limit` would only move the cliff. `test_sr_legacy_sized_release_fits_the_smallest_memory_limit` pins the bound with 8,000 foods × 30 nutrients at `--memory-mb 128`.
+
+Not reproduced locally: the headless session that wrote this couldn't run Python. The buffer threshold comes from DuckDB's sorted-aggregate implementation, and the 1000-vs-10000 contrast fits it. The CI test runs the SR Legacy shape at a sixth of the production limit.
+
+Staples: all 13 USDA staples are SR Legacy IDs, and bounded runs order them first (`ORDER BY list_contains(staples, fdc_id) DESC`). Any `--limit` ≥ 13 reaches them. SR Legacy has 7,793 foods, so `--limit 10000` already reads the whole release, and `--full` adds nothing for it.
+
+## D288 — Clean USDA portion labels catalog-wide; staples match source portions, not guessed IDs (2026-11-26)
+
+Outside the 16 curated staples, a USDA portion's `label` was the raw source text (`1 medium (3" dia)`) and `labels` was empty, so Go's `portionLabels` showed the raw text in both languages. The ETL now cleans every non-curated USDA portion (`transform.clean_portion`):
+- **What it removes:** placeholder measures (`undetermined`, …), parentheticals with imperial measures, and inch marks outside them.
+- **How it maps:** the amount, head and qualifier map through three pinned tables (`SIZES`, `UNITS`, `QUALIFIERS`) to an English label, a German label, short labels and a sort order. Sizes: Klein 10, Mittel 20, Groß 30, Sehr klein 5, Sehr groß 35, Jumbo 38. Household units from 40 up: Stück 40/41, Scheibe 42 … EL 70, TL 72, US-Tasse 80. Unknown heads keep `100 + priority`.
+- **Fallback rules:** a cup stays a "US cup"/"US-Tasse", as in the staples. `oz` and `lb` become grams and `fl oz` becomes ml. If any qualifier word is unmapped, there's no German label at all, and Go falls back to the clean English one, so labels are never half translated. Two labels that collide with different grams get ` (<g> g)`.
+- **Curated stays curated:** staples keep precedence. `is_default` stays curated-only, because `default_portion` promises a measured, explicit default and a heuristic ("Mittel if present") would move people's logged amounts.
+
+IDs don't move. A keyed portion's ID hashes the USDA portion ID and the measure, not the label. An unkeyed portion's ID hashes `legacy_label`, which stays byte-identical. The raw dedupe key is unchanged, so the set of portions per food is unchanged. `legacy_label` now also goes into the staging row, so the merge's manual-twin check matches the Go importer's rows (label = raw text) as before.
+
+The four new staples (Kartoffeln gekocht 170440, Avocado 171705, Tomate 170457, Karotte 170393) and four extras (Salatgurke 168409, rote Paprika 170108, Zwiebel 170000, Naturjoghurt 171284) match their portions **by G1 key, text prefix or grams, never by a USDA portion ID**. The session that wrote them couldn't fetch FDC, and guessing an ID risks a curated label on the wrong measure. They also carry a `source_description` guard: a wrong FDC ID leaves a plain USDA food, and the dry run reports it. Weights always come from the source row, so the user's reference numbers (Kartoffel 60/100/150 g, Avocado ½ 75 g / ganz 150 g, Tomate 90/120/180 g, Karotte 50/70/100 g) are shown for comparison, not imported. Avocado ½ is derived (`half_of`) from the measured whole fruit and is its default.
+
+The staples version goes from 1 to 2. The merge treats a changed checksum under an unchanged `dataset_version` as a conflict, so without the bump the rerun would write nothing. Also in the merge: a curated `portion_key` that moves between surviving rows is released before the upsert, as defaults already are (unique `nutrition_portions_semantic_key`).
+
+Not covered: USDA portions written by the Go importer (`origin='manual'`) keep their raw labels. RLS keeps the ETL role off them by design. The runbook has a read-only count, and cleaning them would be a separate, reviewed operator step.
+
+## D296 — Import BLS 4.0 in full from a committed, reviewed extract; curated synonyms, no machine translation (2026-11-27)
+
+The user decided on 2026-11-27 to import the Bundeslebensmittelschlüssel fully, with curated aliases and no machine translation. OFF at scale (G3) is deferred. Only about 130 production foods have a German name today.
+
+**Licence.** BLS 4.0 is published under **CC BY 4.0** (Creative Commons Namensnennung 4.0 International). The Max Rubner-Institut must be named as publisher ([blsdb.de/download](https://blsdb.de/download), [OpenAgrar](https://www.openagrar.de/receive/openagrar_mods_00112643), both from search snippets: the session could open neither page). The FAQ names app and software development as a use ([blsdb.de/faq](https://blsdb.de/faq), search). CC BY 4.0 allows commercial use, storage, adaptation and redistribution, including serving the data through our API and showing it in the app. It needs credit, a licence link and a note that we changed the data (CC BY 4.0 §3(a)), "in any reasonable manner" for the medium. Nothing blocks our use. The user confirmed the terms on the download page on 2026-11-27 (the file needs no registration): "Die Daten des Bundeslebensmittelschlüssels (BLS) stehen als Open Data zur freien Verfügung. Die Nutzung ist unter der Lizenz CC BY 4.0 (Creative Commons Namensnennung 4.0 International) gestattet. Bei Verwendung ist das Max Rubner-Institut als Herausgeber zu nennen." Citation, verbatim from that page: **Max Rubner-Institut (2025): Bundeslebensmittelschlüssel (BLS), Version 4.0 — Deutsche Nährstoffdatenbank. Karlsruhe. DOI: 10.25826/Data20251217-134202-0**. Where it appears:
+- **Per food:** `food_sources.attribution` carries the exact citation above (`transform.BLS_ATTRIBUTION`), with `license_identifier` `CC-BY-4.0` and `source_url` `https://doi.org/10.25826/Data20251217-134202-0`, served as `sources[].attribution`. The attribution is part of each food's checksum, so the change ships together with the CSV. Without the CSV the three staples keep the version `staples2`, and a new checksum on the same version would be a `conflict`.
+- **The site's licences/legal page (#252) and the app's About/licences screen:** DE: "Enthält Daten aus dem Bundeslebensmittelschlüssel (BLS), Version 4.0, Max Rubner-Institut (2025), Karlsruhe, DOI 10.25826/Data20251217-134202-0, lizenziert unter CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/deed.de). RYFT hat eine Auswahl der Nährstoffe in eigene Einheiten umgerechnet, Suchbegriffe ergänzt und Lebensmittel ausgelassen, die ein kuratiertes Grundnahrungsmittel doppeln." EN: "Contains data from the German Nutrient Database Bundeslebensmittelschlüssel (BLS), Version 4.0, Max Rubner-Institut (2025), Karlsruhe, DOI 10.25826/Data20251217-134202-0, licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). RYFT converted a selection of nutrients to its units, added search terms and left out foods that duplicate a curated staple."
+- **The repository:** `scripts/etl/data/README.md`.
+
+**Source of the data.** The job does not download BLS. `scripts/etl/bls_convert.py` (stdlib only, a streaming xlsx reader) turns the official `BLS_4_0_Daten_2025_DE.xlsx` into `scripts/etl/data/bls_4_0.csv`: code, German name, English name, and our registry nutrients in our units. It also writes `bls_4_0.manifest.json`: the source sha256, the header → component → unit mapping, unparsed cells and counts. Both are committed after review. Why: the download page's layout and links are unknown to us, and a committed extract gives a reviewable diff, deterministic input and stable IDs. The image needs no new dependency, no DuckDB and no network for BLS. The converter fails closed. It exits without output on unknown units, missing macros, name columns that don't look like code/German/English, or unparsable numbers in required components, and it lists what it found. The session that built this could download neither the file nor its documentation, so the layout comes from documentation snippets (columns 1–3: code, German and English name; three columns per component: value per 100 g, origin, reference; EuroFIR-style codes such as ENERCC, PROT625, FAT, CHO).
+
+**Import.** Provider `bls`, external ID = the BLS code, food UUID uuid5(`bls:<code>`), so IDs are stable across reruns. `canonical_name` is the German name, with `de` and `en` names and `markets` `DE`. Nutrients are per 100 g edible portion. BLS gives no density or volume basis that we found, so no BLS food has a per-100-ml basis. The categories come from `classify` with the BLS main group (the code's first letter) as a hint. They are discovery only and carry no `ryft_nutrition` scoring profile, the same as OFF, because the BLS names give no single-ingredient evidence we have reviewed. `food_form` comes from a German state word in the name (`roh`, `gekocht`, `gegart`, `gebraten`, `gebacken`, `getrocknet`, `tiefgefroren`). BLS foods get no `canonical_group_key`, so the forms never move a row in the ranking. Version: `py-etl4:bls_4_0:staples<v>:<sha256 of CSV, curation, staples and BLS_TRANSFORM_VERSION>`. Changed inputs give `updated`, never `conflict`, and a rerun gives `unchanged`. Without the CSV (or with `--no-bls-csv`), `--source bls` imports the 3 staples under `py-etl4:bls_4_0:staples2`. Since the data commit's attribution change that gives 3 `conflict` over the old rows, and `--write` refuses when the catalog holds a full import before any source runs (`refuse_staples_over_full_bls`, a read-only check for any `bls` source outside the curated staples, so it holds under any later version), so it never replaces the staples' CSV nutrients with the curated subset.
+
+**Staples and duplicates.** The curated BLS staples (M111300, M111200, M713100) keep their names, aliases, portions, group, form and density. Their nutrients now come from the CSV, and the dry run reports `staple_nutrient_drift`. A BLS food that is the same food as a curated USDA staple (a *twin*, e.g. "Möhre, roh" next to the staple Karotte) is listed in `scripts/etl/bls_curation.v1.json` → `twins`, with its expected German name as a guard. It is **not imported**, so a German query shows the staple once. On a name mismatch it imports as a normal food (`twin_mismatch`). The code PR shipped the list empty because nobody had seen the file yet; the data commit fills it (below). The dry run proposes `twin_candidates` (the first name segment equals a staple's German name or alias). They are reviewed with the data commit, before the first write. The merge never retires rows, so a twin added after a write stays visible (`stale_twins` in the dry run) until it is retired by hand.
+
+**Aliases.** `bls_curation.v1.json` → `synonyms`: 40 curated DACH synonym groups (Möhre/Karotte/Mohrrübe/Rüebli, Speisequark/Quark/Topfen, Brötchen/Semmel/Schrippe/Weckle, Sahne/Rahm/Obers, Blumenkohl/Karfiol, Tomate/Paradeiser, Aprikose/Marille, Hackfleisch/Gehacktes/Faschiertes, Porree/Lauch, Rotkohl/Rotkraut/Blaukraut, Rote Bete/Rote Rübe, Feldsalat/Rapunzel/Nüsslisalat, Frikadelle/Bulette/Fleischpflanzerl, …). Each is applied case-sensitively to whole words of the BLS German name, with at most 6 aliases per food. Case sensitivity keeps German nouns apart from adjectives ("Paprika, orange" gets no "Apfelsine"), and whole words keep compounds such as "Lauchzwiebel" and "Sauerrahm" out. This is substitution, not translation. Pairs we weren't sure of were left out: Pflaume/Zwetschge, Pfannkuchen/Eierkuchen, Krapfen/Berliner, Paprika/Peperoni, Champignon/Egerling.
+
+**Portions.** None for BLS foods: they get `reference_portion` (100 g) and the app's g/ml input. We don't link BLS foods to USDA portion sets: there is no reviewed crosswalk, and those sets are US sizes. Twins are skipped, so the staple's curated portions serve that food. The three BLS staples keep theirs.
+
+**Ranking (migration 0061).** For `de`, BLS German names reach match 7 (exact), 6 (prefix) or 4 (text). SR Legacy rows have only English names and reach a German query only through the D283 alternate term (tier 2), so BLS ranks above SR Legacy ("Linsen" → "Linsen, getrocknet" before "Lentils, raw"). Staples keep tiers 10/9 through promoted groups ("Apfel", "Gurke", "Karotte"). One gap needed a change: a BLS row whose German name equals the query and a staple whose alias equals it both land in tier 7, and the tie-break read `preferred_market` first (BLS `DE`, USDA none), so BLS won ("Möhre"). 0061 replaces `search_foods_v2` with `c.is_canonical_staple DESC` right after `c.match DESC`. The signature is unchanged, so older API binaries keep working. For `en`, BLS English names and SR Legacy compete as equals. On a tie, a caller in market DE gets BLS first, and others get language, quality, completeness and similarity order. D283 and D284 are otherwise unchanged.
+
+**Size.** About 7,140 foods × (1 food, 1 source, ~2.1 names, ~30 nutrient values, 1 classification) ≈ 250k rows. That is ~30–45 MB with indexes (the research note's per-row sizes), against the 8 GB of the Pro plan. The job reads a ~1.5–2.5 MB CSV and uses no DuckDB for BLS, so the 4 GiB job and the 768 MB DuckDB cap (D287) are untouched. The offline converter streams the sheet. A CI test parses a full-size synthetic sheet (7,140 × 418) and asserts peak RSS under 512 MiB, with `RLIMIT_AS` 1 GiB on Linux.
+
+**Not done (code PR).** The extract itself: the session could not download the file. There is no English-name crosswalk to SR Legacy and no scoring profile for BLS foods. Both are follow-ups. Migrations 0061–0063 are taken (0062/0063 below), so the no-watch recovery implementation (D291–D295) starts at 0064.
+
+**The data commit (2026-11-27).** The user downloaded `BLS_4_0_Daten_2025_DE.xlsx` from blsdb.de, with no registration (14,093,078 bytes, sha256 `524bbefe25b691f5cb3de7a9f3e27fa2967aebfeabf217d99414ba7806e78c60`; one sheet, header in row 1, columns `BLS Code`, `Lebensmittelbezeichnung`, `Food name`). The layout matched the documentation, but three of our guesses about it were wrong. The converter now follows the file, and each fix has a test:
+- **Markers.** Value cells hold `TR`, `<LOD`, `<LOQ`, `<LOD or <LOQ` or `-` (23 protein and 26 fat cells among them, so the converter failed closed). Each marker's data-origin cell says what it means: `TR` comes with "Spuren", the limit markers with "Analyse"/"Literatur"/"Nährstoffdatenbank"/"Labelangabe", and `-` with origin `-`. So the trace and limit markers are stored as **0**, as a measured trace would be, and `-` is **unknown**. Afterwards a measured 0 and "below the limit" look the same; the manifest's per-component counts are the only record. Only the exact spellings count: any other text in a required component still stops the run. The manifest counts the markers per component, and `converter_version` is 2. Three additives have `-` as fat (R172000 glutamate, R411000, R421300), so the ETL rejects them as `missing_or_invalid_macro`.
+- **Codes.** 772 foods have a capital letter in position 3 or 4 (`M5B1600` Gorgonzola, `P2A3000` Rotwein trocken, `M1A5200` lactose-free UHT milk, `U57B100`). The pattern `[A-Z][0-9]{6}` skipped them as non-food rows. The new pattern is `[A-Z][0-9][0-9A-Z]{2}[0-9]{3}`, in the converter, in `transform.BLS_ID` and in `nutrition_bls_attribution`. Migration **0062** swaps that constraint in `NOT VALID` in one ALTER, so the check never lapses, and **0063** validates it. They are two files because the runner wraps each file in one transaction, the same split as 0055/0056. The new pattern is a superset of the old one, so every existing row passes.
+- **EPA/DHA.** The headers are `F20:5CN3` and `F22:6CN3` (g/100g). The header-code pattern now accepts a colon inside a code. There is no selenium, trans-fat or caffeine column in BLS 4.0.
+
+Result: 7,140 foods, 0 skipped rows, 33 components, 0 unparsed cells, a 1.58 MB CSV that passes the `bytes` character policy. **Twins** (20), filled only where the BLS food and the staple are clearly the same food in the same state. Review found that the first candidate rule (the first comma segment) missed most of them, because BLS 4.0 writes the state after a space ("Banane roh"). `twin_keys` now also compares the whole name, the name without state words and that without spaces. The candidates were then checked against the CSV by hand, and five twins whose names differ from the staple (Karotte/Möhre, Speisezwiebel, Gemüsepaprika rot, Rapsöl/Rüböl, Kartoffel geschält) were found by search:
+- `B111000` Weizenvollkornbrot → 172690; `C133000` Hafer Flocken → 173904 (rolled oats, dry)
+- `C352000` Reis poliert, roh → 169756; `C352032` Reis poliert, gekocht → 169757 (9.8 mg sodium, so unsalted, as the staple is)
+- `E111100` Hühnerei roh → 171287; `E111132` Hühnerei gekocht → 173424
+- `F110100` Apfel roh → 171688; `F110600` Apfelsaft → 173933 (vitamin C 0, as the staple's "no added ascorbic acid" says); `F502100` Avocado roh → 171705; `F503100` Banane roh → 173944
+- `G480100` Speisezwiebel roh → 170000; `G520100` Gurke roh → 168409; `G543100` Gemüsepaprika rot, roh → 170108; `G561100` Tomate roh → 170457; `G620100` Karotte/Möhre, roh → 170393
+- `K110132` Kartoffel geschält, gekocht → 170440 (2.6 mg sodium; the staple is boiled without skin and salt)
+- `Q120000` Olivenöl → 171413; `Q180000` Rapsöl/Rüböl → 172336
+- `V416100` Hähnchen Brustfilet, roh and `V4A6100` Hähnchen Brust, ohne Haut, roh → 171077 (two BLS rows for the same raw breast meat)
+
+Not twins, and they stay separate foods:
+- `B101000` Vollkornbrot: in Germany usually a rye–wheat bread, while the staple is whole-wheat.
+- `X820162` Reis gekocht: a dish, salted (101 mg sodium).
+- `V416162` Hähnchen Brustfilet, gebraten ohne Fett (Ofen): close to the roasted staple 171477, but not clearly the same preparation.
+- The plain yoghurts (`Joghurt mind. 3,5 % Fett` appears in several rows, and none is clearly the staple's plain whole-milk yoghurt).
+- Every other state (dried, cooked, baked, frozen) and every dish (X/Y codes).
+
+The dry run without a database gives processed 7,140, accepted 7,026, skipped 20, rejected 94, `aliases_added` 1,554, no staple drift and no staple missing. The X and Y codes (dishes, about 2,000) have no `BLS_MAIN_GROUPS` hint, so they are classified from the name alone. That was already so before this commit.
+
+**The 91 `atwater_deviation` rejects** are kept for now. The rule (4/4/9 kcal per g, ±30 %, exceptions for alcohol and ≥ 15 g fibre) is the ETL's shared quality gate. BLS energy follows Regulation (EU) 1169/2011: fibre at 2 kcal/g, organic acids at 3 and polyols at 2.4. So the rule rejects kale (9 forms), raspberries, currants, celeriac, artichoke, shallots, oyster mushrooms, rhubarb, plain coffee and tea (1 kcal against 0), and also acids, polyols and sweeteners. Proposed follow-up, a BLS-only check: 4P + 4C + 9F + 2·fibre + 7·alcohol, ±30 % with a 5 kcal floor. By hand that accepts kale, raspberries and coffee, and keeps lemon concentrate and polyols out. It changes a quality rule, so it isn't part of the data commit. Rejected rows are never written, so the follow-up adds them as `inserted`.
+
+## D291 — Recovery without a watch: three tiers, the wearable wins, a check-in is the fallback (2026-11-26; contract only)
+
+The brief reserved D290–D294; the legal PR #252 already takes D290, so this work uses **D291–D295**.
+
+- **Context:** a user who does not wear a watch at night has no `DailyScore.recovery` (no overnight HRV or
+  resting heart rate) and today gets nothing in its place. The product spec proposes a morning check-in and
+  session RPE. Contract: `docs/API.md` → Recovery without a watch. Implementation outline:
+  `docs/work/2026-11-26-no-watch-recovery/implementation.md`.
+- **Decision:**
+  1. **One rule, the wearable night:** the night ending on the day has asleep stages (not `in_bed` only) or HRV
+     readings in the sleep window, **and** `DailyScore.recovery` is not null. Recovery alone is not enough: it is
+     computed from resting heart rate too (`scoring/compute_steps.go`), which a watch worn only by day writes
+     every day (review #1). The tiers, `needs_checkin`, `superseded` and the readiness path all use this rule.
+  2. **Tiers** (`RecoveryStatus.confidence`, closed): `high` = a wearable night; `medium` = a check-in and wearable
+     heart rate in at least 8 distinct hours of the day before (the "day watch"); `low` = a check-in only;
+     `null` = nothing. 8 hours is a RYFT heuristic.
+  3. **Precedence:** wearable night > check-in > nothing, per wake day. A later sync that brings a wearable night
+     **supersedes** the check-in: it stays stored (`superseded: true`, still in the history and the export) and
+     every consumer (status, briefing, periodization) uses the wearable. Deleting the wearable data makes the
+     check-in current again. Never averaged: a subjective score next to a measured one would read as a second
+     measurement.
+  4. **`needs_checkin`:** 04:00 local or later, no wearable night, no check-in yet, and the flag on. The sync
+     carries no `was_user_entered` on sleep segments, so a night typed into Apple Health with asleep stages
+     counts as measured (review #2; decided 2026-11-27: kept so, no sync field for now).
+  5. **Routes, mapped to what exists** (the spec named `/api/v1/…` and other paths): `/v1/recovery/checkins/{date}`
+     (`PUT` upsert, `GET`, `DELETE`) and `GET /v1/recovery/checkins?from&to` with the `/v1/days` range rules;
+     `{date}` is the wake day, as every day in v1.
+  6. **`GET /v1/recovery/status` next to `CoachingBriefing.recovery` (a deviation):** the briefing needs the
+     Nutrition-to-Recovery profile (`store/n2r_guidance.go`: no profile, no briefing), so it reaches only the
+     protected pilot. The no-watch user is mostly not in it. The same `RecoveryStatus` object therefore has its
+     own route, and the briefing embeds it.
+  7. **Suggested bed and wake times are a pre-fill** of the check-in form (median of the last 7 days' check-ins,
+     at least 3; else the N2R `expected_bedtime` and 8 h later; else none), never advice; the Sleep Planner stays
+     the recommendation.
+- **Rejected:** writing a check-in score into `DailyScore.recovery`: it would change what an existing v1 field
+  means and mix a subjective estimate into the measured trend and baselines.
+- **Decided by the user, 2026-11-27** (the open questions in `docs/work/…/implementation.md`):
+  - **The Today ring shows the check-in score**, visibly marked as estimated. The app fills the ring from
+    `RecoveryStatus.recovery_score` while `source` is `checkin` and labels it from `source` and `confidence`;
+    `DailyScore.recovery`/`readiness` stay wearable-only (so the rejection above stands), and trends, baselines
+    and insights never contain a check-in.
+  - **Sleep-only trackers, no special case** (conservative default): the one rule applies, so a night with asleep
+    stages but no recovery (no heart rate, no HRV) is not a wearable night, its user is asked, and the check-in is
+    scored on the reported times; measured sleep is not blended into a check-in. (The question was written before
+    review #1 made recovery part of the rule; under the rule no measured-sleep user is left without an estimate.)
+  - **Hand-typed sleep** (conservative default): counts as measured, as the sync cannot tell; no additive sync
+    field in this work. Adding one is its own contract change with the app.
+  - **Apple's workout effort score** (conservative default): not read; `session_rpe` is only the rating given in
+    RYFT (Apple's score is its own construct, and a second source would need its own field and calibration).
+  - **Rollout** (conservative default): allow-listed testers only, not before a published privacy version names
+    the check-in; no percentage rollout, neither to the beta at large nor to the Nutrition pilot as a whole,
+    without a new decision.
+
+## D292 — The check-in score: a hybrid of wellness, duration, regularity and N2R, every constant versioned (2026-11-26; contract only)
+
+- **Decision:** a pure function in `internal/scoring` with calibration tests, computed when a check-in is saved,
+  carrying the scoring `ModelVersion`; the implementation bumps it (the next `2026.11.N`, a `changelog.json` entry,
+  `affects: []` since no trend metric moves) and a newer model rescores stored check-ins. Constants:
+  - `wellness_absolute = (0.65·quality + 0.35·freshness − 1) / 9 · 100` (1 → 0, 10 → 100).
+  - Personal blend from **5 check-ins in the 14 days before**: `z = (absolute − mean) / max(SD, 6)`,
+    `personal = clamp(50 + 25·z)`, `wellness = 0.7·absolute + 0.3·personal`.
+  - `duration`: plateau 100 from `L` to `L + 120` min, linear to 40 at 300 min, 40 below; above the plateau
+    −10 per hour, floor 75. `L = 450`, or `sleep_base_min` clamped to 360–600 when it is learned or manual.
+  - `regularity`: midpoint vs the circular mean of up to 7 prior nights (at least 3; wearable night first),
+    100 at ≤ 30 min, 50 at ≥ 120 min, linear.
+  - `recovery_score = 0.50·wellness + 0.30·duration + 0.10·regularity + 0.10·n2r`, missing parts dropped and
+    the weights renormalised, rounded, clamped 0–100.
+  - `acute_drop`: `z ≤ −1.5`, or quality ≤ 4 and freshness ≤ 4.
+- **Sources:** self-reported wellness as a training-response monitor: Hooper & Mackinnon (1995, Sports Med 20:321)
+  and Saw, Main & Gastin (2016, Br J Sports Med 50:281), who find subjective measures track training stress at
+  least as well as common objective ones. **Every number above is a RYFT heuristic:** the 65/35 split, the 70/30
+  blend, the SD floor, the 50 + 25·z mapping, the duration curve, the regularity band and the 50/30/10/10 weights
+  come from the product spec, not from a study, and are named as such in `docs/SCORING.md` when they ship.
+- **Where it deviates from the spec, and why:** the spec's `0.65·quality + 0.35·freshness` "scaled to 0–100" is
+  fixed as `(x − 1)/9` so 1 is 0 and 10 is 100; its duration band "100 in 7.5–9 h, decay above 9.5 h" left
+  9–9.5 h undefined, now 100 (plateau `L` to `L + 120`); "gentle decay" is −10 per hour; the z mapping
+  `50 + 25·z` is new (the spec gave none); a missing part is renormalised rather than counted as 0 (most
+  no-watch users have no N2R and no regularity in their first week, and a 0 would punish that); `soreness` is
+  stored and shown and adds a readiness reason but does not move the score (the spec gave it no weight; a
+  weight without data to calibrate it would be invented). **Decided by the user, 2026-11-27:** soreness is
+  recorded with zero weight, captured for a later calibration: it moves neither the score, `acute_drop` nor the
+  readiness state, and only adds `soreness_reported`. `docs/SCORING.md` says so when it ships.
+- **Pinned cases:** 5 h, quality and freshness 3, no history → 29; 8 h, 9 and 9 → 93; 14 days of check-ins
+  at 6 and 6 (absolute 55.6, SD 0 → floored to 6), then 5 and 5 (44.4) → `z` −1.85, `personal` 3.7,
+  `wellness` 32, `acute_drop` by `z` alone; 4 check-ins in 14 days → no personal part.
+
+## D293 — Session RPE on the workout id, mapped onto the TRIMP scale; a check-in's bedtime retroactively feeds N2R (2026-11-26; contract only)
+
+- **Session RPE (Foster et al. 2001, J Strength Cond Res 15:109):** `PUT /v1/workouts/{id}/rpe`, 1–10 in halves,
+  stored per workout id; `Workout.session_rpe` and `session_rpe_load` (minutes × RPE, arbitrary units).
+  - **Why the workout, not the Train or sync bodies (a deviation):** `PUT /v1/sessions/{id}` and
+    `POST /v1/sessions/{id}/complete` decode strictly and are queued writes, so a new field sent to a server
+    that doesn't know it is a `400` and today's builds drop such a write; `POST /v1/sync` is the HealthKit
+    mirror, and the rating is the user's input in RYFT. The workout route covers both kinds of manual workout:
+    a HealthKit workout entered by hand (`was_user_entered`) and a Train session (`Session.workout_id`, its
+    `ryft-session` workout when no HealthKit one matched).
+  - **Load:** the coaching load (`energy.Load`: acute 7 d, chronic 28 d, ACWR, TSB) counts a rated workout with
+    neither usable heart rate (no TRIMP) nor power (no TSS) as Banister's TRIMP with `r = session_rpe / 10` in
+    place of the heart-rate-reserve fraction: `minutes × r × a × e^(b·r)`, with `energy.Workout`'s constants
+    for the user's sex (0.64/1.92 male, 0.86/1.67 female, 0.75/1.795 otherwise). Measured load wins. Reading
+    RPE × 10 as the reserve percentage is a RYFT heuristic. The spec's "duration × RPE, mapped onto the
+    internal scale" is kept as `session_rpe_load` (AU) for display. A flat factor was rejected (review #4):
+    TRIMP per AU is `0.075·e^(0.1795·RPE)` with the default constants, 0.13 at RPE 3 and 0.32 at 8, so one
+    factor overstates easy sessions up to 2.3×. So 60 min at RPE 8 = 480 AU → 151 (unspecified sex),
+    143 (male), 157 (female).
+  - **Day strain stays HR-based** (`DailyScore.strain`, `WorkoutDetail.trimp`): putting reported effort into the
+    0–21 strain and its sleep-need top-up moves stored numbers for every user and needs its own calibration.
+    **Decided by the user, 2026-11-27:** session RPE does not feed day strain; it feeds acute and chronic load,
+    ACWR and TSB only, as drafted.
+- **Retroactive N2R:** the N2R bedtime precedence becomes the measured sleep start (`daily_scores.sleep_start`
+  of the next day, as `nutritionBedtimes` reads it) > the next morning's check-in `bedtime` > `expected_bedtime`.
+  `N2RScore.bedtime_source` (`expected`/`wearable`/`checkin`; absent when `bedtime` is null) says which.
+  **Explicit, and live rather than stored** (review #5): the N2R the app reads (`yesterday_n2r`, the Nutrition
+  daily summaries via `addN2RDays`) is computed on read from `nutritionBedtimes`, so the check-in bedtime as a
+  fallback there changes D − 1's alcohol, caffeine and late-meal penalties as soon as the check-in is saved or
+  deleted. The stored night record (`daily_biometric_baselines.n2r_score_breakdown`) is written only by the tick
+  and only for nights with overnight biometrics, i.e. wearable nights, where the measured bedtime wins anyway.
+  So it never needs the check-in bedtime, and no recompute job or event is added. The check-in path's
+  confounders are taken from the live D − 1 N2R, not from that record. What makes it explicit: `bedtime_source`
+  on the N2R and `n2r_bedtime_applied` on the check-in. The N2R formula and `n2rVersion` do not change; only an
+  input does.
+
+## D294 — Readiness without overnight HRV: reported state names, no diagnosis (2026-11-26; contract only)
+
+- **Decision:** `CoachingBriefing.readiness` uses a current check-in where the HRV path yields `UNKNOWN` (no
+  overnight HRV, or not enough for its baseline, `availability.go`), after the availability guardrail, and only
+  with a coaching plan, as today. No `acute_drop` → `OPTIMAL`. `acute_drop` with a confounder
+  of the evening before → `ACUTE_LIFESTYLE_SUPPRESSION` (the existing value; reasons the confounders, then
+  `checkin_below_usual` or `checkin_low_quality_and_freshness`). `acute_drop` without one → the new
+  **`LOW_RECOVERY_UNEXPLAINED`**, which `periodization.Plan` treats like the HRV path's unexplained drop
+  (deficit suspended, carbohydrate floor 4.5 g/kg). `soreness` adds `soreness_reported`.
+- **Confounders:** the N2R tags the HRV path already uses (`alcohol_above_035gkg`, `caffeine_bed_high`,
+  `late_satfat_meal`, from the live D − 1 N2R with the reported bedtime, D293) **and, a deviation, the journal of the day before**
+  (`alcohol`/`alcohol_drinks`, `caffeine_after_2pm` or `last_caffeine` within 8 h of the reported bedtime,
+  `late_meal` → `journal_alcohol`, `journal_late_caffeine`, `journal_late_meal`): most no-watch users are not in
+  the N2R pilot but can keep the journal. **Decided by the user, 2026-11-27:** `sick`, `travel` and `work_stress`
+  of the day before are explanations too (`journal_sick`, `journal_travel`, `journal_work_stress`), so a drop
+  with one of them is `ACUTE_LIFESTYLE_SUPPRESSION`, not `LOW_RECOVERY_UNEXPLAINED`. A judgement call on top:
+  with `journal_sick` the plan stays protective (no deficit, the 4.5 g/kg carbohydrate floor), because
+  `ACUTE_LIFESTYLE_SUPPRESSION` alone keeps a fat-loss deficit (`periodization/plan.go` suspends it only for
+  the unexplained state) and a deficit while ill is the riskier default. These three apply to the check-in path
+  only; the HRV path's confounders do not change (that would move what `AUTONOMIC_FATIGUE` means today).
+- **Names:** no diagnostic label. `AUTONOMIC_FATIGUE` claims a nervous-system cause that a questionnaire cannot
+  show, so the check-in path never emits it; the new name says what was observed (low, unexplained) and nothing
+  about why. App copy for both check-in states repeats what the user reported and names no physiological cause.
+  `AUTONOMIC_FATIGUE` stays on the HRV path (v1 renames nothing).
+- **The neutral name, decided by the user 2026-11-27; the form is ours:** a new field
+  `CoachingBriefing.readiness_display`, always present from the implementation PR on (not behind the flag; it
+  carries no check-in data). It equals `readiness`, except that `AUTONOMIC_FATIGUE` is displayed as
+  `LOW_RECOVERY_UNEXPLAINED`, the same observation the check-in path names. `readiness` keeps its value set, so
+  the pilot app keeps decoding and branching on `AUTONOMIC_FATIGUE`, and the plan logic keeps reading
+  `readiness`. The app keys copy on `readiness_display` and falls back to `readiness` when it is absent.
+  - **Rejected:** emitting a new state in place of `AUTONOMIC_FATIGUE` (behind the flag or a negotiation header):
+    an existing build would read it as `UNKNOWN` and lose the protective message, a negotiation header is a new
+    mechanism for one value, and the flag would tie an HRV-path name to the check-in feature. An alias inside
+    `readiness_reasons`: reasons are evidence, not the state's name, and copy keyed on them would be fragile.
+- **Compatibility:** `readiness` was never declared closed; the contract now says to read an unknown value as
+  `UNKNOWN`. `CoachingBriefing` is not in the Swift mirror; the pilot app is the only reader.
+
+## D295 — The check-in's consent, flag, deletion, export and privacy text (2026-11-26; contract only)
+
+- **Consent:** the check-in and the session RPE are health data (Art. 9 GDPR: perceived sleep, freshness,
+  soreness). Both writes need consent to the policy in force (`403 consent_required`, `warn` acting as `on`, as
+  for Nutrition writes); the reads and deletes do not, so a user who withdrew can still see and erase.
+- **Flag:** `recovery.checkin`, enabled at 0 % (testers by the allow-list; decided 2026-11-27 as the rollout:
+  allow-listed testers only, after the privacy version, no percentage without a new decision; D291). Off: the two writes and the status
+  route answer `404` without a `code` (what an older server answers too, so the app has one rule: hide the
+  feature, never drop local data), and the briefing's `recovery` is `null`. Reads and deletes keep working.
+  It is a **kill switch**: stored check-ins and ratings count nowhere while it is off (readiness, load, the N2R
+  bedtime), and turning it off deletes nothing. No new error `code`.
+- **Deletion and export:** `DELETE /v1/me` deletes check-ins and ratings with the account; a HealthKit deletion of
+  a workout deletes its rating; the account merge moves both; `GET /v1/recovery/checkins` (≤ 400 days a call)
+  feeds the app's export, and the workout export carries `session_rpe` already.
+- **Examples as `http` blocks** until the model types exist (as for Connections, D257): the doc test ties every
+  `json` block to a Go type, and this PR adds no Go. The implementation PR turns them into typed `json` blocks.
+- **Privacy:** the policy in force (2026-10-26) and #252's draft 2026-11-26 do not name subjective sleep times,
+  ratings, soreness or session RPE, and #252 defers N2R and coaching to a later version. The sentences #252
+  needs, and what waits for the N2R version, are in `docs/work/2026-11-26-no-watch-recovery/implementation.md`
+  → Privacy. The feature stays dark until a published version names it.
+
+## D298 — The check-in score's open details: which drop reason wins, and how the numbers are computed (2026-11-27)
+
+- **Context:** implementing D292–D294 (`internal/scoring/checkin.go`, `internal/energy`, `internal/periodization/checkin.go`)
+  left details the contract does not fix. None changes a pinned case of `docs/API.md` or D292.
+- **Decision:**
+  1. **Both drop rules hold → `checkin_below_usual`.** A check-in can be both 1.5 SD below the user's usual and
+     rated ≤ 4 twice. One reason is emitted (the contract's table names one), and the personal comparison wins:
+     it is what `acute_drop` is about ("well below the user's usual"), and for a user whose ratings are always
+     low it is the one that says something; the absolute rule is the fallback for the first weeks, when there is
+     no `z`. Copy for both says what the user reported, so neither choice claims more than the other.
+  2. **The score uses the unrounded parts**; the components are reported rounded. The pinned cases (29, 93, 32,
+     77, 31) come out the same either way; unrounded avoids double rounding.
+  3. **Personal SD is the sample SD (n − 1)** of the prior absolutes, recomputed from their quality and freshness
+     (the stored component is rounded: 14 × 6/6 then 5/5 gives the pinned `z` −1.85 only unrounded), then floored
+     at 6. The mean and SD exclude the day itself.
+  4. **`sleep_duration_min` truncates** to whole minutes (`wake − bed`), as "in whole minutes" reads.
+  5. **Regularity without a mean direction is `null`:** prior midpoints that cancel out on the clock (e.g. 00:00,
+     06:00, 12:00, 18:00) have no circular mean; the part is left out rather than scored against noise. Only the
+     newest 7 midpoints count (the caller passes them newest first).
+  6. **Late caffeine:** `last_caffeine` counts when it is at most 8 h before the reported bedtime, the boundary
+     included, and also when it is after the bedtime (a report that late is late caffeine).
+  7. **`confounders` are `[]` without `acute_drop`** (`periodization.CheckinConfounders` takes the drop), so the
+     stored check-in and the readiness reasons cannot disagree.
+  8. **sRPE load takes the workout's moving time** (`Workout.Seconds()`, as the heart-rate TRIMP does) and a
+     rating outside 1–10 counts as none; heart rate counts as usable only with a reserve (resting and max heart
+     rate known), as on the heart-rate path, so a workout with `avg_hr` but no resting heart rate takes the
+     rating.
+- **Rejected:** emitting both drop reasons (the contract's table and the app's copy key on one).
+
+## D299 — The no-watch recovery implementation: the details the contract leaves to the store and the routes (2026-11-27)
+
+- **Context:** the implementation of D291–D295 and D298 (`internal/store/recovery.go`, `cmd/api/recovery.go`). None of this
+  changes a sentence of `docs/API.md`.
+- **Decision:**
+  1. **The score is injected into the store.** `internal/scoring` imports `internal/store`, so the store cannot call
+     `scoring.CheckinScore`. It gathers the facts (`CheckinFacts`: the report, the sleep base, the prior ratings and
+     nights, yesterday's N2R and tags, the journal of the day before) and takes a `CheckinScorer`; the api passes
+     `scoreCheckin`. One transaction holds the upsert and the rescoring of the later check-ins within 14 days
+     (`lockCheckin`, advisory class 7419010). The store's tests use a stand-in scorer; the real numbers (29, 93, 77,
+     the z blend, 62 with regularity) are pinned through the api.
+  2. **`wearableNightSQL` is the contract's rule:** the day's `daily_scores.recovery` is not null, and the night has
+     asleep stages or an overnight HRV. The stages are `sleep_segments` of stage `asleep`, `core`, `deep` or `rem`
+     ending in scoring's night window of the day (local 20:00 before to 13:00, `scoring.NightWindow`); an `inbed`-only
+     night has none. `daily_scores.sleep_has_stages` (core, deep or rem when it was scored) and `hrv_ms` (the stored
+     sleep-window HRV) answer first, so the `sleep_segments` lookup (index `sleep_user_end`) runs only for a day that has
+     a recovery and neither, such as the older Garmin firmware that writes `asleep` alone. The one rule is a SQL
+     fragment used by the range read, the status, the readiness states and the regularity's nights.
+  3. **Confounders are those of the save.** They are computed from the live D − 1 N2R (with the check-in's bedtime) and
+     the journal of the day before when the check-in is saved or rescored, and stored; the briefing reads the stored
+     ones. A meal logged afterwards moves D − 1's N2R at once but the check-in's confounders at the next rescore (a
+     later check-in, a recompute, a model bump).
+  4. **Suggestions** take the check-ins of the 7 days **before** today (`today − 7 … today − 1`, at least 3); medians
+     are taken across midnight (the clock shifted by 12 h), over each check-in's own clock (`tz_offset_sec`).
+  5. **The flag is a kill switch for counting, not for showing.** While it is off the status, the readiness path, the
+     load, the N2R bedtime and `n2r_bedtime_applied` ignore check-ins and ratings; `Workout.session_rpe` and the check-in
+     reads still show what is stored (the owner's access, as for the DELETEs). `GET /v1/workouts` and the day read
+     `RatedWorkoutsBetween`; scoring reads `VisibleWorkoutsBetween`, which has no rating (its role cannot read the value).
+     A check-in's bedtime goes into N2R only: not into the nutrition diary's meal-timing score, and not into a stored
+     N2R night (`refreshN2RNight` reads its history with the flag off), which would outlive the kill switch.
+  6. **Required fields:** `tz_offset_sec` and `soreness` are pointers in `RecoveryCheckinPut` and `session_rpe` in
+     `WorkoutRPEPut`, so a missing one is a `422` and not a silent 0 or false. A malformed `{id}` is `400` as in
+     `GET /v1/workouts/{id}`.
+  7. **A model bump** rescores stored check-ins at the next `POST /v1/recompute` of the account
+     (`RescoreStaleCheckins`; best effort, never fails the recompute), and any `PUT`/`DELETE` rescores the later ones.
+  8. **Migration 0065 is corrected before it ships:** the foreign key to `workouts(id)` cannot exist (the key of
+     `workouts` has been `(user_id, id)` since 0007), so it is `(user_id, workout_id) REFERENCES workouts (user_id, id)
+     ON DELETE CASCADE ON UPDATE CASCADE`. That also keeps a rating its workout's owner's in the database, and the
+     merge's `UPDATE workouts SET user_id` carries the rating with it. The grants end up as follows. `ryft_ingest`
+     (the fold): `SELECT (user_id, workout_id, updated_at)` and `UPDATE (workout_id, updated_at)`, no `DELETE` (a dropped
+     copy's rating goes with its workout through the foreign key, as the owner), never the value. `ryft_scoring`:
+     `SELECT (user_id, workout_id)` and `UPDATE (workout_id, updated_at)` on `workout_ratings`, and
+     `UPDATE (start_at, end_at)` on `workouts` (per column, not per row: the statement is limited to source
+     `ryft-session`). `ryft_api` has the table.
+  9. **A rating follows its session.** A Train session's own workout whose times are edited is **updated in place**
+     (`EnsureSessionWorkout`; its load columns start over and the day's pass scores it again, as for a new row),
+     where it used to be deleted and inserted under the same id, so the cascade no longer drops the rating. When
+     scoring attaches a session to another workout, `ReleaseSessionWorkouts` moves the rating **from the workout the
+     session had before this pass** (`sessions.workout_id` as read at its start, passed in as `previous`) and from its
+     own workout, to the one chosen: own to HealthKit, HealthKit to HealthKit, HealthKit back to own. A target that has
+     a rating keeps it, and of two ratings for one target the previous workout's wins. The move and the releases run
+     in one transaction.
+- **Rejected:** a `scoring` grant to insert ratings (a service that derives numbers writing a user's input); keeping
+  the confounders live in the briefing (the N2R history read would run per check-in on every briefing).
+
+## D300 — The no-watch recovery's second pass: consent at the write, a recovery-free plan, one strength transaction, no times grant (2026-11-27)
+
+- **Context:** a static adversarial review of #260 against `main` found six holes. All six were checked in the code,
+  confirmed, and fixed with a test (`docs/work/2026-11-26-no-watch-recovery/review-codex.md`). This entry amends D299.
+- **Decision:**
+  1. **Consent is checked again at the write.** `PutCheckin` and `PutWorkoutRating` take the admitting consent grant
+     and revalidate it in their transaction under the consent lock `RevokeConsent` takes (`lockApply` before
+     `lockCheckin`), as the HealthKit sync does. A withdrawal committed in between answers `consent_required` and stores
+     nothing.
+  2. **A saved plan carries a recovery-free twin.** When a check-in changed the day's plan, `daily_energy_states.plan`
+     also holds the plan as it would be with recovery off (`recovery_off`; jsonb, no schema change). Readers with the
+     flag off and the stored N2R night restore it. The capture computes projection, the evaluation's history and calibration
+     with the flag off. The evaluation's adherence and availability are measured against the plan the user was
+     shown, which is the `recovery_off` one once the flag is off. So a check-in leaves no trace in any number stored
+     after the flag goes off.
+  3. **Reconcile keeps a rating.** When `wearables.Reconcile` drops a rated copy of a session, the kept copy takes its
+     session RPE if it has none. Measured HR or power load still wins over the rating, and the rating counts once.
+  4. **The day's strength pass is one transaction** (`Store.ApplySessionPass`): attachments, session loads, rating
+     moves and releases, planned from the mapping read before the pass. A failure rolls it all back, and the retry starts
+     from the same mapping. Rating moves follow chains of reassignments. A swap of two rated workouts leaves both
+     ratings where they are.
+  5. **Scoring has no grant on workout times** (amends D299 item 8). 0065 is changed in place (unmerged, applied
+     nowhere): the `UPDATE (start_at, end_at)` column grant and its trigger are gone (the file revokes and drops them, so
+     a rerun stays clean). `public.scoring_follow_session_times(user, workout)` is SECURITY DEFINER with
+     `search_path = pg_catalog` and EXECUTE for `ryft_scoring` only. It takes no times: it reads them from the owner's
+     completed session of that workout. `EnsureSessionWorkout` calls it.
+  6. **The outermost log redactor covers the recovery paths** (`redactPrivatePath`, formerly `redactNutritionPath`):
+     `/v1/recovery/checkins/{date}` and `/v1/workouts/{id}/rpe` log their pattern even when auth, the rate limit, App
+     Attest, the beta gate or the mux rejects the request.
+- **Rejected:** rebuilding a flag-off plan on every read (the stored plan is what was shown; a second copy is cheaper
+  than replaying the day); a trigger that checks ownership on the times (it still lets the caller pick the times).
+
+## D297 — The sync button reads `GET /v1/me/sync`: per-source status and "scores pending", no new route (2026-11-27; contract only)
+
+- **Context:** the home screen gets a sync button (syncing, up to date < 30 min, stale ≥ 30 min, error; a long
+  press lists Apple Health, Garmin and Suunto). The user's spec asked for `synced_at`, `sources`
+  (`last_sync_utc`, `status` OK/PENDING/ERROR) and `data_freshness` (`UP_TO_DATE`/`SYNCING_CLOUD`/`STALE`), and
+  for the button not to turn green before the scores, readiness, N2R and the briefing include the new data.
+- **Where:** `GET /v1/me/sync` (D91), which already says what the server has and what it is doing with it
+  (`last_sync_at`, `pending_days`, `expected_within_sec`), is behind a 10 s cache and passes the beta gate. A new
+  `GET /v1/sync/status` would be a second answer to the same question. `GET /v1/me` is heavier (`samples_7d`,
+  `account_hint`), uncached, and the Profile screen's. `POST /v1/sync` cannot say when scoring ends (below).
+  So the route gains three fields: `sources`, `freshness`, `scores_pending_since`.
+- **Names follow the contract, not the spec:** `synced_at` is the existing `last_sync_at` (no second field for
+  the same time); `last_sync_utc` is `last_sync_at` (every time in the API is UTC with an `_at` name); the status
+  values are lower case like every closed enum here. `data_freshness` becomes `freshness` with only what the
+  server knows: `current` or `scores_pending`. `UP_TO_DATE` and `STALE` are the app's 30-minute rule on
+  `last_sync_at`; the server reports times and work in progress, never a colour.
+- **"Scores pending", the server's rule:** either of:
+  1. a `score_queue` row with `scored_at IS NULL` (in `pending_days`) for today or yesterday (local), or for a
+     day of the last 30 queued in the last 10 minutes. Scoring a past day rescores up to 30 stored days after
+     it in the same pass (`baselineDays`), today included, before the row is marked;
+  2. a `provider_inbox` row of the user in state `pending` (a connection's delivery not stored yet).
+
+  Readiness is part of the day's score. A sync stores its records, then its apply transaction queues their
+  days (`ApplySync` → `queueAndEmit`), both before the `200`. The window between the two lies inside the
+  uploading app's own request, which shows syncing anyway. A direct delivery is stored, its days queued and
+  its inbox row processed in one transaction (`ApplyDirect`).
+- **Why the day window:** a day queued long ago that scoring never clears (a dead letter, or an account that
+  scoring skips for consent) would otherwise keep the button off green for good, and a 400-day recompute would
+  spin it for minutes. Such days stay in `pending_days`; the home screen does not show them.
+- **What it does not track, and why:** for accounts with Nutrition-to-Recovery, the morning N2R baseline
+  (`daily_biometric_baselines`, written by the api tick's `RefreshN2RNights`) and the coaching briefing built
+  on it; and the coaching pilot's partner deliveries (`nutrition.wearable_inbox`, drained by
+  `processWearables` on the same tick). They follow within one 15-minute pass, and the contract says so. The
+  first version tracked them (a baseline older than its day's score, an uncompleted job), but review showed
+  the baseline term fires almost always. Scoring's 15-minute pass rewrites today and yesterday for every
+  active user and moves `computed_at` even when nothing changed. The same scheduler job ticks scoring and the
+  api, so `processed_at < computed_at` recurs every tick, and the button would never turn green. The job term
+  would have needed `claim_wearable`'s conditions and a new grant for a pilot-only path. Tracking them exactly
+  needs an event-driven N2R refresh after scoring, or `computed_at` moving only on a change: a question for
+  the user, not decided here.
+- **Not exact, and why it is acceptable:** `MarkScored` clears a day queued before its run started
+  (`queued_at <= started`). `queued_at` is the queueing transaction's start time (`now()`), and `started` is
+  the scoring instance's clock. A run that starts while `ApplyDirect`'s transaction is open, before its
+  commit, does not see the records, but marks the day done. The delivery's own event then rescores it seconds
+  later, and the silent refresh push follows. The contract says so. Making it exact (clear only when
+  `queued_at` still equals the value the run read at its start) is a scoring change, follow-up F1 in the
+  implementation outline. `scores_pending_since` restarts when a day is queued again (`queued_at = now()` on
+  conflict), so it measures the current wave, not the first arrival.
+- **Per source:** `healthkit` always, with `last_sync_at` from `devices.last_sync_at`, `ok`, or `error` with the
+  code of the gate that refuses it, each gate checked against its own mode (beta `warn` with consent `on` and
+  no consent is `consent_required`); `warn` lets syncs through and stays `ok`. The server never says `pending`
+  for it: an upload in flight is the app's state. A provider is listed when its connection is `connected` or
+  `needs_reauth`, the server serves the provider and `connect.<provider>` is on for the account. The rule is
+  written out, not "what `GET /v1/me/connections` lists", because that route filters only `available` by
+  flag. It has `last_data_at`, `error`/`needs_reauth`, `pending` while an inbox row waits, else `ok`. So Garmin
+  and Suunto are absent, not `error`, until Connections is live. A `revoked` connection is absent; the Connect
+  screen explains it. A `failed` inbox row (one record ingest could not parse) is no source error: the user can
+  do nothing about it, and the operator's gauges show it. The coaching pilot's partner links (D271) are not
+  sources: they are operator-provisioned, pilot-only, and a second Garmin entry next to a Connections one would
+  confuse.
+- **The sync does not wait for scoring:** scoring is another service behind Pub/Sub (D218), taking seconds to
+  tens of seconds (`expected_within_sec`), more for a backfill; a held `POST /v1/sync` would hold a Cloud Run request slot and the app's background time,
+  and a timeout retry would send the page again. A sync is many pages too. The app takes `scoring.queued_days`
+  from the response as pending at once, polls `GET /v1/me/sync` no sooner than `max(expected_within_sec, 10)` s
+  (the cache) at that interval for at most 3 minutes, and reloads today and the briefing when `freshness` turns
+  `current`. The silent refresh push ends the wait early, but it comes at most once per 5 minutes. A long-poll
+  (`?wait=`) was rejected for the same request-slot reason.
+- **The bound:** pending work older than 3 minutes shows stale with "Scores are still being calculated", not
+  syncing forever and not an error: the data is stored. `scores_pending_since` lets the app apply that after a
+  relaunch too.
+- **Enums:** `freshness` and `status` are closed (Swift enums); `source` and `reason` are open, so Suunto and new
+  reasons need no `/v2`.
+- **Examples as `http` blocks** until the model types exist (as D257, D291). The implementation is outlined in
+  `docs/work/2026-11-27-sync-status/implementation.md`: one indexed query more behind the cache, a column grant
+  on `provider_inbox.received_at` for the api and a partial index, no new table.
+
+## D301 — The sync status is served: `closed_reason`, scoring closes the queue of an account without consent, five queries (2026-11-27)
+
+- **Context:** D297 fixed the contract (#258); this is the implementation PR (`feat/sync-status`), and the
+  calls it made that the outline left open. The user's answers of 2026-11-27: the N2R baseline, the briefing and
+  the pilot's partner deliveries stay untracked, withdrawn consent makes scoring close the queue rows, offline is
+  the app's concern.
+- **`score_queue.closed_reason` (migration 0067):** `NULL` or `'no_consent'`, a closed set (a new reason is a new
+  migration). It means something only together with `scored_at`: scoring sets both when it closes a row without
+  scoring it (`Store.CloseQueue`), and `MarkScored` sets it back to `NULL` when a day is really scored. A row
+  queued again (`scored_at = NULL`) may keep a stale value; every reader asks `scored_at IS NULL` first, so a
+  stale value on a pending row is never read. That is why the queue upserts of ingest and the api (`queueDays`)
+  do not change: no new grant for them and no change of the golden trace. `ExpectedScoreSec` counts only rows
+  with `closed_reason IS NULL`: a closed row has `scored_at - queued_at` of however long the account had been
+  without consent, which says nothing about how long scoring takes, and would pull the p95 that
+  `expected_within_sec` shows to every account.
+- **Consent closing lives in `cmd/scoring`, not in `internal/scoring`:** where scoring answers `ErrNoConsent`
+  (`handleEvent`) it now calls `CloseQueue` first, and the timer pass does the same for an active user the
+  engine does not admit (`refreshActive`). No scoring rule changes: `internal/scoring` is untouched, so no
+  `ModelVersion`, no `SCORING.md`, no rescore. A failure of `CloseQueue` is logged and the event is still acked
+  (D78: nothing to retry); the next event or the next 15-minute pass closes the rows. Closing twice closes
+  nothing the second time (the `WHERE` is `scored_at IS NULL`), so a redelivery is idempotent (D100). If the
+  account consents again, the next sync queues its days again and they are scored; closed days are not scored
+  retroactively. A closed day leaves
+  `pending_days` and stops holding `freshness`; the `healthkit` source shows `consent_required` while the consent
+  gate is `on`. Scoring closes the rows of an account with **no consent recorded** (`Admits`: `Consent != nil`
+  while the consent gate is `on`); an account that consented to an older policy is still scored while `healthkit`
+  shows `consent_required`, and nothing of it is closed. `CloseQueue` takes a cutoff and closes only rows with
+  `queued_at <=` it (as `MarkScored` does with `started`), taken before the account is read: a re-consent and a
+  sync racing the close queue their days again after the cutoff, and those days stay pending and are scored.
+- **"A day of the last 30" (D297's window) means today − 30 through today:** `syncFreshness` holds the button for
+  a day in that range queued in the last 10 minutes, and for no day after today (a timezone change can leave
+  one). The lower bound is today − 30 because scoring's rescore reaches 30 stored days after a changed day, so
+  today − 30's rescore reaches today.
+- **Why not a retention of the old rows instead:** the day window of D297 already stops such a row holding the
+  button after two days. Closing it also removes it from `pending_days` (which the app's fallback for an older
+  server reads), and it records why the row never got a score.
+- **Migration number:** 0067. Main ends at 0063 (#259); #260 holds 0064 to 0066 and merges first.
+- **Cost of the route, uncached:** 5 queries, up from 4: the user row with its last device and today's score;
+  the kinds; the queue (`pendingQueue`, the same primary-key range as before, with `queued_at` as one more
+  column, and `PendingDays` reads it too); the connections (`SyncConnections`: the `connections` primary key,
+  and per listed connection one probe of `provider_inbox_user_pending`, at most two today); the global p95.
+  On top, `served` reads the flag table (`Store.Flags`, one small query, not cached) once per listed
+  connection, as `available` does; none when the account has no connection or `h.conn` is nil (Connections not
+  wired), so 5 queries today and at most 7 with two providers. Reading the flags once per request would need a
+  `served` variant that takes them; not done, the table has a dozen rows. The index
+  holds only `state = 'pending'` rows, so it stays small while the processed rows stay as dedupe keys for 30
+  days. The 10 s per-user cache stays: ingest cannot invalidate the api's cache, and the contract's polling rule
+  (first call no sooner than `max(expected_within_sec, 10)` s after the sync) is built on it.
+- **Evaluation of the gates:** `healthkit` is `error` with `invite_required` only when the beta gate is `on` and
+  the account has no access, else `consent_required` only when the consent gate is `on` and the account has
+  not consented; each against its own mode. `gateFor` (the `gate` field) is untouched: it answers the first
+  failing gate whatever its mode, as D91 says.
+- **A `needs_reauth` connection with a delivery waiting is `pending`, not `error`:** API.md's status table lists
+  `pending` for "`connected` or `needs_reauth`" with a delivery not stored yet, and `freshness` follows a
+  `pending` source. Ingest stores the delivery whatever the grant's state, so the data is on its way into the
+  scores; the `error` shows again once it is stored (usually seconds). Error first would have let `freshness`
+  say `current` for data no score has.
+- **Where the window lives:** `syncFreshness` in `cmd/api/syncstatus.go`, a pure function of the queued days
+  with their `queued_at`, the user's local today and `now`. The `score_queue` primary key lists only the
+  account's unscored rows, so the filtering happens in Go, not in SQL.
+- **Not changed:** `MarkScored`'s `queued_at <= started` (F1 stays a follow-up), `POST /v1/sync`, the events,
+  the Cloud Run templates. Rollback: revert the api and scoring commits; the migration stays (a column, an
+  index and two grants nothing old reads or writes).

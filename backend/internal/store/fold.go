@@ -131,6 +131,11 @@ func foldTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, sc FoldScope, loc 
 	if len(drop) == 0 {
 		return nil, nil, false, nil
 	}
+	// A rating belongs to the workout the user sees: it moves to the copy that stays before the others go (the
+	// delete cascades to a rating, D293).
+	if err := moveFoldedRatings(ctx, tx, userID, groups); err != nil {
+		return nil, nil, false, fmt.Errorf("fold ratings: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM workouts WHERE user_id=$1 AND id = ANY($2) AND source <> $3`,
 		userID, drop, model.SessionSource); err != nil {
 		return nil, nil, false, fmt.Errorf("fold delete: %w", err)

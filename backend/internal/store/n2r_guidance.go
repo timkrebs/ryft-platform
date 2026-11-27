@@ -32,6 +32,20 @@ func (s *Store) coachingBriefing(ctx context.Context, user uuid.UUID, now time.T
 		}
 		today := now.In(p.Location).Format(time.DateOnly)
 		out.Date = today
+		if briefing {
+			// Today's recovery, also when out.Date below is still yesterday; null while the flag is off.
+			on, err := recoveryOn(ctx, tx, user)
+			if err != nil {
+				return err
+			}
+			if on {
+				status, err := recoveryStatusTx(ctx, tx, user, p.Location, p, now)
+				if err != nil {
+					return err
+				}
+				out.Recovery = &status
+			}
+		}
 		previous := parseN2RDay(today, p.Location).AddDate(0, 0, -1)
 		if bed := expectedBedtime(previous, *p); bed != nil && !now.After(*bed) {
 			out.Date = previous.Format(time.DateOnly)
@@ -44,12 +58,13 @@ func (s *Store) coachingBriefing(ctx context.Context, user uuid.UUID, now time.T
 		if err != nil {
 			return err
 		}
-		in := h.input(out.Date, false)
+		in, bedtimeSource := h.inputSource(out.Date, false)
 		if out.Date != today {
 			// Early-morning intake before the expected sleep still informs live guidance.
 			in.Meals = append(in.Meals[:len(in.Meals):len(in.Meals)], h.Meals[today]...)
 		}
 		result := score.N2R(in)
+		result.BedtimeSource = bedtimeSource
 		out.N2R = &result
 		out.Biometrics, err = morningN2R(ctx, tx, user, in.Start, now)
 		if err != nil {
@@ -93,7 +108,7 @@ func (s *Store) coachingBriefing(ctx context.Context, user uuid.UUID, now time.T
 			if briefing {
 				yesterday := parseN2RDay(out.Date, p.Location).AddDate(0, 0, -1).Format(time.DateOnly)
 				if yesterday >= fromDate {
-					r := score.N2R(h.input(yesterday, true))
+					r := h.n2r(yesterday, true)
 					out.Yesterday = &r
 				}
 			}
@@ -116,6 +131,7 @@ func (s *Store) coachingBriefing(ctx context.Context, user uuid.UUID, now time.T
 		}
 		return nil
 	})
+	out.ReadinessDisplay = periodization.ReadinessDisplay(out.Readiness)
 	return out, err
 }
 
@@ -184,7 +200,7 @@ func guidanceFoods(ctx context.Context, tx pgx.Tx, code string, vectorSchema *st
 	if err != nil {
 		return nil, err
 	}
-	foods, err := pgx.CollectRows(rows, pgx.RowToStructByPos[model.FoodSummary])
+	foods, err := pgx.CollectRows(rows, scanFoodSummary)
 	if foods == nil {
 		foods = []model.FoodSummary{}
 	}

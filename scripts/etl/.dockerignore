@@ -8,4 +8,9 @@
 !categorizer.py
 !import_pg.py
 !merge_catalog.sql
+!staples.v1.json
+!bls_curation.v1.json
+!data/README.md
+!data/bls_4_0.csv
+!data/bls_4_0.manifest.json
 !supabase-ca.crt

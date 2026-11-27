@@ -116,6 +116,31 @@ variable "alert_app_channel" {
   }
 }
 
+# ---- the production smoke's token minters (iam.tf, D286) --------------------------------------------
+
+# Who, besides ryft-deployer, may mint an ID token of ryft-smoke for `make smoke-prod`: IAM members of
+# people and groups only. A service account is refused on purpose (CI's is ryft-deployer, bound in
+# iam.tf), and so are allUsers and allAuthenticatedUsers: a token of ryft-smoke acts as the smoke
+# account in api and ingest. Operators' addresses are personal: a workspace variable of ryft-gcp
+# (HCL on), never in a committed file. Empty (the default) leaves minting to CI alone.
+variable "smoke_token_creators" {
+  description = "IAM members (user:<email>, group:<email>) that may mint ryft-smoke's ID token with roles/iam.serviceAccountOpenIdTokenCreator. A workspace variable only"
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for m in var.smoke_token_creators : can(regex("^(user|group):[^@:[:space:]]+@[^@:[:space:]]+\\.[^@:[:space:]]+$", m))
+    ])
+    error_message = "smoke_token_creators takes IAM members written user:<email> or group:<email>, nothing else (no serviceAccount:, domain:, allUsers or allAuthenticatedUsers)."
+  }
+
+  validation {
+    condition     = length(distinct(var.smoke_token_creators)) == length(var.smoke_token_creators)
+    error_message = "smoke_token_creators names each member once."
+  }
+}
+
 # ---- the Pub/Sub topology: pubsub.auto.tfvars.json, written by cmd/pubsub-topology (design 2.1) ------
 
 variable "pubsub_topics" {

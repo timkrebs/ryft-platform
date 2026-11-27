@@ -19,9 +19,108 @@ for s in api ingest; do gcloud run services describe "$s" --region=europe-west1 
 make smoke-prod
 ```
 
+## The sync button: the sync status is served (2026-11-27, D297, D301)
+
+Done (branch `feat/sync-status`): `GET /v1/me/sync` answers `sources`, `freshness` and `scores_pending_since` as the contract says; the API.md examples are typed and decode. Scoring closes the queued days of an account without consent (`score_queue.closed_reason`, migration 0067), so they stop holding `freshness`. Five queries per uncached call, plus one flag read per listed provider. Not tracked: the N2R baseline, the briefing and the pilot's partner deliveries (D297). Merge applies **0067**, after #260's 0064–0066 already on main (a column, an index, two grants; rollback-safe); the api and scoring roll with it. Open: the behaviour tests, review, F1 (`MarkScored` exact).
+
+## No-watch recovery: the implementation, dark (2026-11-27, D291–D295, D298, D299, PR #260)
+
+Done: the contract of #255 is served behind `recovery.checkin` (enabled, 0 %, empty allow-list). The morning check-in (`PUT`/`GET`/`DELETE /v1/recovery/checkins/{date}`, the range route), `GET /v1/recovery/status`, the session RPE (`PUT`/`DELETE /v1/workouts/{id}/rpe`, `Workout.session_rpe`, `session_rpe_load`), `CoachingBriefing.recovery` and readiness from a check-in where the HRV path is `UNKNOWN` (`LOW_RECOVERY_UNEXPLAINED`, `ACUTE_LIFESTYLE_SUPPRESSION` with the journal confounders, the protective plan for `journal_sick`), `readiness_display` on every briefing (not behind the flag), `N2RScore.bedtime_source` with the check-in bedtime as N2R's live fallback, and rated workouts without HR or power in the coaching load only (Banister TRIMP with `r = RPE/10`). One wearable-night rule decides the tiers, `needs_checkin`, `superseded` and the readiness path. The flag is a kill switch. Migrations **0064** `recovery_checkins`, **0065** `workout_ratings` (composite FK to `workouts`, D299), **0066** the flag seed (0061–0063 are the BLS import's, #257 and #259). D296 and D297 went to #257 and #258 while this ran, so this work's own decisions are **D298** (the score's details) and **D299** (store and routes). Scoring model **2026.11.1** (`affects: []`): the golden files change in `model_version` only; no stored daily number, day strain or `WorkoutDetail.trimp` moves. Reviews: `docs/work/2026-11-26-no-watch-recovery/review-impl.md`.
+
+On merge: `deploy.yml`'s migrate job runs 0064–0066; api, ingest and scoring roll (the model version, the fold's rating move). Nothing changes for any account: the flag is at 0 %.
+
+Open: the privacy text (#252 or the next version, the sentences in `implementation.md` → Privacy) before any tester goes on the allow-list; then one tester (OPERATIONS → Feature flags → `recovery.checkin`). The app builds the check-in screen, the RPE prompt and `readiness_display` copy.
+
+## The sync button: the sync status contract, docs only (2026-11-27, D297)
+
+Done: `docs/API.md` → `GET /v1/me/sync` → The sync button. The route gains `sources` (per source: `healthkit` or a provider id, `last_sync_at`, `status` `ok`/`pending`/`error`, `reason`), `freshness` (`current`/`scores_pending`) and `scores_pending_since`. No new route; `POST /v1/sync` is unchanged and does not wait for scoring. "Scores pending" means one of two things. A day is queued that is today, yesterday, or a past day queued in the last 10 minutes (its rescore reaches today). Or a connection's delivery is not stored yet. Not tracked: the N2R morning baseline, the briefing built on it, and the pilot's partner deliveries, all on the 15-minute tick (D297 says why). Garmin and Suunto are listed only while a connection is live, served and flagged on. The app rule (five steps, polling bounded at 3 minutes) is in the section. The Swift mirror and a changelog row are in. The examples are `http` blocks until the server has the types.
+
+Open: the implementation (`docs/work/2026-11-27-sync-status/implementation.md`: one migration with a column grant and a partial index, the api reads, tests; follow-up F1 makes `MarkScored` exact). One code-reviewer pass and a re-verification (`review.md` there): blocker 2 is fixed; blocker 1 is resolved by not tracking the tick-driven N2R and pilot work and documenting the up-to-15-minute lag. The open question: should an event-driven N2R refresh make it trackable? Merging this PR deploys nothing new: `deploy.yml` rolls the services unchanged, and the site job has no change.
+
+## G4: the full BLS 4.0 catalog with German names (2026-11-27, D296)
+
+**Data PR (`data/bls-4-0`):** the extract is committed: 7,140 foods from the user's file (sha256 `524bbefe…8c60`, 1.58 MB CSV, 33 components, 0 unparsed cells). The real file needed three converter fixes, each in D296. BLS markers (`TR`, `<LOD`, `<LOQ` → 0; `-` → unknown). Codes with letters (`M5B1600`; 772 foods, plus migrations **0062/0063** widening `nutrition_bls_attribution`). EPA/DHA headers with a colon (`F20:5CN3`). 20 twins (the staples' raw or matching state, list in D296). Local dry run: 7,140 processed, 7,026 accepted, 20 skipped twins, 94 rejected (91 `atwater_deviation`, among them kale, raspberries, celeriac and coffee: BLS energy uses EU factors; a follow-up is proposed in D296). The per-food attribution is now the publisher's exact citation with the DOI.
+
+Earlier, code done: `scripts/etl/bls_convert.py` turns the official `BLS_4_0_Daten_2025_DE.xlsx` into a committed extract (`scripts/etl/data/bls_4_0.csv` and its manifest). The ETL then imports ~7,140 foods. Each gets its German and English name, ~30 nutrients per 100 g, a category hint and a `food_form`, but no portions. They also get curated DACH synonyms as aliases (40 groups, `scripts/etl/bls_curation.v1.json`). BLS foods that duplicate a curated staple (twins) are left out. Migration 0061 ranks a curated staple ahead of a BLS food on an exact-name tie. The licence is CC BY 4.0; the attribution text is in D296. Nothing ran locally: Python, `curl` and WebFetch needed approval, so CI is the first run, and the BLS file was never downloaded. With the data PR the CSV is in the image. The staples-only path (`--no-bls-csv`) now gives 3 `conflict` over the old staple rows, and `--write` refuses it once the catalog holds the full import (D296).
+
+On merge, `deploy.yml`'s push run: the migrate job applies **0061** (it replaces `nutrition.search_foods_v2`; same signature, rollback-safe), the services roll with unchanged code, then smoke-prod. The site job skips. The ETL image isn't published on push.
+
+Needs you, in order:
+1. **The file.** Download `BLS_4_0_Daten_2025_DE.xlsx` from https://blsdb.de/download. Tell the next run whether the site asked for a registration or a licence acceptance. Put the file at `scripts/etl/BLS_4_0_Daten_2025_DE.xlsx`; `*.xlsx` is git-ignored there.
+2. **The extract.** With Python 3.11+, from `scripts/etl`: `python3 bls_convert.py BLS_4_0_Daten_2025_DE.xlsx`. It writes `data/bls_4_0.csv` and `data/bls_4_0.manifest.json`, or fails and lists the headers it found. Then run the ETL dry run locally (`python3 run_etl.py --source bls`) and review `twin_candidates`, `staple_nutrient_drift`, `staples_missing`, the rejects and the manifest's `unparsed` before you fill `twins` in `bls_curation.v1.json`. Commit the CSV, the manifest and the twins in one commit and open a PR (or hand the file to a headless run with `curl`/Python allowed, and it does this step).
+3. **After that PR merges:** `gh workflow run deploy.yml --ref main -f publish_nutrition_etl=true`, and read the digest from the **Nutrition ETL image** summary.
+4. In the local, git-ignored `infra/gcp/terraform.tfvars` (not HCP), set `nutrition_etl.image_digest`. Run `terraform -chdir=infra/gcp plan -out=bls-full.tfplan`: only the job's image should change. Then `terraform -chdir=infra/gcp apply bls-full.tfplan`.
+5. Dry run: `gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,bls,--full --wait`. With the data PR's extract expect `bls_full: true`, processed 7,140, accepted 7,026, skipped 20 (`skipped_twin` 20), rejected 94 (91 `atwater_deviation`, 3 `missing_or_invalid_macro`), `aliases_added` 1,554, empty `twin_mismatch`, `staple_nutrient_drift` and `staples_missing`, `stale_twins` listing the 20 twins with `imported: null` (a dry run has no connection), and the version `py-etl4:bls_4_0:staples2:` + the digest in the data PR body.
+6. Write: the same with `--args=--source,bls,--full,--write`. Expect 7,023 `inserted`, 3 `updated` (the BLS staples' nutrients and attribution), 0 `unchanged`, 0 `conflict`, and `stale_twins` all `imported: false`. A rerun gives 7,026 `unchanged`.
+7. Legal: put the D296 attribution sentence on the site's licences/legal page (#252), and ask the app lead to add it to the About/licences screen.
+
+Size: ~250k rows, ~30–45 MB in Supabase. To roll back, re-pin the previous digest. Imported rows stay; retire them by `status` if they must go. 0061 rolls back by re-applying 0059's body. **0061–0063 are taken now** (0062/0063 by the BLS data PR): the no-watch recovery implementation (above) starts at 0064.
+
+## No-watch recovery: the contract, docs only (2026-11-26, D291–D295)
+
+Done: `docs/API.md` → Recovery without a watch: the morning check-in (`PUT`/`GET`/`DELETE /v1/recovery/checkins/{date}`, the range), `GET /v1/recovery/status`, session RPE (`PUT`/`DELETE /v1/workouts/{id}/rpe`, `Workout.session_rpe`, `session_rpe_load`), `CoachingBriefing.recovery`, `N2RScore.bedtime_source`, the readiness value `LOW_RECOVERY_UNEXPLAINED`, and the flag `recovery.checkin`. The Swift mirror and a changelog row are in. No Go, no migration, no behaviour change: every new route answers `404` until the implementation PR. The examples are `http` blocks until the model types exist. D290 was taken by #252, so this work uses D291–D295.
+
+Decided 2026-11-27 (the user; folded into API.md, D291–D295 and `implementation.md`): the Today ring shows a check-in's estimate, marked as estimated (from `RecoveryStatus`; `DailyScore.recovery` stays wearable-only); session RPE feeds no day strain; soreness has zero weight; journal `sick`, `travel` and `work_stress` explain a drop (with `sick` the plan stays protective); the neutral name is the new field `CoachingBriefing.readiness_display` (`AUTONOMIC_FATIGUE` → `LOW_RECOVERY_UNEXPLAINED`, `readiness` unchanged); and the conservative defaults: no special case for sleep-only trackers, hand-typed sleep stays counted as measured, Apple's effort score is not read, allow-listed testers only.
+
+Open: the implementation (`docs/work/2026-11-26-no-watch-recovery/implementation.md`: migrations 0061+, tickets, tests) and the privacy text #252 (or the next version) needs before the flag goes on for anyone. One code-reviewer pass (`docs/work/2026-11-26-no-watch-recovery/review.md`): the blocker (one "wearable night" rule) and the should-fix items are fixed in the second commit. Merging this PR deploys nothing new: `deploy.yml` rolls the services unchanged, and the site job has no change.
+
+## Nutrition portions v2: clean USDA labels and 8 more staples (2026-11-26, D288)
+
+The ETL now cleans every non-curated USDA portion. Before, Apple showed `1 medium (3" dia)`, and in German it showed the same raw text. Now `1 medium` / `1 mittelgroßes Stück` with the short label `Mittel`, ordered Klein 10, Mittel 20, Groß 30, household units 40+. `undetermined` and imperial parentheticals are gone, and an unmapped qualifier leaves the German label out instead of mixing languages. New staples: Kartoffeln gekocht, Avocado (½ is the default), Tomate, Karotte/Möhre, plus Salatgurke, rote Paprika, Zwiebel and Naturjoghurt. Their portions match source rows by size key, text or grams. A `source_description` guard keeps a wrong FDC ID harmless. Defaults stay curated. No migration, no API change, no Terraform change. Portion IDs don't change. The Python tests first ran in CI: the session couldn't run Python, fetch FDC or download SR Legacy, so there is no local count of changed labels (the dry run reports it). Research for the next step (OFF portions, BLS names) is in `docs/work/2026-11-26-nutrition-portions-v2/research.md`.
+
+On merge, `deploy.yml`'s push run deploys as usual: migrate has nothing new, the services roll with unchanged backend code, then smoke-prod. The site job skips. The ETL image isn't published on push. Then, in order:
+1. `gh workflow run deploy.yml --ref main -f publish_nutrition_etl=true`. Read the digest from the run's **Nutrition ETL image** summary.
+2. In the local, git-ignored `infra/gcp/terraform.tfvars` (`nutrition_etl` isn't an HCP variable), set `image_digest`. Keep `database_secret_version = 1`, `row_limit = 1000`, `schedule_enabled` as it is. Run `terraform -chdir=infra/gcp plan -out=nutrition-portions-v2.tfplan`. Only the image of `google_cloud_run_v2_job.nutrition_etl` should change. Then `terraform -chdir=infra/gcp apply nutrition-portions-v2.tfplan`.
+3. Dry runs: `gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,sr-legacy,--limit,10000 --wait`, and the same with `--args=--source,foundation,--limit,10000`. Expect a version starting `py-etl4:staples2:`, `portions.relabelled` (the number of labels that change), `portions.raw_marker` 0, empty `staples.description_mismatch` and `staples.unmatched`, and `staple_portions` with the source grams. Send the summary lines back if anything is non-empty.
+4. Writes: `gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,sr-legacy,--write,--limit,10000 --wait`, then `--args=--source,foundation,--write,--limit,10000`. Expect about 7.7k `updated` for SR Legacy and 0 conflicts. A rerun gives `unchanged`.
+5. Optionally, the read-only count of the Go importer's raw labels (SQL in `infra/gcp/README.md` → Nutrition on Cloud Run, step 4).
+
+Roll back by re-pinning the previous digest. The new labels stay (cosmetic, same IDs), and saved meals keep their snapshots.
+
+## The real smoke account is smoke@ryftapp.de (2026-11-26, D286 correction)
+
+Steps 1 and 2 below are done (the #250 push run stopped at "bootstrap pending", and `migrate_only` ran). Step 3 refused `5258f5d1-…` (`smoke@ryftlab.de`, created today, never used): "not in public.users". Nothing was bound, and nothing rolled. The production smoke account is `smoke@ryftapp.de`, `671779e8-9634-4964-b3a6-4445c6ad1c5f`. This PR puts that id in `config.env` and that email in both SQL scripts and the tests. No migrations.
+
+After its merge:
+1. The push run stops again at "the D286 bootstrap is pending". Nothing changes. No `migrate_only` is needed: there are no new migrations.
+2. Step 3 below with `671779e8-9634-4964-b3a6-4445c6ad1c5f` (and the consent if it has none).
+3. Steps 4 to 6 below.
+
+## Production smoke without email sign-in (2026-11-26, D286)
+
+The smoke authenticates with a Google ID token for `ryft-smoke`. api and ingest map it to the smoke account only, and only if the database binds that account (`smoke_account`, migration 0060) and only on the routes the smoke uses. No GitHub secret is involved any more.
+
+Before the merge:
+1. Apply Terraform (`ryft-smoke` and its bindings).
+2. Commit `SMOKE_USER_ID` and `SMOKE_SA_ID` into `deploy/run/config.env`.
+
+After the merge:
+1. The push run stops before migrate: "the D286 bootstrap is pending". The serving api-00044 has no D286 sign-in. Nothing changes.
+2. Run `gh workflow run deploy.yml --ref main -f migrate_only=true`. It applies 0053, 0054 and 0060 and rolls nothing.
+3. Bind the account with `scripts/sql/bind_smoke_account.sql` (Supabase SQL editor, as `postgres`; expect 1 row). The script cross-checks the UUID against `smoke@ryftapp.de` in `auth.users`. Then, if the account holds no unrevoked consent, record it with `scripts/sql/consent_smoke_account.sql` (the post-rollout smoke fails without one).
+4. Run `gh workflow run deploy.yml --ref main`. The bootstrap check, the rollout and the smoke run, and the run is green.
+5. Run `gh workflow run deploy.yml --ref main` once more. The preflight is used by itself.
+6. Delete `SMOKE_EMAIL`, `SMOKE_PASSWORD`, `SMOKE_TOKEN`, `SMOKE_USER_ID` and `SUPABASE_ANON_KEY` from the `deploy` environment.
+
+After the second review:
+- The rollback runs from one EXIT trap.
+- The smoke token writes no consent, and `scripts/sql/consent_smoke_account.sql` covers a policy bump.
+- The D285 floor: `ryft-meal-patch=d285`. #248 ships only once a labelled api serves.
+- `migrate_only` replaces `auth_preflight`.
+
+The runbook is `docs/OPERATIONS.md` → The smoke authentication.
+
 ## Meal PATCH copies retained items as stored (2026-11-26, D285)
 
 Step 1 of the Nutrition selection release. A meal PATCH now copies each retained item row as stored, so columns and `sources` fields this build does not know survive, and only the position moves. Migration 0053 adds the empty `portion_label_snapshot` and `portion_short_label_snapshot` columns with `NOT VALID` length constraints, and 0054 validates them. There is no contract change and no `API.md` change. Merge and deploy this before the catalog selection PR (D284). That release rolls back only to this build or later. The new Postgres test (`TestNutritionPatchCopiesRetainedItemsAsStored`) first runs in CI's `test` job.
+
+## Nutrition catalog selections (2026-11-26, D284)
+
+Step 2 of the two-step release. Migrations 0055–0059 add measured and localized portion choices, account-scoped favourites, recent diary selections, historic portion labels, one default per food and the new ranking. Favourites are exported and block an account merge. Merge and deploy only after the D285 build is live; roll back only to that build. Confirm catalog and iPhone acceptance before release. The staples reach production with the next catalog ETL run. The previous search function stays for the binary rollback.
+
+## German Nutrition food suggestions (2026-11-25, D283)
+
+In an English-only test catalog, typing `Apfe` now suggests `Apple` and `Apple juice`. `Apfels` narrows the suggestions to `Apple juice`. Go unit and PostgreSQL search tests passed locally. The change uses the existing search function and does not require a migration. Deployment and an on-device prefix check are pending. After review and merge, use the normal Platform deploy workflow.
 
 ## Production smoke authentication (2026-11-25, D282)
 
@@ -96,6 +195,32 @@ Ship through the existing PR and main deployment flow. The Go migrator applies 0
 Cloud Run service revisions. Production partner onboarding requires approved relay credentials,
 provider-account links and matching consent. The webhook routes default to disabled.
 
+
+## Nutrition ETL SR Legacy memory (2026-11-26, D287)
+
+P4's dry run `--source sr-legacy --limit 10000` on image `d53bb29` (`nutrition-etl-job-q6v66`) ran out of DuckDB
+memory. The cause is the ordered `list(… ORDER BY …)` aggregates in `extract.usda_rows`. Each SR Legacy food has
+more than 16 nutrient rows, so each got a fixed, non-spillable buffer, ~1.1 GB for 7,793 foods against the
+768 MB `--memory-mb`. The 2026-11-24 run used `--limit 1000`. The aggregates are now unordered and Python sorts
+each row with the same keys. A CI test runs 8,000 foods × 30 nutrients at 128 MB. Nothing was written. Terraform
+keeps 2 CPU, 4 GiB.
+All 13 USDA staples are SR Legacy foods, ordered first, so `row_limit = 1000` reaches them. `--limit 10000` is
+the whole release.
+
+On merge, `deploy.yml`'s push run deploys as usual: migrate (nothing new) and scoring, notify, ingest, api rolled
+with unchanged backend code, then smoke-prod. The site job skips because `web/` is unchanged. The ETL image is not
+published on push. Then, in order:
+1. `gh workflow run deploy.yml --ref main -f publish_nutrition_etl=true` (rolls the services once more with the
+   same code, then publishes the scanned ETL image). Read the digest from the run's **Nutrition ETL image** summary.
+2. Set `image_digest` in the local, git-ignored `infra/gcp/terraform.tfvars` (`nutrition_etl` is not an HCP
+   variable). Keep `database_secret_version = 1`, `row_limit = 1000`, `schedule_enabled = false`.
+   `terraform -chdir=infra/gcp plan -out=nutrition-etl-memory.tfplan`. The plan should change only the image of
+   `google_cloud_run_v2_job.nutrition_etl`. Then `terraform -chdir=infra/gcp apply nutrition-etl-memory.tfplan`.
+3. Dry run: `gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,sr-legacy,--limit,10000 --wait`
+   (and `--args=--source,foundation,--limit,10000`). Expect `"mode": "dry-run"` and SR Legacy `accepted` close to 7,793.
+4. Write: `gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --wait`
+   (the pinned `--source all --write --limit 1000`, staples included). For the whole SR Legacy release, add
+   `--args=--source,sr-legacy,--write,--limit,10000`.
 
 ## Nutrition ETL USDA recovery (2026-11-24)
 

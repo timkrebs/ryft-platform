@@ -15,6 +15,10 @@ google_site_verification = "google-site-verification=<value from Search Console>
 # alert_app_channel = "projects/<project>/notificationChannels/<number>"
 # Per device: a workspace variable only (HCL off, Sensitive off), never in a committed file.
 
+# Who may mint ryft-smoke's ID token for `make smoke-prod` (D286), besides CI's ryft-deployer: user: or
+# group: members only. Personal, so a workspace variable only (HCL on, Sensitive off). Default [].
+# smoke_token_creators = ["user:<operator's Google account email>"]
+
 # Defaults, change only with a reason:
 # project_id = "ryftlab-prod"
 # region     = "europe-west1"

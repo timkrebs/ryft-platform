@@ -7,6 +7,7 @@ import os
 import re
 import uuid
 from dataclasses import asdict
+from decimal import Decimal
 from pathlib import Path
 
 import psycopg
@@ -14,7 +15,7 @@ from psycopg.conninfo import conninfo_to_dict
 from psycopg.types.json import Jsonb
 
 from categorizer import normalize
-from transform import Food
+from transform import Food, Portion
 
 # Matches Go's importedFoodNamespace and nutritionImportLock.
 IMPORT_NAMESPACE = uuid.UUID("a7e40c6e-bfb4-47eb-ad64-aea61136db20")
@@ -32,7 +33,9 @@ CREATE TEMP TABLE etl_batch (
     source_updated_at timestamptz, name text NOT NULL, brand text NOT NULL, food_type text NOT NULL,
     quality text NOT NULL, normalized_brand text NOT NULL, completeness smallint NOT NULL, markets text[] NOT NULL,
     gtin text, names jsonb NOT NULL, nutrients jsonb NOT NULL, category text NOT NULL,
-    confidence numeric NOT NULL, score_profile jsonb NOT NULL, portions jsonb NOT NULL
+    confidence numeric NOT NULL, score_profile jsonb NOT NULL, portions jsonb NOT NULL,
+    is_canonical_staple boolean NOT NULL, canonical_group_key text, food_form text, subtitles jsonb NOT NULL,
+    attribution text, density_g_ml numeric
 ) ON COMMIT DROP
 """
 
@@ -79,30 +82,61 @@ def connect() -> psycopg.Connection:
     return psycopg.connect(dsn, autocommit=True, **options)
 
 
+def measure_text(value: float | None) -> str | None:
+    """One spelling per number, so 110, 110.0 and 1.1e2 give the same portion ID."""
+    return None if value is None else format(Decimal(str(value)).normalize(), "f")
+
+
+def source_portion_uuid(namespace: uuid.UUID, key: str, portion: Portion) -> uuid.UUID:
+    """A keyed portion keeps its ID while its measure is unchanged.
+
+    The measure is part of the ID: a source that changes a portion's grams or millilitres
+    gets a new ID and the old one is retired. A selection saved against the old ID is
+    then rejected instead of silently logging the new amount.
+    """
+    measure = {"unit": portion.unit, "weight_g": measure_text(portion.weight_g), "volume_ml": measure_text(portion.volume_ml)}
+    return uuid.uuid5(namespace, f"source-portion:{key}|{json.dumps(measure, sort_keys=True)}")
+
+
 def staging_row(food: Food, ordinal: int) -> tuple:
     off = food.provider == "off"
     if off:
         url, license_id, food_type = (
             f"https://world.openfoodfacts.org/product/{food.external_id}", "ODbL-1.0", "branded"
         )
-    else:
+    elif food.provider == "usda":
         url, license_id, food_type = (
             f"https://fdc.nal.usda.gov/food-details/{food.external_id}/nutrients", "CC0-1.0", "generic"
         )
-    names = [{"lang": lang, "label": label, "normalized": normalize(label)} for lang, label in food.names]
+    elif food.provider == "bls":
+        url, license_id, food_type = "https://doi.org/10.25826/Data20251217-134202-0", "CC-BY-4.0", "generic"
+    else:
+        raise ValueError("unsupported catalog provider")
+    names = [
+        {"lang": lang, "label": label, "normalized": normalize(label), "alias": alias}
+        for pairs, alias in ((food.names, False), (food.aliases, True))
+        for lang, label in pairs
+    ]
     namespace = uuid.uuid5(IMPORT_NAMESPACE, f"{food.provider}:{food.external_id}")
     portions = []
     for portion in food.portions:
         data = asdict(portion)
-        portion_id = uuid.uuid5(namespace, "portion:" + json.dumps(data, sort_keys=True))
-        labels = {"de": "Portion", "en": "Serving"} if off else {}
-        portions.append({**data, "id": str(portion_id), "labels": labels})
+        # The legacy text stays in the payload: the merge compares it with the Go importer's manual rows.
+        legacy_label = data["legacy_label"] or portion.label
+        legacy = {"label": legacy_label, "unit": portion.unit, "weight_g": portion.weight_g, "volume_ml": portion.volume_ml}
+        legacy_id = uuid.uuid5(namespace, "portion:" + json.dumps(legacy, sort_keys=True))
+        key = portion.source_portion_id or portion.portion_key
+        portion_id = source_portion_uuid(namespace, key, portion) if key else legacy_id
+        if off:
+            data["labels"] = {"de": "Portion", "en": "Serving"}
+        portions.append({**data, "id": str(portion_id), "legacy_id": str(legacy_id)})
     return (
         ordinal, food.provider, food.external_id, namespace,
         food.version, url, license_id, food.checksum, food.source_updated_at, food.name, food.brand, food_type,
         "warnings" if food.warnings else "source_reported", normalize(food.brand), food.completeness, food.markets, food.gtin, Jsonb(names),
         Jsonb([{"code": n.code, "amount": n.amount, "method": n.method, "basis": food.reference_unit} for n in food.nutrients]), food.category.name,
-        food.category.confidence, Jsonb(food.category.profile), Jsonb(portions),
+        food.category.confidence, Jsonb(food.category.profile), Jsonb(portions), food.is_canonical_staple,
+        food.canonical_group_key, food.food_form, Jsonb(food.subtitles), food.attribution, food.density_g_ml,
     )
 
 

@@ -24,15 +24,41 @@ const nutritionPrefix = "/v1/nutrition"
 
 type nutritionAdvancedKey struct{}
 
-func redactNutritionPath(next http.Handler) http.Handler {
+// redactPrivatePath is the outermost wrapper of /v1/: it sets what the access line says for the path of the routes
+// whose path holds a private value, before any middleware can reject the request (a 401, a 429, a gate, the mux's
+// 405 and 404 all log the redacted path). Nutrition logs its prefix; the recovery routes log their pattern.
+func redactPrivatePath(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == nutritionPrefix || strings.HasPrefix(r.URL.Path, nutritionPrefix+"/") {
+		if logPath := privateLogPath(r.URL.Path); logPath != "" {
 			if info := httpx.Info(r.Context()); info != nil {
-				info.LogPath = nutritionPrefix
+				info.LogPath = logPath
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+const (
+	recoveryCheckinPrefix = "/v1/recovery/checkins/"
+	workoutsPrefix        = "/v1/workouts/"
+	workoutRPESuffix      = "/rpe"
+)
+
+// privateLogPath is what the access line logs instead of path, "" when the path holds nothing private.
+func privateLogPath(path string) string {
+	switch {
+	case path == nutritionPrefix || strings.HasPrefix(path, nutritionPrefix+"/"):
+		return nutritionPrefix
+	case strings.HasPrefix(path, recoveryCheckinPrefix): // the wake date, whatever follows it
+		return recoveryCheckinPrefix + "{date}"
+	}
+	// /v1/workouts/{id}/rpe, with or without a trailing slash, only: GET /v1/workouts/{id} keeps its path.
+	if rest, ok := strings.CutPrefix(path, workoutsPrefix); ok {
+		if id, ok := strings.CutSuffix(strings.TrimSuffix(rest, "/"), workoutRPESuffix); ok && id != "" && !strings.Contains(id, "/") {
+			return workoutsPrefix + "{id}" + workoutRPESuffix
+		}
+	}
+	return ""
 }
 
 func (h *handler) nutritionRoutes(mux *http.ServeMux) {
@@ -47,8 +73,10 @@ func (h *handler) nutritionRoutes(mux *http.ServeMux) {
 	}
 	register("POST", "/foods/search", nutritionBody(http.StatusOK, h.searchNutritionFoods))
 	register("POST", "/foods/barcode", nutritionBody(http.StatusOK, h.nutritionBarcode))
-	register("GET", "/foods/{id}", nutritionByID(h.st.Food))
+	register("GET", "/foods/{id}", h.nutritionFoodDetail)
 	register("GET", "/foods/{id}/portions", nutritionByID(h.st.FoodPortions))
+	register("PUT", "/foods/{id}/favorite", h.nutritionFoodFavorite(h.st.PutFoodFavorite))
+	erasure("/foods/{id}/favorite", h.nutritionFoodFavorite(h.st.DeleteFoodFavorite))
 	register("POST", "/foods/custom", nutritionBody(http.StatusOK, h.st.CreateCustomFood))
 	advanced("POST", "/foods/submissions", nutritionBody(http.StatusOK, h.st.SubmitFood))
 	register("POST", "/meals", h.createNutritionMeal)
@@ -152,6 +180,23 @@ func nutritionByID[O any](fn func(context.Context, uuid.UUID, uuid.UUID) (O, err
 		}
 		out, err := fn(r.Context(), userOf(r).ID, id)
 		nutritionAnswer(w, r, http.StatusOK, out, err)
+	}
+}
+
+func (h *handler) nutritionFoodDetail(w http.ResponseWriter, r *http.Request) {
+	nutritionByID(func(ctx context.Context, user, id uuid.UUID) (model.FoodDetail, error) {
+		return h.st.FoodForLanguage(ctx, user, id, r.URL.Query().Get("language"))
+	})(w, r)
+}
+
+func (h *handler) nutritionFoodFavorite(write func(context.Context, uuid.UUID, uuid.UUID) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := uuid.Parse(r.PathValue("id"))
+		if err != nil || id == uuid.Nil {
+			httpx.NotFound(w, r)
+			return
+		}
+		nutritionAnswer(w, r, http.StatusNoContent, nil, write(r.Context(), userOf(r).ID, id))
 	}
 }
 

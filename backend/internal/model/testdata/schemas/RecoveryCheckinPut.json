@@ -1,0 +1,37 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "bedtime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "perceived_freshness": {
+      "type": "integer"
+    },
+    "perceived_sleep_quality": {
+      "type": "integer"
+    },
+    "soreness": {
+      "nullable": true,
+      "type": "boolean"
+    },
+    "tz_offset_sec": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "wake_time": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "bedtime",
+    "perceived_freshness",
+    "perceived_sleep_quality",
+    "soreness",
+    "tz_offset_sec",
+    "wake_time"
+  ],
+  "title": "RecoveryCheckinPut",
+  "type": "object"
+}

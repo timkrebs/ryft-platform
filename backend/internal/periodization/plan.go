@@ -40,6 +40,7 @@ type Input struct {
 	LostMass                                     *float64
 	Availability                                 model.Availability
 	Readiness                                    string
+	ReadinessReasons                             []string // with Readiness (journal_sick keeps a lifestyle drop protective)
 	WeightChange                                 *float64
 }
 
@@ -78,7 +79,8 @@ func SessionClass(in Input) string {
 func Plan(in Input) model.CoachingPlan {
 	class := SessionClass(in)
 	risk := in.Availability.State
-	blockDeficit := risk != AvailabilityGreen || class == Race || class == CarbLoad || in.Readiness == ReadinessFatigue
+	protective := protectiveReadiness(in.Readiness, in.ReadinessReasons)
+	blockDeficit := risk != AvailabilityGreen || class == Race || class == CarbLoad || protective
 	if in.WeightChange != nil && *in.WeightChange < -.014*in.Mass {
 		blockDeficit = true
 	}
@@ -108,7 +110,7 @@ func Plan(in Input) model.CoachingPlan {
 		protein = 2.6 * in.FFM
 	}
 	carb := carbsPerKG(class, in.Profile.Recreational) * in.Mass
-	if in.Readiness == ReadinessFatigue || risk == AvailabilityRed || risk == AvailabilityYellow {
+	if protective || risk == AvailabilityRed || risk == AvailabilityYellow {
 		carb = max(carb, 4.5*in.Mass)
 	}
 	macroKcal := (carb + protein) * kcalCarbsProtein

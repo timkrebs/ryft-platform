@@ -1,0 +1,290 @@
+{
+  "version": 2,
+  "bls": {
+    "M111300": {
+      "group": "milk",
+      "form": "liquid",
+      "names": {"de": "Vollmilch 3,5 %", "en": "Whole milk 3.5%"},
+      "subtitles": {"de": "Kuhmilch, pasteurisiert", "en": "Pasteurized cow's milk"},
+      "aliases": {"de": ["Milch", "Vollmilch", "Milch 3,5 Prozent"], "en": ["Milk", "Whole milk"]},
+      "nutrients": {"energy_kcal": 62, "protein": 3.55, "carbohydrates": 4.03, "fat": 3.49, "fiber": 0, "sodium": 34.9, "calcium": 117, "total_sugar": 4.03, "saturated_fat": 2.209},
+      "density_g_per_ml": 1.03,
+      "portions": {
+        "splash_30_ml": {"ml": 30, "order": 10, "labels": {"de": "30 ml Milch", "en": "30 mL milk"}, "short_labels": {"de": "30 ml", "en": "30 mL"}},
+        "glass_200_ml": {"ml": 200, "order": 20, "default": true, "labels": {"de": "1 Glas Milch (200 ml)", "en": "1 glass of milk (200 mL)"}, "short_labels": {"de": "Glas", "en": "Glass"}},
+        "cup_300_ml": {"ml": 300, "order": 30, "labels": {"de": "300 ml Milch", "en": "300 mL milk"}, "short_labels": {"de": "300 ml", "en": "300 mL"}}
+      }
+    },
+    "M111200": {
+      "group": "milk",
+      "form": "liquid",
+      "names": {"de": "Fettarme Milch 1,5 %", "en": "Low-fat milk 1.5%"},
+      "subtitles": {"de": "Kuhmilch, pasteurisiert", "en": "Pasteurized cow's milk"},
+      "aliases": {"de": ["Fettarme Milch", "Milch 1,5 Prozent"], "en": ["Low-fat milk", "Semi-skimmed milk"]},
+      "nutrients": {"energy_kcal": 44, "protein": 3.49, "carbohydrates": 3.86, "fat": 1.54, "fiber": 0, "sodium": 35.2, "calcium": 121, "total_sugar": 3.86, "saturated_fat": 1.012},
+      "density_g_per_ml": 1.034,
+      "portions": {
+        "splash_30_ml": {"ml": 30, "order": 10, "labels": {"de": "30 ml Milch", "en": "30 mL milk"}, "short_labels": {"de": "30 ml", "en": "30 mL"}},
+        "glass_200_ml": {"ml": 200, "order": 20, "default": true, "labels": {"de": "1 Glas Milch (200 ml)", "en": "1 glass of milk (200 mL)"}, "short_labels": {"de": "Glas", "en": "Glass"}},
+        "cup_300_ml": {"ml": 300, "order": 30, "labels": {"de": "300 ml Milch", "en": "300 mL milk"}, "short_labels": {"de": "300 ml", "en": "300 mL"}}
+      }
+    },
+    "M713100": {
+      "group": "lean_quark",
+      "form": "fresh_dairy",
+      "names": {"de": "Magerquark", "en": "Low-fat quark"},
+      "subtitles": {"de": "Natur, Magerstufe", "en": "Plain, low fat"},
+      "aliases": {"de": ["Quark", "Magertopfen", "Topfen", "Speisequark mager"], "en": ["Quark", "Fat-free quark", "Skim milk quark"]},
+      "nutrients": {"energy_kcal": 66, "protein": 11.85, "carbohydrates": 3.68, "fat": 0.18, "fiber": 0, "sodium": 33.6, "calcium": 132, "total_sugar": 3.68, "saturated_fat": 0.114},
+      "portions": {
+        "portion_25_g": {"grams": 25, "order": 10, "labels": {"de": "25 g Magerquark", "en": "25 g low-fat quark"}, "short_labels": {"de": "25 g", "en": "25 g"}},
+        "portion_150_g": {"grams": 150, "order": 20, "default": true, "labels": {"de": "1 Portion (150 g)", "en": "1 portion (150 g)"}, "short_labels": {"de": "Portion", "en": "Portion"}},
+        "portion_250_g": {"grams": 250, "order": 30, "labels": {"de": "1 Becher (250 g)", "en": "1 tub (250 g)"}, "short_labels": {"de": "Becher", "en": "Tub"}}
+      }
+    }
+  },
+  "usda": {
+    "171688": {
+      "group": "apple",
+      "form": "whole_raw",
+      "names": {"de": "Apfel", "en": "Apple"},
+      "subtitles": {"de": "Roh, mit Schale", "en": "Raw, with skin"},
+      "aliases": {"de": ["Äpfel", "Apfel mit Schale"], "en": ["Apples", "Raw apple"]},
+      "portions": {
+        "89194": {"key": "small", "grams": 149, "order": 10, "labels": {"de": "1 kleiner Apfel", "en": "1 small apple"}, "short_labels": {"de": "Klein", "en": "Small"}},
+        "89193": {"key": "medium", "grams": 182, "order": 20, "default": true, "labels": {"de": "1 mittelgroßer Apfel", "en": "1 medium apple"}, "short_labels": {"de": "Mittel", "en": "Medium"}},
+        "89192": {"key": "large", "grams": 223, "order": 30, "labels": {"de": "1 großer Apfel", "en": "1 large apple"}, "short_labels": {"de": "Groß", "en": "Large"}},
+        "89195": {"key": "extra_small", "grams": 101, "order": 40, "labels": {"de": "1 sehr kleiner Apfel", "en": "1 extra-small apple"}, "short_labels": {"de": "Sehr klein", "en": "Extra small"}},
+        "89191": {"key": "us_cup_sliced", "grams": 109, "order": 60, "labels": {"de": "1 US-Tasse Apfelspalten", "en": "1 US cup of apple slices"}, "short_labels": {"de": "US-Tasse, Spalten", "en": "US cup, sliced"}},
+        "89190": {"key": "us_cup_chopped", "grams": 125, "order": 70, "labels": {"de": "1 US-Tasse zerkleinerter Apfel", "en": "1 US cup of chopped apple"}, "short_labels": {"de": "US-Tasse, zerkleinert", "en": "US cup, chopped"}},
+        "89196": {"key": "us_label_serving", "grams": 242, "order": 90, "labels": {"de": "US-Referenzportion (242 g)", "en": "US label serving (242 g)"}, "short_labels": {"de": "242 g", "en": "242 g"}}
+      }
+    },
+    "173933": {
+      "canonical": false,
+      "group": "apple",
+      "form": "juice",
+      "names": {"de": "Apfelsaft", "en": "Apple juice"},
+      "subtitles": {"de": "Ungesüßt, ohne zugesetzte Ascorbinsäure", "en": "Unsweetened, without added ascorbic acid"},
+      "aliases": {"de": ["Apfelsaft ungesüßt"], "en": ["Unsweetened apple juice"]},
+      "portions": {
+        "93494": {"key": "us_cup", "grams": 248, "order": 10, "default": true, "labels": {"de": "1 US-Tasse Apfelsaft", "en": "1 US cup of apple juice"}, "short_labels": {"de": "US-Tasse", "en": "US cup"}}
+      }
+    },
+    "173944": {
+      "group": "banana",
+      "form": "whole_raw",
+      "names": {"de": "Banane", "en": "Banana"},
+      "subtitles": {"de": "Roh, ohne Schale", "en": "Raw, peeled"},
+      "aliases": {"de": ["Bananen"], "en": ["Bananas", "Raw banana"]},
+      "portions": {
+        "93514": {"key": "small", "grams": 101, "order": 10, "labels": {"de": "1 kleine Banane", "en": "1 small banana"}, "short_labels": {"de": "Klein", "en": "Small"}},
+        "93515": {"key": "medium", "grams": 118, "order": 20, "default": true, "labels": {"de": "1 mittelgroße Banane", "en": "1 medium banana"}, "short_labels": {"de": "Mittel", "en": "Medium"}},
+        "93516": {"key": "large", "grams": 136, "order": 30, "labels": {"de": "1 große Banane", "en": "1 large banana"}, "short_labels": {"de": "Groß", "en": "Large"}}
+      }
+    },
+    "171287": {
+      "group": "egg",
+      "form": "raw",
+      "names": {"de": "Ei, roh", "en": "Egg, raw"},
+      "subtitles": {"de": "Hühnerei ohne Schale", "en": "Whole hen egg, without shell"},
+      "aliases": {"de": ["Ei", "Eier", "Hühnerei"], "en": ["Egg", "Eggs", "Raw egg"]},
+      "portions": {
+        "88379": {"key": "small", "grams": 38, "order": 10, "labels": {"de": "1 kleines Ei (US-Größe)", "en": "1 small egg (US size)"}, "short_labels": {"de": "Klein (US)", "en": "Small (US)"}},
+        "88378": {"key": "medium", "grams": 44, "order": 20, "labels": {"de": "1 mittelgroßes Ei (US-Größe)", "en": "1 medium egg (US size)"}, "short_labels": {"de": "Mittel (US)", "en": "Medium (US)"}},
+        "88374": {"key": "large", "grams": 50, "order": 30, "default": true, "labels": {"de": "1 großes Ei (US-Größe)", "en": "1 large egg (US size)"}, "short_labels": {"de": "Groß (US)", "en": "Large (US)"}}
+      }
+    },
+    "173424": {
+      "group": "egg",
+      "form": "boiled",
+      "names": {"de": "Ei, gekocht", "en": "Egg, hard-boiled"},
+      "subtitles": {"de": "Hart gekocht, ohne Schale", "en": "Hard-boiled, without shell"},
+      "aliases": {"de": ["Gekochtes Ei", "Hartgekochtes Ei"], "en": ["Boiled egg", "Hard boiled egg"]},
+      "portions": {
+        "92500": {"key": "large", "grams": 50, "order": 10, "default": true, "labels": {"de": "1 großes Ei (US-Größe)", "en": "1 large egg (US size)"}, "short_labels": {"de": "Groß (US)", "en": "Large (US)"}}
+      }
+    },
+    "172690": {
+      "group": "whole_wheat_bread",
+      "form": "baked",
+      "names": {"de": "Weizenvollkornbrot", "en": "Whole-wheat bread"},
+      "subtitles": {"de": "Weizen, ungetoastet", "en": "Wheat, untoasted"},
+      "aliases": {"de": ["Brot", "Vollkornbrot", "Vollkornweizenbrot"], "en": ["Bread", "Whole wheat bread", "Whole grain bread"]},
+      "portions": {
+        "91114": {"key": "thin_slice", "grams": 33, "order": 10, "labels": {"de": "1 dünne Scheibe Weizenvollkornbrot", "en": "1 thin slice of whole-wheat bread"}, "short_labels": {"de": "Dünne Scheibe", "en": "Thin slice"}},
+        "91113": {"key": "regular_slice", "grams": 46, "order": 20, "default": true, "labels": {"de": "1 normale Scheibe Weizenvollkornbrot", "en": "1 regular slice of whole-wheat bread"}, "short_labels": {"de": "Normale Scheibe", "en": "Regular slice"}}
+      }
+    },
+    "173904": {
+      "group": "rolled_oats",
+      "form": "dry",
+      "names": {"de": "Haferflocken", "en": "Rolled oats"},
+      "subtitles": {"de": "Trocken, ungesüßt", "en": "Dry, unsweetened"},
+      "aliases": {"de": ["Hafer", "Zarte Haferflocken"], "en": ["Oats", "Dry oats", "Quick oats"]},
+      "portions": {
+        "93455": {"key": "third_us_cup", "grams": 27, "order": 10, "default": true, "labels": {"de": "⅓ US-Tasse Haferflocken", "en": "⅓ US cup of rolled oats"}, "short_labels": {"de": "⅓ US-Tasse", "en": "⅓ US cup"}},
+        "93454": {"key": "us_cup", "grams": 81, "order": 20, "labels": {"de": "1 US-Tasse Haferflocken", "en": "1 US cup of rolled oats"}, "short_labels": {"de": "US-Tasse", "en": "US cup"}}
+      }
+    },
+    "169756": {
+      "group": "white_rice",
+      "form": "dry",
+      "names": {"de": "Reis, trocken", "en": "White rice, dry"},
+      "subtitles": {"de": "Weißer Langkornreis, ungekocht", "en": "Long-grain white rice, uncooked"},
+      "aliases": {"de": ["Roher Reis", "Ungekochter Reis"], "en": ["Dry rice", "Raw rice", "Uncooked rice"]},
+      "portions": {
+        "85461": {"key": "us_cup", "grams": 185, "order": 10, "default": true, "labels": {"de": "1 US-Tasse trockener Reis", "en": "1 US cup of dry rice"}, "short_labels": {"de": "US-Tasse", "en": "US cup"}}
+      }
+    },
+    "169757": {
+      "group": "white_rice",
+      "form": "cooked",
+      "names": {"de": "Reis, gekocht", "en": "White rice, cooked"},
+      "subtitles": {"de": "Weißer Langkornreis, ohne Salz gekocht", "en": "Long-grain white rice, cooked without salt"},
+      "aliases": {"de": ["Reis", "Weißer Reis", "Gekochter Reis"], "en": ["Rice", "White rice", "Cooked rice"]},
+      "portions": {
+        "85462": {"key": "us_cup", "grams": 158, "order": 10, "default": true, "labels": {"de": "1 US-Tasse gekochter Reis", "en": "1 US cup of cooked rice"}, "short_labels": {"de": "US-Tasse", "en": "US cup"}}
+      }
+    },
+    "171077": {
+      "group": "chicken_breast",
+      "form": "raw",
+      "names": {"de": "Hähnchenbrust, roh", "en": "Chicken breast, raw"},
+      "subtitles": {"de": "Filet, ohne Haut und Knochen", "en": "Skinless, boneless fillet"},
+      "aliases": {"de": ["Hähnchenbrustfilet roh", "Pouletbrust roh"], "en": ["Raw chicken breast", "Raw chicken fillet"]},
+      "portions": {
+        "87920": {"key": "piece", "grams": 272, "order": 10, "default": true, "labels": {"de": "1 Stück rohes Hähnchenbrustfilet", "en": "1 piece of raw chicken breast"}, "short_labels": {"de": "Stück", "en": "Piece"}}
+      }
+    },
+    "171477": {
+      "group": "chicken_breast",
+      "form": "roasted",
+      "names": {"de": "Hähnchenbrust, gegart", "en": "Chicken breast, roasted"},
+      "subtitles": {"de": "Geröstet, ohne Haut und Knochen", "en": "Roasted, skinless and boneless"},
+      "aliases": {"de": ["Hähnchen", "Hähnchenbrust", "Poulet", "Pouletbrust"], "en": ["Chicken", "Chicken breast", "Cooked chicken breast"]},
+      "portions": {
+        "88819": {"key": "half_breast", "grams": 86, "order": 10, "default": true, "labels": {"de": "½ gegarte Brust, ohne Haut und Knochen", "en": "½ cooked breast, skin and bone removed"}, "short_labels": {"de": "½ Brust", "en": "½ breast"}},
+        "88817": {"key": "us_cup_chopped", "grams": 140, "order": 20, "labels": {"de": "1 US-Tasse gegarte Brust, gewürfelt", "en": "1 US cup of cooked breast, diced"}, "short_labels": {"de": "US-Tasse, gewürfelt", "en": "US cup, diced"}},
+        "88818": {"key": "portion_52_g", "grams": 52, "order": 60, "labels": {"de": "52 g gegarte Hähnchenbrust", "en": "52 g roasted chicken breast"}, "short_labels": {"de": "52 g", "en": "52 g"}}
+      }
+    },
+    "171413": {
+      "group": "olive_oil",
+      "form": "oil",
+      "names": {"de": "Olivenöl", "en": "Olive oil"},
+      "subtitles": {"de": "Zum Kochen oder für Salate", "en": "For cooking or salads"},
+      "aliases": {"de": ["Olivenoel"], "en": ["Olive cooking oil"]},
+      "portions": {
+        "88669": {"key": "tsp", "grams": 4.5, "order": 10, "labels": {"de": "1 Teelöffel Olivenöl", "en": "1 teaspoon of olive oil"}, "short_labels": {"de": "TL", "en": "Tsp"}},
+        "88667": {"key": "tbsp", "grams": 13.5, "order": 20, "default": true, "labels": {"de": "1 Esslöffel Olivenöl", "en": "1 tablespoon of olive oil"}, "short_labels": {"de": "EL", "en": "Tbsp"}}
+      }
+    },
+    "172336": {
+      "group": "canola_oil",
+      "form": "oil",
+      "names": {"de": "Rapsöl", "en": "Canola oil"},
+      "subtitles": {"de": "Pflanzenöl aus Raps", "en": "Vegetable oil from rapeseed"},
+      "aliases": {"de": ["Rapsoel"], "en": ["Rapeseed oil"]},
+      "portions": {
+        "90376": {"key": "tsp", "grams": 4.5, "order": 10, "labels": {"de": "1 Teelöffel Rapsöl", "en": "1 teaspoon of canola oil"}, "short_labels": {"de": "TL", "en": "Tsp"}},
+        "90374": {"key": "tbsp", "grams": 14, "order": 20, "default": true, "labels": {"de": "1 Esslöffel Rapsöl", "en": "1 tablespoon of canola oil"}, "short_labels": {"de": "EL", "en": "Tbsp"}}
+      }
+    },
+    "170440": {
+      "source_description": "Potatoes, boiled, cooked without skin, flesh, without salt",
+      "group": "potato",
+      "form": "boiled",
+      "names": {"de": "Kartoffeln, gekocht", "en": "Potatoes, boiled"},
+      "subtitles": {"de": "Ohne Schale gekocht, ohne Salz", "en": "Boiled without skin, no salt"},
+      "aliases": {"de": ["Kartoffel", "Kartoffeln", "Salzkartoffeln", "Gekochte Kartoffeln", "Erdäpfel"], "en": ["Potato", "Potatoes", "Boiled potatoes"]},
+      "portions": {
+        "small": {"match": {"key": "small"}, "order": 10, "labels": {"de": "1 kleine Kartoffel", "en": "1 small potato"}, "short_labels": {"de": "Klein", "en": "Small"}},
+        "medium": {"match": {"key": "medium"}, "order": 20, "default": true, "labels": {"de": "1 mittelgroße Kartoffel", "en": "1 medium potato"}, "short_labels": {"de": "Mittel", "en": "Medium"}},
+        "large": {"match": {"key": "large"}, "order": 30, "labels": {"de": "1 große Kartoffel", "en": "1 large potato"}, "short_labels": {"de": "Groß", "en": "Large"}}
+      }
+    },
+    "171705": {
+      "source_description": "Avocados, raw, all commercial varieties",
+      "group": "avocado",
+      "form": "whole_raw",
+      "names": {"de": "Avocado", "en": "Avocado"},
+      "subtitles": {"de": "Roh, alle Sorten", "en": "Raw, all varieties"},
+      "aliases": {"de": ["Avocados"], "en": ["Avocados"]},
+      "portions": {
+        "whole": {"match": {"text": ["avocado", "fruit"]}, "order": 10, "labels": {"de": "1 Avocado", "en": "1 avocado"}, "short_labels": {"de": "Ganz", "en": "Whole"}},
+        "half": {"half_of": "whole", "order": 20, "default": true, "labels": {"de": "½ Avocado", "en": "½ avocado"}, "short_labels": {"de": "½", "en": "½"}}
+      }
+    },
+    "170457": {
+      "source_description": "Tomatoes, red, ripe, raw, year round average",
+      "group": "tomato",
+      "form": "whole_raw",
+      "names": {"de": "Tomate", "en": "Tomato"},
+      "subtitles": {"de": "Rot, reif, roh", "en": "Red, ripe, raw"},
+      "aliases": {"de": ["Tomaten", "Rote Tomate"], "en": ["Tomatoes"]},
+      "portions": {
+        "small": {"match": {"key": "small"}, "order": 10, "labels": {"de": "1 kleine Tomate", "en": "1 small tomato"}, "short_labels": {"de": "Klein", "en": "Small"}},
+        "medium": {"match": {"key": "medium"}, "order": 20, "default": true, "labels": {"de": "1 mittelgroße Tomate", "en": "1 medium tomato"}, "short_labels": {"de": "Mittel", "en": "Medium"}},
+        "large": {"match": {"key": "large"}, "order": 30, "labels": {"de": "1 große Tomate", "en": "1 large tomato"}, "short_labels": {"de": "Groß", "en": "Large"}}
+      }
+    },
+    "170393": {
+      "source_description": "Carrots, raw",
+      "group": "carrot",
+      "form": "whole_raw",
+      "names": {"de": "Karotte", "en": "Carrot"},
+      "subtitles": {"de": "Roh", "en": "Raw"},
+      "aliases": {"de": ["Karotten", "Möhre", "Möhren", "Mohrrübe", "Rüebli"], "en": ["Carrots"]},
+      "portions": {
+        "small": {"match": {"key": "small"}, "order": 10, "labels": {"de": "1 kleine Karotte", "en": "1 small carrot"}, "short_labels": {"de": "Klein", "en": "Small"}},
+        "medium": {"match": {"key": "medium"}, "order": 20, "default": true, "labels": {"de": "1 mittelgroße Karotte", "en": "1 medium carrot"}, "short_labels": {"de": "Mittel", "en": "Medium"}},
+        "large": {"match": {"key": "large"}, "order": 30, "labels": {"de": "1 große Karotte", "en": "1 large carrot"}, "short_labels": {"de": "Groß", "en": "Large"}}
+      }
+    },
+    "168409": {
+      "source_description": "Cucumber, with peel, raw",
+      "group": "cucumber",
+      "form": "whole_raw",
+      "names": {"de": "Salatgurke", "en": "Cucumber"},
+      "subtitles": {"de": "Roh, mit Schale", "en": "Raw, with peel"},
+      "aliases": {"de": ["Gurke", "Gurken", "Salatgurken"], "en": ["Cucumbers"]},
+      "portions": {}
+    },
+    "170108": {
+      "source_description": "Peppers, sweet, red, raw",
+      "group": "bell_pepper",
+      "form": "whole_raw",
+      "names": {"de": "Paprika, rot", "en": "Red bell pepper"},
+      "subtitles": {"de": "Süß, roh", "en": "Sweet, raw"},
+      "aliases": {"de": ["Paprika", "Rote Paprika", "Paprikaschote"], "en": ["Bell pepper", "Red pepper"]},
+      "portions": {
+        "small": {"match": {"key": "small"}, "order": 10, "labels": {"de": "1 kleine Paprika", "en": "1 small pepper"}, "short_labels": {"de": "Klein", "en": "Small"}},
+        "medium": {"match": {"key": "medium"}, "order": 20, "default": true, "labels": {"de": "1 mittelgroße Paprika", "en": "1 medium pepper"}, "short_labels": {"de": "Mittel", "en": "Medium"}},
+        "large": {"match": {"key": "large"}, "order": 30, "labels": {"de": "1 große Paprika", "en": "1 large pepper"}, "short_labels": {"de": "Groß", "en": "Large"}}
+      }
+    },
+    "170000": {
+      "source_description": "Onions, raw",
+      "group": "onion",
+      "form": "whole_raw",
+      "names": {"de": "Zwiebel", "en": "Onion"},
+      "subtitles": {"de": "Roh", "en": "Raw"},
+      "aliases": {"de": ["Zwiebeln"], "en": ["Onions"]},
+      "portions": {
+        "small": {"match": {"key": "small"}, "order": 10, "labels": {"de": "1 kleine Zwiebel", "en": "1 small onion"}, "short_labels": {"de": "Klein", "en": "Small"}},
+        "medium": {"match": {"key": "medium"}, "order": 20, "default": true, "labels": {"de": "1 mittelgroße Zwiebel", "en": "1 medium onion"}, "short_labels": {"de": "Mittel", "en": "Medium"}},
+        "large": {"match": {"key": "large"}, "order": 30, "labels": {"de": "1 große Zwiebel", "en": "1 large onion"}, "short_labels": {"de": "Groß", "en": "Large"}}
+      }
+    },
+    "171284": {
+      "source_description": "Yogurt, plain, whole milk",
+      "group": "yogurt",
+      "form": "plain",
+      "names": {"de": "Naturjoghurt", "en": "Plain yogurt"},
+      "subtitles": {"de": "Natur, Vollmilch", "en": "Plain, whole milk"},
+      "aliases": {"de": ["Joghurt", "Joghurt natur"], "en": ["Yogurt"]},
+      "portions": {}
+    }
+  }
+}

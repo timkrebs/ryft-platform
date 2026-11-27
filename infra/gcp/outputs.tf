@@ -13,6 +13,16 @@ output "push_sa_email" {
   value       = local.sa["ryft-push"]
 }
 
+output "smoke_sa_unique_id" {
+  description = "ryft-smoke's unique ID, the sub of the smoke's ID token: SMOKE_SA_ID in deploy/run/config.env (known after the apply: terraform output -raw smoke_sa_unique_id)"
+  value       = google_service_account.this["ryft-smoke"].unique_id
+}
+
+output "smoke_sa_email" {
+  description = "ryft-smoke's email, the service account generateIdToken is called for and the email claim api and ingest check (SMOKE_OIDC_SA_EMAIL in deploy/run)"
+  value       = local.sa["ryft-smoke"]
+}
+
 output "github_workload_identity_provider" {
   description = "workload_identity_provider for google-github-actions/auth in deploy.yml"
   value       = "${local.github_pool_name}/providers/${google_iam_workload_identity_pool_provider.github.workload_identity_pool_provider_id}"

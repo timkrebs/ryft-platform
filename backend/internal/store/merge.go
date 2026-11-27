@@ -206,8 +206,25 @@ func (m merger) run(res *MergeResult) error {
 		"same start, end, stage and source, or the same HealthKit id: to's kept")); err != nil {
 		return err
 	}
+	ratings, err := m.count(`SELECT count(*) FROM workout_ratings WHERE user_id = $1`, m.from)
+	if err != nil {
+		return fmt.Errorf("workout_ratings: %w", err)
+	}
 	if err := add(m.move("workouts", `NOT EXISTS (SELECT 1 FROM workouts t WHERE t.user_id = $2 AND t.id = s.id)`,
 		"same workout id: to's kept")); err != nil {
+		return err
+	}
+	// A rating follows its workout: the foreign key (user_id, workout_id) cascades the move above (ON UPDATE CASCADE,
+	// 0065), so the ones left with from belong to the workouts to already had, and go with from.
+	left, err := m.count(`SELECT count(*) FROM workout_ratings WHERE user_id = $1`, m.from)
+	if err != nil {
+		return fmt.Errorf("workout_ratings: %w", err)
+	}
+	res.Tables = append(res.Tables, MergeTable{Table: "workout_ratings", Moved: ratings - left, Dropped: left,
+		Rule: "follow their workout: a workout both have keeps to's rating"})
+	// Check-ins: the days to does not have; a day both have keeps to's.
+	if err := add(m.move("recovery_checkins", `NOT EXISTS (SELECT 1 FROM recovery_checkins t WHERE t.user_id = $2 AND t.wake_date = s.wake_date)`,
+		"same wake day: to's kept")); err != nil {
 		return err
 	}
 	if err := add(m.move("devices", `NOT EXISTS (SELECT 1 FROM devices t WHERE t.user_id = $2 AND t.id = s.id)`,

@@ -10,7 +10,7 @@ runbook is `docs/OPERATIONS.md` → **GCP**.
 | File | What |
 | --- | --- |
 | `project.tf` | the API keep list (`google_project_service`, `disable_on_destroy = false`; 16, and Compute Engine and Certificate Manager from `edge = "built"` on), Data Access audit logs (`DATA_READ`) for Secret Manager, STS and IAM credentials (every secret read and token mint), the Pub/Sub and Cloud Scheduler service agents |
-| `iam.tf` | the accounts `ryft-<api,ingest,scoring,notify,migrate>`, `ryft-push`, `ryft-deployer` (no key, ever; `grafana-reader` went with Grafana Cloud, D236); the deployer's rights (**The deployer**, below); Pub/Sub's token creator on `ryft-push` |
+| `iam.tf` | the accounts `ryft-<api,ingest,scoring,notify,migrate>`, `ryft-push`, `ryft-deployer`, `ryft-smoke` (no key, ever; `grafana-reader` went with Grafana Cloud, D236); the deployer's rights (**The deployer**, below); Pub/Sub's token creator on `ryft-push`; the ID-token minters of `ryft-smoke` (**The smoke identity**, below) |
 | `wif.tf` | the GitHub pool `github` and provider `github-actions` (condition by repository and owner ID, `deploy.yml` on `main`, environment `deploy` or `site`, a GitHub-hosted runner); one principal set per environment, `ryft-deployer` bound to `deploy`'s alone (D233), `site`'s for `site-deployer` in ryftlab-site (by hand, step 10a) |
 | `secrets.tf` | the 13 secret containers in use (ticket B's 10, `posthog-project-key`, D231, App Attest's token ring `app-attest-token-key`, api and ingest, D247, and Garmin's OAuth client secret `connect-garmin-client-secret`, api alone, D257: empty until phase 2), `prevent_destroy`, 30-day delayed destruction, accessors on each secret; `retired`: `otlp-token` and its accessor without `prevent_destroy`, on their way out (OPERATIONS → GCP 11.6). **No values**: they never pass through state |
 | `pubsub.tf`, `pubsub.auto.tfvars.json` | topics (messages stored in `europe-west1` only; `enforce_in_transit` stays off, so the Scheduler's publish and an operator's `gcloud pubsub` through the global endpoint still work), push and hold subscriptions, publisher bindings per topic, the agents' bindings. The JSON is written by `go run ./cmd/pubsub-topology` (PR A); do not edit it by hand once that exists |
@@ -74,7 +74,7 @@ The existing API serves the scores and guidance and its 15-minute tick runs the 
 
 Merge the Nutrition backend and infrastructure through the normal review and CI flow. Run the following from `plattform` on green `main` after hosted validation and sign-off on the catalog sources and health-data consent.
 
-1. In HCP workspace `ryft-gcp`, set the Terraform variable `nutrition_etl` with **HCL** enabled and value `{}`. Plan the dedicated service accounts, the `nutrition-etl-db` secret container and its one accessor.
+1. In the operator's local, git-ignored `infra/gcp/terraform.tfvars`, set `nutrition_etl = {}`. The variable is kept there and not in HCP workspace `ryft-gcp`. If an earlier version of this step left a workspace variable `nutrition_etl`, delete it: it can override the local file, and a plan would then not move the pins. Plan the dedicated service accounts, the `nutrition-etl-db` secret container and its one accessor.
 
    ```bash
    terraform -chdir=infra/gcp plan -out=nutrition-bootstrap.tfplan
@@ -147,10 +147,10 @@ Merge the Nutrition backend and infrastructure through the normal review and CI 
 
    Keep the current job pin if this check fails. Correct the dedicated login DSN or confirm the reviewed CA against the Supabase Dashboard and run preflight again. Follow the bounded rollout below using the same image digest and secret version that passed.
 
-4. Set `nutrition_etl` in HCP with the actual image digest and numeric secret version. Start with a bounded import and paused schedule.
+4. Set `nutrition_etl` with the actual image digest and numeric secret version. It is **not** an HCP workspace variable: it lives in the operator's local, git-ignored `infra/gcp/terraform.tfvars`. Start with a bounded import and paused schedule.
 
    ```hcl
-   {
+   nutrition_etl = {
      image_digest            = "sha256:<digest shown in the GitHub Actions summary>"
      database_secret_version = 1
      row_limit               = 1000
@@ -163,7 +163,22 @@ Merge the Nutrition backend and infrastructure through the normal review and CI 
    terraform -chdir=infra/gcp show -no-color nutrition-job.tfplan
    ```
 
-   After reviewing and applying the job plan, run one bounded import and check its completion and aggregates.
+   After reviewing and applying the job plan, dry-run each source without `--write`. `--args` replaces the job's arguments for this execution only, so nothing is written and the Terraform pin stays. All 13 USDA staples are SR Legacy foods and bounded runs take them first. SR Legacy has 7,793 foods, so `--limit 10000` is the whole release (D287).
+
+   ```bash
+   gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,bls --wait
+   gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,foundation,--limit,10000 --wait
+   gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,sr-legacy,--limit,10000 --wait
+   ```
+
+   Each summary line must show `"mode": "dry-run"` with accepted rows. The SR Legacy line must have `accepted` close to 7,793, and the version must start with `py-etl4:staples2:sr-legacy:` (staples version 2 since D288). The USDA lines also carry `portions` and `staples` (D288). Before writing, check that `portions.raw_marker` is 0 (or that every remaining marker is understood), and that `staples.description_mismatch` and `staples.unmatched` are empty. `staple_portions` lists the source grams each curated staple portion takes. Then run the pinned bounded write (`--source all --write --limit <row_limit>`) and check completion and aggregates.
+
+   After a staples-version change (D288) every USDA food changes its checksum once. The first write reports them as `updated`, and an identical rerun reports `unchanged`. A `conflict` count near the accepted count means the image still carries the old staples version. Portion IDs don't change, and saved meals keep their snapshots. USDA portions that the Go importer wrote (`origin='manual'`) keep their raw labels, because RLS keeps the ETL off them. Count them read-only in the Supabase SQL editor:
+
+   ```sql
+   SELECT count(*) FROM nutrition.portions p JOIN nutrition.food_sources s ON s.id=p.source_id
+   WHERE s.provider='usda' AND p.origin='manual' AND (p.label ILIKE '%undetermined%' OR p.label LIKE '%"%');
+   ```
 
    ```bash
    gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --wait
@@ -171,6 +186,8 @@ Merge the Nutrition backend and infrastructure through the normal review and CI 
    gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="nutrition-etl-job"' \
      --project=ryftlab-prod --freshness=1h --limit=20
    ```
+
+   To write the whole SR Legacy release without raising `row_limit` for every source, override the arguments once: `--args=--source,sr-legacy,--write,--limit,10000`.
 
 5. Set `schedule_enabled = true` in the reviewed configuration after the bounded validation. The schedule is 04:00 UTC on the first day of each month. Keep `row_limit` until database load, runtime and source volume have been measured for the intended scope. Use `full_import = true` when ready for unbounded provider scans. `schedule_enabled = false` pauses future launches, and the global stop line also pauses them.
 
@@ -235,6 +252,23 @@ the five runtime accounts, and `artifactregistry.writer` on `ryft`. Never an IAM
 Runbook step 9's fallback (a permission error on `run.*` after apply 2) is PR 1 alone, and nothing
 else.
 
+## The smoke identity
+
+`ryft-smoke` (D286) is the subject of the production smoke's Google ID token (audience `ryft-smoke`):
+api and ingest map that token to the smoke account and to nobody else. The account holds **no role**
+(not on the project, not on a secret, not as an actAs target) and has no key; it exists to be minted for.
+
+- Who may mint: `ryft-deployer` (`deploy.yml`'s preflight) and the members of `smoke_token_creators`
+  (operators for `make smoke-prod`), each with `roles/iam.serviceAccountOpenIdTokenCreator` on
+  `ryft-smoke`: ID tokens only. Never `serviceAccountTokenCreator`, which also gives access tokens,
+  `signBlob` and `signJwt`. `tests/smoke.tftest.hcl` pins both.
+- `smoke_token_creators` (`list(string)`, default `[]`): `user:<email>` or `group:<email>` only; a
+  service account, a domain, `allUsers` and duplicates are refused. A workspace variable (HCL on,
+  Sensitive off), never a committed file: the addresses are personal.
+- Every mint is a Data Access entry (`iam.googleapis.com`, `project.tf`), 14 days in `ryft-logs`.
+- Outputs: `smoke_sa_unique_id` (`SMOKE_SA_ID` in `deploy/run/config.env`; known only after the apply:
+  `terraform output -raw smoke_sa_unique_id`) and `smoke_sa_email`.
+
 ## The applies
 
 The arithmetic of each count is in the runbook (steps 4, 9, 11, 14a.9 and the stop line).
@@ -297,6 +331,15 @@ The arithmetic of each count is in the runbook (steps 4, 9, 11, 14a.9 and the st
    a mapping changes, or anything is destroyed. The secret's value is phase 2's (`gcloud secrets
    versions add connect-garmin-client-secret --data-file=…`), and `deploy/run/api.yaml` pins it only
    then. Cost: Cloud Armor bills the rule, $1 a month (D242 → Cost); the rest is free at RYFT's volume.
+10. **The smoke identity** (D286, before the PR's merge: `SMOKE_SA_ID` comes from this apply). 2 to add
+    (`google_service_account.this["ryft-smoke"]`, `google_service_account_iam_member.smoke_deployer_id_token`),
+    plus one `smoke_operator_id_token["user:…"]` for each member of `smoke_token_creators` set in the
+    workspace; 0 to change, 0 to destroy. Two outputs appear (`smoke_sa_unique_id`, `smoke_sa_email`).
+    **Stop if** anything is changed or destroyed, a secret, a subscription, a record set, a backend
+    service, a mapping or a project-level IAM member is touched, or a binding names a role other than
+    `roles/iam.serviceAccountOpenIdTokenCreator` on `ryft-smoke`. Cost: $0 (a service account, IAM
+    bindings and a handful of token mints are free). Then `terraform output -raw smoke_sa_unique_id`
+    into `SMOKE_SA_ID` (digits, not a secret).
 
 ```bash
 cd infra/gcp
@@ -314,6 +357,8 @@ them with placeholders. `github_repository_id`, `github_repository_owner_id` and
 resource name, `projects/<project>/notificationChannels/<number>`) is set in the workspace UI only,
 never in a committed file: it is per device. Not sensitive, an opaque id (D237), so Sensitive off in
 HCP too. Null (the default, unset) keeps every alert policy out; an empty string is refused (step 11.1).
+`smoke_token_creators` (`["user:<email>", …]`, HCL on, default `[]`) is the same kind: per person, a
+workspace variable only (**The smoke identity**).
 
 The apply account `hcp-terraform-apply` needs four Monitoring roles for `alerts.tf` and
 `monitoring.tf` beyond the bootstrap's (step 11.2): `roles/monitoring.uptimeCheckConfigEditor`,

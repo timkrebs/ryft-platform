@@ -284,6 +284,7 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	// Nutrition inherits the authenticated v1 chain and has its own rollout flag (D265, D266).
 	h.nutritionRoutes(api)
 	h.coachingRoutes(api)
+	h.recoveryRoutes(api)
 	api.HandleFunc("/v1/", httpx.NotFound)
 	limits := ratelimit.NewUserLimits()
 	authOpts := auth.Options{
@@ -292,6 +293,7 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 		Limit: func(r *http.Request, p auth.Principal) (string, bool, time.Duration) {
 			return limits.Allow(r, p.UserID.String())
 		},
+		SmokeAllow: smokeAllow, // DELETE /v1/me and the import share these options
 	}
 	// Account deletion skips the user lookup (a deleted account gets 401 from
 	// it) so that a retry after a failed Supabase call still reaches the
@@ -311,7 +313,7 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	// app token, the beta gate, then the routes. DELETE /v1/me above and /v1/admin/* below are not
 	// wrapped: they never need an app token.
 	attest := appAttestGate(o.attest, log)
-	mux.Handle("/v1/", redactNutritionPath(auth.Middleware(authOpts, attest(betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))))
+	mux.Handle("/v1/", redactPrivatePath(auth.Middleware(authOpts, attest(betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))))
 	// The training import gets 50 s instead of readTimeout, like a sync (D129).
 	mux.Handle("POST /v1/train/import", importRoute(authOpts, o.gate, attest, h.trainImport))
 	// The operator's routes: ADMIN_API_KEY, or an allow-listed operator's Supabase token (only with
@@ -343,9 +345,24 @@ func requestID(r *http.Request) string {
 
 // ensureUser finds or creates the caller's user row from the verified token.
 // A deleted account's token is rejected like any other bad token.
-func ensureUser(st *store.Store) func(context.Context, auth.Principal) (model.User, error) {
+// The smoke account's token (D286) never creates a row and must be the account bound in
+// smoke_account, checked first on every request and before any write: a wrong SMOKE_USER_ID is a
+// 401 that touches no user's row, never a pass.
+func ensureUser(st userStore) func(context.Context, auth.Principal) (model.User, error) {
 	return func(ctx context.Context, p auth.Principal) (model.User, error) {
-		u, err := st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name})
+		if p.Smoke {
+			bound, err := st.IsSmokeAccount(ctx, p.UserID)
+			switch {
+			case err != nil:
+				return model.User{}, err // a 503: cannot tell, so no pass
+			case !bound:
+				return model.User{}, auth.Unauthorized("smoke_unbound", nil)
+			}
+		}
+		u, err := st.EnsureUser(ctx, store.Identity{ID: p.UserID, Email: p.Email, Provider: p.Provider, Name: p.Name, MustExist: p.Smoke})
+		if p.Smoke && (errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrDeleted)) {
+			return u, auth.Unauthorized("smoke_unknown_user", nil)
+		}
 		if errors.Is(err, store.ErrDeleted) {
 			return u, auth.Unauthorized("deleted", err)
 		}
@@ -512,6 +529,7 @@ func (h *handler) recompute(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusTooManyRequests, "a recompute was requested less than a minute ago")
 		return
 	}
+	h.rescoreStaleCheckins(r) // a model bump rescores stored check-ins here (D292)
 	ev := model.IngestedEvent{UserID: u.ID, Days: []string{req.From, req.To}, Reason: "recompute", RequestID: requestID(r)}
 	dedup := fmt.Sprintf("recompute:%s:%s:%s", u.ID, req.From, req.To)
 	if err := h.bus.PublishIngested(r.Context(), ev, dedup); err != nil {

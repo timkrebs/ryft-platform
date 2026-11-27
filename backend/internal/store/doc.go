@@ -8,15 +8,14 @@
 //
 // Invariants:
 //   - The multi-row writes that must not be seen half done (ApplySync, DeleteUser,
-//     MergeUsers, FoldWorkouts, AddFeedback, a Train session's completion) are one
-//     transaction the method opens and commits. That is not a rule for every
-//     method: some run several statements on the pool (ReleaseSessionWorkouts,
-//     AdvanceEnrollment, ArchiveBehavior, AcquireImportLease), and some reads
+//     MergeUsers, FoldWorkouts, AddFeedback, a Train session's completion, the
+//     strength pass ApplySessionPass) are one transaction the method opens and
+//     commits. That is not a rule for every method: some run several statements
+//     on the pool (AdvanceEnrollment, ArchiveBehavior, AcquireImportLease), and some reads
 //     (AdminUserDetail, JournalDay, Trend, SyncStateOf) read without one
 //     snapshot. The import writes its outbox row in its own transaction under
 //     publisher "api" (FinishImport).
-//   - Of the 143 exported methods, 112 take the user id first after ctx and scope
-//     by it. Not every WHERE names it: RedeemInvite matches the global invite by
+//   - Most exported methods take the user id first after ctx and scope by it. Not every WHERE names it: RedeemInvite matches the global invite by
 //     code, IsAdminAccount looks the id up in the operators' allow-list (admin_accounts,
 //     operator configuration that account deletion does not touch; a flag's allow_user_ids it does, DeleteUser removes the id), a statement that looks a row up by its own id (ArchiveBehavior,
 //     UpdateCustomExercise, Enroll) checks ownership around the lookup, and
@@ -27,7 +26,7 @@
 //     RESTRICTIVE per source (ryft_scoring may write only ryft-session workouts,
 //     0011; ryft_ingest may not delete them, 0029). anon and authenticated are
 //     kept out by REVOKE ALL, and authenticated sees only its own rows (0007, D28).
-//   - The other 31 take no user id or take another key. Operator and admin:
+//   - The others take no user id or take another key. Operator and admin:
 //     AdminUsers, Audit, AuditSince, CreateInvite, RevokeInvite, Invites, BoundInviteEmail (the redeem path, by code),
 //     ResolveFeedback, FeedbackSince, ResolveUser, MergeUsers, PutFlag,
 //     DeleteFlag. Timers and reconcilers: ActiveUsers, SyncAges, StaleCandidates,

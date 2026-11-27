@@ -108,7 +108,10 @@ func (s *Store) refreshN2RNight(ctx context.Context, night dueNight, now time.Ti
 			return err
 		}
 		intake := wake.AddDate(0, 0, -1).Format(time.DateOnly)
-		h, err := readN2RHistory(ctx, tx, user, *p, intake, intake, now)
+		// The stored night (its score, breakdown and the caffeine tuning from it) is computed without a check-in's
+		// bedtime or a rating, whatever the flag says: it must not outlive the kill switch (D293). Wearable nights
+		// have a measured bedtime anyway.
+		h, err := readN2RHistoryWith(ctx, tx, user, *p, intake, intake, now, false)
 		if err != nil {
 			return err
 		}

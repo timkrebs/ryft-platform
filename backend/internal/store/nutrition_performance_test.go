@@ -78,9 +78,9 @@ func TestNutritionCatalogPerformance(t *testing.T) {
 		probeNutritionSQL(t, ctx, tx, "barcode", nutritionBarcodeSQL, "nutrition_barcodes_gtin",
 			"00000000005000", "DE", user)
 		probeNutritionSQL(t, ctx, tx, "text-selective", nutritionSearchSQL, "",
-			"c4ca4238a0b923820dcc509a6f75849b", "en", "DE", 21, 0)
+			"c4ca4238a0b923820dcc509a6f75849b", "en", "DE", 21, 0, "")
 		probeNutritionSQL(t, ctx, tx, "text-broad", nutritionSearchSQL, "",
-			"catalog fixture", "en", "DE", 21, 0)
+			"catalog fixture", "en", "DE", 21, 0, "")
 		return nil
 	})
 	if err != nil {
@@ -91,11 +91,11 @@ func TestNutritionCatalogPerformance(t *testing.T) {
 	err = New(root).nutritionTx(ctx, user, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var sql string
 		if err := tx.QueryRow(ctx, `SELECT split_part(prosrc, '$query$', 2) FROM pg_proc
-			WHERE oid='nutrition.search_foods(text,text,text,integer,integer)'::regprocedure`).Scan(&sql); err != nil {
+			WHERE oid='nutrition.search_foods_v2(text,text,text,integer,integer,text)'::regprocedure`).Scan(&sql); err != nil {
 			return err
 		}
 		probeNutritionSQL(t, ctx, tx, "indexed-text-selective", sql, "nutrition_names_",
-			"c4ca4238a0b923820dcc509a6f75849b", "en", "DE", 21, 0)
+			"c4ca4238a0b923820dcc509a6f75849b", "en", "DE", 21, 0, "")
 		return nil
 	})
 	if err != nil {
