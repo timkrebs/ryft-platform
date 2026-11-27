@@ -6841,7 +6841,7 @@ When smoke is enabled, check the dedicated session after the tip check and befor
 
 The API before D285 deletes and reinserts every meal item on PATCH from its typed snapshot, so a rollback or a mixed-version rollout across a release that adds item columns or source fields erases them. This step copies each retained item row as stored (`to_jsonb` and `jsonb_populate_record`: every column, the sources JSON unchanged), only moves its position, and writes no new snapshot fields. It adds the two portion label columns empty (0053, constraints `NOT VALID`, validated by 0054). The catalog selection release (D284) writes the labels and ships only after this build is live; its rollback target is this build, never an earlier one.
 
-## D290 — Privacy policy 2026-11-26 and terms 2026-11-26: today's RYFT, the planned connections, no personal details (2026-11-26; supersedes the C2 draft of #228; a draft PR until the user's `TODO(user)` answers and the legal review)
+## D290 — Privacy policy 2026-11-26 and terms 2026-11-26: today's RYFT, the planned connections, no personal details (2026-11-26; supersedes the C2 draft of #228; published now under the user's rule of 2026-11-27: open points stay `TODO(user)`, the legal review comes later, RFT-155)
 
 **Not legal advice:** the texts state facts with their sources (`docs/work/2026-11-26-legal-partners/facts.md`);
 the bases they propose and every legal reading stay with the user and their reviewer.
@@ -6859,8 +6859,9 @@ the bases they propose and every legal reading stay with the user and their revi
      refuses a pull request that moves the version to a page that is not exactly published, `check-policy-version.mjs
      --strict` needs the newest page to equal the version and the list's last entry, and `web/tests/legal.test.ts`
      needs a date in `effective` for a published page. A draft would turn CI red; a published page with
-     `TODO(user)` passes every guard (no guard reads markers in published pages; LEGAL_CHECKLIST P7). So the PR
-     stays a draft, and the user sets `effective` to the merge date if it is later.
+     `TODO(user)` passes every guard (no guard reads markers in published pages; LEGAL_CHECKLIST P7). Since
+     2026-11-27 the PR is not held back for the markers (see "Amended 2026-11-27"), and the user sets `effective`
+     to the merge date if it is later.
   2. **Consequence: the merge puts it into force.** `deploy.yml` rolls api and ingest (the two services that read
      `PRIVACY_POLICY_VERSION`, `deploy/run/api.yaml:55`, `ingest.yaml:45`), the `site` job deploys the page and its
      live check expects `/privacy` to show 2026-11-26, and **every user is asked to consent again** before the next
@@ -6906,12 +6907,43 @@ the bases they propose and every legal reading stay with the user and their revi
 - **Rejected:** a draft page (CI refuses it, and the version would sit in force with a draft); editing 2026-10-26
   in place (it is the record of consents given); describing CGM, N2R and coaching now (not in the app, and their
   data model may still move); naming the BLS (excluded on main pending review,
-  `docs/architecture/nutrition/06-data-source-licensing.md:10`); a trademark notice for Garmin (none mandated was
+  `docs/architecture/nutrition/06-data-source-licensing.md:10`; superseded by the import of D296, see the
+  amendment); a trademark notice for Garmin (none mandated was
   found; the site names Garmin only as a source). Amended by the lead: BLS 4.0 is named as "once German staples
   are added", with draft #248's attribution (`scripts/etl/transform.py:95` there, CC BY 4.0), because the brief
   asks for it and #248 carries it.
-- **Open:** the 28 `TODO(user)` in the four files (LEGAL_CHECKLIST U1-U15), Google sign-in in the app, the legal
-  review, the partner requirements still missing (partners.md).
+- **Open:** the 24 `TODO(user)` in the four files (LEGAL_CHECKLIST U1-U15; 28 before the amendment below), Google
+  sign-in in the app, the legal review (RFT-155), the partner requirements still missing (partners.md).
+
+**Amended 2026-11-27** (the user's rule of that day: legal questions don't block work; the most conservative sound
+text is published now, open points stay `TODO(user)` or a PR note, a lawyer reviews it later, Linear RFT-155). The
+PR is no longer a draft held for the answers. The version stays `2026-11-26`: it was never in force anywhere, so the
+id is re-used, and `PRIVACY_POLICY_VERSION`, `privacy-versions.json`, `config.env` and `docker-compose.yml` do not
+change. Merging still bumps `PRIVACY_POLICY_VERSION` from 2026-10-26, so every user is asked to consent again. The
+privacy text now matches today's RYFT (sources: `docs/work/2026-11-26-legal-partners/revision-2026-11-27.md`):
+- **App Attest goes to `warn`.** §2 no longer lists the device check as not yet available. §3 says the check runs;
+  while it is being introduced a request without a valid check is only recorded and still answered, later it is
+  refused (`on`). The recorded line adds the reason and the app's build number (`docs/OPERATIONS.md` §17.4: no
+  account, key or token). The `TODO(user)` for the § 25 TDDDG basis stays in §5.
+- **The no-watch morning check-in** (code live, flag off; D291-D295, D299): the text of
+  `docs/work/2026-11-26-no-watch-recovery/implementation.md` → Privacy, verbatim, in §2, §3 (a new bullet, and what
+  RYFT computes), §5 (the health-data basis names the check-in, Art. 9(2)(a)), §9 (morning check-ins by request)
+  and §12 (an estimate is not a measurement). Not in it: what waits for the version that describes N2R and coaching.
+- **BLS 4.0 (CC BY 4.0, imported, D296).** §6 names the Bundeslebensmittelschlüssel (BLS) 4.0 of the Max
+  Rubner-Institut as an imported source (no more "once German staples are added", also in terms and support). The
+  licences page has a new "Data sources" group with the citation, the licence link and the DOI link.
+- **Usage analytics (PostHog), a section of its own.** New §7 "Usage analytics (only if you say yes)" after §6,
+  from `app/docs/ANALYTICS.md`, with the sync event covering the Home screen's sync button too. Sections 7-12
+  became 8-13 and every "Section N" reference was updated. The transfer basis is the EU Standard Contractual
+  Clauses (Art. 46(2)(c) GDPR, module 2 of the 2021/914 clauses) in PostHog's DPA; PostHog Inc.'s certification
+  under the EU-U.S. Data Privacy Framework could not be confirmed, so the DPF is not named. IP discarded and no
+  location derived, no screen recordings, retention 12 months, the DPA accepted. §3 and §5 point to §7; §6 and §8
+  carry the settled facts. Deleting an account does not reach the events at PostHog: their random id is not linked
+  to the account (Art. 11 GDPR).
+- **`TODO(user)` closed: 4** (PostHog's GeoIP and session recording, its retention, its transfer basis, and what
+  deleting an account does to its events). 24 remain in the four files (privacy 18, terms 2, Impressum 3, support
+  1), plus 1 in `messages/en.json`. The markers that need the user's details (controller, Impressum, Microsoft and
+  GoDaddy, Supabase, DPO, authority) are unchanged.
 
 ## D286 — The production smoke signs in as a Google service account, mapped to the smoke account only (2026-11-26)
 

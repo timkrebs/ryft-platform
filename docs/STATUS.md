@@ -1,17 +1,22 @@
 # RYFT platform — status
 
-## Legal pages for today's RYFT and the partner programs (2026-11-26, D290; draft)
+## Legal pages for today's RYFT and the partner programs (2026-11-26, D290; revised 2026-11-27)
 
 Privacy 2026-11-26 and terms 2026-11-26 (new versions; the old ones stay), the support page and the Impressum,
-rewritten for GCP, Firebase Hosting and Supabase, Apple or Google sign-in, the dark food diary, opt-in analytics,
-the report form and the planned Garmin and Suunto connections. No personal details: the provider and controller
-are `TODO(user)` (28 markers; `web/docs/LEGAL_CHECKLIST.md`). It supersedes the C2 draft (#228). Sources:
-`docs/work/2026-11-26-legal-partners/facts.md`; partner requirements: `…/partners.md`.
+rewritten for GCP, Firebase Hosting and Supabase, Apple or Google sign-in, the dark food diary, the usage analytics,
+the report form and the planned Garmin and Suunto connections. Revised on 2026-11-27 to today's RYFT: App Attest in
+`warn`, the no-watch morning check-in, BLS 4.0 (credited on `/licenses`) and a section of its own for the usage
+analytics (privacy §7; later sections renumbered). No personal details: the provider and controller are
+`TODO(user)` (24 markers in the content files, plus 1 in `messages/en.json`; `web/docs/LEGAL_CHECKLIST.md`). It
+supersedes the C2 draft (#228). Sources: `docs/work/2026-11-26-legal-partners/facts.md` and `…/revision-2026-11-27.md`;
+partner requirements: `…/partners.md`.
 
-**Do not merge before the `TODO(user)` items and the legal review are done.** The merge puts 2026-11-26 into force:
-CI, `deploy.yml` (no migration), api and ingest roll with the new `PRIVACY_POLICY_VERSION`, the `site` job ships the
-pages and checks that `/privacy` shows 2026-11-26, and every user is asked to consent again. Decide
-`CONNECT_MIN_POLICY_VERSION` first (LEGAL_CHECKLIST U14). After the merge (read-only):
+**Published under the user's rule of 2026-11-27:** legal questions don't block work. The most conservative sound text
+goes out now, the open points stay `TODO(user)`, and a lawyer reviews it later (Linear RFT-155). **Merging bumps
+`PRIVACY_POLICY_VERSION` to 2026-11-26, so every user is asked to consent again** before the next upload. The
+merge puts 2026-11-26 into force: CI, `deploy.yml` (no migration), api and ingest roll with the new version, and the
+`site` job ships the pages and checks that `/privacy` shows 2026-11-26. Decide `CONNECT_MIN_POLICY_VERSION` with the
+merge (LEGAL_CHECKLIST U14). After the merge (read-only):
 
 ```bash
 for s in api ingest; do gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod --format=json \

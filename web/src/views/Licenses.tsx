@@ -39,6 +39,21 @@ export function LicensesPage({ locale }: { locale: Locale }) {
         </header>
         <Group id="app" title={t.app} intro={t.appIntro} items={data.app} locale={locale} />
         <Group id="web" title={t.web} intro={t.webIntro} items={data.web} locale={locale} />
+        <section aria-labelledby="data-title" className={styles.group}>
+          <h2 id="data-title">{t.data}</h2>
+          <p className={styles.intro}>{t.dataIntro}</p>
+          <ul className={styles.credits}>
+            <li>
+              <p>
+                {t.blsCitation} DOI: <a href={t.blsDoiUrl}>{t.blsDoi}</a>
+              </p>
+              <p>{t.blsChanges}</p>
+              <p>
+                {t.blsLicence} <a href={t.ccBy4Url}>{t.ccBy4Url.replace(/^https?:\/\//, '')}</a>
+              </p>
+            </li>
+          </ul>
+        </section>
       </Container>
     </PageShell>
   );

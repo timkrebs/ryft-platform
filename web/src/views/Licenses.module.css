@@ -65,6 +65,28 @@
   color: var(--text-secondary);
 }
 
+.credits {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: var(--card-padding);
+  list-style: none;
+  border-radius: var(--card-radius);
+  background: var(--surface);
+  font-size: var(--type-callout);
+  color: var(--text-secondary);
+}
+
+.credits li {
+  display: grid;
+  gap: 10px;
+}
+
+.credits a {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
 .body {
   display: grid;
   gap: 10px;
