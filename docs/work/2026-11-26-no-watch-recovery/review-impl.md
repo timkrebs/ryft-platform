@@ -1,0 +1,27 @@
+# Review: the no-watch recovery implementation, PR #260 (code-reviewer, 2026-11-27)
+
+Reviewed 6a32b51 + 808a65c (`git diff origin/main...HEAD`), read-only, recorded on arrival. The third column says
+what the follow-up did.
+
+| # | Rank | Finding | Fix |
+| --- | --- | --- | --- |
+| 1 | Blocker | `lint`: `store/recovery.go:81` `wearableNight` unused (the rule runs via `wearableNightSQL`). | |
+| 2 | Blocker | `web-checks`: `web/content/science/en.mdx` names model `2026.10.3`; the web test ties it to `ModelVersion`. | |
+| 3 | Blocker | `pooler` red (logs locked while the run was in progress); `test`/`smoke` pending. | |
+| 4 | Should fix | A rating is dropped when scoring recreates a session's own workout on a time edit (`train.go:919-944`, `scoring/strength_day.go:55-65`: DELETE + INSERT under the same id, the FK cascades); and a re-attach from one HealthKit workout to another (or back) leaves the rating behind. Hits exactly the no-watch Train user. | |
+| 5 | Should fix | `nutrition_score.go:81`: `NutritionDaily`'s meal-timing score uses check-in bedtimes; the contract puts them into N2R only. | |
+| 6 | Should fix | `n2r_calibration.go:111`: `refreshN2RNight` can persist an N2R night computed with a check-in bedtime (HRV night without measured sleep start), which survives the kill switch. | |
+| 7 | Should fix | `0063`: ingest gets table-wide SELECT (incl. `session_rpe`) and DELETE; the fold only repoints. Column SELECT, no DELETE. | |
+| n1 | Nit | `recovery.go:162` confidence: a correlated HR-hours count per check-in; heavy on a 400-day export. | |
+| n2 | Nit | Merged check-ins aren't rescored against the target's history. | |
+| n3 | Nit | Races: PUT rpe vs the fold; the move and the delete in `ReleaseSessionWorkouts` outside one transaction. | |
+| n4 | Nit | One briefing reads the flag ~4 times. | |
+
+None found: status codes and gates; nullability/omitempty and closed enums; the kill switch (status, briefing,
+readiness, load, N2R bedtime, `n2r_bedtime_applied`); one wearable-night rule; upsert and the locked 14-day
+rescore; tz/wake-day validation and 04:00; migrations' idempotency and RLS; the composite FK with merge, fold,
+re-sync and deletion; deletion/merge coverage; the trace golden; logging; scoring goldens move in
+`model_version` only; TRIMP constants and day strain unchanged.
+
+API.md (api-contract-owner, same pass): markers now "served from 2026-11-27 behind `recovery.checkin`", old
+anchor kept, changelog row 2026-11-27, Swift mirror matches. `make check-swift` needs the running stack (not run).
