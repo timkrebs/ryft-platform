@@ -810,7 +810,7 @@ func (s *Store) DeleteWorkoutRating(ctx context.Context, user, id uuid.UUID) err
 // moveFoldedRatings moves the rating of a dropped duplicate to the copy the fold keeps, before the duplicate is
 // deleted (the delete cascades to its rating). A kept copy that already has a rating keeps it, and the dropped
 // one's goes with its workout; of several rated copies of one kept workout the latest rating wins. It runs in the
-// fold's transaction as ryft_ingest, which may repoint a rating but never write a value (0063).
+// fold's transaction as ryft_ingest, which may repoint a rating but never write a value (0065).
 func moveFoldedRatings(ctx context.Context, tx pgx.Tx, user uuid.UUID, groups []FoldGroup) error {
 	var dropped, kept []uuid.UUID
 	for _, g := range groups {

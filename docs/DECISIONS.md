@@ -7213,7 +7213,7 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
      `GET /v1/workouts/{id}`.
   7. **A model bump** rescores stored check-ins at the next `POST /v1/recompute` of the account
      (`RescoreStaleCheckins`; best effort, never fails the recompute), and any `PUT`/`DELETE` rescores the later ones.
-  8. **Migration 0063 is corrected before it ships:** the foreign key to `workouts(id)` cannot exist (the key of
+  8. **Migration 0065 is corrected before it ships:** the foreign key to `workouts(id)` cannot exist (the key of
      `workouts` has been `(user_id, id)` since 0007), so it is `(user_id, workout_id) REFERENCES workouts (user_id, id)
      ON DELETE CASCADE ON UPDATE CASCADE`. That also keeps a rating its workout's owner's in the database, and the
      merge's `UPDATE workouts SET user_id` carries the rating with it. The grants end up as follows. `ryft_ingest`

@@ -5058,7 +5058,7 @@ in. Testers first, by the allow-list; `{"enabled": false, "rollout_pct": 100}` i
 Nothing on the server checks the flag, so it takes effect at the app's next config.
 
 **`recovery.checkin`: the morning check-in and the session RPE (D291–D295, D298, D299).** The flag ships dark
-(migration 0064: enabled, 0 %, an empty allow-list) and stays so until a published privacy version names the
+(migration 0066: enabled, 0 %, an empty allow-list) and stays so until a published privacy version names the
 check-in; no percentage rollout, neither for the beta at large nor for the Nutrition pilot, without a new decision.
 Then **one tester** first, by the allow-list (the user ID: `GET /v1/me` → `id`; `PUT` replaces the whole flag, so
 send the IDs already on it too):
@@ -5298,7 +5298,7 @@ scripts/seed_demo.py`.
   letter's `Ryft-Error` header kept as well. The logs and the dead-letter queues of that time
   kept 14 days, so all of it is gone 14 days after the deploy of this change
   (`docs/STATUS.md` has the date).
-- **Recovery without a watch (0062, 0063; D291–D295, D298, D299), the two tables:** `recovery_checkins` (a morning check-in:
+- **Recovery without a watch (0064, 0065; D291–D295, D298, D299), the two tables:** `recovery_checkins` (a morning check-in:
   bed and wake time, the two 1–10 ratings, soreness, and what was computed from them) and `workout_ratings` (a
   workout's session RPE) hold health data a user typed in. Retention: **account-bound, no age limit**: kept until
   the user deletes a check-in or a rating (`DELETE /v1/recovery/checkins/{date}`, `DELETE /v1/workouts/{id}/rpe`),
@@ -5307,7 +5307,7 @@ scripts/seed_demo.py`.
   moves them (a check-in for a day the kept account has stays with the old one; a rating follows its workout).
   The export reads `GET /v1/recovery/checkins`; the workout export carries the rating. Backups keep them as long
   as any backup of the database (7 days on Pro). No other service reads a check-in; ingest and scoring may only
-  repoint a rating, never read or write its value or delete one (0063: ingest reads the key columns and
+  repoint a rating, never read or write its value or delete one (0065: ingest reads the key columns and
   `updated_at`, scoring the key columns only; scoring also updates `start_at`/`end_at` of a session's own workout,
   so an edit of the session keeps its rating). Logs: the routes log their pattern (`/v1/recovery/checkins/{date}`),
   never the date, a rating, a time or a score. Turning `recovery.checkin` off deletes nothing (Feature flags).

@@ -211,7 +211,7 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 			`DELETE FROM journal_days WHERE user_id=$1`,
 			`DELETE FROM user_behaviors WHERE user_id=$1`,
 			`DELETE FROM behaviors WHERE user_id=$1`,
-			// Recovery without a watch (0062, 0063, D295): the morning check-ins and the session ratings, the
+			// Recovery without a watch (0064, 0065, D295): the morning check-ins and the session ratings, the
 			// ratings before the workouts they name (the foreign key cascades too).
 			`DELETE FROM recovery_checkins WHERE user_id=$1`,
 			`DELETE FROM workout_ratings WHERE user_id=$1`,

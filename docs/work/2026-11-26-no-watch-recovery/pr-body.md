@@ -7,11 +7,11 @@ Implements the no-watch recovery contract merged in #255 (`docs/API.md` → Reco
 - **N2R:** the check-in bedtime as the live fallback after the measured sleep start, `bedtime_source`; never persisted into the night record or the meal-timing score.
 - **Readiness:** the check-in path where the HRV path is `UNKNOWN`: `OPTIMAL`, `ACUTE_LIFESTYLE_SUPPRESSION` (N2R tags and the journal of the day before, incl. sick/travel/work stress; `journal_sick` keeps the plan protective), `LOW_RECOVERY_UNEXPLAINED`. `readiness_display` on every briefing; `readiness` unchanged.
 - **Session RPE:** `session_rpe_load` = minutes × RPE; a rated workout without HR or power enters acute/chronic load, ACWR and TSB as Banister TRIMP with `r = RPE/10` (60 min at 8 → 151). Day strain unchanged.
-- **Flag `recovery.checkin`** (0064: enabled, 0 %): the kill switch; off changes nothing for anyone.
+- **Flag `recovery.checkin`** (0066: enabled, 0 %): the kill switch; off changes nothing for anyone.
 - **Data:** deletion, merge, the same-source fold and the session re-attach cover both tables; no rating, time or score in a log line.
 
 ## On merge (`deploy.yml`)
-1. The migrate job runs **0062** `recovery_checkins`, **0063** `workout_ratings`, **0064** the flag seed. (`0061` stays reserved for the BLS import.)
+1. The migrate job runs **0064** `recovery_checkins`, **0065** `workout_ratings`, **0066** the flag seed. (`0061` stays reserved for the BLS import.)
 2. The services roll (api: the routes; ingest: the fold's rating move; scoring: model 2026.11.1). No site change beyond the science page's model version.
 3. Nothing changes for any account: the flag is at 0 % with an empty allow-list.
 

@@ -71,7 +71,7 @@ var grants = map[string]map[string][]string{
 		"provider_inbox": crud,
 		// 0060: the operator writes smoke_account (scripts/sql/bind_smoke_account.sql); ingest only reads it.
 		"smoke_account": {"SELECT"},
-		// 0063 (D293): the same-source fold, run by ingest's sync, moves a dropped duplicate's rating to the
+		// 0065 (D293): the same-source fold, run by ingest's sync, moves a dropped duplicate's rating to the
 		// survivor: column grants only (below), no table-level privilege, no DELETE. recovery_checkins: none.
 	},
 	"ryft_scoring": {
@@ -103,7 +103,7 @@ var grants = map[string]map[string][]string{
 		// 0042: the api alone holds the OAuth side; a state is never updated; the inbox only by column (below).
 		"connections": crud, "connection_tokens": crud, "connection_pending": crud, "connection_deregistrations": crud,
 		"connection_states": {"SELECT", "INSERT", "DELETE"}, "provider_inbox": {"DELETE"},
-		// 0062, 0063 (D291–D293): the api alone writes a check-in and a rating; no other service reads a check-in.
+		// 0064, 0065 (D291–D293): the api alone writes a check-in and a rating; no other service reads a check-in.
 		"recovery_checkins": crud, "workout_ratings": crud,
 		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
@@ -153,7 +153,7 @@ func TestServiceRoleGrants(t *testing.T) {
 	// scoring may write only the load columns of a workout, and of a session.
 	for col, want := range map[string]bool{"strain": true, "trimp": true, "zone_minutes": true, "muscular_load": true,
 		"session_id": true, "model_version": true, "avg_hr": false, "activity": false, "source": false, "user_id": false,
-		// 0063: a session's own workout follows an edit of the session's times in place (so its rating stays)
+		// 0065: a session's own workout follows an edit of the session's times in place (so its rating stays)
 		"start_at": true, "end_at": true} {
 		var has bool
 		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_scoring', 'public.workouts', $1, 'UPDATE')`, col).Scan(&has); err != nil {
@@ -327,7 +327,7 @@ func TestServiceRoleGrants(t *testing.T) {
 			t.Errorf("%s %s %s.%s: %v, want %v", c.role, c.priv, c.table, c.col, has, c.want)
 		}
 	}
-	// 0063: ingest's fold may read the key columns and updated_at and repoint a rating (workout_id, updated_at); it
+	// 0065: ingest's fold may read the key columns and updated_at and repoint a rating (workout_id, updated_at); it
 	// never reads or writes a value, creates one or deletes one (a dropped copy's rating goes with its workout).
 	for _, c := range []struct {
 		role, col, priv string

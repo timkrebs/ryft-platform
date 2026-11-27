@@ -917,7 +917,7 @@ func (s *Store) EnsureSessionWorkout(ctx context.Context, userID, workoutID, ses
 				AND (muscular_load, session_id) IS DISTINCT FROM ($3::float8, $4::uuid)`, userID, workoutID, load, sessionID)
 			return err
 		case err == nil:
-			// Times changed: the session's own workout follows them in place (0063's UPDATE (start_at, end_at),
+			// Times changed: the session's own workout follows them in place (0065's UPDATE (start_at, end_at),
 			// only for source ryft-session), so its rating stays; a delete and insert would cascade it away.
 			// The load columns start over as a new row's do: the day's pass scores the workout again.
 			_, err = tx.Exec(ctx, `UPDATE workouts SET start_at=$3, end_at=$4, muscular_load=$5, session_id=$6,
@@ -959,7 +959,7 @@ func (s *Store) ReleaseSessionWorkouts(ctx context.Context, userID uuid.UUID, da
 		}
 	}
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		// Scoring may repoint a rating by its key columns, never read its value (0063). The target keeps its own
+		// Scoring may repoint a rating by its key columns, never read its value (0065). The target keeps its own
 		// rating when it has one; of two ratings that would move to one target the previous workout's wins.
 		if len(sessions) > 0 {
 			if _, err := tx.Exec(ctx, `WITH candidates AS (

@@ -121,7 +121,7 @@ func seedUser(t *testing.T, st *Store, pool *pgxpool.Pool, id uuid.UUID) {
 	if _, err := st.UpsertWorkouts(ctx, id, []model.Workout{{ID: rated, Activity: "running", Start: now.Add(-time.Hour), End: now, Source: "test"}}); err != nil {
 		t.Fatal(err)
 	}
-	// Recovery without a watch (0062, 0063): a check-in, and the session rating of that workout.
+	// Recovery without a watch (0064, 0065): a check-in, and the session rating of that workout.
 	if _, err := st.PutCheckin(ctx, id, now.Format(time.DateOnly), CheckinReport{Bedtime: now.Add(-8 * time.Hour), WakeTime: now, Quality: 6, Freshness: 6},
 		now, fakeScorer); err != nil {
 		t.Fatal(err)

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// 0062–0064 (D291–D295): the check-in and rating tables keep their ranges, cascade with their user and workout,
+// 0064–0066 (D291–D295): the check-in and rating tables keep their ranges, cascade with their user and workout,
 // every file reruns, and recovery.checkin ships dark and keeps what the operator set since.
 func TestMigrateRecovery(t *testing.T) {
 	pool := freshDB(t, false)
@@ -20,7 +20,7 @@ func TestMigrateRecovery(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE feature_flags SET enabled = false, rollout_pct = 100 WHERE key = 'recovery.checkin'`); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"0062_recovery_checkins.sql", "0063_workout_ratings.sql", "0064_recovery_checkin_flag.sql"} {
+	for _, f := range []string{"0064_recovery_checkins.sql", "0065_workout_ratings.sql", "0066_recovery_checkin_flag.sql"} {
 		body, err := migrations.ReadFile("migrations/" + f)
 		if err != nil {
 			t.Fatal(err)
@@ -30,7 +30,7 @@ func TestMigrateRecovery(t *testing.T) {
 		}
 	}
 	if !scalar[bool](t, pool, `SELECT NOT enabled AND rollout_pct = 100 FROM feature_flags WHERE key = 'recovery.checkin'`) {
-		t.Error("a rerun of 0064 overwrote the operator's setting")
+		t.Error("a rerun of 0066 overwrote the operator's setting")
 	}
 
 	user, other := "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"

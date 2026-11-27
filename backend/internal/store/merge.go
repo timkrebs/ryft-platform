@@ -215,7 +215,7 @@ func (m merger) run(res *MergeResult) error {
 		return err
 	}
 	// A rating follows its workout: the foreign key (user_id, workout_id) cascades the move above (ON UPDATE CASCADE,
-	// 0063), so the ones left with from belong to the workouts to already had, and go with from.
+	// 0065), so the ones left with from belong to the workouts to already had, and go with from.
 	left, err := m.count(`SELECT count(*) FROM workout_ratings WHERE user_id = $1`, m.from)
 	if err != nil {
 		return fmt.Errorf("workout_ratings: %w", err)
