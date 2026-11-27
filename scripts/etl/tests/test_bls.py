@@ -523,7 +523,8 @@ class TransformTests(unittest.TestCase):
         return bls_row_food(csv_row(code, name_de, name_en, **nutrients), "v1", curation, notes)
 
     def test_a_generic_food(self):
-        self.assertEqual(BLS_ATTRIBUTION, "Max Rubner-Institut (2025), Bundeslebensmittelschlüssel (BLS), Version 4.0")
+        self.assertEqual(BLS_ATTRIBUTION, "Max Rubner-Institut (2025): Bundeslebensmittelschlüssel (BLS), Version 4.0 "
+                                          "— Deutsche Nährstoffdatenbank. Karlsruhe. DOI: 10.25826/Data20251217-134202-0")
         notes = BlsNotes()
         food = self.food("G300000", "Möhre, roh", "Carrot, raw", notes=notes, fiber="2.8")
         self.assertEqual((food.provider, food.external_id, food.name, food.reference_unit, food.markets),

@@ -98,7 +98,9 @@ USDA_NUTRIENTS = {
 
 USDA_ENERGY_PRIORITY = {"2048": 3, "1008": 2, "2047": 1}
 UNIT_MASS_G = {"g": 1, "mg": 0.001, "ug": 0.000001}
-BLS_ATTRIBUTION = "Max Rubner-Institut (2025), Bundeslebensmittelschlüssel (BLS), Version 4.0"
+# The publisher's citation, verbatim from blsdb.de/download (D296).
+BLS_ATTRIBUTION = ("Max Rubner-Institut (2025): Bundeslebensmittelschlüssel (BLS), Version 4.0 — Deutsche "
+                   "Nährstoffdatenbank. Karlsruhe. DOI: 10.25826/Data20251217-134202-0")
 USDA_PORTION_ID = re.compile(r"[1-9][0-9]{0,19}")
 UNKNOWN_MEASURES = {"undetermined", "unspecified", "unknown", "not specified", "n/a", "none"}
 STAPLES_PATH = Path(__file__).with_name("staples.v1.json")
