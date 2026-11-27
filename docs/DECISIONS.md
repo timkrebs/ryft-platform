@@ -6941,7 +6941,7 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
      measurement.
   4. **`needs_checkin`:** 04:00 local or later, no wearable night, no check-in yet, and the flag on. The sync
      carries no `was_user_entered` on sleep segments, so a night typed into Apple Health with asleep stages
-     counts as measured; an additive sync field is an open question (review #2).
+     counts as measured (review #2; decided 2026-11-27: kept so, no sync field for now).
   5. **Routes, mapped to what exists** (the spec named `/api/v1/…` and other paths): `/v1/recovery/checkins/{date}`
      (`PUT` upsert, `GET`, `DELETE`) and `GET /v1/recovery/checkins?from&to` with the `/v1/days` range rules;
      `{date}` is the wake day, as every day in v1.
@@ -6952,10 +6952,24 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   7. **Suggested bed and wake times are a pre-fill** of the check-in form (median of the last 7 days' check-ins,
      at least 3; else the N2R `expected_bedtime` and 8 h later; else none), never advice; the Sleep Planner stays
      the recommendation.
-- **Rejected:** writing a check-in score into `DailyScore.recovery` (the Today ring): it would change what an
-  existing v1 field means and mix a subjective estimate into the measured trend and baselines; open for the
-  user (`docs/work/…/implementation.md` → Open questions). A check-in for sleep-only trackers' nights: they have
-  measured sleep, so `needs_checkin` is false; the routes still accept a check-in.
+- **Rejected:** writing a check-in score into `DailyScore.recovery`: it would change what an existing v1 field
+  means and mix a subjective estimate into the measured trend and baselines.
+- **Decided by the user, 2026-11-27** (the open questions in `docs/work/…/implementation.md`):
+  - **The Today ring shows the check-in score**, visibly marked as estimated. The app fills the ring from
+    `RecoveryStatus.recovery_score` while `source` is `checkin` and labels it from `source` and `confidence`;
+    `DailyScore.recovery`/`readiness` stay wearable-only (so the rejection above stands), and trends, baselines
+    and insights never contain a check-in.
+  - **Sleep-only trackers, no special case** (conservative default): the one rule applies, so a night with asleep
+    stages but no recovery (no heart rate, no HRV) is not a wearable night, its user is asked, and the check-in is
+    scored on the reported times; measured sleep is not blended into a check-in. (The question was written before
+    review #1 made recovery part of the rule; under the rule no measured-sleep user is left without an estimate.)
+  - **Hand-typed sleep** (conservative default): counts as measured, as the sync cannot tell; no additive sync
+    field in this work. Adding one is its own contract change with the app.
+  - **Apple's workout effort score** (conservative default): not read; `session_rpe` is only the rating given in
+    RYFT (Apple's score is its own construct, and a second source would need its own field and calibration).
+  - **Rollout** (conservative default): allow-listed testers only, not before a published privacy version names
+    the check-in; no percentage rollout, neither to the beta at large nor to the Nutrition pilot as a whole,
+    without a new decision.
 
 ## D292 — The check-in score: a hybrid of wellness, duration, regularity and N2R, every constant versioned (2026-11-26; contract only)
 
@@ -6983,7 +6997,9 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   `50 + 25·z` is new (the spec gave none); a missing part is renormalised rather than counted as 0 (most
   no-watch users have no N2R and no regularity in their first week, and a 0 would punish that); `soreness` is
   stored and shown and adds a readiness reason but does not move the score (the spec gave it no weight; a
-  weight without data to calibrate it would be invented).
+  weight without data to calibrate it would be invented). **Decided by the user, 2026-11-27:** soreness is
+  recorded with zero weight, captured for a later calibration: it moves neither the score, `acute_drop` nor the
+  readiness state, and only adds `soreness_reported`. `docs/SCORING.md` says so when it ships.
 - **Pinned cases:** 5 h, quality and freshness 3, no history → 29; 8 h, 9 and 9 → 93; 14 days of check-ins
   at 6 and 6 (absolute 55.6, SD 0 → floored to 6), then 5 and 5 (44.4) → `z` −1.85, `personal` 3.7,
   `wellness` 32, `acute_drop` by `z` alone; 4 check-ins in 14 days → no personal part.
@@ -7008,8 +7024,9 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
     factor overstates easy sessions up to 2.3×. So 60 min at RPE 8 = 480 AU → 151 (unspecified sex),
     143 (male), 157 (female).
   - **Day strain stays HR-based** (`DailyScore.strain`, `WorkoutDetail.trimp`): putting reported effort into the
-    0–21 strain and its sleep-need top-up moves stored numbers for every user and needs its own calibration;
-    open for the user.
+    0–21 strain and its sleep-need top-up moves stored numbers for every user and needs its own calibration.
+    **Decided by the user, 2026-11-27:** session RPE does not feed day strain; it feeds acute and chronic load,
+    ACWR and TSB only, as drafted.
 - **Retroactive N2R:** the N2R bedtime precedence becomes the measured sleep start (`daily_scores.sleep_start`
   of the next day, as `nutritionBedtimes` reads it) > the next morning's check-in `bedtime` > `expected_bedtime`.
   `N2RScore.bedtime_source` (`expected`/`wearable`/`checkin`; absent when `bedtime` is null) says which.
@@ -7036,11 +7053,27 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   `late_satfat_meal`, from the live D − 1 N2R with the reported bedtime, D293) **and, a deviation, the journal of the day before**
   (`alcohol`/`alcohol_drinks`, `caffeine_after_2pm` or `last_caffeine` within 8 h of the reported bedtime,
   `late_meal` → `journal_alcohol`, `journal_late_caffeine`, `journal_late_meal`): most no-watch users are not in
-  the N2R pilot but can keep the journal. `sick`, `travel` and `work_stress` are not confounders here (open).
+  the N2R pilot but can keep the journal. **Decided by the user, 2026-11-27:** `sick`, `travel` and `work_stress`
+  of the day before are explanations too (`journal_sick`, `journal_travel`, `journal_work_stress`), so a drop
+  with one of them is `ACUTE_LIFESTYLE_SUPPRESSION`, not `LOW_RECOVERY_UNEXPLAINED`. A judgement call on top:
+  with `journal_sick` the plan stays protective (no deficit, the 4.5 g/kg carbohydrate floor), because
+  `ACUTE_LIFESTYLE_SUPPRESSION` alone keeps a fat-loss deficit (`periodization/plan.go` suspends it only for
+  the unexplained state) and a deficit while ill is the riskier default. These three apply to the check-in path
+  only; the HRV path's confounders do not change (that would move what `AUTONOMIC_FATIGUE` means today).
 - **Names:** no diagnostic label. `AUTONOMIC_FATIGUE` claims a nervous-system cause that a questionnaire cannot
   show, so the check-in path never emits it; the new name says what was observed (low, unexplained) and nothing
   about why. App copy for both check-in states repeats what the user reported and names no physiological cause.
-  `AUTONOMIC_FATIGUE` stays on the HRV path (v1 renames nothing); whether to add a neutral alias for it is open.
+  `AUTONOMIC_FATIGUE` stays on the HRV path (v1 renames nothing).
+- **The neutral name, decided by the user 2026-11-27; the form is ours:** a new field
+  `CoachingBriefing.readiness_display`, always present from the implementation PR on (not behind the flag; it
+  carries no check-in data). It equals `readiness`, except that `AUTONOMIC_FATIGUE` is displayed as
+  `LOW_RECOVERY_UNEXPLAINED`, the same observation the check-in path names. `readiness` keeps its value set, so
+  the pilot app keeps decoding and branching on `AUTONOMIC_FATIGUE`, and the plan logic keeps reading
+  `readiness`. The app keys copy on `readiness_display` and falls back to `readiness` when it is absent.
+  - **Rejected:** emitting a new state in place of `AUTONOMIC_FATIGUE` (behind the flag or a negotiation header):
+    an existing build would read it as `UNKNOWN` and lose the protective message, a negotiation header is a new
+    mechanism for one value, and the flag would tie an HRV-path name to the check-in feature. An alias inside
+    `readiness_reasons`: reasons are evidence, not the state's name, and copy keyed on them would be fragile.
 - **Compatibility:** `readiness` was never declared closed; the contract now says to read an unknown value as
   `UNKNOWN`. `CoachingBriefing` is not in the Swift mirror; the pilot app is the only reader.
 
@@ -7049,7 +7082,8 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
 - **Consent:** the check-in and the session RPE are health data (Art. 9 GDPR: perceived sleep, freshness,
   soreness). Both writes need consent to the policy in force (`403 consent_required`, `warn` acting as `on`, as
   for Nutrition writes); the reads and deletes do not, so a user who withdrew can still see and erase.
-- **Flag:** `recovery.checkin`, enabled at 0 % (testers by the allow-list). Off: the two writes and the status
+- **Flag:** `recovery.checkin`, enabled at 0 % (testers by the allow-list; decided 2026-11-27 as the rollout:
+  allow-listed testers only, after the privacy version, no percentage without a new decision; D291). Off: the two writes and the status
   route answer `404` without a `code` (what an older server answers too, so the app has one rule: hide the
   feature, never drop local data), and the briefing's `recovery` is `null`. Reads and deletes keep working.
   It is a **kill switch**: stored check-ins and ratings count nowhere while it is off (readiness, load, the N2R
