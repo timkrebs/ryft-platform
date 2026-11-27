@@ -113,6 +113,7 @@ func (h *handler) days(w http.ResponseWriter, r *http.Request) {
 // detail with its stage timeline, the day's heart-rate load and its workouts.
 func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	userID := userOf(r).ID
 	day := r.PathValue("day")
 	loc, err := h.location(r)
 	if err != nil {
@@ -124,17 +125,18 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, 400, "day must be YYYY-MM-DD")
 		return
 	}
-	scores, err := h.st.DailyScores(ctx, userOf(r).ID, day, day)
+	end := d.AddDate(0, 0, 1)
+	scores, err := h.st.DailyScores(ctx, userID, day, day)
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}
-	nights, err := h.st.SleepNights(ctx, userOf(r).ID, day, day)
+	nights, err := h.st.SleepNights(ctx, userID, day, day)
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}
-	workouts, err := h.st.RatedWorkoutsBetween(ctx, userOf(r).ID, d, d.AddDate(0, 0, 1))
+	workouts, err := h.st.RatedWorkoutsBetween(ctx, userID, d, end)
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
@@ -146,14 +148,14 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 		Score: model.DailyScore{Day: day, State: model.StateCalibrating, Details: map[string]any{}}}
 	if len(scores) > 0 {
 		out.Score = scores[0]
-		load, err := h.st.DayLoadOf(ctx, userOf(r).ID, day)
+		load, err := h.st.DayLoadOf(ctx, userID, day)
 		if err != nil {
 			httpx.Fail(w, r, err)
 			return
 		}
 		out.Strain = scoring.DayStrainFrom(load)
 		if out.Strain != nil {
-			sessions, err := h.st.SessionSummaries(ctx, userOf(r).ID, d, d.AddDate(0, 0, 1), model.SessionCompleted, true)
+			sessions, err := h.st.SessionSummaries(ctx, userID, d, end, model.SessionCompleted, true)
 			if err != nil {
 				httpx.Fail(w, r, err)
 				return
@@ -165,7 +167,7 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 		if s, ok := scoring.NightSummary(nights[0]); ok {
 			// The night as scoring took it: one source, morning naps split off.
 			from, to := scoring.DaySleepWindow(d)
-			segs, err := h.st.SleepEndingBetween(ctx, userOf(r).ID, from, to)
+			segs, err := h.st.SleepEndingBetween(ctx, userID, from, to)
 			if err != nil {
 				httpx.Fail(w, r, err)
 				return
@@ -174,9 +176,23 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 			out.Sleep = &model.SleepDetail{SleepSummary: s, Need: scoring.NeedOf(out.Score), Segments: scoring.Hypnogram(night)}
 		}
 	}
+	// Muscle freshness (D309): today at the request time, any other day at its end. The clock is the
+	// api's (coachingNow) so a test can move it; in production it is time.Now.
+	at := end
+	if now := h.coachingNow(); day == now.In(loc).Format(dayLayout) {
+		at = now
+	}
+	hist, err := h.st.MuscleHistory(ctx, userID, at.Add(-scoring.FreshnessWindow), at)
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
+	if hist.HasCompletedSession {
+		out.Muscles = scoring.MuscleFreshnessAt(hist.Sets, hist.Last, at)
+	}
 	today := time.Now().In(loc).Format(dayLayout)
 	states := []model.DailyScore{out.Score}
-	if err := h.withScoringStates(ctx, userOf(r).ID, today, states); err != nil {
+	if err := h.withScoringStates(ctx, userID, today, states); err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}

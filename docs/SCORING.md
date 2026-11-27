@@ -325,6 +325,61 @@ not the exact 90: that is a judgement, pinned by the tests and open to the beta'
 | 4 × 5 at 100 kg and a 110 × 3 at +70 min, `ended_at` +45, +60 or +120 min | TRIMP 28.1 each | 30.2, 30.2, 28.1 |
 | The three anchors (11.0, 8.0, 5.1) | unchanged | |
 
+## Muscle freshness (D309)
+
+`GET /v1/days/{day}` computes `DayDetail.muscles` on read in `internal/scoring/freshness.go`.
+For today, the evaluation time `t` is the request time. For any other date, `t` is the next
+midnight in the account's timezone. The result is `null` until the account has a completed
+session, then one entry per muscle in contract order, including on unscored days. No stored
+scores move, so no model-version bump is needed.
+
+A working set has a completion time strictly before `t`, belongs to a completed session,
+uses a built-in exercise or the account's own exercise, and is outside the warm-up. The
+hard-set count matches how training volume is prescribed and keeps the read path free of
+e1RM history. Reps, weight and intensity are outside this calculation. A unilateral set
+counts once. Each primary muscle gets weight `w = 1` and each secondary muscle gets `w = 0.5`
+to give indirect work partial credit. A muscle in both lists gets the primary weight once.
+A set of a `cardio` exercise (rowing, jump rope, the sled) weighs `× 0.3`, Strength's cardio
+load factor: an interval tires a muscle less than a hard set. It still counts in `sets_7d`
+and `last_trained_at`. The model uses the closed 18-muscle vocabulary.
+
+Fatigue and freshness for muscle `m` are:
+
+```text
+F_m(t) = Σ w × exp(−(t − completed_at) / τ_m), for t − 14 × 24 h < completed_at < t
+τ_m = 24 h + 24 h × muscleMass[m]
+K = 10 / ln(2.5) ≈ 10.9136
+freshness = clamp(round(100 × exp(−F_m / K)), 0, 100)
+```
+
+The 14-day window bounds the fatigue calculation. At that age even a primary set for the
+largest muscles contributes about `exp(−7) ≈ 0.00091` to fatigue. The time constant uses the
+relative muscle masses from Strength so larger muscles recover more slowly in the heuristic.
+For example, quads and glutes use 48 h, chest uses 40.8 h, and forearms use 28.8 h. `K` sets
+the anchor at 40 immediately after ten primary working sets, since `100 × exp(−10 / K) = 40`.
+Rounding is half away from zero. The rounded score determines `state`: 80–100 is `fresh`,
+50–79 is `recovering`, and 0–49 is `fatigued`.
+
+`sets_7d` counts each working set that loads the muscle once, including secondary load,
+over the open interval `(t − 7 × 24 h, t)`. `last_trained_at` is the latest working set
+that loads the muscle strictly before `t`, including older history, or `null` with no such set.
+
+| Reference (`freshness_test.go`) | Freshness | State | `sets_7d` |
+| --- | --- | --- | --- |
+| No working sets | 100 | `fresh` | 0 |
+| Ten primary chest sets, 1 s old | 40 | `fatigued` | 10 |
+| Ten primary quad sets, 24 h old | 57 | `recovering` | 10 |
+| Ten primary quad sets, 48 h old | 71 | `recovering` | 10 |
+| Ten primary quad sets, 72 h old | 82 | `fresh` | 10 |
+| Ten primary quad sets, 6 days old | 96 | `fresh` | 10 |
+| Ten primary chest / forearm sets, 24 h old | 60 / 67 | `recovering` | 10 each |
+| Ten secondary-only triceps sets, 1 s old | 63 | `recovering` | 10 |
+| Ten cardio calf intervals (jump rope), 1 s old | 76 | `recovering` | 10 |
+| Ten primary quad sets, exactly 7 days old | 97 | `fresh` | 0 |
+| Four primary quad sets, 8 days old | 99 | `fresh` | 0 |
+| 100 primary quad sets, just inside / exactly at 14 days old | 99 / 100 | `fresh` | 0 |
+| Training history last seen 15 days ago | 100 | `fresh` | 0 |
+
 ## Imported history (TI-1)
 
 `POST /v1/train/import` (API.md, D124–D130) stores another app's history as completed

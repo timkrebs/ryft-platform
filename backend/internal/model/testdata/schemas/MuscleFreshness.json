@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "freshness": {
+      "type": "integer"
+    },
+    "last_trained_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "muscle": {
+      "type": "string"
+    },
+    "sets_7d": {
+      "type": "integer"
+    },
+    "state": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "freshness",
+    "last_trained_at",
+    "muscle",
+    "sets_7d",
+    "state"
+  ],
+  "title": "MuscleFreshness",
+  "type": "object"
+}
