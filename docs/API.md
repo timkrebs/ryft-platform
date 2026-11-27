@@ -13,7 +13,7 @@ know. Response enums are **closed** in v1 — `state`, `quality_label`, sleep `s
 `severity`, `calibrating_reason` will not gain values without `/v2`, so they can be decoded as Swift enums;
 so are the operator routes' `actor.kind` (`key` or `user`, Admin routes → The actor) and `BetaInvite.status`
 (`open`, `used`, `expired`, `revoked`, Admin routes → Invites for a person).
-`Insight.id`, `Insight.metric` and `Workout.activity` are **open** strings.
+`Insight.id`, `Insight.metric`, `Workout.activity` and `User.goal` (D304, not served yet) are **open** strings.
 
 ## Screens → endpoints
 
@@ -28,12 +28,16 @@ so are the operator routes' `actor.kind` (`key` or `user`, Admin routes → The 
 | Sleep — Planner | three bedtimes for a wake time, the need behind them | `GET /v1/sleep/plan?wake=07:00` |
 | Strain | day strain, zones, TRIMP, steps, active kcal, activities (a workout two sources recorded is listed once, `also_recorded_by`) | `GET /v1/days/{day}` → `score.strain`, `strain`, `workouts` |
 | Strain — workout | HR curve, zones, avg/max HR, TRIMP, strain | `GET /v1/workouts/{id}` |
+| Fitness — load tiles (D304; not served yet) | cardio and muscular training load: the last 7 days against the 28-day norm, the optimal band, below / optimal / above, and how many days of data stand behind it; the 28-day chart | `GET /v1/days/{day}` → `score.training_load`; `GET /v1/days?from&to` → `training_load` per day (**Training load** under `GET /v1/days`) |
+| Nutrition — net energy (D304; not served yet) | intake, active and resting energy and the day's balance, what is missing, how sure it is, whether the day is still going | `GET /v1/days/{day}` and `GET /v1/days?from&to` → `score.energy` (**Net energy** under `GET /v1/days`) |
+| Fitness — VO₂ max, heart-rate recovery, active time, zones, muscle freshness (D304; not served yet) | VO₂ max with its 7-day change, heart-rate recovery, active minutes, active kcal, the five heart-rate zones, a freshness figure per muscle | `GET /v1/days/{day}` → `score.vo2max`, `vo2max_delta_7d`, `hrr_bpm`, `active_min`, `score.active_kcal`, `strain.zone_min`, `muscles` (**Fitness tiles** under `GET /v1/days`) |
 | Insights | cards; charts behind them | `GET /v1/insights`, `GET /v1/trends?metric=…` |
 | Profile | timezone, max HR, sleep baseline (learned or set by hand); apply & recompute | `GET`/`PATCH /v1/me`, `POST /v1/recompute` |
 | Profile — Delete account | erase all data and the sign-in | `DELETE /v1/me` |
 | Onboarding — invite | redeem the beta invite code | `POST /v1/me/invite`, `User.beta_access` |
 | Onboarding — consent; Profile → Privacy | agree to (or withdraw) health-data processing for the current policy | `GET /v1/config` → `privacy_policy_*`, `POST`/`DELETE /v1/me/consent`, `User.consent` |
 | Onboarding — about you | birth year, max HR | `PATCH /v1/me` (`birth_year`, `max_hr`, `max_hr_manual`) |
+| Onboarding — goal step; Profile sheet (D304; not served yet) | the goal (or "decide later"), sex (or "prefer not to say"), weight and where it came from | `GET`/`PATCH /v1/me` → `goal`, `sex`, `weight_kg`, `weight_source`, `weight_measured_at` (**Goal, sex and weight** under `GET /v1/me`); `PATCH` only when the last `GET /v1/me` had the key `goal`; `sex` and `weight_kg` need consent to a policy version that names them (`403 consent_required`) |
 | Profile — Data sources; tracker setup | which apps and devices send what, and how much of it in the last 7 days (a source without HRV shows `hrv_sdnn: 0`), and whether it arrives through Apple Health or a direct connection | `User.sources` (`kinds`, `samples_7d`, `origin`) |
 | Devices & sync — Connect (a direct connection; D257, not served yet) | which providers can be connected and whether there is room, the data card, the provider's sign-in sheet, connected / reconnect / removed at the provider, when data last arrived, Disconnect (and what it deletes) | `GET /v1/me/connections`, `POST /v1/me/connections/{provider}/start`, the redirect `ryft://connect/{provider}?status=…` from `GET /v1/connect/{provider}/callback`, `POST /v1/me/connections/{provider}/confirm`, `DELETE /v1/me/connections/{provider}` (**Connections** below) |
 | Onboarding — tracker setup: the first setup card for a tracker with a direct connection | offer the connection first when the provider is in `available`, else the Apple Health setup as today | `GET /v1/me/connections` → `available`, then the Connect flow above; `GET /v1/config` → `flags["connect.<provider>"]` |
@@ -54,7 +58,7 @@ so are the operator routes' `actor.kind` (`key` or `user`, Admin routes → The 
 | Strain — workout without heart rate: "How hard was it?" | session RPE 1–10 and its load | `PUT`/`DELETE /v1/workouts/{id}/rpe`, `Workout.session_rpe`, `session_rpe_load` |
 | Strain — Train: library, history | exercise search, custom exercises, e1RM chart and PRs, past sessions | `GET`/`POST /v1/exercises`, `PATCH`/`DELETE /v1/exercises/{id}`, `GET /v1/exercises/{id}/history`, `GET /v1/sessions` |
 | Strain — Train: import | plans and workout history from another training app's export; label imported sessions; start the imported plan where the user is | `POST /v1/train/import`, `Session.origin` / `import_source`, `POST /v1/plans/{id}/enroll` (optional position) |
-| (background) | HealthKit upload, and the deletions HealthKit reports | `POST /v1/sync` (`deleted`, `Sample.id`) |
+| (background) | HealthKit upload, and the deletions HealthKit reports | `POST /v1/sync` (`deleted`, `Sample.id`); from D304 (not served yet) `basal_energy`, `heart_rate_recovery` and `body_mass`, sent only while `GET /v1/config` → `flags["sync.fitness_types"]` is `true` |
 | Operator web page `https://ryftlab.de/admin` (not an app screen; Supabase sign-in with TOTP) | invites for a person (create, copy and share the link, list, revoke, who redeemed), users (beta access), feedback, flags (read-only), audit (read-only, last 7 days) | **Admin routes** below: `POST`/`GET /v1/admin/invites`, `DELETE /v1/admin/invites/{code}`, `GET /v1/admin/users`, `POST`/`DELETE /v1/admin/users/{id}/access`, `GET /v1/admin/feedback`, `POST /v1/admin/feedback/{id}/resolve`, `GET /v1/admin/flags`, `GET /v1/admin/audit` |
 
 ## Conventions
@@ -96,7 +100,7 @@ not on the message. Closed enum:
 | `code` | Status | Do |
 | --- | --- | --- |
 | `invite_required` | `403` | The beta is invite-only and this account has no access yet: show the invite screen, `POST /v1/me/invite`. Every `/v1/*` route answers it except `GET /v1/me`, `GET /v1/me/sync`, `GET /v1/config`, `GET /v1/model`, `POST /v1/me/invite`, `POST`/`DELETE /v1/me/consent`, `POST /v1/feedback`, `DELETE /v1/me`, `DELETE /v1/me/connections/{provider}` (Connections, not served yet), `POST /v1/app-attest/challenge`, `POST /v1/app-attest/keys` and `POST /v1/app-attest/token`. |
-| `consent_required` | `403` | `POST /v1/sync`, `POST /v1/train/import`, `POST /v1/me/connections/{provider}/start` or `/confirm`, and (behind the flag `recovery.checkin`) `PUT /v1/recovery/checkins/{date}` or `PUT /v1/workouts/{id}/rpe` without a consent to the current privacy policy (`GET /v1/config` → `privacy_policy_version`): show the consent screen, `POST /v1/me/consent`, then send again. Reads keep working. |
+| `consent_required` | `403` | `POST /v1/sync`, `POST /v1/train/import`, `POST /v1/me/connections/{provider}/start` or `/confirm`, and (behind the flag `recovery.checkin`) `PUT /v1/recovery/checkins/{date}` or `PUT /v1/workouts/{id}/rpe` without a consent to the current privacy policy (`GET /v1/config` → `privacy_policy_version`): show the consent screen, `POST /v1/me/consent`, then send again. Reads keep working. **D304 (not served yet):** also `PATCH /v1/me` whose body has `sex` or `weight_kg` (a value or `null`) without a consent to a policy version that names them; the whole request is refused, so `goal` and the other fields in it are not applied (a body with only `goal` and the older fields is never refused for consent). |
 | `import_in_progress` | `429` | `POST /v1/train/import` while another import of this account is still running (this device's earlier request, or another device): wait `Retry-After` (10) seconds and send the same request again. It is safe: nothing of this request was processed. |
 | `import_not_enabled` | `403` | `POST /v1/train/import` for an account the feature flag `train.import` is off for (`GET /v1/config` → `flags`): hide the import; it is not an error to retry. Nothing of the request was read. |
 | `mfa_required` | `403` | Only on `/v1/admin/*` (the operator's web page and scripts); the app never calls these routes and never receives it. The admin token has no second factor, or its TOTP is older than 12 hours: run a TOTP challenge (Supabase MFA) and send the request again with the new token (Admin routes → Who may call). |
@@ -153,7 +157,7 @@ Connections routes, which it does not call.
 | --- | --- | --- | --- |
 | `400` | — | Malformed JSON (a raw 0x00 byte in the body included), unknown body field (in `POST /v1/train/import` also `origin` and `import_source` on a session), malformed date / UUID in query or path, a path or query holding `%00` or bytes that are not UTF-8 | Fix the request: sent again unchanged it fails the same way. A client bug, not for the user to fix; log `request_id`. Do not retry. |
 | `401` | — | The token is missing, malformed, expired, not signed by the project, or not a signed-in user's token, or the account was deleted (checked before routing, so any `/v1/*` path). `/v1/admin/*` has its own rules (Admin routes → Who may call): there a `401` also means a valid token that is not an operator's. | Refresh the session and send the request again once; a second `401` means sign in again (Authentication). A `503` is never a reason to sign out. |
-| `403` | `invite_required`, `consent_required`, `import_not_enabled`, `app_attest_required`, `mfa_required`, or none | Changing a built-in exercise, plan or behavior; and the `code`s of the table above: `invite_required` (no beta access), `consent_required` (sync, import, a connection's start or confirm, a recovery check-in or a session RPE without consent to the current policy), `import_not_enabled` (the import is off for the account), `app_attest_required` (under `APP_ATTEST=on`, no valid app token); on `/v1/admin/*` only: `mfa_required` (no recent second factor), or no `code` for a route that needs the admin key | Without a `code` the target is a built-in: do not retry, drop the edit. With a `code`, act on it as in the `code` table: `invite_required` shows the invite screen, `consent_required` the consent screen and then sends again, `import_not_enabled` hides the import, `app_attest_required` gets a new app token and sends again once, keeping a refused write queued (never "drop the edit"). `mfa_required` is never sent to the app: the operator's page runs the TOTP challenge and sends again. |
+| `403` | `invite_required`, `consent_required`, `import_not_enabled`, `app_attest_required`, `mfa_required`, or none | Changing a built-in exercise, plan or behavior; and the `code`s of the table above: `invite_required` (no beta access), `consent_required` (sync, import, a connection's start or confirm, a recovery check-in or a session RPE without consent to the current policy; from D304, not served yet, a `PATCH /v1/me` with `sex` or `weight_kg` without consent to a policy version that names them), `import_not_enabled` (the import is off for the account), `app_attest_required` (under `APP_ATTEST=on`, no valid app token); on `/v1/admin/*` only: `mfa_required` (no recent second factor), or no `code` for a route that needs the admin key | Without a `code` the target is a built-in: do not retry, drop the edit. With a `code`, act on it as in the `code` table: `invite_required` shows the invite screen, `consent_required` the consent screen and then sends again, `import_not_enabled` hides the import, `app_attest_required` gets a new app token and sends again once, keeping a refused write queued (never "drop the edit"). `mfa_required` is never sent to the app: the operator's page runs the TOTP challenge and sends again. |
 | `404` | `app_attest_key_unknown`, `unknown_provider`, or none | Resource does not exist or is not the user's (`/v1/workouts/{id}`, exercises, plans, sessions), or unknown route or method; `POST /v1/app-attest/token` only: `app_attest_key_unknown` (the `key_id` is not one of the account's keys); `POST /v1/me/connections/{provider}/start` and `/confirm` only: `unknown_provider` (the provider is not served or not enabled for the account) | Branch on the `code` first. `app_attest_key_unknown`: drop the `key_id`, attest a new key, then get a token. `unknown_provider`: hide that provider's Connect entry. Without a `code` the resource is gone or not the user's: do not retry, drop the local reference and refresh the list. An unknown route or method is a `404` too: the app is newer than the server (on `POST /v1/app-attest/challenge`: App Attest is not live, send no app token). **Exception, the recovery writes and status** (`PUT /v1/recovery/checkins/{date}`, `GET /v1/recovery/status`, `PUT /v1/workouts/{id}/rpe`; served from 2026-11-27 behind `recovery.checkin`): a `404` without a `code` there means the feature is off for the account or the server is older: hide it, and never drop the workout or other local data. |
 | `409` | `connection_limit`, `connect_ticket_invalid`, `merge_has_connections`, or none | Connections only: `connection_limit` (the provider's user cap is full) and `connect_ticket_invalid` (a confirm's ticket is unknown or another account's); `/v1/admin/*` only: `merge_has_connections` (the merge's source account holds a connection). Without a `code`: the id is taken by another user's or a built-in exercise, plan or behavior (`POST /v1/exercises`, `POST /v1/behaviors`, `PUT /v1/plans/{id}`; a `PUT /v1/plans/{id}` can also mean that a day's or a plan exercise's id is taken); completing a discarded session. **`PUT /v1/sessions/{id}`**: the server has newer sets — the body is then the server's `Session`, not the error shape. | Branch on the `code` first. `connection_limit`: say the provider is full, no automatic retry. `connect_ticket_invalid`: read `GET /v1/me/connections`, else start again. `merge_has_connections` is never sent to the app. Without a `code`: do not resend unchanged. An id that is taken: create the item again under new UUIDs, for the document and for its children. `PUT /v1/sessions/{id}`: the body is the server's `Session`; merge it with the local copy by set id (the later `updated_at` wins per set) and `PUT` the result. Completing a discarded session: treat it as discarded. |
 | `410` | `connect_expired` | `POST /v1/me/connections/{provider}/confirm` only (Connections): more than 10 minutes after the callback (a repeat of a confirm that worked included); the grant waiting for it is dropped. | Do not resend it. Read `GET /v1/me/connections`: connected, done; not connected, start again. |
@@ -844,6 +848,9 @@ Request `SyncRequest`:
 | `vo2max` | ml/kg/min |
 | `active_energy` | kcal |
 | `steps` | count |
+| `basal_energy` | kcal (D304; not served yet; HealthKit `basalEnergyBurned`; below) |
+| `heart_rate_recovery` | bpm (D304; not served yet; the 1-minute drop, HealthKit `heartRateRecoveryOneMinute`; below) |
+| `body_mass` | kg (every account from D304, gated by the policy version; the protected pilot's before; below) |
 
 **`hrv_rmssd`** is the HRV a direct connection delivers (Connections). It is never the same number as
 `hrv_sdnn`: the two are different measures of the same thing, and scoring keeps them apart (a baseline per
@@ -868,7 +875,43 @@ that carries an `id` is also unique on `(user, id)`. Re-sending a page is harmle
 
 When consent enforcement is on, both the raw record transaction and the later apply transaction require the active grant that admitted the request. The server returns `403 consent_required` if that grant is withdrawn between phases. The server keeps records that already committed with active consent and stops the later deletions, cursor update and scoring queue. Send a fresh request after consent is granted again.
 
-Optional `body_mass` samples require the protected pilot's `nutrition.enabled` flag. Outside that cohort, sync reports them as `ignored.samples.unknown_type` and skips an explicit body-mass cursor. Other streams use the normal HealthKit consent rules.
+Optional `body_mass` samples require the protected pilot's `nutrition.enabled` flag. Outside that cohort, sync reports them as `ignored.samples.unknown_type` and skips an explicit body-mass cursor. Other streams use the normal HealthKit consent rules. **From D304 (not served yet), `body_mass` is also stored for an account outside the pilot, under the policy-version gate below; the pilot's own path is unchanged.**
+
+**`basal_energy`, `heart_rate_recovery` and `body_mass` for every account (D304; not served yet).** Three
+sample types the Fitness tab, net energy and the profile's weight need. `basal_energy` is the resting energy
+HealthKit records in slices (kcal; the day's resting energy is their sum); `heart_rate_recovery` is the 1-minute
+drop in beats per minute after a workout (bpm); `body_mass` is a weigh-in in kilograms. They come from Apple
+Health, so they change the privacy text, and the server therefore stores them **only for an account whose
+consent is to a policy version that names them** (`User.consent.policy_version`; the operator sets which
+versions do when that policy ships) **and while the flag `sync.fitness_types` is on for the account**
+(`GET /v1/config` → `flags["sync.fitness_types"]`). For any other account, and on a server before the
+implementing change, each such sample is counted `ignored.samples.unknown_type`: `200`, never an error, and
+nothing in the request is refused. A `cursor` whose `stream` is one of the three types is skipped under the
+same condition, as the pilot's `body_mass` cursor is today. **Ignored samples are lost, not queued:** the
+response is `200`, so the app's HealthKit anchor moves on and the sample is not sent again. That anchor loss
+is the reason for the flag. The app therefore sends `basal_energy`, `heart_rate_recovery` and `body_mass`
+**only while `flags["sync.fitness_types"]` is `true`** in its last `GET /v1/config` (absent or `false`: send
+none of them and do not advance the anchors of those three types), and the operator turns the flag on for an
+account only once the policy version that names the types is in place and the account has consented to it
+(privacy note in the changelog entry of 2026-11-27). A stored `body_mass` newer than the
+account's current weigh-in becomes `User.weight_kg` (`GET /v1/me` → **Goal, sex and weight**). Excerpts of a
+request (an `http` block until the server has the types):
+
+```http
+POST /v1/sync HTTP/2
+host: ingest.ryftlab.de
+authorization: Bearer <access token>
+content-type: application/json
+
+{ "device_id": "0E6B2E54-9C6D-4F7B-8A55-4E3F3B7C1D20", "workouts": [], "sleep": [],
+  "samples": [
+    { "id": "6B1E9C34-0A52-4D7B-8C41-5F2A9D3E7B10", "type": "basal_energy", "start": "2026-11-26T10:00:00Z", "end": "2026-11-26T11:00:00Z",
+      "value": 71.4, "unit": "kcal", "source": "Tim's Apple Watch", "source_bundle_id": "com.apple.health.81E2…" },
+    { "id": "C2D7A8E1-4B93-4F10-9E65-1A0B3C5D7F22", "type": "heart_rate_recovery", "start": "2026-11-26T17:42:00Z", "end": "2026-11-26T17:43:00Z",
+      "value": 34, "unit": "bpm", "source": "Tim's Apple Watch", "source_bundle_id": "com.apple.health.81E2…" },
+    { "id": "9F4A6D12-7C3E-4B85-A2D0-8E1F5B6C3A44", "type": "body_mass", "start": "2026-11-26T06:40:00Z", "end": "2026-11-26T06:40:00Z",
+      "value": 78.2, "unit": "kg", "source": "Health", "source_bundle_id": "com.apple.Health" } ] }
+```
 
 **HealthKit ids.** `Sample.id` and `SleepSegment.id` are optional (uuid, upper or lower
 case; stored lower case). Records without one behave exactly as before. Health objects
@@ -1037,11 +1080,16 @@ The user is created on the first authenticated request with `tz = Europe/Berlin`
 | `consent` | `Consent?` | The latest consent to health-data processing that was not withdrawn: `{policy_version, granted_at}`; `null` when there is none. Syncing needs `policy_version` to equal `GET /v1/config` → `privacy_policy_version`. |
 | `birth_year` | int? | For the max-HR estimate; nothing finer is stored. `PATCH /v1/me` accepts 1920 to the current year − 16. |
 | `max_hr_source` | string | `default` (190, nothing known), `estimated` (208 − 0.7 · age, Tanaka, from `birth_year`), `manual` (set with `PATCH`). Closed enum. |
-| `sources` | `[UserSource]` | Apps and devices that sent data in the last 30 days, newest first: `name` (HealthKit source name), `bundle_id` (string?, when the app sent it), `kinds` (closed enum, sorted: `energy`, `hr`, `hrv`, `resp`, `sleep`, `spo2`, `steps`, `workout`; `hr` covers heart rate, resting heart rate and VO₂max), `last_seen` (the latest record's time), `samples_7d` (see below), `origin` (see below). `[]` when nothing arrived. |
+| `sources` | `[UserSource]` | Apps and devices that sent data in the last 30 days, newest first: `name` (HealthKit source name), `bundle_id` (string?, when the app sent it), `kinds` (closed enum, sorted: `energy`, `hr`, `hrv`, `resp`, `sleep`, `spo2`, `steps`, `workout`; `hr` covers heart rate, resting heart rate and VO₂max; from D304 `energy` also covers `basal_energy` and `hr` also `heart_rate_recovery`, and `body_mass` adds no kind, so a source that sends only `body_mass` is not listed in `sources` at all; the `kinds` enum does not change), `last_seen` (the latest record's time), `samples_7d` (see below), `origin` (see below). `[]` when nothing arrived. |
 | `notifications` | `NotificationPrefs` | Push preferences: every category (`MORNING_SCORE`, `SESSION_SCORED`, `PR`, `SYNC_STALE`) with whether it is on (default on), and `quiet_hours` (`{from, to}`, local `HH:MM`, or `null`). Change with `PATCH /v1/me/notifications`. |
 | `account_hint` | `AccountHint?` | Set when this account has no data yet and the device in `X-RYFT-Device-ID` synced **another** account in the last 30 days: probably the same person signed in another way (Apple vs. email). `{"kind": "other_account_on_device", "other_provider": "email", "other_last_sync": "2026-10-20T06:58:00Z"}`: `kind` closed enum (one value so far), `other_provider` string? (`apple`, `email`), `other_last_sync` timestamp. Never an id or an email. Offer "sign in with email instead" and the support contact; the operator can merge accounts. `null` otherwise. |
+| `goal` | string? | D304, not served yet. The app-wide goal: `health`, `endurance`, `strength`, `body_composition`, `performance`. `null` = not chosen, or "decide later" (the default). **Open** enum in responses: a later version may add a value, so show an unknown one like `null`. `PATCH` accepts only the five or `null`. See **Goal, sex and weight** below. |
+| `sex` | string? | D304, not served yet. `female`, `male`, `unspecified` (the user chose not to say); `null` = never asked. **Closed** enum. `PATCH` accepts the three or `null`. |
+| `weight_kg` | number? | D304, not served yet. Body weight in kg, one decimal, 25–350. `null` until there is a weigh-in. |
+| `weight_source` | string? | D304, not served yet. Where `weight_kg` comes from: `manual` (set with `PATCH`) or `healthkit` (a `body_mass` sample). **Closed** enum. `null` exactly when `weight_kg` is. |
+| `weight_measured_at` | timestamp? | D304, not served yet. When that weigh-in was taken: the `PATCH` request's time for `manual`, the sample's `start` for `healthkit`. `null` exactly when `weight_kg` is. |
 
-**`UserSource.samples_7d`** (`{string: int}`) counts the **samples** (not sleep segments or workouts, which `kinds` covers) stored for that source with `start` in the last 7 × 24 hours, per sample `type`: the keys are the eight `Sample.type` values (`heart_rate`, `hrv_sdnn`, `resting_hr`, `respiratory_rate`, `spo2`, `vo2max`, `active_energy`, `steps`), **all present on every source, `0` when none arrived**. That is how the app tells a tracker that writes heart rate but no HRV (`hrv_sdnn: 0` next to `heart_rate` in the thousands) from one that writes both. The source is matched by `name`; the counts are after the sync's duplicate handling (each stored row once). The type keys are an open set (a later version may add one): ignore keys you do not know and treat a missing key as `0`. The counts are exact as of the response or taken from the last scoring pass (at most about 15 minutes old); do not compare them to a sync's `accepted`. The field is absent only from a platform that predates 2026-10-31; decode it as optional. There is no way to choose which source feeds which metric yet.
+**`UserSource.samples_7d`** (`{string: int}`) counts the **samples** (not sleep segments or workouts, which `kinds` covers) stored for that source with `start` in the last 7 × 24 hours, per sample `type`: the keys are the `Sample.type` values (since 2026-10-31 `heart_rate`, `hrv_sdnn`, `resting_hr`, `respiratory_rate`, `spo2`, `vo2max`, `active_energy`, `steps`; later additions follow below), **all present on every source, `0` when none arrived**. That is how the app tells a tracker that writes heart rate but no HRV (`hrv_sdnn: 0` next to `heart_rate` in the thousands) from one that writes both. The source is matched by `name`; the counts are after the sync's duplicate handling (each stored row once). The type keys are an open set (a later version may add one): ignore keys you do not know and treat a missing key as `0`. **D304 (not served yet) adds the keys `basal_energy`, `heart_rate_recovery` and `body_mass`**, present on every source and `0` when none, like `hrv_rmssd`: where the server does not store a type for the account (the flag and the policy-version gate in `POST /v1/sync`), its key is `0`. (A source that sent only `body_mass` is not listed, so its count is not visible here.) The counts are exact as of the response or taken from the last scoring pass (at most about 15 minutes old); do not compare them to a sync's `accepted`. The field is absent only from a platform that predates 2026-10-31; decode it as optional. There is no way to choose which source feeds which metric yet.
 
 **`UserSource.origin`** (string, Connections; from the platform PR `connect/foundation`) says how the source's
 data reached RYFT: `healthkit` (through Apple Health, uploaded by the app) or `direct` (a direct connection,
@@ -1073,6 +1121,61 @@ estimate is the median minutes asleep of the qualifying nights, clamped to 360�
 the source is `manual`, `sleep_base_min` takes the estimate when it changes, and the last
 seven days are rescored with it.
 
+#### Goal, sex and weight (D304; not served yet)
+
+Five fields on `User`, all `null` by default, added for the app's goal step, its Profile sheet, the Fitness
+tab and net energy. **Absent from a server before the implementing change: decode all five as optional.**
+Old builds ignore them. **From the implementing server on, the key `goal` is always present** (`null` or a
+value), as are the other four, so **the key `goal` in the last `GET /v1/me` is how the app knows the server
+has these fields**: a server before it omits the key, and a decoded `nil` cannot tell an absent key from
+`"goal": null`. Today's server answers `400` to a `PATCH /v1/me` with an unknown field (`goal`, `sex`,
+`weight_kg`), and the whole request fails, so **the app sends `goal`, `sex` and `weight_*` only when the last
+`GET /v1/me` had the key `goal`** (the Swift mirror shows the check). An excerpt of `GET /v1/me` (an `http` block until the server has the model fields):
+
+```http
+HTTP/2 200
+content-type: application/json
+
+{ …, "birth_year": 1990, "max_hr_source": "estimated",
+  "goal": "endurance", "sex": "male",
+  "weight_kg": 78.2, "weight_source": "healthkit", "weight_measured_at": "2026-11-26T06:40:00Z", … }
+```
+
+- **`goal`** is **open** in responses (`User.goal`'s value set may grow within v1: show a value you do
+  not know like `null`, and never send it back); `PATCH` accepts exactly the five values or `null`, else `422`.
+  `null` is "not chosen" and is what "decide later" sends.
+- **`sex`** is **closed**: `female`, `male`, `unspecified` or `null`. `unspecified` is an answer ("prefer not to
+  say"); `null` means the user was never asked. `PATCH` accepts the three or `null`, else `422`.
+- **Weight.** `weight_kg` is a number with one decimal. `PATCH` accepts 25–350 (`422` outside) and records a
+  **manual weigh-in at the time of the request**: `weight_source: "manual"`, `weight_measured_at` = now.
+  **The newest weigh-in wins.** A `body_mass` sample (`POST /v1/sync`, gated by the policy version) measured
+  *after* the current weigh-in replaces it (`weight_source: "healthkit"`, `weight_measured_at` = the sample's
+  `start`), and a manual entry replaces any older HealthKit reading. A sample measured before the current
+  weigh-in changes nothing. There is no "manual pin" as `max_hr_manual` has: a weight changes, so a pin would
+  go stale. `PATCH` with `"weight_kg": null` **clears the manual weigh-in**; the account then has its newest
+  stored HealthKit reading (`weight_source: "healthkit"`) if there is one, else `weight_kg`, `weight_source` and
+  `weight_measured_at` are all `null`. Clearing when the current weigh-in is HealthKit's changes nothing.
+  When HealthKit deletes the `body_mass` sample behind `weight_kg` (`POST /v1/sync` → `deleted`), the next
+  newest weigh-in takes over (manual or HealthKit, by `weight_measured_at`); with none left, `weight_kg`,
+  `weight_source` and `weight_measured_at` are all `null`.
+- **Use.** `sex` and `weight_kg` feed the RYFT Age estimate (no contract yet) and the resting-energy estimate
+  of **Net energy** (`GET /v1/days`). They do **not** feed the training load. The Nutrition
+  pilot's `N2RProfile` (`body_mass_kg`, `sex`) **keeps its own values and is not synced with these**; changing
+  one never writes the other.
+- **`goal` and Nutrition.** `User.goal` is the app-wide goal (it will drive a daily recommendation).
+  `GoalProfile.goal` (`PUT /v1/users/goal-profile`: `HYPERTROPHY`, `MARATHON`, `CYCLING_RACE`,
+  `FAT_LOSS_RECOMP`) stays the plan goal of the Nutrition pilot and **wins for nutrition targets**. Changing
+  one never writes the other; the app pre-fills the Nutrition goal picker from this table, and Nutrition
+  confirms:
+
+  | `User.goal` | Nutrition training goal (`GoalProfile.goal`) | Why |
+  | --- | --- | --- |
+  | `health` | none (maintenance; Nutrition asks) | no deficit or surplus implied |
+  | `endurance` | `MARATHON` or `CYCLING_RACE`: pre-select by the dominant workout activity of the last 28 days (cycling → `CYCLING_RACE`, else `MARATHON`) | both are endurance fueling |
+  | `strength` | `HYPERTROPHY` | surplus, 2 g/kg protein |
+  | `body_composition` | `FAT_LOSS_RECOMP` | deficit with the guardrails |
+  | `performance` | none (Nutrition asks) | sport-specific; no default is safe |
+
 ### `PATCH /v1/me` — change settings
 
 Body `UserPatch`, every field optional: `tz` (IANA zone name), `max_hr` (int, 100–230;
@@ -1083,10 +1186,40 @@ birth_year))` and the source `estimated`),
 `sleep_base_min` (int, 240–720; sets `sleep_base_source` to `manual`, so learning no
 longer changes it), `sleep_base_manual` (bool; `false` goes back to the learned estimate,
 or to the default 460 when there is none; `true` keeps the current value as manual).
+**D304, not served yet:** `goal` (`health`, `endurance`, `strength`, `body_composition`, `performance`, or
+`null`), `sex` (`female`, `male`, `unspecified`, or `null`) and `weight_kg` (number 25–350, or `null`). For these
+three, a field that is **absent** is left alone and an explicit **`null` clears** it (`goal`, `sex`; `weight_kg`
+clears the manual weigh-in only, see **Goal, sex and weight** above); a value outside the lists or the range is `422`.
+**Send them only when the last `GET /v1/me` had the key `goal`:** a server before the implementing change
+answers `400` (unknown field) and applies nothing, the other fields of the body included. **`sex` and `weight_kg`
+(a value or `null`) need a consent to a policy version that names them** (`User.consent.policy_version`), else
+`403` with `code` `consent_required` and the whole request is refused; **`goal` is not gated**, and a body
+without `sex` and `weight_kg` is never refused for consent. A `weight_kg` sets `weight_source` to `manual` and `weight_measured_at` to the request's time; `weight_source`
+and `weight_measured_at` are not accepted in the body (unknown fields are `400`).
 Returns the updated `User`. `422` on an unknown zone, an out-of-range value,
 `sleep_base_min` together with `sleep_base_manual: false`, or `max_hr` together with
-`max_hr_manual: false`; `500` if the update itself fails. Changing a setting does **not** rescore history; follow with
-`POST /v1/recompute`.
+`max_hr_manual: false` (and, from D304, an unknown `goal` or `sex`, or a `weight_kg` outside 25–350); `500` if the update itself fails. Changing a setting does **not** rescore history; follow with
+`POST /v1/recompute`. An example body of the goal step, and the answer's changed fields
+(an `http` block until the server has the model fields):
+
+```http
+PATCH /v1/me HTTP/2
+host: api.ryftlab.de
+authorization: Bearer <access token>
+content-type: application/json
+
+{ "goal": "strength", "sex": "female", "weight_kg": 64.5 }
+```
+
+```http
+HTTP/2 200
+content-type: application/json
+
+{ …, "goal": "strength", "sex": "female",
+  "weight_kg": 64.5, "weight_source": "manual", "weight_measured_at": "2026-11-27T08:15:03Z", … }
+```
+
+And `{ "goal": null, "weight_kg": null }` clears the goal and the manual weigh-in.
 
 ### `DELETE /v1/me` — delete the account
 
@@ -1511,7 +1644,8 @@ the last answer (and compiled-in defaults) when offline.
 ```json
 { "flags": { "train.enabled": true, "sleep.planner": true, "today.redesign": false,
              "coach.enabled": false, "push.enabled": false, "physiology.card": false,
-             "train.import": false, "analytics.enabled": true, "connect.garmin": false },
+             "train.import": false, "analytics.enabled": true, "connect.garmin": false,
+             "sync.fitness_types": false },
   "evaluated_at": "2026-11-20T06:12:00Z", "ttl_sec": 21600,
   "privacy_policy_version": "2026-10-26", "privacy_policy_url": "https://ryftlab.de/privacy",
   "analytics": { "host": "https://eu.i.posthog.com", "project_key": "phc_…" },
@@ -1539,6 +1673,14 @@ server runs App Attest in `warn`:
 | `analytics.host` | string | The ingestion origin, `https://eu.i.posthog.com` by default; always `https://`, no path. |
 | `analytics.project_key` | string | PostHog's project API key (`phc_…`), a client key. It is served here, not compiled into the app, because the app's repository is public. Don't log it, and don't persist it beyond the cached config. |
 | `app_attest` | string | The server's App Attest mode (AA2, D247), always present: `"off"`, `"warn"` or `"on"`, a **closed** enum (Conventions → App Attest → When the server checks); the same for every account. The app may use `"off"` to skip the challenge probe; a `501` or a `404` without a `code` from `POST /v1/app-attest/challenge` stays authoritative in every mode. Under `"on"` this read itself needs a token, so an app without one learns `on` from `403 app_attest_required`. A server before D247 omits the field, and a value the app doesn't know is treated as missing: probe as before. |
+
+**`flags["sync.fitness_types"]` (D304, not served yet).** `true` when the server stores `basal_energy`,
+`heart_rate_recovery` and `body_mass` for this account (`POST /v1/sync` → **`basal_energy`, `heart_rate_recovery`
+and `body_mass` for every account**). The app sends those three types, and moves their HealthKit anchors, only
+while the flag is `true` in its last answer; absent counts as `false`. The reason is the anchor loss: an
+ignored sample is answered `200`, the anchor moves on, and the sample is never sent again. The server
+additionally requires a consent to a policy version that names the types, so a `true` flag with an older consent
+still ends in `ignored.samples.unknown_type`.
 
 **Analytics: when the app sends anything.** Only while all three hold: `flags["analytics.enabled"]`
 is `true`, `analytics` is not `null`, and the user opted in (off until they do). Send to
@@ -1953,6 +2095,12 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 | `details` | object | Free-form scoring breakdown. Not part of the typed contract, but these keys stay as they are for clients that already read them: `baseline_days`, `trimp`, `hr_minutes`, `zone_minutes`, `sleep_start`, `sleep_end` (local RFC 3339), `sleep_stages`, `sleep_has_stages`, `recovery`. Prefer the typed fields: `baseline_days`, `DayDetail.strain`, `DayDetail.sleep`. |
 | `computed_at` | timestamp | When the row was last scored. |
 | `model_version` | string? | The scoring model that computed it (`GET /v1/model`), e.g. `2026.10.1`; `null` for rows scored before versions existed, until they are rescored. A row whose version differs from `GET /v1/model` → `current` will move when it is rescored. |
+| `training_load` | `TrainingLoad?` | D304, not served yet. The cardio and the muscular load of the last 7 days against the last 28, with the optimal band: **Training load** below. Includes today so far (so a past day's figure is final, today's still moves). **Computed on read**, not stored. Not `CoachingBriefing.training_load`. |
+| `energy` | `DayEnergy?` | D304, not served yet. Intake, active and resting energy and the net balance of the day: **Net energy** below. **Assembled on read.** |
+| `vo2max` | number? | D304, not served yet. ml/kg/min: the newest `vo2max` reading in the 30 days up to the day's end; `null` without one. |
+| `vo2max_delta_7d` | number? | D304, not served yet. `vo2max` minus the same value as of 7 days earlier; `null` when either is `null`, and **`null` unless a `vo2max` reading lies within the last 7 days up to the day's end** (an older reading alone is not a change). |
+| `hrr_bpm` | number? | D304, not served yet. Heart-rate recovery in bpm: the mean of the day's `heart_rate_recovery` samples (the 1-minute drop after a workout); `null` without one. |
+| `active_min` | int? | D304, not served yet. Active time in minutes: the union of the day's workout time and the minutes with heart rate in zone 1 or above (50 % of heart-rate reserve or more, as `strain.zone_min`), so overlapping minutes count once. `null` without heart rate and without a workout. Not `strain.hr_min`, which is the minutes the watch was worn. |
 
 #### `calibrating_reason`
 
@@ -2065,6 +2213,130 @@ Examples of what a client sees for one morning: after a 03:00 Garmin sync, the `
 night, the same day with `"sleep_hr_minutes": 400, "hrv_readings": 5, "night_complete": true,
 "status": "final"`, the push, and a silent refresh for both.
 
+#### Fitness fields: training load, net energy and tiles (D304; not served yet)
+
+New optional fields of `DailyScore`, on both `GET /v1/days?from&to` and `GET /v1/days/{day}` (`score`): the
+Fitness tab already reads one day and a chart over a range, so no new route. **Absent from a server before the
+implementing change: decode every one as optional.** Old builds ignore them. On the placeholder of a day that was
+never scored (`GET /v1/days/{day}`) the new fields are `null`, like its other numbers; once a day is scored,
+`training_load` and `energy` are objects. An excerpt of one scored day (an `http` block until the server has the
+model fields):
+
+```http
+HTTP/2 200
+content-type: application/json
+
+{ "score": { "day": "2026-11-26", …, "active_kcal": 640,
+    "training_load": {
+      "cardio":   { "acute_7d": 612, "chronic_28d_weekly": 540, "ratio": 1.13, "optimal_low": 432, "optimal_high": 702,
+                    "state": "optimal", "days_with_data": 27, "window_days": 28 },
+      "muscular": { "acute_7d": 118, "chronic_28d_weekly": 150, "ratio": 0.79, "optimal_low": 120, "optimal_high": 195,
+                    "state": "below", "days_with_data": 28, "window_days": 28 } },
+    "energy": { "intake_kcal": 2150, "active_kcal": 640, "resting_kcal": 1712, "resting_source": "healthkit",
+                "net_kcal": -202, "missing": [], "confidence": "high", "partial_day": false },
+    "vo2max": 47.5, "vo2max_delta_7d": 0.4, "hrr_bpm": 33.5, "active_min": 74, … }, … }
+```
+
+##### Training load: `DailyScore.training_load`
+
+`TrainingLoad`: `{cardio: LoadPart, muscular: LoadPart}`, both always present when the object is. It is
+**computed on read** by the api from stored day values (a pure function, `SCORING.md`): a sync that
+backfills an old day moves the following 28 days at once without a cascade of rescoring, and no stored number
+changes. A request for a range reads the 27 days before its first day too.
+
+**It is not `CoachingBriefing.training_load`.** That one (`acute_7d`, `chronic_28d_weekly`, `acwr`, `tsb`; the
+Nutrition coaching pilot, `GET /v1/coaching/daily-briefing`) is workout-based, counts power (TSS) and stays as
+documented; this one is the day-based load of the Fitness tab, with two parts and its own band. The two numbers
+differ and must not be shown as one. The same words (`acute_7d`) name different quantities.
+
+`LoadPart`:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `acute_7d` | number | The sum of the daily load of the 7 days ending on `day` (today: so far). |
+| `chronic_28d_weekly` | number | The sum of the 28 days ending on `day` (today: so far), divided by 4: weekly units, comparable to `acute_7d` (the name `CoachingBriefing.training_load` uses for the same arithmetic). |
+| `ratio` | number? | `acute_7d / chronic_28d_weekly`; `null` when `chronic_28d_weekly` is 0, and while `state` is `null`. |
+| `optimal_low`, `optimal_high` | number? | The optimal band for `acute_7d`: `chronic_28d_weekly` × 0.8 and × 1.3 (the band Gabbett 2016 describes, used here as a RYFT display heuristic, pinned in `SCORING.md`). `null` while `state` is `null`. The band is a training guide, **not a medical or injury-risk claim**: the app shows it as a guide and never as a risk of injury. |
+| `state` | string? | `below` (`acute_7d` < `optimal_low`), `optimal`, `above` (> `optimal_high`). **Closed** enum. `null` while `days_with_data` < 21. |
+| `days_with_data` | int | Days of the 28 that count as having data (below), 0–28. |
+| `window_days` | int | `28`. |
+
+The example shows whole numbers; **decode every figure as a number**: the rounding is pinned in `SCORING.md` by
+the implementing change.
+
+The daily load behind it:
+
+- **Cardio** = the day's heart-rate TRIMP (`strain.trimp`) **plus** the TRIMP from the session RPE of the day's
+  rated workouts that have no usable heart rate (`Workout.session_rpe`, D293), so a user without a watch has a
+  cardio load. "No usable heart rate" is scoring's rule: **fewer than 2 heart-rate samples in the workout's window
+  and no `avg_hr`**; a workout with heart rate is counted once, by its samples. The rated workouts count **on
+  `strain.trimp`'s scale** (the day TRIMP's constants and its 0.25 heart-rate-reserve floor), so the two parts
+  add; `SCORING.md` pins it in the implementing change. `sex` does not enter the load.
+- **Muscular** = the sum of `muscular_trimp` of the day's completed sessions (the existing session load,
+  `DayStrain.muscular_trimp`; per-set RPE is too sparse to use).
+- **`days_with_data`**: cardio counts the days of the 28 with heart-rate data (`hr_min` > 0) or a rated
+  workout; muscular counts the days of the 28 on or after the account's first completed session.
+
+A new account therefore shows `state: null`, with `ratio`, `optimal_low` and `optimal_high` `null` too, until
+21 days count; `acute_7d` and `chronic_28d_weekly` are numbers from the first day:
+
+```http
+HTTP/2 200
+content-type: application/json
+
+{ "score": { "day": "2026-11-12", …,
+    "training_load": {
+      "cardio":   { "acute_7d": 180, "chronic_28d_weekly": 45, "ratio": null, "optimal_low": null, "optimal_high": null,
+                    "state": null, "days_with_data": 6, "window_days": 28 },
+      "muscular": { "acute_7d": 0, "chronic_28d_weekly": 0, "ratio": null, "optimal_low": null, "optimal_high": null,
+                    "state": null, "days_with_data": 0, "window_days": 28 } }, … }, … }
+```
+
+##### Net energy: `DailyScore.energy`
+
+`DayEnergy` is assembled **on read**: `active_kcal` and the day's resting total come from the stored day, the
+intake from the meal diary at the time of the request, so logging or deleting a meal moves the day's `net_kcal`
+at once, without a rescore.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `intake_kcal` | int? | The sum of kcal of the day's logged meals, **rounded to a whole number**, as `GET /v1/nutrition/daily` → `nutrients.energy_kcal.known_subtotal`. `null` without a logged meal, and without the diary (`nutrition.diary_enabled` / `nutrition.enabled` off for the account). |
+| `active_kcal` | int? | `DailyScore.active_kcal`. |
+| `resting_kcal` | int? | The sum of the day's `basal_energy` samples (`resting_source: "healthkit"`), else an estimate from `weight_kg`, `birth_year` and `sex` (Henry 2005; weight only; `"estimated"`), else `null` (`resting_source: null`). |
+| `resting_source` | string? | `healthkit` or `estimated`: **closed** enum; `null` exactly when `resting_kcal` is. |
+| `net_kcal` | int? | `intake_kcal − (active_kcal + resting_kcal)`: **negative is a deficit**. `null` when any of the three is `null`. |
+| `missing` | `[string]` | The parts that are `null`, sorted: `intake`, `active`, `resting` (**closed** values). `[]` when all three are there. |
+| `confidence` | string? | `high`, `medium` or `low` (**closed**): `high` when nothing is missing, `resting_kcal` is measured (`healthkit`), `intake_kcal` comes from at least 2 meals and the day is over; `medium` when one of those is not met; `low` when two or more are not. It **drops one more step** (`high` → `medium`, `medium` → `low`, `low` stays) when `GET /v1/nutrition/daily` → `nutrients.energy_kcal.complete_for_logged_items` is `false` (a logged item has no kcal, so `intake_kcal` is a lower bound). `null` when `net_kcal` is `null`. The thresholds are pinned in `SCORING.md` by the implementing change. |
+| `partial_day` | bool | `true` for today: the totals so far, so `net_kcal` is still moving. |
+
+With `net_kcal` not `null` nothing is missing, so `confidence` then depends on the other three conditions. A
+day without a logged meal is `intake_kcal: null` (never `0`) and `missing` has `intake`:
+
+```http
+HTTP/2 200
+content-type: application/json
+
+{ "score": { "day": "2026-11-27", …,
+    "energy": { "intake_kcal": null, "active_kcal": 310, "resting_kcal": 1690, "resting_source": "estimated",
+                "net_kcal": null, "missing": ["intake"], "confidence": null, "partial_day": true }, … }, … }
+```
+
+How the estimate treats `sex` `unspecified` or `null`, and a missing `birth_year` or `weight_kg` (then
+`resting_kcal` is `null` with `resting` in `missing`), is pinned in `SCORING.md` by the implementing change.
+
+##### Fitness tiles
+
+| Tile | Field |
+| --- | --- |
+| VO₂ max with its 7-day change | `DailyScore.vo2max`, `vo2max_delta_7d` |
+| Heart-rate recovery | `DailyScore.hrr_bpm` (from `Sample.type` `heart_rate_recovery`, `POST /v1/sync`) |
+| Active time | `DailyScore.active_min` |
+| Active energy | `DailyScore.active_kcal` (exists) |
+| Heart-rate zones | `DayDetail.strain.zone_min`, `WorkoutDetail.zone_min` (exist) |
+| Muscle freshness | `DayDetail.muscles` (`GET /v1/days/{day}`, below) |
+
+`vo2max` was synced and counted in `samples_7d` before, and is read here for the first time.
+
 ### `GET /v1/days/{day}` — one day
 
 <!-- type: model.DayDetail shape -->
@@ -2129,6 +2401,47 @@ malformed day. `sleep` is `null` when no sleep was recorded for the night ending
 `SleepStage`: `{ "stage": string, "min": int, "pct": int }`. For `deep`, `light`, `rem`,
 `pct` is the share of staged sleep and the three always sum to exactly 100 (or are all 0
 when `has_stages` is false). For `awake`, `pct` is the share of `in_bed_min`.
+
+`DayDetail.muscles` (`[MuscleFreshness]?`; D304, not served yet; absent from a server before the implementing
+change, so decode it as optional) — how recovered each muscle is, for the Fitness tab. Not part of the
+`shape` block above, and not tied to scoring: a day that was never scored (the placeholder above) still has it
+once the account has completed a session. `null` when the account **never completed a session**; otherwise
+always **18 entries, one per muscle of the closed vocabulary of `Exercise.primary_muscles`, in this order**:
+`chest`, `lats`, `upper_back`, `traps`, `front_delts`, `side_delts`, `rear_delts`, `biceps`, `triceps`,
+`forearms`, `abs`, `obliques`, `lower_back`, `glutes`, `quads`, `hamstrings`, `adductors`, `calves`. It is
+evaluated at the **time of the request for today**, and at the **end of the day** for any other day.
+
+`MuscleFreshness`:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `muscle` | string | One of the 18 above (a **closed** vocabulary, as in Train). |
+| `freshness` | int | 0–100, whole number. 100: no recent load on the muscle. |
+| `state` | string | `fresh` (freshness ≥ 80), `recovering` (50–79), `fatigued` (< 50). **Closed** enum. |
+| `last_trained_at` | timestamp? | The completion time of the latest completed working set that loads the muscle, up to the evaluation time. `null` when there is none. |
+| `sets_7d` | int | Completed working sets that load the muscle (as a primary or a secondary muscle) in the 7 days up to the evaluation time. `0` when none. |
+
+The model (a RYFT heuristic; `SCORING.md` pins the constants): each completed working set's load is
+attributed to the exercise's primary muscles (× 1) and secondary muscles (× ½), decays exponentially with a time
+constant per muscle size (provisionally 24–48 h), and is scaled so that a hard session on a muscle leaves its
+freshness at about 40 right after it. An excerpt (an `http` block until the server has the model type; the
+other 13 entries have the same shape):
+
+```http
+HTTP/2 200
+content-type: application/json
+
+{ "score": { … }, "sleep": { … }, "strain": { … }, "workouts": [ … ],
+  "muscles": [
+    { "muscle": "chest",       "freshness": 38,  "state": "fatigued",   "last_trained_at": "2026-11-26T17:48:00Z", "sets_7d": 14 },
+    { "muscle": "lats",        "freshness": 64,  "state": "recovering", "last_trained_at": "2026-11-25T18:10:00Z", "sets_7d": 9 },
+    { "muscle": "upper_back",  "freshness": 71,  "state": "recovering", "last_trained_at": "2026-11-25T18:10:00Z", "sets_7d": 9 },
+    { "muscle": "traps",       "freshness": 100, "state": "fresh",      "last_trained_at": null,                   "sets_7d": 0 },
+    …,
+    { "muscle": "calves",      "freshness": 100, "state": "fresh",      "last_trained_at": "2026-11-18T09:30:00Z", "sets_7d": 0 } ] }
+```
+
+The **training load** of this day, and the net energy, are on `score` (`GET /v1/days` → **Fitness fields**).
 
 ### `GET /v1/sleep?range=week|month&to=YYYY-MM-DD` — Week / Month tabs
 
@@ -3344,7 +3657,10 @@ constants the heart-rate path uses for the user's sex. 60 minutes at 8 (480 AU) 
 unspecified, 143 male, 157 female. Heart rate or power, when present, wins and the rating only shows. **Day
 strain does not use the rating** (decided 2026-11-27, D293): `DailyScore.strain`, its sleep-need top-up and
 `WorkoutDetail.trimp` stay based on heart rate and the muscular load of logged sessions; the rating feeds only acute and chronic load,
-ACWR and TSB.
+ACWR and TSB. **This is not the Fitness tab's load** (D304, not served yet): `DailyScore.training_load`
+(`GET /v1/days`, **Fitness fields**) is a different, day-based number with a cardio and a muscular part and its
+own optimal band; it also counts a rated workout without heart rate, by the same TRIMP rule, but it does not use
+power, and its `acute_7d` is not this one's.
 
 #### `CoachingBriefing.recovery` and `N2RScore.bedtime_source`
 
@@ -3802,7 +4118,7 @@ Codable types for the iOS app, matching the shapes above with the app's decoder
 extend `Models.swift`: `DailyScore`, `DayDetail`, `DayStrain`, `Workout`, `User`,
 `UserPatch` and the sleep types replace the existing structs (new fields only), the rest
 are new. The sync request types are not mirrored here; on the app's `Sample` and `SleepSegment` add `id: UUID?`
-(the HealthKit object UUID) and on `SyncRequest` `deleted: [DeletedRecord]?` (below). The response types `IgnoredCounts` and `SyncResponse` gain the fields below. The sample type `hrv_rmssd` (Connections) needs no case on the app's `SampleType` unless it ever sends one (Apple Health has none); `samples_7d` keys stay strings. A logged set is `SessionSet` in Swift (`Set` is taken). `scripts/check_swift.sh` compiles this block and decodes every
+(the HealthKit object UUID) and on `SyncRequest` `deleted: [DeletedRecord]?` (below). The response types `IgnoredCounts` and `SyncResponse` gain the fields below. The sample type `hrv_rmssd` (Connections) needs no case on the app's `SampleType` unless it ever sends one (Apple Health has none); `samples_7d` keys stay strings. The sample types `basal_energy`, `heart_rate_recovery` and `body_mass` (D304, not served yet) are cases the app's `SampleType` gains with the build that ships the bundled privacy update (`POST /v1/sync`), never before. New with D304: `UserGoal` (open, a struct), `Sex`, `WeightSource`, `TrainingLoad`, `LoadPart`, `LoadState`, `DayEnergy`, `RestingSource`, `EnergyPart`, `EnergyConfidence`, `MuscleFreshness`, `FreshnessState`, and optional fields on `User`, `UserPatch`, `DailyScore` and `DayDetail`; the wire keys ending in `_7d` decode as `…7D` (capital D) under `.convertFromSnakeCase`, and `chronic_28d_weekly` as `chronic28DWeekly` (the same rule; the Fitness types are decoded against a stack only once the server serves them). A logged set is `SessionSet` in Swift (`Set` is taken). `scripts/check_swift.sh` compiles this block and decodes every
 endpoint of a running stack with it.
 
 ```swift
@@ -3862,7 +4178,59 @@ struct DailyScore: Codable, Identifiable {
     let modelVersion: String?
     let scoringState: ScoringState
     let coverage: ScoreCoverage?      // null: never scored, or scored before 2026-10-31 (read as final)
+    // D304, not served yet: absent before the implementing change, null on a day that was never scored
+    var trainingLoad: TrainingLoad? = nil   // computed on read; not CoachingBriefing.training_load
+    var energy: DayEnergy? = nil            // assembled on read
+    var vo2max: Double? = nil               // ml/kg/min
+    var vo2maxDelta7D: Double? = nil        // wire key vo2max_delta_7d: .convertFromSnakeCase yields vo2maxDelta7D (capital D)
+    var hrrBpm: Double? = nil
+    var activeMin: Int? = nil
     var id: String { day }
+}
+
+// ---- Fitness (D304; not served yet) ----
+
+enum LoadState: String, Codable { case below, optimal, above }   // closed; LoadPart.state is null while daysWithData < 21
+
+struct LoadPart: Codable {   // TrainingLoad.cardio / .muscular; decode every figure as a number
+    let acute7D: Double          // wire key acute_7d (capital D, as samples7D)
+    let chronic28DWeekly: Double // wire key chronic_28d_weekly (capital D, as acute7D: .convertFromSnakeCase capitalizes each word after the first, "28d" → "28D"): the 28-day sum / 4
+    let ratio: Double?           // null: chronic28DWeekly is 0, or state is null
+    let optimalLow: Double?      // chronic28DWeekly × 0.8; null while state is null
+    let optimalHigh: Double?     // chronic28DWeekly × 1.3
+    let state: LoadState?
+    let daysWithData: Int
+    let windowDays: Int          // 28
+}
+
+struct TrainingLoad: Codable {   // DailyScore.trainingLoad; not CoachingBriefing.training_load
+    let cardio: LoadPart
+    let muscular: LoadPart
+}
+
+enum RestingSource: String, Codable { case healthkit, estimated }   // closed
+enum EnergyPart: String, Codable { case intake, active, resting }    // closed; DayEnergy.missing
+enum EnergyConfidence: String, Codable { case high, medium, low }    // closed; null when netKcal is
+
+struct DayEnergy: Codable {   // DailyScore.energy
+    let intakeKcal: Int?         // null without a logged meal or without the diary
+    let activeKcal: Int?
+    let restingKcal: Int?
+    let restingSource: RestingSource?
+    let netKcal: Int?            // intake − (active + resting); negative = deficit; null when a part is null
+    let missing: [EnergyPart]    // sorted; [] when all three are there
+    let confidence: EnergyConfidence?
+    let partialDay: Bool         // true for today
+}
+
+enum FreshnessState: String, Codable { case fresh, recovering, fatigued }   // closed
+
+struct MuscleFreshness: Codable {   // DayDetail.muscles: 18 entries in the order of the muscle vocabulary
+    let muscle: String           // closed: the 18 values of Exercise.primary_muscles
+    let freshness: Int           // 0–100
+    let state: FreshnessState
+    let lastTrainedAt: Date?
+    let sets7D: Int              // wire key sets_7d (capital D)
 }
 
 struct SleepStage: Codable {
@@ -3935,6 +4303,7 @@ struct DayDetail: Codable {
     let sleep: SleepDetail?
     let strain: DayStrain?
     let workouts: [Workout]
+    var muscles: [MuscleFreshness]? = nil   // D304, not served yet: null until the account completed a session; absent before
 }
 
 struct SleepDay: Codable, Identifiable {
@@ -4062,7 +4431,37 @@ struct User: Codable {
     let maxHrSource: MaxHRSource
     let sources: [UserSource]
     let accountHint: AccountHint?
+    // D304, not served yet: absent before the implementing change, null until set
+    var goal: UserGoal? = nil             // open: an unknown value decodes (isKnown == false); show it like nil
+    var sex: Sex? = nil                   // closed
+    var weightKg: Double? = nil           // 25–350, one decimal
+    var weightSource: WeightSource? = nil // closed; nil exactly when weightKg is
+    var weightMeasuredAt: Date? = nil
+    // Detecting the server: `goal == nil` cannot tell an absent key (a server before D304) from `"goal": null`.
+    // Decode the key's presence once per GET /v1/me, e.g. with a second decode of the same data:
+    //     struct FitnessFieldsProbe: Decodable { let hasGoalKey: Bool
+    //         enum K: String, CodingKey { case goal }
+    //         init(from d: Decoder) throws { hasGoalKey = try d.container(keyedBy: K.self).contains(.goal) } }
+    // (decode it with the same JSONDecoder; .convertFromSnakeCase leaves "goal" as it is.) Send goal, sex and
+    // weightKg in a UserPatch only while hasGoalKey was true in the last GET /v1/me: today's server answers 400
+    // to the unknown fields and applies nothing. From the implementing server on the key is always present.
 }
+
+struct UserGoal: RawRepresentable, Codable, Hashable {   // User.goal: OPEN, so a struct, not an enum: a value a later server adds still decodes
+    let rawValue: String
+    init(rawValue: String) { self.rawValue = rawValue }
+    init(from decoder: Decoder) throws { rawValue = try decoder.singleValueContainer().decode(String.self) }
+    func encode(to encoder: Encoder) throws { var c = encoder.singleValueContainer(); try c.encode(rawValue) }
+    static let health = UserGoal(rawValue: "health")
+    static let endurance = UserGoal(rawValue: "endurance")
+    static let strength = UserGoal(rawValue: "strength")
+    static let bodyComposition = UserGoal(rawValue: "body_composition")
+    static let performance = UserGoal(rawValue: "performance")
+    static let known: [UserGoal] = [.health, .endurance, .strength, .bodyComposition, .performance]   // what PATCH accepts
+    var isKnown: Bool { Self.known.contains(self) }
+}
+enum Sex: String, Codable { case female, male, unspecified }       // User.sex; closed (also N2RProfile.sex's values, a separate field)
+enum WeightSource: String, Codable { case manual, healthkit }      // User.weightSource; closed
 
 // ---- Beta: consent, invite, profile, sources, model, feedback ---------------------
 
@@ -4330,6 +4729,12 @@ struct UserPatch: Codable {   // PATCH /v1/me, every field optional
     var birthYear: Int?
     var sleepBaseMin: Int?
     var sleepBaseManual: Bool?
+    // D304, not served yet. Double optional: nil leaves the field out (unchanged), .some(nil) sends null (clears)
+    // Send these only when the last GET /v1/me had the key "goal" (see User); sex and weightKg (a value or
+    // .some(nil)) also need the consent to a policy version that names them: else 403 consent_required, whole request refused.
+    var goal: UserGoal??            // not gated by consent
+    var sex: Sex??
+    var weightKg: Double??          // 25–350; .some(nil) clears the manual weigh-in only
 }
 
 struct AccountDeleted: Codable {   // DELETE /v1/me
@@ -4807,6 +5212,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-11-27 | **The Fitness contract: goal, sex and weight, training load, net energy, the Fitness tiles** (D304; platform PR `api: goal, training load, net energy and the Fitness tiles (contract)`, branch `docs/fitness-contract`; the head-architect's brief of 2026-11-27, no `API_REQUESTS.md` entry). Additive; docs only, so the app can build it before the server has it: no v1 field renamed, removed or retyped, no new route. **`GET`/`PATCH /v1/me`:** `User.goal` (`health`, `endurance`, `strength`, `body_composition`, `performance`, or `null`; **open** in responses, `PATCH` accepts the five or `null`), `sex` (`female`, `male`, `unspecified`, `null`; closed), `weight_kg` (one decimal, `PATCH` 25–350, `null` clears the manual weigh-in), `weight_source` (`manual`, `healthkit`; closed), `weight_measured_at`; `UserPatch` gains `goal`, `sex`, `weight_kg` (absent leaves a field alone, `null` clears it, a value outside the lists or the range is `422`; **a body with `sex` or `weight_kg` (a value or `null`) needs a consent to a policy version that names them, else `403 consent_required` and the whole request is refused**, `goal` is not gated; **the app sends them only when the last `GET /v1/me` had the key `goal`**, because today's server answers `400` to unknown fields and applies nothing, and the implementing server always sends the key, `null` or a value); **the newest weigh-in wins**, a HealthKit `body_mass` sample measured after a manual entry replaces it and a manual entry replaces older readings, with no manual pin. `goal` is the app-wide goal and `GoalProfile.goal` stays the Nutrition pilot's plan goal and wins for nutrition targets; a table maps the one to the other for pre-filling, and neither writes the other. `N2RProfile` keeps its own `sex` and `body_mass_kg`. **`POST /v1/sync`:** `Sample.type` gains `basal_energy` (kcal), `heart_rate_recovery` (bpm) and `body_mass` (kg) for every account. They are stored only while the flag `sync.fitness_types` is on for the account **and** its consent is to a policy version that names them, and counted `ignored.samples.unknown_type` otherwise (never an error; an ignored sample is lost, the anchor moves on; a `cursor` for one of the three streams is skipped like the pilot's `body_mass` cursor). A source that sends only `body_mass` is not listed in `User.sources`. **`GET /v1/config`:** the new flag `flags["sync.fitness_types"]`; the app sends the three types only while it is `true` (the anchor loss is the reason for the flag). `UserSource.samples_7d` gains the keys `basal_energy`, `heart_rate_recovery`, `body_mass` (an open set); in `kinds`, `basal_energy` is `energy`, `heart_rate_recovery` is `hr` and `body_mass` adds none (the closed `kinds` enum does not change). **`GET /v1/days`, `GET /v1/days/{day}`:** `DailyScore.training_load` (`TrainingLoad`: `cardio` and `muscular`, each a `LoadPart` with `acute_7d`, `chronic_28d_weekly`, `ratio`, `optimal_low`, `optimal_high`, `state` `below`/`optimal`/`above` (closed, `null` below 21 days of data), `days_with_data`, `window_days`; computed on read, not the pilot's `CoachingBriefing.training_load`, which stays), `DailyScore.energy` (`DayEnergy`: `intake_kcal`, `active_kcal`, `resting_kcal`, `resting_source` `healthkit`/`estimated`, `net_kcal`, `missing` (`intake`/`active`/`resting`), `confidence` `high`/`medium`/`low`, `partial_day`; assembled on read), `vo2max`, `vo2max_delta_7d`, `hrr_bpm`, `active_min`, and `DayDetail.muscles` (`[MuscleFreshness]?`: the 18 muscles, `freshness` 0–100, `state` `fresh`/`recovering`/`fatigued` (closed), `last_trained_at`, `sets_7d`). **Behaviour:** none yet. **Old builds:** ignore every new field and send none of the new sample types. **The app:** decode every new field as optional; build the goal step, the Profile sheet and the Fitness and net-energy screens against fixtures now; show an unknown `goal` like `null`; ask for the new HealthKit permissions and send the new sample types only in the build that ships with the bundled privacy update **and only while `flags["sync.fitness_types"]` is `true`**; send `goal`, `sex` and `weight_*` only when the last `GET /v1/me` had the key `goal`. **Privacy (not in this change):** resting (basal) energy, heart-rate recovery and body mass from Apple Health, and the profile's sex, weight and goal, are not in the current policy (2026-10-26). They go into one bundled privacy update later: the text, `PRIVACY_POLICY_VERSION`, the consent screen's type list and App Store App Privacy. That update is the **next** privacy version after the pending one (#252), made when the sync-types PR (implementation step 3) is ready, and not part of #228 or #252; until then `sync.fitness_types` stays off, the server stores none of the three sample types, and a `PATCH` with `sex` or `weight_kg` gets `403 consent_required`. **Swift:** `UserGoal` (open, a struct), `Sex`, `WeightSource`, `TrainingLoad`, `LoadPart`, `LoadState`, `DayEnergy`, `RestingSource`, `EnergyPart`, `EnergyConfidence`, `MuscleFreshness`, `FreshnessState`; `User.goal`, `.sex`, `.weightKg`, `.weightSource`, `.weightMeasuredAt`; `UserPatch.goal`, `.sex`, `.weightKg` (double optionals); `DailyScore.trainingLoad`, `.energy`, `.vo2max`, `.vo2maxDelta7D`, `.hrrBpm`, `.activeMin`; `DayDetail.muscles`; `LoadPart.chronic28DWeekly` (wire `chronic_28d_weekly`). Details: `sex` feeds RYFT Age and the resting-energy estimate, not the training load; rated workouts count in the cardio load on `strain.trimp`'s scale, when they have fewer than 2 heart-rate samples in their window and no `avg_hr`; `training_load` includes today so far; `vo2max_delta_7d` is `null` unless a reading lies within the last 7 days; `confidence` drops one step when `energy_kcal.complete_for_logged_items` is false and `intake_kcal` is rounded to an integer; when HealthKit deletes the `body_mass` sample behind `weight_kg`, the next newest weigh-in takes over, else all three weight fields are `null`. The examples are `http` blocks until the server has the model types. |
 | 2026-11-27 | **[The sync button](#the-sync-button-sources-freshness-scores_pending_since-d297-d301) is served: `GET /v1/me/sync` answers `sources`, `freshness`, `scores_pending_since`** (D297, D301; the implementation PR, branch `feat/sync-status`). No shape change from the contract of #258 (`docs: the sync status contract`): no field renamed, removed or retyped, no new route; the three fields are present in every answer, `sources` is never `null` and always holds `healthkit`. **Behaviour:** as the contract says. `healthkit`'s `last_sync_at` is the route's `last_sync_at`; its `status` is `error` with `invite_required` or `consent_required` only while that gate is `on` (in `warn` mode the status stays `ok` and `gate` is set, as before). A provider is listed only while its connection is `connected` or `needs_reauth`, the server serves it and `connect.<provider>` is on for the account; `needs_reauth` is `error`, a delivery waiting to be stored is `pending`. `freshness` is `scores_pending` while `pending_days` holds today or yesterday, a day from today − 30 through today (not after it) queued in the last 10 minutes, or a source is `pending`. **No consent recorded (D301):** scoring now closes the queued days of an account with no consent recorded (while the consent gate is `on`), so they leave `pending_days` and no longer hold `freshness`; they are not scored. An account that consented to an older policy is still scored: its `healthkit` source shows `consent_required` meanwhile, and nothing is closed. The cache stays 10 s. **Old apps:** ignore the fields. **The app:** nothing new; keep the fallback for an older server. The four examples under the section are typed now. |
 | 2026-11-27 | **[Recovery without a watch](#recovery-without-a-watch--check-ins-and-session-rpe-d291d295-d298-d299): served** (D291–D295, D298, D299; platform PR #260, branch `feat/no-watch-recovery`; implements the contract of 2026-11-26). Additive: no v1 field renamed, removed or retyped; the shapes of the 2026-11-26 entry are unchanged, and the examples are now typed `json` blocks checked against the Go types. **Now served:** `PUT`/`GET`/`DELETE /v1/recovery/checkins/{date}`, `GET /v1/recovery/checkins?from&to`, `GET /v1/recovery/status`, `PUT`/`DELETE /v1/workouts/{id}/rpe`, `CoachingBriefing.recovery`, the check-in path of `readiness` (with `LOW_RECOVERY_UNEXPLAINED` and the new `readiness_reasons`) and the rated workout in the coaching training load. **Flag:** all of it behind `recovery.checkin` (migration 0066 inserts it enabled at 0 %: allow-listed testers only, and only after a published privacy version names the check-in; until then no account has it). **Observable on every account, whatever the flag:** `CoachingBriefing.readiness_display` is on every briefing (equals `readiness`, except `AUTONOMIC_FATIGUE` is shown as `LOW_RECOVERY_UNEXPLAINED`; `readiness` is unchanged); `N2RScore.bedtime_source` (`expected`/`wearable`/`checkin`, closed) is on every N2R with a `bedtime`; `Workout.session_rpe`/`session_rpe_load` show a stored rating (omitted without one). **Model:** `GET /v1/model` lists version **2026.11.1** (its changelog entry names the check-in and the session RPE); no stored daily score changes. A model bump rescores stored check-ins at the next `POST /v1/recompute` of the account (best effort: it never fails the recompute). **Migrations:** 0064 (`recovery_checkins`: one row per account and wake day), 0065 (`workout_ratings`, keyed to the workout's owner), 0066 (the flag row). Account deletion, merge and the export cover the new tables. **Behaviour the app can observe (D298, D299):** the flag is a kill switch for counting, not for showing: while it is off, the status, the readiness path, the training load, the N2R bedtime and `n2r_bedtime_applied` ignore check-ins and ratings, but `GET /v1/recovery/checkins`, `GET`/`DELETE /v1/recovery/checkins/{date}`, `DELETE /v1/workouts/{id}/rpe` and `Workout.session_rpe` still show and remove what is stored. Required fields: a missing `tz_offset_sec` or `soreness` in `RecoveryCheckinPut`, or `session_rpe` in `WorkoutRPEPut`, is `422` (not a silent 0 or `false`); a malformed `{id}` on the RPE routes is `400`, as on `GET /v1/workouts/{id}`. One `PUT` rescores the later check-ins within 14 days in the same transaction, so a read after it shows their new `recovery_score`. When a check-in is both 1.5 SD below the user's usual and rated ≤ 4 twice, `readiness_reasons` has `checkin_below_usual` (one reason, never both). `sleep_duration_min` truncates to whole minutes. The personal SD is the sample SD of the prior ratings, floored at 6; `regularity` is `null` when the prior sleep midpoints have no circular mean. `last_caffeine` counts as `journal_late_caffeine` at most 8 h before `bedtime`, and also when it is after `bedtime`. `confounders` are `[]` without `acute_drop` and are those of the save: a meal logged afterwards moves yesterday's N2R at once but the stored `confounders` only at the next rescore (a later check-in, a recompute, a model bump). `suggested_bedtime`/`suggested_wake_time` use the check-ins of the 7 days before today (at least 3), medians taken across midnight on each check-in's own clock. A night with asleep stages (`asleep`, `core`, `deep` or `rem` ending in the night window, local 20:00 to 13:00) or an overnight HRV counts as a wearable night once the day has a recovery, an unspecified `asleep` stage alone included; an `inbed`-only night does not. The rating of a workout counts as load only when heart rate has a reserve (resting and max heart rate known) and no power: a workout with `avg_hr` but no resting heart rate takes the rating; its duration is the workout's moving time. A rating outside 1–10 counts as none. A rating follows its workout: a sync of the same HealthKit workout keeps it, the same-source fold moves it to the copy that stays, and a Train session whose times are edited (its own workout is updated in place) or that scoring attaches to another workout, or back to its own, takes it along; a HealthKit deletion of the workout deletes it. **Old builds:** unchanged (ignore the new fields; never call the routes). **The app:** as the 2026-11-26 entry; key readiness copy on `readiness_display`; read an absent `bedtime_source` as unknown. **Swift:** no new types; the mirror's comments now say "served"; `CoachingBriefing.recovery` (`RecoveryStatus?`), `.readinessDisplay` (`String?`) and `N2RScore.bedtimeSource` (`String?`) belong to the app's own briefing types. |
 | 2026-11-27 | **[The sync button](#the-sync-button-sources-freshness-scores_pending_since-d297-d301): `GET /v1/me/sync` gains `sources`, `freshness`, `scores_pending_since`** (D297; platform PR `docs: the sync status contract`, branch `docs/sync-status-contract`; the head-architect's brief of 2026-11-27). Additive; docs only, so the app can build it before the server has it: no v1 field renamed, removed or retyped, no new route. **Fields:** `sources` (`[SyncSource]`: `source`, an open set, `healthkit` or a provider id; `last_sync_at`; `status` `ok`/`pending`/`error`, closed; `reason`, an open set, `needs_reauth`/`consent_required`/`invite_required`); `freshness` (`current`/`scores_pending`, closed: `scores_pending` when today's scores and readiness do not include stored data yet, i.e. `pending_days` holds today or yesterday, or a day of the last 30 queued in the last 10 minutes, or a source is `pending`); `scores_pending_since` (timestamp?; a re-queued day restarts it). **Not tracked:** the N2R morning baseline, the coaching briefing built on it, and the pilot's partner deliveries follow within one 15-minute pass. The brief's names map onto the contract's conventions: `synced_at` is the existing `last_sync_at`, `last_sync_utc` is `last_sync_at` (every time here is UTC), `OK`/`PENDING`/`ERROR` are lower case, and `data_freshness` is `freshness` with only what the server knows (`UP_TO_DATE` and `STALE` are the app's 30-minute rule, `SYNCING_CLOUD` is `scores_pending`). **Behaviour:** none yet. A provider is listed only while its connection is `connected` or `needs_reauth`, the server serves it and its flag `connect.<provider>` is on for the account, so Garmin and Suunto stay absent until Connections is served. The coaching pilot's partner links are not sources. `POST /v1/sync` does not change and does not wait for scoring. **Old builds:** ignore the new fields. **The app:** the five-step rule under The sync button: after a sync, poll this route no sooner than `max(expected_within_sec, 10)` s, at that interval, for at most 3 minutes, then once at the next foreground or silent push; reload today and the briefing when `freshness` turns `current`, and only then turn the button green. Read absent fields as an older server (`freshness` from `pending_days` holding a day of the last 30). **Swift:** `SyncFreshness`, `SyncSourceStatus`, `SyncSource`; `SyncStatus.sources`, `.freshness`, `.scoresPendingSince`. The examples are `http` blocks until the server has the model types. |
