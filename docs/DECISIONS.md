@@ -7225,7 +7225,7 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   `docs/work/2026-11-27-sync-status/implementation.md`: one indexed query more behind the cache, a column grant
   on `provider_inbox.received_at` for the api and a partial index, no new table.
 
-## D298 — The sync status is served: `closed_reason`, scoring closes the queue of an account without consent, five queries (2026-11-27)
+## D300 — The sync status is served: `closed_reason`, scoring closes the queue of an account without consent, five queries (2026-11-27)
 
 - **Context:** D297 fixed the contract (#258); this is the implementation PR (`feat/sync-status`), and the
   calls it made that the outline left open. The user's answers of 2026-11-27: the N2R baseline, the briefing and

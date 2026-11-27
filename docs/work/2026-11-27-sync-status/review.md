@@ -29,7 +29,7 @@ Blocker 2 is closed.
 
 Sound: polling vs the 10 s cache across instances; open/closed enums; the Swift mirror; the anchor; `sources` never `null`.
 
-# The backend PR (`feat/sync-status`, D298)
+# The backend PR (`feat/sync-status`, D300)
 
 ## Hand-backs (2026-11-27)
 - **database-engineer:** `0067_sync_status.sql` (renamed from 0065 for #260; + `lock_timeout 5s`), `roles_test.go`, `migrate_syncstatus_test.go`
@@ -38,25 +38,25 @@ Sound: polling vs the 10 s cache across instances; open/closed enums; the Swift 
   **every Postgres test skipped locally** (no `RYFT_TEST_POSTGRES_URL`): CI is the first real run. The index is not
   `CONCURRENTLY` (the migrator wraps each file in a transaction; the inbox is tiny).
 - **backend-engineer:** model, store, handler, `cmd/scoring` consent closing (`queueCloser` seam,
-  `closeNoConsent`), API.md typed examples + changelog row, D298, STATUS, ARCHITECTURE. vet/build/unit green,
+  `closeNoConsent`), API.md typed examples + changelog row, D300, STATUS, ARCHITECTURE. vet/build/unit green,
   `check-api-doc` green (52→56 strict blocks); `check-swift` compiled the mirror, its live-decode step needs a
   running stack (not verified). Postgres tests skipped. Cost: `served` reads the flag once per listed provider,
-  so 5 queries + 1 per listed provider (≤ 7 today); D298 says so. The section anchor became `…-d297-d298`; no
+  so 5 queries + 1 per listed provider (≤ 7 today); D300 says so. The section anchor became `…-d297-d300`; no
   link in `../app/docs` used the old one.
 - **test-engineer:** pure tests (`syncstatus_freshness_test.go`, `closequeue_test.go` fake) pass; DB tests for
   cases 1–10 + consent in `cmd/api/syncstatus_db_test.go`, `internal/store/syncstatus_test.go`,
   `cmd/scoring/closequeue_test.go` skip locally. Flagged: code answered `error` for needs_reauth with a waiting
   delivery; API.md's table says `pending`. **platform-lead:** switched the precedence to pending (contract), test
-  and D298 updated.
+  and D300 updated.
 
 ## code-reviewer, one pass on 39be67e
 
 | # | Level | Finding | Resolution |
 | --- | --- | --- | --- |
-| 1 | should-fix | `CloseQueue` closes every unscored row with no cutoff: a re-consent + sync between scoring's `GetUser` and the `UPDATE` closes the fresh row (`current` too early, `MarkScored` then finds nothing). | **Fixed.** `CloseQueue(…, before)` with `queued_at <= before`, taken before the account is read in `handleEvent` and `refreshActive`; store + scoring tests; D298. Verified in the diff by platform-lead. Same clock caveat as `MarkScored` (F1). |
-| 2 | nit | A day after today (tz change) holds the button 10 min; "the last 30" is 31 dates (today−30..today). | **Fixed.** `d.Day <= today`; D298 defines today−30..today (a rescore of today−30 reaches today); table row added. |
+| 1 | should-fix | `CloseQueue` closes every unscored row with no cutoff: a re-consent + sync between scoring's `GetUser` and the `UPDATE` closes the fresh row (`current` too early, `MarkScored` then finds nothing). | **Fixed.** `CloseQueue(…, before)` with `queued_at <= before`, taken before the account is read in `handleEvent` and `refreshActive`; store + scoring tests; D300. Verified in the diff by platform-lead. Same clock caveat as `MarkScored` (F1). |
+| 2 | nit | A day after today (tz change) holds the button 10 min; "the last 30" is 31 dates (today−30..today). | **Fixed.** `d.Day <= today`; D300 defines today−30..today (a rescore of today−30 reaches today); table row added. |
 | 3 | nit | DB fixtures take today from `syncDay(0)` (UTC), the handler from its own clock: a run across 00:00 UTC fails. | **Fixed.** The rig skips within a minute of 00:00 UTC (accounts pinned to UTC). |
-| 4 | nit | "without current consent" wording vs `Admits` (`Consent != nil`): an older policy's consent keeps scoring while `healthkit` shows `consent_required`. | **Fixed** (wording in API.md changelog and D298). |
+| 4 | nit | "without current consent" wording vs `Admits` (`Consent != nil`): an older policy's consent keeps scoring while `healthkit` shows `consent_required`. | **Fixed** (wording in API.md changelog and D300). |
 | 5 | nit | API.md:4122 Swift mirror comment changed (comment only). | **Fixed.** Restored as on f579b33; the mirror is byte-identical to the app's contract. |
 | 6 | nit | A failed flags read in `served` turns the route into a 500. | **Not changed:** consistent with every other read of the route. |
 

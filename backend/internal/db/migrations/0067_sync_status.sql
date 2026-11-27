@@ -1,4 +1,4 @@
--- The sync status (docs/DECISIONS.md D297, D298; docs/work/2026-11-27-sync-status/backend.md). GET /v1/me/sync
+-- The sync status (docs/DECISIONS.md D297, D300; docs/work/2026-11-27-sync-status/backend.md). GET /v1/me/sync
 -- tells the app per source whether the account's data is current, and whether the scores are still pending.
 -- Two things it needs from the database:
 --   - The api reads when a provider's delivery arrived (provider_inbox.received_at of a row still pending), so

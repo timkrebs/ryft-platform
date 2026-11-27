@@ -55,7 +55,7 @@ func queueDays(ctx context.Context, tx pgx.Tx, userID uuid.UUID, days []string) 
 // at started: only a queue entry from before then is done (a sync during the
 // computation stays pending). It returns when that entry was queued, for the
 // latency metric; ok false when nothing was pending. A day really scored has no
-// closed_reason (D298).
+// closed_reason (D300).
 func (s *Store) MarkScored(ctx context.Context, userID uuid.UUID, day string, started time.Time) (queuedAt time.Time, ok bool, err error) {
 	err = s.pool.QueryRow(ctx, `UPDATE score_queue SET scored_at = now(), closed_reason = NULL
 		WHERE user_id = $1 AND day = $2::date AND scored_at IS NULL AND queued_at <= $3 RETURNING queued_at`,
@@ -73,14 +73,14 @@ func (s *Store) PruneScoreQueue(ctx context.Context) error {
 }
 
 // QueueClosedNoConsent is score_queue.closed_reason of a row scoring closed without scoring it because the
-// account has no current consent (D78, D298). A closed set: a new reason is a new migration.
+// account has no current consent (D78, D300). A closed set: a new reason is a new migration.
 const QueueClosedNoConsent = "no_consent"
 
 // CloseQueue closes a user's unscored queue rows without scoring them, with reason (QueueClosedNoConsent): it
 // sets scored_at, so nothing waits for them (pending_days, the sync status), and closed_reason, so the sync
 // latency estimate skips them. It returns the number of rows closed; closing twice closes nothing the second
 // time. Only a row queued at or before before is closed (as MarkScored's started): a sync after the caller read
-// the account stays pending. Only scoring calls it (D298).
+// the account stays pending. Only scoring calls it (D300).
 func (s *Store) CloseQueue(ctx context.Context, userID uuid.UUID, reason string, before time.Time) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `UPDATE score_queue SET scored_at = now(), closed_reason = $2
 		WHERE user_id = $1 AND scored_at IS NULL AND queued_at <= $3`, userID, reason, before)
@@ -125,7 +125,7 @@ func pendingDayNames(q []PendingDay) []string {
 
 // ExpectedScoreSec is the 95th percentile of sync-to-score over every account
 // in the last 6 hours, in whole seconds (at least 1); DefaultExpectedSec with
-// fewer than 5 entries. Rows scoring closed without scoring them (closed_reason, D298) are no sync-to-score time.
+// fewer than 5 entries. Rows scoring closed without scoring them (closed_reason, D300) are no sync-to-score time.
 func (s *Store) ExpectedScoreSec(ctx context.Context) (int, error) {
 	var n int
 	var p95 *float64

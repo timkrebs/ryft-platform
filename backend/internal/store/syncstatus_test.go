@@ -13,7 +13,7 @@ import (
 	"github.com/timkrebs/ryft/internal/model"
 )
 
-// The store's side of the sync status (0067, D297, D298): CloseQueue, MarkScored's closed_reason, ExpectedScoreSec
+// The store's side of the sync status (0067, D297, D300): CloseQueue, MarkScored's closed_reason, ExpectedScoreSec
 // without closed rows, and SyncConnections. Opt-in like the rest of the package (RYFT_TEST_POSTGRES_URL).
 
 type queueRow struct {
@@ -95,7 +95,7 @@ func TestCloseQueueTouchesOnlyTheUsersUnscoredRows(t *testing.T) {
 	}
 }
 
-// A row queued after the cutoff stays open: a re-consent and a sync racing the close (D298). The cutoff is
+// A row queued after the cutoff stays open: a re-consent and a sync racing the close (D300). The cutoff is
 // inclusive, like MarkScored's started.
 func TestCloseQueueLeavesARowQueuedAfterTheCutoff(t *testing.T) {
 	st, pool := testStore(t)

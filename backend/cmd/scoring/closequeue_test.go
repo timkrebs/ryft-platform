@@ -20,7 +20,7 @@ import (
 	"github.com/timkrebs/ryft/internal/store"
 )
 
-// Withdrawn consent (D78, D298, the user's answer 2): scoring does not score an account without a current consent,
+// Withdrawn consent (D78, D300, the user's answer 2): scoring does not score an account without a current consent,
 // and it closes that account's queue rows with a reason, so the sync status does not report scores pending for
 // days that will never be scored. A failure to close is logged and never fails the event.
 

@@ -1,6 +1,6 @@
 # RYFT platform — status
 
-## The sync button: the sync status is served (2026-11-27, D297, D298)
+## The sync button: the sync status is served (2026-11-27, D297, D300)
 
 Done (branch `feat/sync-status`): `GET /v1/me/sync` answers `sources`, `freshness` and `scores_pending_since` as the contract says; the API.md examples are typed and decode. Scoring closes the queued days of an account without consent (`score_queue.closed_reason`, migration 0067), so they stop holding `freshness`. Five queries per uncached call, plus one flag read per listed provider. Not tracked: the N2R baseline, the briefing and the pilot's partner deliveries (D297). Merge applies **0067** after #260's 0064–0066 (a column, an index, two grants; rollback-safe); the api and scoring roll with it. Merge #260 first. Open: the behaviour tests, review, F1 (`MarkScored` exact).
 
