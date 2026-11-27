@@ -56,7 +56,8 @@ func TestCloseQueueTouchesOnlyTheUsersUnscoredRows(t *testing.T) {
 	}
 	scoredBefore := queueRowOf(t, pool, a, "2026-11-24")
 
-	n, err := st.CloseQueue(ctx, a, QueueClosedNoConsent)
+	before := time.Now().Add(time.Minute)
+	n, err := st.CloseQueue(ctx, a, QueueClosedNoConsent, before)
 	if err != nil || n != 2 {
 		t.Fatalf("closed %d rows: %v, want the two unscored ones", n, err)
 	}
@@ -82,15 +83,52 @@ func TestCloseQueueTouchesOnlyTheUsersUnscoredRows(t *testing.T) {
 
 	// Closing twice is a no-op: nothing closed, nothing moved.
 	closed := queueRowOf(t, pool, a, "2026-11-25")
-	if n, err := st.CloseQueue(ctx, a, QueueClosedNoConsent); err != nil || n != 0 {
+	if n, err := st.CloseQueue(ctx, a, QueueClosedNoConsent, before); err != nil || n != 0 {
 		t.Fatalf("the second close: %d %v", n, err)
 	}
 	if again := queueRowOf(t, pool, a, "2026-11-25"); !again.scored.Equal(*closed.scored) || *again.reason != "no_consent" {
 		t.Fatalf("the second close changed a closed row: %+v, was %+v", again, closed)
 	}
 	// An account with no queue rows.
-	if n, err := st.CloseQueue(ctx, uuid.New(), QueueClosedNoConsent); err != nil || n != 0 {
+	if n, err := st.CloseQueue(ctx, uuid.New(), QueueClosedNoConsent, before); err != nil || n != 0 {
 		t.Fatalf("an unknown account: %d %v", n, err)
+	}
+}
+
+// A row queued after the cutoff stays open: a re-consent and a sync racing the close (D298). The cutoff is
+// inclusive, like MarkScored's started.
+func TestCloseQueueLeavesARowQueuedAfterTheCutoff(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+	u := newBareAccount(t, st)
+	if err := st.QueueDays(ctx, u, []string{"2026-11-24", "2026-11-25", "2026-11-26"}); err != nil {
+		t.Fatal(err)
+	}
+	cutoff := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	set := func(day string, queued time.Time) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `UPDATE score_queue SET queued_at = $3 WHERE user_id = $1 AND day = $2::date`, u, day, queued); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set("2026-11-24", cutoff.Add(-time.Minute)) // before the cutoff
+	set("2026-11-25", cutoff)                   // at it
+	set("2026-11-26", cutoff.Add(time.Minute))  // queued again after the account was read
+
+	n, err := st.CloseQueue(ctx, u, QueueClosedNoConsent, cutoff)
+	if err != nil || n != 2 {
+		t.Fatalf("closed %d rows: %v, want the two queued at or before the cutoff", n, err)
+	}
+	for _, day := range []string{"2026-11-24", "2026-11-25"} {
+		if r := queueRowOf(t, pool, u, day); r.scored == nil || r.reason == nil || *r.reason != "no_consent" {
+			t.Fatalf("%s: %+v, want it closed", day, r)
+		}
+	}
+	if r := queueRowOf(t, pool, u, "2026-11-26"); r.scored != nil || r.reason != nil {
+		t.Fatalf("the row queued after the cutoff: %+v, want it open", r)
+	}
+	if p, err := st.PendingDays(ctx, u); err != nil || len(p) != 1 || p[0] != "2026-11-26" {
+		t.Fatalf("pending after the close: %v %v", p, err)
 	}
 }
 
@@ -102,7 +140,7 @@ func TestCloseQueueRefusesAnUnknownReason(t *testing.T) {
 	if err := st.QueueDays(ctx, u, []string{"2026-11-26"}); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := st.CloseQueue(ctx, u, "because"); err == nil || n != 0 {
+	if n, err := st.CloseQueue(ctx, u, "because", time.Now().Add(time.Minute)); err == nil || n != 0 {
 		t.Fatalf("an unknown reason: %d %v", n, err)
 	}
 	if r := queueRowOf(t, pool, u, "2026-11-26"); r.scored != nil || r.reason != nil {
@@ -120,7 +158,7 @@ func TestMarkScoredClearsClosedReason(t *testing.T) {
 	if err := st.QueueDays(ctx, u, []string{day}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CloseQueue(ctx, u, QueueClosedNoConsent); err != nil {
+	if _, err := st.CloseQueue(ctx, u, QueueClosedNoConsent, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	// A closed row is not pending: scoring's mark finds nothing to finish and keeps it closed.

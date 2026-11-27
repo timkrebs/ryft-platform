@@ -43,3 +43,23 @@ Sound: polling vs the 10 s cache across instances; open/closed enums; the Swift 
   running stack (not verified). Postgres tests skipped. Cost: `served` reads the flag once per listed provider,
   so 5 queries + 1 per listed provider (≤ 7 today); D298 says so. The section anchor became `…-d297-d298`; no
   link in `../app/docs` used the old one.
+- **test-engineer:** pure tests (`syncstatus_freshness_test.go`, `closequeue_test.go` fake) pass; DB tests for
+  cases 1–10 + consent in `cmd/api/syncstatus_db_test.go`, `internal/store/syncstatus_test.go`,
+  `cmd/scoring/closequeue_test.go` skip locally. Flagged: code answered `error` for needs_reauth with a waiting
+  delivery; API.md's table says `pending`. **platform-lead:** switched the precedence to pending (contract), test
+  and D298 updated.
+
+## code-reviewer, one pass on 39be67e
+
+| # | Level | Finding | Resolution |
+| --- | --- | --- | --- |
+| 1 | should-fix | `CloseQueue` closes every unscored row with no cutoff: a re-consent + sync between scoring's `GetUser` and the `UPDATE` closes the fresh row (`current` too early, `MarkScored` then finds nothing). | **Fixed.** `CloseQueue(…, before)` with `queued_at <= before`, taken before the account is read in `handleEvent` and `refreshActive`; store + scoring tests; D298. Verified in the diff by platform-lead. Same clock caveat as `MarkScored` (F1). |
+| 2 | nit | A day after today (tz change) holds the button 10 min; "the last 30" is 31 dates (today−30..today). | **Fixed.** `d.Day <= today`; D298 defines today−30..today (a rescore of today−30 reaches today); table row added. |
+| 3 | nit | DB fixtures take today from `syncDay(0)` (UTC), the handler from its own clock: a run across 00:00 UTC fails. | **Fixed.** The rig skips within a minute of 00:00 UTC (accounts pinned to UTC). |
+| 4 | nit | "without current consent" wording vs `Admits` (`Consent != nil`): an older policy's consent keeps scoring while `healthkit` shows `consent_required`. | **Fixed** (wording in API.md changelog and D298). |
+| 5 | nit | API.md:4122 Swift mirror comment changed (comment only). | **Fixed.** Restored as on f579b33; the mirror is byte-identical to the app's contract. |
+| 6 | nit | A failed flags read in `served` turns the route into a 500. | **Not changed:** consistent with every other read of the route. |
+
+Sound: freshness boundaries, since null ⇔ current, gates per mode, listing, needs_reauth+delivery = pending, stale
+`closed_reason` never read, no close under `warn`/`off`, idempotent close, migration (grants, index, RLS,
+lock_timeout), fixtures vs 0042/0046 constraints, API.md shape unchanged from #258.

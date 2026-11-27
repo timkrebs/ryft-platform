@@ -48,6 +48,8 @@ func TestSyncFreshness(t *testing.T) {
 		{name: "today - 30, queued 11 minutes ago", days: []store.PendingDay{pd(back30, ago(11*time.Minute))}},
 		{name: "today - 30, queued 9 min 59 s ago", days: []store.PendingDay{pd(back30, ago(10*time.Minute-time.Second))}, hold: true, since: ago(10*time.Minute - time.Second)},
 		{name: "today - 30, queued exactly 10 minutes ago: the window is open at its end", days: []store.PendingDay{pd(back30, ago(10*time.Minute))}},
+		{name: "a day after today (a timezone change), queued now", days: []store.PendingDay{pd("2026-11-28", now)}},
+		{name: "a day after today, queued days ago", days: []store.PendingDay{pd("2026-11-28", ago(3*24*time.Hour)), pd("2026-12-05", now)}},
 		{name: "today - 31, queued now", days: []store.PendingDay{pd(back31, now)}},
 		{name: "today - 40, queued now", days: []store.PendingDay{pd(back40, now)}},
 		{name: "since is the earliest of the days that hold",

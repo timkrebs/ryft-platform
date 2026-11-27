@@ -27,6 +27,12 @@ type syncRig struct{ *connRig }
 
 func newSyncRig(t *testing.T, mod ...func(*config.Beta, *config.AppAttest)) *syncRig {
 	t.Helper()
+	// The fixtures take their days from syncDay (the UTC clock at the time of the call) and the handler from its own
+	// clock, with the account pinned to UTC: the two agree except across 00:00 UTC. A test runs far under a minute,
+	// so it is skipped within a minute of midnight rather than made to share one clock.
+	if now := time.Now().UTC(); now.Hour() == 23 && now.Minute() == 59 || now.Hour() == 0 && now.Minute() == 0 {
+		t.Skip("within a minute of 00:00 UTC: today would change under the test")
+	}
 	return &syncRig{newConnRig(t, mod...)}
 }
 
@@ -810,7 +816,7 @@ func TestSyncStatusWithdrawnConsent(t *testing.T) {
 		t.Fatalf("healthkit after the withdrawal: %+v", hk)
 	}
 
-	n, err := rg.st.CloseQueue(ctx, u, store.QueueClosedNoConsent)
+	n, err := rg.st.CloseQueue(ctx, u, store.QueueClosedNoConsent, time.Now().Add(time.Minute))
 	if err != nil || n != 2 {
 		t.Fatalf("close: %d %v", n, err)
 	}

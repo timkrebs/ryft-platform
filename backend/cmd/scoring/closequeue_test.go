@@ -29,10 +29,11 @@ type fakeCloser struct {
 	err   error
 	users []uuid.UUID
 	why   []string
+	when  []time.Time // the cutoff of each call
 }
 
-func (f *fakeCloser) CloseQueue(_ context.Context, user uuid.UUID, reason string) (int64, error) {
-	f.users, f.why = append(f.users, user), append(f.why, reason)
+func (f *fakeCloser) CloseQueue(_ context.Context, user uuid.UUID, reason string, before time.Time) (int64, error) {
+	f.users, f.why, f.when = append(f.users, user), append(f.why, reason), append(f.when, before)
 	return 1, f.err
 }
 
@@ -59,9 +60,10 @@ func TestCloseNoConsent(t *testing.T) {
 	t.Run("closes the user's queue with the no_consent reason, logs nothing", func(t *testing.T) {
 		var buf bytes.Buffer
 		f := &fakeCloser{}
-		closeNoConsent(context.Background(), slog.New(slog.NewJSONHandler(&buf, nil)), f, user)
-		if len(f.users) != 1 || f.users[0] != user || f.why[0] != "no_consent" {
-			t.Fatalf("closed %v for %v", f.users, f.why)
+		cutoff := time.Date(2026, 11, 27, 8, 0, 0, 0, time.UTC)
+		closeNoConsent(context.Background(), slog.New(slog.NewJSONHandler(&buf, nil)), f, user, cutoff)
+		if len(f.users) != 1 || f.users[0] != user || f.why[0] != "no_consent" || !f.when[0].Equal(cutoff) {
+			t.Fatalf("closed %v for %v before %v", f.users, f.why, f.when)
 		}
 		if buf.Len() != 0 {
 			t.Fatalf("a quiet success logged %s", buf.String())
@@ -70,7 +72,7 @@ func TestCloseNoConsent(t *testing.T) {
 
 	t.Run("a failure is logged as an error, once, and not returned", func(t *testing.T) {
 		var buf bytes.Buffer
-		closeNoConsent(context.Background(), slog.New(slog.NewJSONHandler(&buf, nil)), &fakeCloser{err: errors.New("connection reset")}, user)
+		closeNoConsent(context.Background(), slog.New(slog.NewJSONHandler(&buf, nil)), &fakeCloser{err: errors.New("connection reset")}, user, time.Now())
 		lines := logLines(t, &buf)
 		if len(lines) != 1 || lines[0]["level"] != "ERROR" || !strings.Contains(lines[0]["msg"].(string), "close the score queue") ||
 			!strings.Contains(lines[0]["err"].(string), "connection reset") {
@@ -86,7 +88,7 @@ func TestCloseNoConsent(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		var buf bytes.Buffer
-		closeNoConsent(ctx, slog.New(slog.NewJSONHandler(&buf, nil)), &fakeCloser{err: context.Canceled}, user)
+		closeNoConsent(ctx, slog.New(slog.NewJSONHandler(&buf, nil)), &fakeCloser{err: context.Canceled}, user, time.Now())
 		if buf.Len() != 0 {
 			t.Fatalf("logged %s", buf.String())
 		}
@@ -245,12 +247,17 @@ func TestHandleEventAcksWhenTheCloseFails(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	f := &fakeCloser{err: errors.New("queue unavailable")}
+	start := time.Now()
 	err := handleEvent(ctx, slog.New(slog.NewJSONHandler(&buf, nil)), engine, f, model.IngestedEvent{UserID: user, Days: []string{day}, Reason: model.ReasonSync})
 	if err != nil {
 		t.Fatalf("a failed close must not fail (and so retry) the event: %v", err)
 	}
 	if len(f.users) != 1 || f.users[0] != user || f.why[0] != store.QueueClosedNoConsent {
 		t.Fatalf("asked to close %v / %v", f.users, f.why)
+	}
+	// The cutoff was taken when the event's handling started, before the account was read: not after it.
+	if c := f.when[0]; c.After(time.Now()) || c.Before(start) {
+		t.Fatalf("cutoff %v, want it between the start of the handling (%v) and now", c, start)
 	}
 	if lines := logLines(t, &buf); len(lines) != 1 || lines[0]["level"] != "ERROR" {
 		t.Fatalf("log %s", buf.String())

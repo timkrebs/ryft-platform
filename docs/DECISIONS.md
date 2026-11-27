@@ -7223,7 +7223,15 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   account consents again, the next sync queues its days again and they are scored; closed days are not scored
   retroactively. A closed day leaves
   `pending_days` and stops holding `freshness`; the `healthkit` source shows `consent_required` while the consent
-  gate is `on`.
+  gate is `on`. Scoring closes the rows of an account with **no consent recorded** (`Admits`: `Consent != nil`
+  while the consent gate is `on`); an account that consented to an older policy is still scored while `healthkit`
+  shows `consent_required`, and nothing of it is closed. `CloseQueue` takes a cutoff and closes only rows with
+  `queued_at <=` it (as `MarkScored` does with `started`), taken before the account is read: a re-consent and a
+  sync racing the close queue their days again after the cutoff, and those days stay pending and are scored.
+- **"A day of the last 30" (D297's window) means today − 30 through today:** `syncFreshness` holds the button for
+  a day in that range queued in the last 10 minutes, and for no day after today (a timezone change can leave
+  one). The lower bound is today − 30 because scoring's rescore reaches 30 stored days after a changed day, so
+  today − 30's rescore reaches today.
 - **Why not a retention of the old rows instead:** the day window of D297 already stops such a row holding the
   button after two days. Closing it also removes it from `pending_days` (which the app's fallback for an older
   server reads), and it records why the row never got a score.

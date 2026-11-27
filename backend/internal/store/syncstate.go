@@ -79,10 +79,11 @@ const QueueClosedNoConsent = "no_consent"
 // CloseQueue closes a user's unscored queue rows without scoring them, with reason (QueueClosedNoConsent): it
 // sets scored_at, so nothing waits for them (pending_days, the sync status), and closed_reason, so the sync
 // latency estimate skips them. It returns the number of rows closed; closing twice closes nothing the second
-// time. Only scoring calls it (D298).
-func (s *Store) CloseQueue(ctx context.Context, userID uuid.UUID, reason string) (int64, error) {
+// time. Only a row queued at or before before is closed (as MarkScored's started): a sync after the caller read
+// the account stays pending. Only scoring calls it (D298).
+func (s *Store) CloseQueue(ctx context.Context, userID uuid.UUID, reason string, before time.Time) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `UPDATE score_queue SET scored_at = now(), closed_reason = $2
-		WHERE user_id = $1 AND scored_at IS NULL`, userID, reason)
+		WHERE user_id = $1 AND scored_at IS NULL AND queued_at <= $3`, userID, reason, before)
 	return tag.RowsAffected(), err
 }
 

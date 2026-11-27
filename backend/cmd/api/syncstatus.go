@@ -171,8 +171,9 @@ const (
 )
 
 // syncFreshness says whether the queued days hold today's scores back (D297): a day does when it is today or
-// yesterday (any age of its queue row), or when it is one of the last 30 days and was queued in the last 10
-// minutes. since is the earliest queued_at among those days (UTC); nil when none. today is the user's local day.
+// yesterday (any age of its queue row), or when it is today - 30 through today and was queued in the last 10
+// minutes (a day after today, after a timezone change, holds nothing: no rescore of it reaches today). since is
+// the earliest queued_at among those days (UTC); nil when none. today is the user's local day.
 func syncFreshness(days []store.PendingDay, today string, now time.Time) (pending bool, since *time.Time) {
 	t, err := time.Parse(dayLayout, today)
 	if err != nil {
@@ -182,7 +183,7 @@ func syncFreshness(days []store.PendingDay, today string, now time.Time) (pendin
 	oldest := t.AddDate(0, 0, -syncPastDays).Format(dayLayout)
 	for _, d := range days {
 		hold := d.Day == today || d.Day == yesterday ||
-			(d.Day >= oldest && d.QueuedAt.After(now.Add(-syncRescoreWindow)))
+			(d.Day >= oldest && d.Day <= today && d.QueuedAt.After(now.Add(-syncRescoreWindow)))
 		if !hold {
 			continue
 		}
