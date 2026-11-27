@@ -153,14 +153,24 @@ func TestServiceRoleGrants(t *testing.T) {
 	// scoring may write only the load columns of a workout, and of a session.
 	for col, want := range map[string]bool{"strain": true, "trimp": true, "zone_minutes": true, "muscular_load": true,
 		"session_id": true, "model_version": true, "avg_hr": false, "activity": false, "source": false, "user_id": false,
-		// 0065: a session's own workout follows an edit of the session's times in place (so its rating stays)
-		"start_at": true, "end_at": true} {
+		// 0065: no grant on the times; a session's own workout follows its session through scoring_follow_session_times (D300)
+		"start_at": false, "end_at": false} {
 		var has bool
 		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_scoring', 'public.workouts', $1, 'UPDATE')`, col).Scan(&has); err != nil {
 			t.Fatal(err)
 		}
 		if has != want {
 			t.Errorf("ryft_scoring UPDATE workouts.%s: %v, want %v", col, has, want)
+		}
+	}
+	// ...and the function that moves them is scoring's alone.
+	for role, want := range map[string]bool{"ryft_scoring": true, "ryft_api": false, "ryft_ingest": false} {
+		var has bool
+		if err := pool.QueryRow(ctx, `SELECT has_function_privilege($1, 'public.scoring_follow_session_times(uuid, uuid)', 'EXECUTE')`, role).Scan(&has); err != nil {
+			t.Fatal(err)
+		}
+		if has != want {
+			t.Errorf("%s EXECUTE scoring_follow_session_times: %v, want %v", role, has, want)
 		}
 	}
 	// api may move a merged account's raw data: the owner column only (0024, D90).
