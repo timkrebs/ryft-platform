@@ -9,6 +9,7 @@ import (
 	"github.com/timkrebs/ryft/internal/wearables"
 )
 
+// ValidGoal reports whether PATCH /v1/me accepts the goal (D304: five values; null is handled by the caller).
 func ValidGoal(goal string) bool {
 	switch goal {
 	case "health", "endurance", "strength", "body_composition", "performance":
@@ -17,6 +18,7 @@ func ValidGoal(goal string) bool {
 	return false
 }
 
+// ValidSex reports whether PATCH /v1/me accepts the sex (closed: female, male, unspecified).
 func ValidSex(sex string) bool {
 	switch sex {
 	case "female", "male", "unspecified":
@@ -25,10 +27,13 @@ func ValidSex(sex string) bool {
 	return false
 }
 
+// ValidWeightKG reports whether a weigh-in is in the accepted 25–350 kg (NaN is not).
 func ValidWeightKG(kg float64) bool { return kg >= 25 && kg <= 350 }
 
+// RoundWeightKG rounds a weight to one decimal, half away from zero, as User.weight_kg serves it.
 func RoundWeightKG(kg float64) float64 { return math.Round(kg*10) / 10 }
 
+// WeighIn is one body-weight reading: manual (PATCH /v1/me) or healthkit (a body_mass sample).
 type WeighIn struct {
 	KG         float64
 	Source     string
