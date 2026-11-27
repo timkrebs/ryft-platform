@@ -16,4 +16,15 @@ by platform-lead after verifying each item against the code.
 | n2 | nit | Example 2: Garmin `last_sync_at` equals `latest.hrv` to the second, but `last_data_at` is storage time, not the sample time. | Fixed (05:03:02). |
 | n3 | nit | Say what the silent push means (reload, then one poll ≥ 10 s later) and what happens after the 3-minute window. | Fixed. |
 
+## Second pass (af27f9b)
+
+| # | Level | Finding | Resolution |
+| --- | --- | --- | --- |
+| 1b | blocker (1 still open) | The N2R term fires almost always. Scoring's `refreshActive` rewrites today and yesterday every tick for users active in 48 h, and `computed_at = now()` moves even when nothing changes (`store.go` persist). The same scheduler job ticks scoring and the api together, so `processed_at < computed_at` recurs every 15 min and the button never turns green. | **Fixed by dropping the pilot terms.** `freshness` tracks scoring and connection deliveries only. API.md and D297 state that, for N2R accounts, the morning baseline and the briefing built on it, and the coaching pilot's partner deliveries, follow within one 15-minute pass and are not tracked. An exact signal needs an event-driven N2R refresh (open question for the user). |
+| 8 | should-fix | The wearable term does not match `claim_wearable` (`attempts < 5`, provider configured); retry-only jobs give pending with a null since; `ryft_api` has no grant on `wearable_inbox`. | Moot: the term is dropped. |
+| 9 | should-fix | The today/yesterday scope opens a hole. Late data for T−k queues only T−k, and scoring then rescores up to 30 days after it (`compute.go` `baselineDays`), today included, while `freshness` already says `current`. | **Fixed.** A pending day counts if it is today or yesterday, or within the last 30 days and queued in the last 10 minutes. The absent-field fallback reads "a day of the last 30 days". |
+| 10 | contradiction | `n2r_pending ⊆ n2r_due` and "cannot wait forever" do not hold under the 25-row cap per tick. API.md calls freshness "data for today or yesterday", but wearable jobs have no day. | Moot: the pilot terms and `n2r_pending` are gone. |
+
+Blocker 2 is closed.
+
 Sound: polling vs the 10 s cache across instances; open/closed enums; the Swift mirror; the anchor; `sources` never `null`.

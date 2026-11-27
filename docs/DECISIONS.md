@@ -7139,25 +7139,30 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   values are lower case like every closed enum here. `data_freshness` becomes `freshness` with only what the
   server knows: `current` or `scores_pending`. `UP_TO_DATE` and `STALE` are the app's 30-minute rule on
   `last_sync_at`; the server reports times and work in progress, never a colour.
-- **"Scores pending", the server's rule:** for the home screen's days (today and yesterday, local), any of:
-  1. a `score_queue` row with `scored_at IS NULL` (that is `pending_days`);
-  2. a `provider_inbox` row of the user in state `pending` (a connection's delivery not stored yet);
-  3. in the coaching pilot (an N2R profile, the nutrition flag on, consent to the policy in force): a
-     `nutrition.wearable_inbox` job of the user's partner links with `completed_at IS NULL`, or a day whose
-     `nutrition.daily_biometric_baselines.processed_at` is missing or older than
-     `greatest(daily_scores.computed_at, n2r_profiles.updated_at)`. That is `nutrition.n2r_due`'s predicate
-     without its 6-hour refresh term, which is a periodic refresh, not pending work.
+- **"Scores pending", the server's rule:** either of:
+  1. a `score_queue` row with `scored_at IS NULL` (in `pending_days`) for today or yesterday (local), or for a
+     day of the last 30 queued in the last 10 minutes. Scoring a past day rescores up to 30 stored days after
+     it in the same pass (`baselineDays`), today included, before the row is marked;
+  2. a `provider_inbox` row of the user in state `pending` (a connection's delivery not stored yet).
 
-  Readiness is part of the day's score (1). The coaching briefing reads the stored scores, the N2R baselines
-  (3, written by the api tick's `RefreshN2RNights`) and the pilot's wearable nights (3, written by
-  `processWearables` on the same tick), so the three cover what the button promises. A sync stores its
-  records, then its apply transaction queues their days (`ApplySync` → `queueAndEmit`), both before the `200`.
-  The window between the two lies inside the uploading app's own request, which shows syncing anyway. A
-  direct delivery is stored, its days queued and its inbox row processed in one transaction (`ApplyDirect`).
-- **Only today and yesterday hold the button:** a day queued long ago that scoring never clears (a dead
-  letter, or an account scoring skips for consent) would otherwise keep the button off green for good, and a
-  400-day recompute would spin it for minutes. Older pending days stay in `pending_days`; the home screen does
-  not show them.
+  Readiness is part of the day's score. A sync stores its records, then its apply transaction queues their
+  days (`ApplySync` → `queueAndEmit`), both before the `200`. The window between the two lies inside the
+  uploading app's own request, which shows syncing anyway. A direct delivery is stored, its days queued and
+  its inbox row processed in one transaction (`ApplyDirect`).
+- **Why the day window:** a day queued long ago that scoring never clears (a dead letter, or an account that
+  scoring skips for consent) would otherwise keep the button off green for good, and a 400-day recompute would
+  spin it for minutes. Such days stay in `pending_days`; the home screen does not show them.
+- **What it does not track, and why:** for accounts with Nutrition-to-Recovery, the morning N2R baseline
+  (`daily_biometric_baselines`, written by the api tick's `RefreshN2RNights`) and the coaching briefing built
+  on it; and the coaching pilot's partner deliveries (`nutrition.wearable_inbox`, drained by
+  `processWearables` on the same tick). They follow within one 15-minute pass, and the contract says so. The
+  first version tracked them (a baseline older than its day's score, an uncompleted job), but review showed
+  the baseline term fires almost always. Scoring's 15-minute pass rewrites today and yesterday for every
+  active user and moves `computed_at` even when nothing changed. The same scheduler job ticks scoring and the
+  api, so `processed_at < computed_at` recurs every tick, and the button would never turn green. The job term
+  would have needed `claim_wearable`'s conditions and a new grant for a pilot-only path. Tracking them exactly
+  needs an event-driven N2R refresh after scoring, or `computed_at` moving only on a change: a question for
+  the user, not decided here.
 - **Not exact, and why it is acceptable:** `MarkScored` clears a day queued before its run started
   (`queued_at <= started`). `queued_at` is the queueing transaction's start time (`now()`), and `started` is
   the scoring instance's clock. A run that starts while `ApplyDirect`'s transaction is open, before its
@@ -7177,7 +7182,7 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   screen explains it. A `failed` inbox row (one record ingest could not parse) is no source error: the user can
   do nothing about it, and the operator's gauges show it. The coaching pilot's partner links (D271) are not
   sources: they are operator-provisioned, pilot-only, and a second Garmin entry next to a Connections one would
-  confuse. Their work counts in `freshness`.
+  confuse.
 - **The sync does not wait for scoring:** scoring is another service behind Pub/Sub (D218), taking seconds to
   tens of seconds (`expected_within_sec`), more for a backfill; a held `POST /v1/sync` would hold a Cloud Run request slot and the app's background time,
   and a timeout retry would send the page again. A sync is many pages too. The app takes `scoring.queued_days`
@@ -7187,10 +7192,9 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   (`?wait=`) was rejected for the same request-slot reason.
 - **The bound:** pending work older than 3 minutes shows stale with "Scores are still being calculated", not
   syncing forever and not an error: the data is stored. `scores_pending_since` lets the app apply that after a
-  relaunch too. In the pilot, the 15-minute tick means that is the usual case after a partner delivery. An
-  event-driven N2R refresh after scoring would shorten it (an open question, not decided here).
+  relaunch too.
 - **Enums:** `freshness` and `status` are closed (Swift enums); `source` and `reason` are open, so Suunto and new
   reasons need no `/v2`.
 - **Examples as `http` blocks** until the model types exist (as D257, D291). The implementation is outlined in
-  `docs/work/2026-11-27-sync-status/implementation.md`: two indexed queries more behind the cache (one in the
-  pilot only), a column grant on `provider_inbox.received_at` for the api and a partial index, no new table.
+  `docs/work/2026-11-27-sync-status/implementation.md`: one indexed query more behind the cache, a column grant
+  on `provider_inbox.received_at` for the api and a partial index, no new table.
