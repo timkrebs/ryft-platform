@@ -199,14 +199,23 @@ func (h *handler) deleteMe(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, gone)
 }
 
-// eraseAccount is the account deletion path (DELETE /v1/me, and a merge for
-// the account merged away): every row, then the Sign in with Apple grant, then
-// the Supabase auth user.
+// eraseAccount is the account deletion path of DELETE /v1/me: every row, then
+// afterErase (the Sign in with Apple grant, the Supabase auth user, the provider grants).
+// A merge erases the account it merged away inside its own transaction (store.MergeUsers)
+// and runs afterErase itself.
 func (h *handler) eraseAccount(ctx context.Context, id uuid.UUID) (AccountDeleted, error) {
 	if err := h.st.DeleteUser(ctx, id); err != nil {
 		metrics.AccountDeletions.WithLabelValues("data", "error").Inc()
 		return AccountDeleted{}, fmt.Errorf("delete account: %w", err)
 	}
+	return h.afterErase(ctx, id), nil
+}
+
+// afterErase is what follows the commit that erased an account's rows (DeleteUser, or the merge that moved the
+// account's data and erased it in the same transaction): the metric, the cache, the Sign in with Apple grant, the
+// Supabase auth user and the provider grants. None of it fails the request: what cannot be done now is retried in
+// the background (the reconciler, the deregistration queue).
+func (h *handler) afterErase(ctx context.Context, id uuid.UUID) AccountDeleted {
 	metrics.AccountDeletions.WithLabelValues("data", "ok").Inc()
 	h.cache.forget(id)
 	appleRevoked := h.accounts.revokeApple(ctx, id)
@@ -217,7 +226,7 @@ func (h *handler) eraseAccount(ctx context.Context, id uuid.UUID) (AccountDelete
 	}
 	h.log.InfoContext(ctx, "account deleted", "deleted_user", id, "auth_user_deleted", authDeleted, "apple_token_revoked", appleRevoked,
 		"connections_deregistered", conns)
-	return AccountDeleted{Status: "deleted", AuthUserDeleted: authDeleted, AppleTokenRevoked: appleRevoked, ConnectionsDeregistered: conns}, nil
+	return AccountDeleted{Status: "deleted", AuthUserDeleted: authDeleted, AppleTokenRevoked: appleRevoked, ConnectionsDeregistered: conns}
 }
 
 // appleAuthorization is the POST /v1/me/apple-authorization body: the

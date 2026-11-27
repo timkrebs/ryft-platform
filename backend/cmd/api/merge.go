@@ -46,9 +46,10 @@ type dayRange struct {
 
 // merge is POST /v1/admin/users/{id}/merge-into/{to}[?dry_run=1][&force=1]
 // (D90): everything of {id} moves to {to}, in one transaction; to's rows win
-// where both have one; to is rescored over the moved data's days; {id} is then
-// deleted like DELETE /v1/me (Supabase auth user and Apple grant included). A
-// second call answers 404: from is gone. It refuses to merge the account with
+// where both have one; to is rescored over the moved data's days. {id} is erased in the
+// same transaction as the move (RFT-88, D302: no write can land on it in between), then,
+// as after DELETE /v1/me, its Supabase auth user, Apple grant and provider grants are
+// ended. A second call answers 404: from is gone. It refuses to merge the account with
 // more scored days into the smaller one unless force=1.
 func (a admin) merge(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -135,9 +136,21 @@ func (a admin) merge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ans.Tables, ans.Consent, ans.BetaAccess = res.Tables, res.Consent, res.BetaAccess
+	// The commit moved to's data and erased from. What follows from has no data step left: Apple, the Supabase
+	// auth user and the provider grants (a failure of one is retried in the background). It runs before the
+	// rescore so that a failing rescore, which answers 500, does not leave them undone.
+	if !dryRun {
+		gone := a.h.afterErase(work, from)
+		ans.Deleted = &gone
+	}
 	ans.Rescore, err = a.rescoreRange(work, to, res.FirstRecord)
 	if err != nil {
 		metrics.AdminRequests.WithLabelValues("error").Inc()
+		if !dryRun {
+			// Logged by Fail, never shown to the client: the operator needs to know the merge happened.
+			err = fmt.Errorf("merge: %s is merged into %s and erased, the rescore range failed (POST /v1/recompute for %s catches up): %w",
+				ans.From.ShortID, ans.To.ShortID, ans.To.ShortID, err)
+		}
 		httpx.Fail(w, r, err)
 		return
 	}
@@ -163,13 +176,6 @@ func (a admin) merge(w http.ResponseWriter, r *http.Request) {
 			a.h.log.ErrorContext(work, "merge: publish rescore", "err", err)
 		}
 	}
-	gone, err := a.h.eraseAccount(work, from)
-	if err != nil {
-		metrics.AdminRequests.WithLabelValues("error").Inc()
-		httpx.Fail(w, r, fmt.Errorf("merge: the data is moved, deleting %s failed (run the merge again): %w", ans.From.ShortID, err))
-		return
-	}
-	ans.Deleted = &gone
 	metrics.AdminRequests.WithLabelValues("ok").Inc()
 	a.info(r, "accounts merged", "from", ans.From.ShortID, "into", ans.To.ShortID, "moved", moved)
 	httpx.WriteJSON(w, 200, ans)

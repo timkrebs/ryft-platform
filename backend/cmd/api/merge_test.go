@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -98,6 +99,10 @@ func TestAdminMerge(t *testing.T) {
 	}
 	if _, _, err := st.GetUser(ctx, from); err == nil {
 		t.Fatal("from is deleted")
+	}
+	// The merge erased from in its own transaction: its token cannot bring it back.
+	if _, err := st.EnsureUser(ctx, store.Identity{ID: from}); !errors.Is(err, store.ErrDeleted) {
+		t.Fatalf("EnsureUser of the merged account: %v, want ErrDeleted", err)
 	}
 	if code, _, body := post(base + "?force=1"); code != 404 || !strings.Contains(body, "not found") {
 		t.Fatalf("a second merge: %d %s", code, body)
