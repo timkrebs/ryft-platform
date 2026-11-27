@@ -290,8 +290,10 @@ func (e *Engine) activity(ctx context.Context, userID uuid.UUID, d time.Time) (s
 	if kcal, err = e.dayTotal(ctx, userID, model.SampleActiveEnergy, dayStart, dayEnd); err != nil {
 		return nil, nil, nil, err
 	}
-	restingKcal, err = e.dayTotal(ctx, userID, model.SampleBasalEnergy, dayStart, dayEnd)
-	return steps, kcal, restingKcal, err
+	if restingKcal, err = e.dayTotal(ctx, userID, model.SampleBasalEnergy, dayStart, dayEnd); err != nil {
+		return nil, nil, nil, err
+	}
+	return steps, kcal, PlausibleRestingKcal(restingKcal), nil
 }
 
 // readinessOf is the Today headline, its penalty for yesterday's strain and

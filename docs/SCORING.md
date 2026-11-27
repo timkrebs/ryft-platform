@@ -163,7 +163,8 @@ that type arrived. They feed `DailyScore`, `DayDetail.strain` and the trend metr
 
 The API assembles `DailyScore.energy` on read. The stored `daily_scores.resting_kcal`
 is the local day's `basal_energy` total, using the same `DayTotal` source
-de-duplication, start-day assignment and rounding as `active_kcal`. A measured
+de-duplication, start-day assignment and rounding as `active_kcal`; a total outside
+0–20 000 kcal (`MaxRestingKcal`) is stored as missing (a broken source). A measured
 total takes precedence over a resting estimate. The diary contributes the known
 energy subtotal when it is enabled and the day has a logged meal. Net energy is
 intake minus the sum of active and resting energy, when all three are known.

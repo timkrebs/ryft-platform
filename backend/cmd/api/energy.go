@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/timkrebs/ryft/internal/flags"
@@ -15,9 +14,14 @@ func restingInputs(u model.User) scoring.RestingInputs {
 	return scoring.RestingInputs{BirthYear: u.BirthYear}
 }
 
-// energyDayProgress uses calendar midnights in now's location for DST days.
+// energyDayProgress uses calendar midnights in now's location for DST days. A
+// stored day after local today (the user travelled west) has not started here.
 func energyDayProgress(day string, now time.Time) (partial bool, elapsed float64) {
-	if day != now.Format(dayLayout) {
+	today := now.Format(dayLayout)
+	if day > today {
+		return true, 0
+	}
+	if day != today {
 		return false, 1
 	}
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
@@ -38,8 +42,10 @@ func (h *handler) withDayEnergy(ctx context.Context, user model.User, from, to s
 	if diaryOn {
 		days, err := h.st.NutritionEnergyTotals(ctx, user.ID, from, to)
 		if err != nil {
-			// As in nutritionAnswer, keep private database values out of request logs.
-			return errors.New("nutrition store operation failed")
+			// The day routes must not fail on the diary: intake reads as unknown.
+			// A fixed line; the error could carry private database values.
+			h.log.WarnContext(ctx, "net energy: diary totals unavailable")
+			diaryOn = false
 		}
 		byDay = make(map[string]model.NutritionDaily, len(days))
 		for _, d := range days {

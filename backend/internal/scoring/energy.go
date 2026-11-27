@@ -44,6 +44,20 @@ func RestingEstimateKcal(in RestingInputs, day time.Time, elapsed float64) *int 
 	return &kcal
 }
 
+// MaxRestingKcal bounds a day's measured resting total: about four times the
+// basal rate of a very large adult. A day total outside 0..MaxRestingKcal comes
+// from a broken source and is treated as missing, so it can neither move
+// net_kcal nor stop the day from being scored (D310).
+const MaxRestingKcal = 20000
+
+// PlausibleRestingKcal is the day's basal_energy total when it is plausible, else nil.
+func PlausibleRestingKcal(total *int) *int {
+	if total == nil || *total < 0 || *total > MaxRestingKcal {
+		return nil
+	}
+	return total
+}
+
 type EnergyInputs struct {
 	IntakeKcal       float64
 	Meals            int

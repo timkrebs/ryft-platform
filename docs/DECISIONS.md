@@ -7568,10 +7568,16 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   D307 and D308 are left for other C1 PRs (PR 6 took D309); migration `0070_daily_resting_kcal.sql`.
 - **The resting total is stored, the rest is read:** scoring writes `daily_scores.resting_kcal`, the day's
   `basal_energy` total with `DayTotal`'s one-source-per-hour rule, as for `active_kcal`, so the two parts of the
-  burn are counted the same way. Intake comes from the diary at request time (one `NutritionEnergyTotals` read for
-  the whole range, only when `nutrition.enabled` or `nutrition.diary_enabled` is on for the account), so a logged
-  meal moves `net_kcal` at once. `resting_kcal` joins `dataColumns` and the history inputs by presence, like
-  `active_kcal`.
+  burn are counted the same way. A day total outside 0–20 000 kcal (`MaxRestingKcal`) is stored as missing: one
+  broken sample must neither move `net_kcal` nor stop the day from scoring (ingest bounds only `body_mass`'s value;
+  a per-sample bound for `basal_energy` is a follow-up for PR 3). Intake comes from the diary at request time (one
+  `NutritionEnergyTotals` read for the whole range: its own query, one pass grouped by date over the energy key
+  only, so a long range stays cheap; only when `nutrition.enabled` or `nutrition.diary_enabled` is on for the
+  account), so a logged meal moves `net_kcal` at once. **A failed diary read degrades** to unknown intake with a
+  fixed warn line: the day routes never touched the nutrition schema before and must not fail on it.
+  `resting_kcal` joins `dataColumns` and the history inputs by presence, like `active_kcal`, so a day with only
+  resting energy counts as having data.
+- **A stored day after local today** (the user travelled west) is `partial_day: true` with nothing elapsed.
 - **No model bump:** no stored number of an existing day changes (the goldens only gain `resting_kcal: null`), the
   column fills only from `basal_energy` samples, which cannot be stored while the D304 guard holds, and a sync of
   them rescores the days they touch. `ModelVersion` stays `2026.11.1`, so no account is rescored on deploy.

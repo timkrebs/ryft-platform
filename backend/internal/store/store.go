@@ -900,7 +900,7 @@ type History struct {
 	Efficiency     *int // the planner (asleep / in bed)
 	// HasData: one of dataColumns is set: an overnight HRV, a resting HR or a
 	// respiratory rate, a strain (heart-rate minutes or a logged session), a
-	// night's sleep, steps or active energy. A range or a rescore also stores
+	// night's sleep, steps, active energy or resting (basal) energy (D310). A range or a rescore also stores
 	// days before an account's first data, with none of it; they do not count
 	// as history for calibrating_reason. Neither does a day with only an SpO2,
 	// a nap, time in bed or a workout without heart rate: rare, and it errs

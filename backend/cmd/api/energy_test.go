@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,7 @@ func TestEnergyDayProgress(t *testing.T) {
 		{"short day", "2026-03-29T10:00:00Z", "2026-03-29", true, 11.0 / 23},
 		{"long day", "2026-10-25T11:00:00Z", "2026-10-25", true, 13.0 / 25},
 		{"midnight", "2026-10-24T22:00:00Z", "2026-10-25", true, 0},
+		{"after today (travelled west)", "2026-01-02T23:30:00Z", "2026-01-04", true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now, err := time.Parse(time.RFC3339, tc.at)
@@ -171,6 +173,16 @@ func TestDaysServeEnergy(t *testing.T) {
 	if string(wire.Score["energy"]) != "null" {
 		t.Fatal("the never-scored placeholder must send energy: null")
 	}
+	const unavailable = "net energy: diary totals unavailable"
+	if strings.Contains(rig.logs.String(), unavailable) {
+		t.Fatal("the placeholder day must not read the diary")
+	}
+	// With the diary on, an unreadable diary degrades to unknown intake, never a 500.
+	get("/v1/days/"+dayKey(past), &detail)
+	checkNoIntake(detail.Score.Energy)
+	if n := strings.Count(rig.logs.String(), unavailable); n != 1 {
+		t.Fatalf("the failed diary read logged %d warn lines, want 1", n)
+	}
 	setFlags(false, false)
 	get("/v1/days/"+dayKey(past), &detail)
 	checkNoIntake(detail.Score.Energy)
@@ -180,5 +192,9 @@ func TestDaysServeEnergy(t *testing.T) {
 	}
 	for _, row := range rows {
 		checkNoIntake(row.Energy)
+	}
+	// The diary was not read with both flags off: no further failed read.
+	if n := strings.Count(rig.logs.String(), unavailable); n != 1 {
+		t.Fatalf("the diary was read with both flags off (%d warn lines)", n)
 	}
 }

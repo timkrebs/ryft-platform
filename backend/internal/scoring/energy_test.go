@@ -46,6 +46,24 @@ func TestRestingEstimateKcal(t *testing.T) {
 	}
 }
 
+func TestPlausibleRestingKcal(t *testing.T) {
+	if MaxRestingKcal != 20000 {
+		t.Fatalf("MaxRestingKcal moved to %d: say why in SCORING.md", MaxRestingKcal)
+	}
+	for _, tc := range []struct {
+		in   *int
+		want *int
+	}{
+		{nil, nil}, {ip(0), ip(0)}, {ip(1712), ip(1712)}, {ip(20000), ip(20000)},
+		{ip(20001), nil}, {ip(-1), nil}, {ip(1 << 40), nil},
+	} {
+		got := PlausibleRestingKcal(tc.in)
+		if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+			t.Errorf("PlausibleRestingKcal(%v) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestDayEnergyConfidence(t *testing.T) {
 	for _, tc := range []struct {
 		name                        string
