@@ -1,0 +1,19 @@
+# Review: the sync status contract (D297)
+
+code-reviewer, one pass on commit 993877d (2026-11-27). Verdict: needs changes. The resolution column is filled in
+by platform-lead after verifying each item against the code.
+
+| # | Level | Finding | Resolution |
+| --- | --- | --- | --- |
+| 1 | blocker | "N2R and the briefing are computed on read from the stored scores" is false. `loadCoaching` reads `nutrition.daily_biometric_baselines` (written by `RefreshN2RNights` on the 15-min api tick) and the pilot's `nutrition.wearable_nights` / `canonical_workouts` (the coaching pilot's Garmin/Suunto webhooks, `nutrition.wearable_inbox`, drained by `processWearables` per tick). Neither touches `score_queue` or `provider_inbox`, so `current` can be up to 15+ min ahead of the briefing. | **Fixed.** `freshness` now includes the pilot: unfinished `wearable_inbox` jobs, and an N2R baseline older than its day's score (`n2r_due` without its 6-h term). Both count only while the tick processes the account. API.md says the pilot can stay pending for up to 15 min. |
+| 2 | blocker | App rule 4 (up to date) has no `freshness` condition: first-match ordering shows green while scores are pending > 3 min with a sync < 30 min old. | **Fixed.** Rule 4 requires `freshness: current` and no sync of the app still waiting for its scores. |
+| 3 | should-fix | `MarkScored`'s `queued_at <= started` compares `now()` (the transaction start time, not its commit) with the scoring instance's clock. A run that starts during `ApplyDirect`'s transaction can mark the day scored without seeing its records. So "exactly" and "atomically" overclaim. | **Accepted; documented, not fixed here.** API.md and D297 state the race and its recovery (the delivery's own run, then the push); the overclaims are gone. Follow-up F1 in the outline makes `MarkScored` exact. |
+| 4 | should-fix | `scores_pending_since` resets on every re-queue or re-receipt (`queued_at = now()`, `received_at` = the latest), so it is not "the oldest arrival". An old stuck day nobody touches (dead letter, `ErrNoConsent` ack in `cmd/scoring/main.go`) keeps the button off green forever; nothing sweeps it. | **Fixed.** `freshness` counts today and yesterday only, so an old stuck day no longer holds the button. `scores_pending_since` is documented as restarting on a re-queue. The consent ack is an open edge in the outline. |
+| 5 | should-fix | API.md says a provider is listed when `GET /v1/me/connections` lists it, but `connectAPI.list` does not filter connections by served/flag; the outline does. The two disagree. | **Fixed.** The rule is written out the same way in API.md, D297 and the outline: the connection is `connected` or `needs_reauth`, the provider is served and its flag is on. One shared helper, not the connections list. |
+| 6 | should-fix | "capped at 500 rows" is for pending rows only; `provider_inbox_user` also spans processed rows kept 30 days. Suggest a partial index `(user_id, provider, received_at) WHERE state = 'pending'`. | **Fixed.** Ticket 1 adds the partial index; the cost section names it. |
+| 7 | should-fix | `gateFor` returns the first gate that fails whatever its mode (beta `warn` + consent `on` → `invite_required`, so "enforced" is decided on the wrong gate). Evaluate each gate against its own mode. | **Fixed.** The outline evaluates each gate against its own mode, and D297 gives the beta `warn` + consent `on` example. |
+| n1 | nit | Grant claim correct. Add a test that the since time equals `ApplyDirect`'s `queued_at`. | Fixed (test 4). |
+| n2 | nit | Example 2: Garmin `last_sync_at` equals `latest.hrv` to the second, but `last_data_at` is storage time, not the sample time. | Fixed (05:03:02). |
+| n3 | nit | Say what the silent push means (reload, then one poll ≥ 10 s later) and what happens after the 3-minute window. | Fixed. |
+
+Sound: polling vs the 10 s cache across instances; open/closed enums; the Swift mirror; the anchor; `sources` never `null`.

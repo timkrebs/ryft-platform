@@ -1,5 +1,11 @@
 # RYFT platform — status
 
+## The sync button: the sync status contract, docs only (2026-11-27, D297)
+
+Done: `docs/API.md` → `GET /v1/me/sync` → The sync button. The route gains `sources` (per source: `healthkit` or a provider id, `last_sync_at`, `status` `ok`/`pending`/`error`, `reason`), `freshness` (`current`/`scores_pending`) and `scores_pending_since`. No new route; `POST /v1/sync` is unchanged and does not wait for scoring. "Scores pending" applies to today and yesterday: a queued day, a connection delivery not stored yet, or, in the coaching pilot, an unprocessed partner job or an N2R baseline older than the day's score. Garmin and Suunto are listed only while a connection is live, served and flagged on. The app rule (five steps, polling bounded at 3 minutes) is in the section. The Swift mirror and a changelog row are in. The examples are `http` blocks until the server has the types.
+
+Open: the implementation (`docs/work/2026-11-27-sync-status/implementation.md`: one migration with a column grant and a partial index, the api reads, tests; follow-up F1 makes `MarkScored` exact). One code-reviewer pass (`review.md` there): both blockers and the should-fix items are folded in. Merging this PR deploys nothing new: `deploy.yml` rolls the services unchanged, and the site job has no change.
+
 ## G4: the full BLS 4.0 catalog with German names (2026-11-27, D296)
 
 Code done, **data not in yet.** `scripts/etl/bls_convert.py` turns the official `BLS_4_0_Daten_2025_DE.xlsx` into a committed extract (`scripts/etl/data/bls_4_0.csv` and its manifest). The ETL then imports ~7,140 foods. Each gets its German and English name, ~30 nutrients per 100 g, a category hint and a `food_form`, but no portions. They also get curated DACH synonyms as aliases (40 groups, `scripts/etl/bls_curation.v1.json`). BLS foods that duplicate a curated staple (twins) are left out. Migration 0061 ranks a curated staple ahead of a BLS food on an exact-name tie. The licence is CC BY 4.0; the attribution text is in D296. Nothing ran locally: Python, `curl` and WebFetch needed approval, so CI is the first run, and the BLS file was never downloaded. Until the CSV is committed, the BLS step behaves exactly as before (3 staples, `unchanged`).
