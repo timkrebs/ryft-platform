@@ -30,6 +30,9 @@ func TestUserSources(t *testing.T) {
 		{Type: model.SampleHeartRate, Start: now.Add(-2 * time.Hour), End: now.Add(-2 * time.Hour), Source: "Watch", SourceBundleID: &watch},
 		{Type: model.SampleSteps, Start: now.Add(-3 * time.Hour), End: now.Add(-3 * time.Hour), Source: "Watch"},
 		{Type: model.SampleVO2Max, Start: now, End: now, Source: "Watch"},
+		{Type: model.SampleBasalEnergy, Start: now, End: now, Source: "Watch"},
+		{Type: model.SampleHeartRateRecovery, Start: now.Add(-time.Minute), End: now.Add(-time.Minute), Source: "Workout app"},
+		{Type: model.SampleBodyMass, Start: now, End: now, Source: "Scale"},
 		{Type: model.SampleSteps, Start: now.Add(-40 * 24 * time.Hour), End: now.Add(-40 * 24 * time.Hour), Source: "Old phone"},
 		{Type: model.SampleSteps, Start: now, End: now, Source: ""},
 	}, []model.SleepSegment{{Start: now.Add(-9 * time.Hour), End: now.Add(-time.Hour), Stage: "deep", Source: "Oura", SourceBundleID: &ring}})
@@ -40,18 +43,21 @@ func TestUserSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0].Name != "Watch" || got[1].Name != "Oura" {
-		t.Fatalf("newest first, the old phone and the nameless source left out: %+v", got)
+	if len(got) != 3 || got[0].Name != "Watch" || got[1].Name != "Workout app" || got[2].Name != "Oura" {
+		t.Fatalf("newest first, the old phone, nameless source and body-mass-only scale left out: %+v", got)
 	}
-	w, o := got[0], got[1]
-	if !slices.Equal(w.Kinds, []string{model.KindHR, model.KindSteps}) || w.BundleID == nil || *w.BundleID != watch ||
+	w, recovery, o := got[0], got[1], got[2]
+	if !slices.Equal(w.Kinds, []string{model.KindEnergy, model.KindHR, model.KindSteps}) || w.BundleID == nil || *w.BundleID != watch ||
 		!w.LastSeen.Equal(now) {
-		t.Fatalf("watch: %+v (vo2max counts as hr, the latest record is now)", w)
+		t.Fatalf("watch: %+v (basal energy counts as energy, vo2max as hr)", w)
+	}
+	if !slices.Equal(recovery.Kinds, []string{model.KindHR}) {
+		t.Fatalf("heart-rate recovery source: %+v", recovery)
 	}
 	if !slices.Equal(o.Kinds, []string{model.KindSleep}) || o.BundleID == nil || *o.BundleID != ring || !o.LastSeen.Equal(now.Add(-time.Hour)) {
 		t.Fatalf("ring: %+v", o)
 	}
-	if week, _ := st.UserSources(ctx, id, now.Add(-30*time.Minute)); len(week) != 1 || week[0].Name != "Watch" {
+	if week, _ := st.UserSources(ctx, id, now.Add(-30*time.Second)); len(week) != 1 || week[0].Name != "Watch" {
 		t.Fatalf("since a time: %+v", week)
 	}
 	if empty, err := st.UserSources(ctx, uuid.New(), now.Add(-time.Hour)); err != nil || empty == nil || len(empty) != 0 {
