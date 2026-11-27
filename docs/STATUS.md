@@ -1,6 +1,6 @@
 # RYFT platform — status
 
-## C1 PR 1: goal, sex and weight on the profile (2026-11-27, D305)
+## C1 PR 1: goal, sex and weight on the profile (2026-11-27, D306)
 
 Done (branch `feat/profile-goal-body`): migration `0068_profile_goal_body.sql` (four nullable `users` columns). `GET`/`PATCH /v1/me` always carry `goal`, `sex`, `weight_kg`, `weight_source`, `weight_measured_at`. `goal` can be set now. `sex` and `weight_kg` answer `403 consent_required` until a policy version names them (`model.NamesProfileBody`, empty). The HealthKit weight is also read only while `sync.fitness_types` is on (not seeded). The newest weigh-in wins, and a tie goes to manual. The goal→Nutrition table is in `scoring.NutritionGoalFor`. On merge, the migrate job adds the columns and api, ingest and scoring roll. Nothing changes for an account until it sets a goal.
 

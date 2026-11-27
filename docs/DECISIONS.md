@@ -7523,7 +7523,7 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
 - **Cost:** the merge transaction now also deletes `from`; it is bounded by `deleteTimeout` and the route is
   admin-only. Rollback: revert; no migration.
 
-## D305 — Goal, sex and weight on the profile (implementation PR 1 of D304, 2026-11-27)
+## D306 — Goal, sex and weight on the profile (implementation PR 1 of D304, 2026-11-27)
 
 - **Context:** the first implementation step of the D304 contract: `GET`/`PATCH /v1/me` serve `goal`, `sex`,
   `weight_kg`, `weight_source` and `weight_measured_at`. Migration `0068_profile_goal_body.sql`. The guard of D304

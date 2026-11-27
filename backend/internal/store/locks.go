@@ -11,7 +11,7 @@ package store
 //	7419004  lockEnrollments  a user's plan enrolment changes
 //	7419005  lockApply        a user's HealthKit writes and sync apply, workout fold,
 //	                        native connection changes, inbox writes, consent changes, and a
-//	                        PATCH /v1/me with sex or weight_kg (its consent check, D305); and the
+//	                        PATCH /v1/me with sex or weight_kg (its consent check, D306); and the
 //	                        account merge, for both accounts, after lockUser (D302)
 //	7419006  relayLock        the outbox relay, per publisher (internal/events/outbox; every
 //	                        drain of a Flush or a Sweep, so one publisher's rows go out in

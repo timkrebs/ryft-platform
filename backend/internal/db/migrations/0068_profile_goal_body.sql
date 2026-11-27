@@ -1,4 +1,4 @@
--- Profile (D305): the app-wide goal, sex and the latest manual weigh-in.
+-- Profile (D306): the app-wide goal, sex and the latest manual weigh-in.
 -- HealthKit weigh-ins are resolved from samples on read. Account erasure
 -- already deletes the users row and its samples.
 -- Existing table grants cover the API's reads and writes and ingest/scoring's

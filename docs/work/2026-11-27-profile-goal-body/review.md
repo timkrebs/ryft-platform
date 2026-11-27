@@ -1,10 +1,10 @@
-# Review: `me: goal, sex and weight on the profile` (D305)
+# Review: `me: goal, sex and weight on the profile` (D306)
 
 One code-reviewer pass on commit 1 of `feat/profile-goal-body` (2026-11-27). No blockers.
 
 | # | Severity | Finding | Outcome |
 | --- | --- | --- | --- |
-| 1 | should-fix | `{"sex":null}` / `{"weight_kg":null}` need a naming consent too (the contract says so). A user who set them under version V1 and then withdrew, or moved to a V2 that does not name them, cannot clear them without deleting the account (GDPR Art. 7(3), 17). | **Deferred, decide before a policy names the data.** Not reachable today: the set is empty, so nobody can store a value. It changes the contract (relaxing a 403), so it goes to api-contract-owner with the privacy update / PR 3. Options: clears without consent, or `RevokeConsent` clears sex and the manual weight. Recorded in D305. |
+| 1 | should-fix | `{"sex":null}` / `{"weight_kg":null}` need a naming consent too (the contract says so). A user who set them under version V1 and then withdrew, or moved to a V2 that does not name them, cannot clear them without deleting the account (GDPR Art. 7(3), 17). | **Deferred, decide before a policy names the data.** Not reachable today: the set is empty, so nobody can store a value. It changes the contract (relaxing a 403), so it goes to api-contract-owner with the privacy update / PR 3. Options: clears without consent, or `RevokeConsent` clears sex and the manual weight. Recorded in D306. |
 | 2 | should-fix | `profileFail` replaces every store error with one string, which leaves no SQLSTATE or constraint name for a 500 on `/v1/me`. | **Fixed:** logs `pgconn.PgError` code and constraint name (they hold no values), otherwise the error type. |
 | 3 | should-fix | While no version names the data, the documented goal-step body (`goal`+`sex`+`weight_kg`) is 403 for everyone. The generic `consent_required` handling (show consent, re-send) loops, and `goal` is never saved. | **Fixed in docs:** the PATCH section says the app sends `sex`/`weight_kg` only after the privacy version that names them is current and consented, sends `goal` on its own before that, and must not loop on this 403 when the consent already equals the current version. |
 | 4 | nit | `HealthKitWeighIn` does not filter `unit='kg'` and 25–350, unlike `coaching.go`. | **Fixed:** filter added. |
