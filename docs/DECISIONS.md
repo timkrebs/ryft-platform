@@ -7522,3 +7522,28 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   unchanged.
 - **Cost:** the merge transaction now also deletes `from`; it is bounded by `deleteTimeout` and the route is
   admin-only. Rollback: revert; no migration.
+
+## D305 — The access line redacts every date in a path: the journal, the day and the coaching feedback (RFT-75, 2026-11-27)
+
+- **Context:** #260 (D300) made `redactPrivatePath`, the outermost wrapper of `/v1/`, log nutrition's prefix and the
+  recovery check-in's pattern, but `GET|PUT /v1/journal/{day}` and `PUT /v1/coaching/feedback/{date}` still logged the
+  raw date on every 401, 429, 404/405 and gate refusal, and the journal on its answers too.
+- **Decision:** one table in `privateLogPath` (`cmd/api/nutrition.go`), whatever follows the prefix logged as the
+  placeholder: `/v1/recovery/checkins/{date}`, `/v1/journal/{day}`, `/v1/days/{day}`, `/v1/coaching/feedback/{date}`.
+  **`GET /v1/days/{day}` is added too**, which #260 pinned as out of scope: a grep of the router for `{day}`/`{date}`
+  finds it, and the day a user reads is as private as the day they write. The list routes without a date (`GET
+  /v1/days`, `GET /v1/coaching/daily-briefing`) keep their path. Opaque ids (plans, sessions, exercises, behaviors,
+  devices, `GET /v1/workouts/{id}`) stay as they are: a random uuid, not a date or a value.
+- **The redactor moves out of `/v1/` to wrap the whole mux** (`newMux` returns `redactPrivatePath(mux)`), and a path
+  is matched in its `path.Clean` form too: `ServeMux` answers `/v1//journal/2026-11-26` or `/v1/x/../days/…` with a
+  redirect (307 on these routes) before the `/v1/` handler runs, so before this the line logged the raw path, on
+  #260's routes as well (the review, `docs/work/2026-11-27-log-redaction/review.md`). `/v1/workouts/{id}/rpe//`
+  now logs the pattern too (#260 pinned it as unredacted).
+- **Pinned by** `TestPrivateLogPath` and `TestPrivatePathsLogNoDateOrWorkoutID` (renamed from
+  `TestRecoveryRejectionsLogNoDateOrWorkoutID`): an authorized request (closed-pool store), a 401, the redirect of an
+  unclean path, the wrong method and the 429 each log the redacted path and the log holds no date. A handler that sets
+  `LogPath` to its mux pattern (`PUT /v1/coaching/feedback/{date}`, the recovery routes) keeps doing so; both forms
+  carry no date.
+- **Not covered:** a path that is no route (`/v1/sleep/2026-11-26`, `/v1/Journal/…`: the mux is case-sensitive) is a
+  404 that logs its raw path; only a broken client sends one. Cloud Run's own request log has the full URL; below 5xx
+  it is excluded from `edge = "built"` on (D242). No `API.md` change. Rollback: revert; no migration.

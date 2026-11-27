@@ -5239,9 +5239,14 @@ scripts/seed_demo.py`.
   has no key of its own: only what every line has and what logx adds from the request,
   as on every line. Cloud Monitoring's `ryft_notices` counts it, `feedback received`
   and `admin auth rejected` by their message alone, and its alert names the policy and
-  that message, no key of the line (GCP → 14a.9). Paths carry dates and resource ids (`/v1/days/2026-10-19`,
-  `/v1/workouts/<uuid>`), so the lines still show when someone used the app and which
-  days they opened: personal data, read and kept as below.
+  that message, no key of the line (GCP → 14a.9). A path that holds a date logs a
+  placeholder whoever answers (the mux's redirect of an unclean path, a 401, 429, gate,
+  404/405; `privateLogPath`, D300, D305): `/v1/days/{day}`, `/v1/journal/{day}`,
+  `/v1/recovery/checkins/{date}`, `/v1/coaching/feedback/{date}`, `/v1/workouts/{id}/rpe`;
+  nutrition logs `/v1/nutrition`. A handler behind some of them logs its route pattern
+  with the method (`PUT /v1/coaching/feedback/{date}`). A path that is no route logs as sent.
+  Other paths carry resource ids (`/v1/workouts/<uuid>`), and every line has its time,
+  so the lines still show when someone used the app: personal data, read and kept as below.
 - **Never logged:** health values (no score, sample, sleep or workout value, baseline,
   learned sleep need or readiness state, neither as a field nor in an error's text: a
   body that does not decode is named by its field and type, not by its value), request
@@ -5256,7 +5261,8 @@ scripts/seed_demo.py`.
 - **Tests pin it:** `TestEngineLogsNoHealthValues` (scoring at debug level, every
   line's keys allowlisted), `TestSyncLogsCountsOnly` and
   `TestSyncErrorPathsLogNoHealthData` (ingest), `TestWritesLogNoBodies`,
-  `TestErrorPathsLogNoBodies` and `TestTrainImportLogsCountsOnly` (api), `TestSyncStripsNULBeforeTheDatabase` and
+  `TestErrorPathsLogNoBodies`, `TestTrainImportLogsCountsOnly`, `TestPrivateLogPath` and
+  `TestPrivatePathsLogNoDateOrWorkoutID` (api), `TestSyncStripsNULBeforeTheDatabase` and
   `TestWritesRefuseNULBeforeTheDatabase` (a NUL removed, or refused with `422`/`400`,
   logs no text), `TestDecodeErrorsQuoteNoValues` (events), `TestJSONErrorDropsTheValue`
   (logx), `TestTransportErrorsHideTheDeviceToken` (apns), `TestAdminErrorsHoldNoBody`
