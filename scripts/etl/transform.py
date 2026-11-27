@@ -854,7 +854,23 @@ class Curation:
     groups: tuple[tuple[str, ...], ...]
     patterns: tuple[tuple[tuple[str, re.Pattern[str]], ...], ...]  # per group: (member, whole-word pattern)
     twins: dict[str, dict[str, str]]
-    usda_labels: dict[str, tuple[str, ...]]  # normalized German staple name or alias -> "usda:<fdc_id>" keys
+    usda_labels: dict[str, tuple[str, ...]]  # twin_keys of a German staple name or alias -> "usda:<fdc_id>" keys
+
+
+BLS_STATE_WORDS = re.compile(r"(?<!\w)(?:roh|gekocht|gegart|gebraten|gebacken|getrocknet|tiefgefroren|tiefgekühlt)(?!\w)",
+                             re.IGNORECASE)
+
+
+def twin_keys(name: str) -> set[str]:
+    """The keys under which a German name proposes a twin (dry-run reporting only, never what is written).
+
+    BLS 4.0 adds the state after a space ("Banane roh") or a comma ("Möhre, roh") and sometimes splits a compound
+    ("Hafer Flocken"). So: the whole name, its first comma segment, the name without its state words, and that
+    without spaces.
+    """
+    first = normalize(name.split(",", 1)[0])
+    bare = normalize(BLS_STATE_WORDS.sub(" ", name))
+    return {key for key in (normalize(name), first, bare, bare.replace(" ", "")) if len(key) >= 2}
 
 
 def curation_error(message: str) -> ValueError:
@@ -893,8 +909,8 @@ def parse_curation(data: object) -> Curation:
     labels: dict[str, set[str]] = {}
     for fdc_id, staple in STAPLES["usda"].items():
         for label in (staple["names"].get("de"), *staple["aliases"].get("de", ())):
-            if label and normalize(label):
-                labels.setdefault(normalize(label), set()).add(f"usda:{fdc_id}")
+            for key in twin_keys(label or ""):
+                labels.setdefault(key, set()).add(f"usda:{fdc_id}")
     return Curation(
         tuple(groups),
         tuple(tuple((member, re.compile(rf"(?<!\w){re.escape(member)}(?!\w)")) for member in group)
@@ -1021,8 +1037,9 @@ def bls_row_food(row: dict, version: str, curation: Curation, notes: BlsNotes | 
             raise Skip(code)
         if notes is not None:
             notes.twin_mismatch[code] = {"expected": twin["name_de"], "found": name_de}
-    if notes is not None and (staples := curation.usda_labels.get(normalize(name_de.split(",", 1)[0]))):
-        notes.twin_candidates[code] = {"name_de": name_de, "staples": list(staples)}
+    if notes is not None and (staples := sorted({key for name in twin_keys(name_de)
+                                                 for key in curation.usda_labels.get(name, ())})):
+        notes.twin_candidates[code] = {"name_de": name_de, "staples": staples}
     alcohol = amounts.get("alcohol")
     warnings = validate(name_de, amounts, alcohol is not None and alcohol.amount > 0)
     names = [("de", name_de)]

@@ -29,7 +29,7 @@ from bls_convert import (BLS_COMPONENTS, REGISTRY_UNITS, ConvertError, column_le
 from bls_convert import main as convert_main
 from categorizer import classify
 from import_pg import IMPORT_NAMESPACE
-from run_etl import process
+from run_etl import process, refuse_staples_over_full_bls
 from transform import (BLS_ATTRIBUTION, BLS_CSV_PATH, BLS_CURATION_PATH, BLS_NUTRIENT_CODES, STAPLES, STAPLES_PATH,
                        USDA_NUTRIENTS, BlsNotes, Reject, Skip, bls_csv_rows, bls_food, bls_input_digest, bls_row_food,
                        load_curation, parse_curation, staple_aliases, verify_bls_extract)
@@ -598,6 +598,40 @@ class TransformTests(unittest.TestCase):
         unknown = self.food("Z999999", "Apfel, roh")  # no main group for Z: no hint
         self.assertEqual(unknown.category, classify("Apfel, roh", [], provider="bls"))
 
+    def test_twin_candidates_ignore_state_words_spaces_and_commas(self):
+        # BLS 4.0 writes the state after a space ("Banane roh") or a comma, and splits some compounds ("Hafer Flocken").
+        # Codes outside the committed twins, so the rows are proposed, not skipped.
+        for code, name, staples in (("F900001", "Banane roh", ["usda:173944"]), ("C900001", "Hafer Flocken", ["usda:173904"]),
+                                    ("E900001", "Hühnerei gekocht", ["usda:171287"]),
+                                    ("X900001", "Kartoffeln gekocht, mit Butter", ["usda:170440"]),
+                                    ("F900002", "Apfel roh", ["usda:171688"]), ("G300000", "Möhre, roh", ["usda:170393"])):
+            with self.subTest(name=name):
+                notes = BlsNotes()
+                self.food(code, name, notes=notes)
+                self.assertEqual(notes.twin_candidates, {code: {"name_de": name, "staples": staples}})
+        notes = BlsNotes()
+        self.food("D130100", "Apfelkuchen (Sandmasse)", notes=notes)
+        self.assertEqual(notes.twin_candidates, {})
+
+    def test_the_staples_only_path_never_writes_over_a_full_import(self):
+        class Rows:
+            def __init__(self, row):
+                self.row, self.calls = row, []
+
+            def execute(self, sql, params):
+                self.calls.append((sql, params))
+                return self
+
+            def fetchone(self):
+                return self.row
+
+        refuse_staples_over_full_bls(None, "py-etl4:bls_4_0:staples2")  # a dry run has nothing to protect
+        empty = Rows(None)
+        refuse_staples_over_full_bls(empty, "py-etl4:bls_4_0:staples2")
+        self.assertEqual(empty.calls[0][1], ("py-etl4:bls_4_0:staples2:",))
+        with self.assertRaisesRegex(ValueError, "holds the full BLS import"):
+            refuse_staples_over_full_bls(Rows((1,)), "py-etl4:bls_4_0:staples2")
+
     def test_bls_codes_may_carry_capital_letters_in_positions_3_and_4(self):
         for code in ("M5B1600", "U57B100", "P2A3000", "M111300"):
             with self.subTest(code=code):
@@ -845,7 +879,7 @@ class CliTests(unittest.TestCase):
             [line] = self.run_etl("--bls-csv", str(path)).stdout.splitlines()
             result = json.loads(line)
             self.assertEqual(result["version"], f"py-etl4:bls_4_0:staples2:{bls_input_digest(path)}")
-            self.assertEqual(result["stale_twins"], {})  # the committed curation has no twins
+            self.assertEqual(result["stale_twins"], {})  # none of the committed twins is in this CSV
             self.assertEqual((result["release"], result["mode"], result["bls_full"]), ("bls", "dry-run", True))
             self.assertEqual({key: result["counts"][key] for key in ("processed", "accepted", "rejected")},
                              {"processed": 4, "accepted": 3, "rejected": 1})
