@@ -181,6 +181,13 @@ func TestMergeUsers(t *testing.T) {
 	if n := attestRows(t, pool, from); n != 3 {
 		t.Fatalf("a dry run keeps from's App Attest rows: %d, want 3", n)
 	}
+	// A dry run erases nothing and leaves no tombstone.
+	if n := owned(t, pool, from); n == 0 {
+		t.Fatal("a dry run must not erase from")
+	}
+	if n := count(`SELECT count(*) FROM deleted_users WHERE id = $1`, from); n != 0 {
+		t.Fatalf("a dry run left %d tombstone(s) of from", n)
+	}
 
 	res, err := st.MergeUsers(ctx, from, to, false)
 	if err != nil {
@@ -237,11 +244,22 @@ func TestMergeUsers(t *testing.T) {
 	if n := count(`SELECT count(*) FROM session_exercises WHERE user_id = $1 AND exercise_id = $2`, to, exToPress); n != 2 {
 		t.Errorf("to's press: in to's session and in the moved one (remapped): %d", n)
 	}
-	if err := st.DeleteUser(ctx, from); err != nil {
-		t.Fatalf("from is deleted afterwards: %v", err)
-	}
+	// The merge erased from in its own transaction (RFT-88): nothing left, a tombstone, no way back.
 	if n := owned(t, pool, from); n != 0 {
 		t.Fatalf("from leaves nothing: %d", n)
+	}
+	if n := count(`SELECT count(*) FROM deleted_users WHERE id = $1`, from); n != 1 {
+		t.Fatalf("from's tombstone: %d, want 1", n)
+	}
+	if _, err := st.EnsureUser(ctx, Identity{ID: from}); !errors.Is(err, ErrDeleted) {
+		t.Fatalf("EnsureUser of the merged account: %v, want ErrDeleted", err)
+	}
+	// The account deletion that follows in the old flow stays an idempotent no-op.
+	if err := st.DeleteUser(ctx, from); err != nil {
+		t.Fatalf("deleting from afterwards: %v", err)
+	}
+	if n := owned(t, pool, from); n != 0 {
+		t.Fatalf("from leaves nothing after DeleteUser: %d", n)
 	}
 	if _, err := st.MergeUsers(ctx, from, to, false); !errors.Is(err, ErrFromNotFound) {
 		t.Fatalf("a second merge: %v", err)

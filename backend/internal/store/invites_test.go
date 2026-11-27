@@ -794,14 +794,15 @@ func TestMergeMovesRedemptions(t *testing.T) {
 	if _, err := h.st.MergeUsers(ctx, from, to, false); err != nil {
 		t.Fatal(err)
 	}
-	if h.countUses(to) != 3 || h.countUses(from) != 1 {
-		t.Fatalf("to has a, b and shared; from keeps its duplicate for the deletion: to %d from %d", h.countUses(to), h.countUses(from))
+	// The merge erases from in its own transaction (D302): its duplicate of shared goes with it.
+	if h.countUses(to) != 3 || h.countUses(from) != 0 {
+		t.Fatalf("to has a, b and shared; from's duplicate is erased with from: to %d from %d", h.countUses(to), h.countUses(from))
 	}
 	if err := h.st.DeleteUser(ctx, from); err != nil {
-		t.Fatal(err)
+		t.Fatalf("deleting the merged account again is a no-op: %v", err)
 	}
 	if h.countUses(from) != 0 || h.countUses(to) != 3 {
-		t.Fatalf("after deleting from: to %d from %d", h.countUses(to), h.countUses(from))
+		t.Fatalf("after deleting from again: to %d from %d", h.countUses(to), h.countUses(from))
 	}
 }
 
