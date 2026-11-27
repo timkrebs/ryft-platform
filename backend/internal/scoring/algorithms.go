@@ -257,15 +257,11 @@ func Strain(points []HRPoint, rhr, maxHR float64) StrainResult {
 	}
 	sort.Slice(points, func(i, j int) bool { return points[i].T.Before(points[j].T) })
 	for i := 0; i+1 < len(points); i++ {
-		dt := points[i+1].T.Sub(points[i].T)
+		dt, hrr := strainInterval(points[i], points[i+1], rhr, maxHR)
 		if dt <= 0 {
 			continue
 		}
-		if dt > maxSampleGap {
-			dt = maxSampleGap
-		}
 		mins := dt.Minutes()
-		hrr := clamp((points[i].BPM-rhr)/(maxHR-rhr), 0, 1)
 		res.Minutes += mins
 		res.TRIMP += mins * trimpPerMinute(hrr)
 		if z := hrrZone(hrr); z >= 0 {
@@ -274,6 +270,11 @@ func Strain(points []HRPoint, rhr, maxHR float64) StrainResult {
 	}
 	res.Score = StrainFromTRIMP(res.TRIMP)
 	return res
+}
+
+// strainInterval is the time and heart-rate reserve credited by one point.
+func strainInterval(point, next HRPoint, rhr, maxHR float64) (time.Duration, float64) {
+	return min(next.T.Sub(point.T), maxSampleGap), clamp((point.BPM-rhr)/(maxHR-rhr), 0, 1)
 }
 
 // zoneFloors are the lower bounds of the five heart-rate-reserve zones.

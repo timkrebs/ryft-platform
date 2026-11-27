@@ -30,7 +30,7 @@ so are the operator routes' `actor.kind` (`key` or `user`, Admin routes → The 
 | Strain — workout | HR curve, zones, avg/max HR, TRIMP, strain | `GET /v1/workouts/{id}` |
 | Fitness — load tiles (D304; not served yet) | cardio and muscular training load: the last 7 days against the 28-day norm, the optimal band, below / optimal / above, and how many days of data stand behind it; the 28-day chart | `GET /v1/days/{day}` → `score.training_load`; `GET /v1/days?from&to` → `training_load` per day (**Training load** under `GET /v1/days`) |
 | Nutrition — net energy (D304; not served yet) | intake, active and resting energy and the day's balance, what is missing, how sure it is, whether the day is still going | `GET /v1/days/{day}` and `GET /v1/days?from&to` → `score.energy` (**Net energy** under `GET /v1/days`) |
-| Fitness — VO₂ max, heart-rate recovery, active time, zones, muscle freshness (D304; not served yet) | VO₂ max with its 7-day change, heart-rate recovery, active minutes, active kcal, the five heart-rate zones, a freshness figure per muscle | `GET /v1/days/{day}` → `score.vo2max`, `vo2max_delta_7d`, `hrr_bpm`, `active_min`, `score.active_kcal`, `strain.zone_min`, `muscles` (**Fitness tiles** under `GET /v1/days`) |
+| Fitness — VO₂ max, heart-rate recovery, active time, zones, muscle freshness (D304) | VO₂ max with its 7-day change, heart-rate recovery, active minutes, active kcal, the five heart-rate zones, a freshness figure per muscle (not served yet) | `GET /v1/days/{day}` → `score.vo2max`, `vo2max_delta_7d`, `hrr_bpm`, `active_min`, `score.active_kcal`, `strain.zone_min`, `muscles` (**Fitness tiles** under `GET /v1/days`) |
 | Insights | cards; charts behind them | `GET /v1/insights`, `GET /v1/trends?metric=…` |
 | Profile | timezone, max HR, sleep baseline (learned or set by hand); apply & recompute | `GET`/`PATCH /v1/me`, `POST /v1/recompute` |
 | Profile — Delete account | erase all data and the sign-in | `DELETE /v1/me` |
@@ -2097,10 +2097,10 @@ scored days in `[from, to]`, oldest first; days that were never scored are absen
 | `model_version` | string? | The scoring model that computed it (`GET /v1/model`), e.g. `2026.10.1`; `null` for rows scored before versions existed, until they are rescored. A row whose version differs from `GET /v1/model` → `current` will move when it is rescored. |
 | `training_load` | `TrainingLoad?` | D304, not served yet. The cardio and the muscular load of the last 7 days against the last 28, with the optimal band: **Training load** below. Includes today so far (so a past day's figure is final, today's still moves). **Computed on read**, not stored. Not `CoachingBriefing.training_load`. |
 | `energy` | `DayEnergy?` | D304, not served yet. Intake, active and resting energy and the net balance of the day: **Net energy** below. **Assembled on read.** |
-| `vo2max` | number? | D304, not served yet. ml/kg/min: the newest `vo2max` reading in the 30 days up to the day's end; `null` without one. |
-| `vo2max_delta_7d` | number? | D304, not served yet. `vo2max` minus the same value as of 7 days earlier; `null` when either is `null`, and **`null` unless a `vo2max` reading lies within the last 7 days up to the day's end** (an older reading alone is not a change). |
-| `hrr_bpm` | number? | D304, not served yet. Heart-rate recovery in bpm: the mean of the day's `heart_rate_recovery` samples (the 1-minute drop after a workout); `null` without one. |
-| `active_min` | int? | D304, not served yet. Active time in minutes: the union of the day's workout time and the minutes with heart rate in zone 1 or above (50 % of heart-rate reserve or more, as `strain.zone_min`), so overlapping minutes count once. `null` without heart rate and without a workout. Not `strain.hr_min`, which is the minutes the watch was worn. |
+| `vo2max` | number? | D304, from the platform PR `days: VO2 max with its 7-day change, heart-rate recovery, active time`. ml/kg/min: the newest `vo2max` reading in the 30 days up to the day's end; `null` without one. |
+| `vo2max_delta_7d` | number? | D304, from the platform PR `days: VO2 max with its 7-day change, heart-rate recovery, active time`. `vo2max` minus the same value as of 7 days earlier; `null` when either is `null`, and **`null` unless a `vo2max` reading lies within the last 7 days up to the day's end** (an older reading alone is not a change). |
+| `hrr_bpm` | number? | D304, from the platform PR `days: VO2 max with its 7-day change, heart-rate recovery, active time`. Heart-rate recovery in bpm: the mean of the day's `heart_rate_recovery` samples (the 1-minute drop after a workout); `null` without one. |
+| `active_min` | int? | D304, from the platform PR `days: VO2 max with its 7-day change, heart-rate recovery, active time`. Active time in minutes: the union of the day's workout time and the minutes with heart rate in zone 1 or above (50 % of heart-rate reserve or more, as `strain.zone_min`), so overlapping minutes count once. `null` without heart rate and without a workout. Also `null` on rows scored before model 2026.11.2, until they are rescored. Not `strain.hr_min`, which is the minutes the watch was worn. |
 
 #### `calibrating_reason`
 
@@ -2213,14 +2213,14 @@ Examples of what a client sees for one morning: after a 03:00 Garmin sync, the `
 night, the same day with `"sleep_hr_minutes": 400, "hrv_readings": 5, "night_complete": true,
 "status": "final"`, the push, and a silent refresh for both.
 
-#### Fitness fields: training load, net energy and tiles (D304; not served yet)
+#### Fitness fields: training load, net energy and tiles (D304)
 
 New optional fields of `DailyScore`, on both `GET /v1/days?from&to` and `GET /v1/days/{day}` (`score`): the
 Fitness tab already reads one day and a chart over a range, so no new route. **Absent from a server before the
 implementing change: decode every one as optional.** Old builds ignore them. On the placeholder of a day that was
-never scored (`GET /v1/days/{day}`) the new fields are `null`, like its other numbers; once a day is scored,
-`training_load` and `energy` are objects. An excerpt of one scored day (an `http` block until the server has the
-model fields):
+never scored (`GET /v1/days/{day}`) the new fields are `null`, like its other numbers. The server serves VO₂ max,
+its 7-day change, heart-rate recovery and active time. Once their implementations ship, `training_load` and
+`energy` are objects on a scored day. An excerpt of one scored day with the full D304 contract:
 
 ```http
 HTTP/2 200
@@ -5275,3 +5275,4 @@ struct APIErrorBody: Codable {
 | 2026-10-18 | `DayDetail.sleep` (typed night with stages and hypnogram) and `GET /v1/sleep` added. |
 | 2026-10-18 | `DailyScore.readiness` and `DailyScore.state` added. |
 | 2026-10-18 | Initial v1: sync, me, days, day detail, workouts, recompute. |
+| 2026-11-27 | **[Fitness tiles](#fitness-tiles): VO₂ max, its 7-day change, heart-rate recovery and active time** (D304, D311). `GET /v1/days` and `GET /v1/days/{day}` serve `DailyScore.vo2max`, `vo2max_delta_7d`, `hrr_bpm` and `active_min`. The three sample-based fields are computed on read. Active time is stored by model 2026.11.2 and appears on earlier scores when they are rescored. The never-scored day placeholder returns all four fields as `null`. `hrr_bpm` stays `null` for every account until the server stores `heart_rate_recovery` (`flags["sync.fitness_types"]` on and the bundled privacy update live). |

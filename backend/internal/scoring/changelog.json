@@ -1,5 +1,12 @@
 [
   {
+    "version": "2026.11.2",
+    "date": "2026-11-27",
+    "summary_en": "Active time. Each day now records your active minutes: your workouts plus every minute with your heart rate in zone 1 or higher, with overlapping time counted once. No existing score changes.",
+    "summary_de": "Aktive Zeit. Jeder Tag hält jetzt deine aktiven Minuten fest: deine Trainings und jede Minute mit Herzfrequenz in Zone 1 oder höher. Überschneidungen zählen nur einmal. Kein bestehender Score ändert sich.",
+    "affects": []
+  },
+  {
     "version": "2026.11.1",
     "date": "2026-11-27",
     "summary_en": "Recovery without a watch. On a morning without a measured night, a short check-in (when you went to bed and woke up, how well you slept, how fresh you feel) gives an estimated recovery from 0 to 100: mostly your two ratings, compared with your own last two weeks once you have five check-ins, then how long you were in bed, how regular your sleep times are and, when you have one, yesterday's nutrition-to-recovery score. It is marked as estimated and never enters your trends. A workout without heart rate can be rated from 1 to 10 for how hard it felt; the rating then counts in your training load. Measured data always wins, and no stored daily score changes.",

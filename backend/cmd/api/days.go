@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -98,15 +99,63 @@ func (h *handler) days(w http.ResponseWriter, r *http.Request) {
 	if rows == nil {
 		rows = []model.DailyScore{}
 	}
-	today, _, err := h.localToday(r)
+	today, loc, err := h.localToday(r)
 	if err == nil {
 		err = h.withScoringStates(r.Context(), userOf(r).ID, today, rows)
+	}
+	if err == nil {
+		err = h.withFitnessTiles(r, loc, rows)
 	}
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, 200, rows)
+}
+
+// withFitnessTiles attaches the latest readings to stored scores (oldest day first, D311).
+func (h *handler) withFitnessTiles(r *http.Request, loc *time.Location, rows []model.DailyScore) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	first, err := time.ParseInLocation(dayLayout, rows[0].Day, loc)
+	if err != nil {
+		return err
+	}
+	last, err := time.ParseInLocation(dayLayout, rows[len(rows)-1].Day, loc)
+	if err != nil {
+		return err
+	}
+	ctx, userID := r.Context(), userOf(r).ID
+	end := last.AddDate(0, 0, 1)
+	vo2, err := h.st.SamplesBetween(ctx, userID, model.SampleVO2Max, first.AddDate(0, 0, -37), end)
+	if err != nil {
+		return err
+	}
+	hrr, err := h.st.SamplesBetween(ctx, userID, model.SampleHeartRateRecovery, first, end)
+	if err != nil {
+		return err
+	}
+
+	// The sample reader orders by start. Search just the relevant days' readings
+	// for each score, even when the request spans years.
+	between := func(readings []model.Sample, from, to time.Time) []model.Sample {
+		byStart := func(s model.Sample, t time.Time) int { return s.Start.Compare(t) }
+		i, _ := slices.BinarySearchFunc(readings, from, byStart)
+		j, _ := slices.BinarySearchFunc(readings, to, byStart)
+		return readings[i:j]
+	}
+	for i := range rows {
+		row := &rows[i]
+		start, err := time.ParseInLocation(dayLayout, row.Day, loc)
+		if err != nil {
+			return err
+		}
+		end := start.AddDate(0, 0, 1)
+		row.VO2Max, row.VO2MaxDelta7D = scoring.VO2MaxOn(row.Day, loc, between(vo2, start.AddDate(0, 0, -36), end))
+		row.HRRBpm = scoring.HRRMean(row.Day, loc, between(hrr, start, end))
+	}
+	return nil
 }
 
 // day is the Today / Sleep "Day" / Strain view: the score, last night in
@@ -145,6 +194,10 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 	out := model.DayDetail{Workouts: workouts,
 		Score: model.DailyScore{Day: day, State: model.StateCalibrating, Details: map[string]any{}}}
 	if len(scores) > 0 {
+		if err := h.withFitnessTiles(r, loc, scores); err != nil {
+			httpx.Fail(w, r, err)
+			return
+		}
 		out.Score = scores[0]
 		load, err := h.st.DayLoadOf(ctx, userOf(r).ID, day)
 		if err != nil {

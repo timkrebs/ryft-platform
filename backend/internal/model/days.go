@@ -29,6 +29,7 @@ type DailyScore struct {
 	Strain           *float64 `json:"strain"`
 	Steps            *int     `json:"steps"`        // day total, null without step samples
 	ActiveKcal       *int     `json:"active_kcal"`  // day total of active energy, null without samples
+	ActiveMin        *int     `json:"active_min"`   // union of workout and heart-rate zone time
 	StrengthMin      *int     `json:"strength_min"` // minutes of completed strength sessions, null without one
 	VolumeKG         *float64 `json:"volume_kg"`    // their Σ reps × kg, null without a session
 	SleepPerformance *int     `json:"sleep_performance"`
@@ -47,6 +48,9 @@ type DailyScore struct {
 	RHR                *float64       `json:"rhr"`
 	RespRate           *float64       `json:"resp_rate"`
 	SpO2               *float64       `json:"spo2"`
+	VO2Max             *float64       `json:"vo2max"`
+	VO2MaxDelta7D      *float64       `json:"vo2max_delta_7d"`
+	HRRBpm             *float64       `json:"hrr_bpm"`
 	HRVBaselineMS      *float64       `json:"hrv_baseline_ms"`    // 30-day baseline hrv_ms is scored against
 	RHRBaseline        *float64       `json:"rhr_baseline"`       // 30-day baseline rhr is scored against
 	BaselineDays       int            `json:"baseline_days"`      // nights behind the baselines, 0..30; typed, details' copy stays frozen (D20)

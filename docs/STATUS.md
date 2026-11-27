@@ -8,6 +8,8 @@ PR 3 (branch `feat/sync-fitness-types`, D307): `POST /v1/sync` knows `basal_ener
 
 Open: the other implementation PRs (plan.md, about 9–10 days). The bundled privacy update (basal energy, heart-rate recovery, body mass from Apple Health, sex, weight, goal) must be live before the flag goes on. The app sends the types only while the flag is `true`. Reviews: `docs/work/2026-11-27-fitness-contract/review.md`.
 
+PR 5 (branch `feat/fitness-tiles`, D311) implements VO₂ max, its 7-day change, heart-rate recovery and active time on both day routes. Migration 0071 adds active minutes for model 2026.11.2. Older rows show `active_min: null` until rescored. After the deploy, each account rescores itself with `POST /v1/recompute` using its own token (OPERATIONS.md → Rescoring; there is no bulk runner on Cloud Run, D246). Until the bundled privacy update is live and `sync.fitness_types` is on, `hrr_bpm` stays `null`. Review: `docs/work/2026-11-27-fitness-contract/review-pr5.md`.
+
 ## The sync button: the sync status is served (2026-11-27, D297, D301)
 
 Done (branch `feat/sync-status`): `GET /v1/me/sync` answers `sources`, `freshness` and `scores_pending_since` as the contract says; the API.md examples are typed and decode. Scoring closes the queued days of an account without consent (`score_queue.closed_reason`, migration 0067), so they stop holding `freshness`. Five queries per uncached call, plus one flag read per listed provider. Not tracked: the N2R baseline, the briefing and the pilot's partner deliveries (D297). Merge applies **0067**, after #260's 0064–0066 already on main (a column, an index, two grants; rollback-safe); the api and scoring roll with it. Open: the behaviour tests, review, F1 (`MarkScored` exact).

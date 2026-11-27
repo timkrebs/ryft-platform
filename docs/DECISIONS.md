@@ -7561,3 +7561,36 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   after the flag is turned off (tested).
 - **Rollback:** revert. Migration 0069 only adds a flag row and a function, and nothing is stored while the policy
   list is empty.
+
+## D311 — Read fitness samples on the day routes and store active time (C1 PR 5, 2026-11-27)
+
+- **VO₂ max, its 7-day change and heart-rate recovery are readings.** The two day routes fill
+  the three fields only on stored scores, using each sample's start in the caller's local calendar.
+  One user-scoped VO₂ max query covers the span from 37 days before the first score to midnight
+  after the last. One user-scoped recovery query covers the scored rows' span, with the same end.
+  The sample reads keep a fixed query count even across long ranges. Late and deleted samples show
+  on the next request. Same-start VO₂ max ties take the larger reading, and the change uses the
+  original readings before rounding. The never-scored placeholder has four `null` fitness fields.
+- **Bounds and sources.** As D307 promised, the readers filter implausible values. VO₂ max counts from
+  10 to 100 ml/kg/min and recovery from 1 to 120 bpm, both inclusive; a value outside is ignored. The
+  tile shows the newest reading from any source. The 7-day change compares it only with an earlier
+  reading from the same source, so a second device's different estimate is not shown as a change.
+- **The read uses the samples already stored for the caller.** The ingest flag and policy gate
+  control storage (D307). A day request can return the caller's stored readings after the flag
+  turns off. The feature adds no sample-value logging.
+- **Active time belongs in the scoring pass.** It already has the de-duplicated heart-rate points
+  and reserve used for day Strain, plus the day's workouts and duplicate decisions. Counting the
+  union of visible workout time and zone time there keeps raw heart rate off the unbounded day
+  range route. Migration 0071 adds a nullable `active_min` with a nonnegative check. `NULL` on
+  earlier scores persists until rescore. Active time is a result, so changing it does not trigger
+  a rescore of days later in its history window.
+- **Model 2026.11.2** records active time. Existing score values stay the same, and `affects` is
+  `[]`. Rescoring fills historical active time. The migration can remain if the code is reverted.
+- **Split from the contract plan.** The contract's plan (#264, PR 5 row) put all four in the scoring pass,
+  and the brief asked for all four on read. Each half takes the cheaper path: the readings on read, and
+  active time in the pass, because `GET /v1/days` has no range cap and raw heart rate per request would be
+  unbounded.
+- **Known edges.** Workouts count on the day they start (the pass's `WorkoutsBetween`), so the minutes
+  after midnight of a late workout count on the next day only through its heart rate. After a rollback to
+  an older scoring image, that image's upsert does not write `active_min`, so a re-scored row keeps the newer
+  value, possibly stale, until the next 2026.11.2 pass. Accepted: it is one display field, and a rollback is followed by a rescore anyway.

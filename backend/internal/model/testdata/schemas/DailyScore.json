@@ -5,6 +5,10 @@
       "nullable": true,
       "type": "integer"
     },
+    "active_min": {
+      "nullable": true,
+      "type": "integer"
+    },
     "baseline_days": {
       "type": "integer"
     },
@@ -36,6 +40,10 @@
       },
       "nullable": true,
       "type": "object"
+    },
+    "hrr_bpm": {
+      "nullable": true,
+      "type": "number"
     },
     "hrv_baseline_ms": {
       "nullable": true,
@@ -135,6 +143,14 @@
       "nullable": true,
       "type": "integer"
     },
+    "vo2max": {
+      "nullable": true,
+      "type": "number"
+    },
+    "vo2max_delta_7d": {
+      "nullable": true,
+      "type": "number"
+    },
     "volume_kg": {
       "nullable": true,
       "type": "number"
@@ -142,6 +158,7 @@
   },
   "required": [
     "active_kcal",
+    "active_min",
     "baseline_days",
     "baseline_hrv_days",
     "baseline_rhr_days",
@@ -150,6 +167,7 @@
     "computed_at",
     "day",
     "details",
+    "hrr_bpm",
     "hrv_baseline_ms",
     "hrv_ms",
     "model_version",
@@ -175,6 +193,8 @@
     "steps",
     "strain",
     "strength_min",
+    "vo2max",
+    "vo2max_delta_7d",
     "volume_kg"
   ],
   "title": "DailyScore",

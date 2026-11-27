@@ -1046,9 +1046,9 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 zone_minutes, trimp, hr_min, hrv_baseline_ms, rhr_baseline, baseline_days, steps, active_kcal,
 		 muscular_trimp, strength_min, volume_kg, nap_min, sleep_quality, sleep_consistency,
 		 sleep_need_base_min, sleep_need_strain_min, sleep_need_debt_min, sleep_need_nap_min, model_version,
-		 baseline_hrv_days, baseline_rhr_days, calibrating_reason, computed_at)
+		 baseline_hrv_days, baseline_rhr_days, calibrating_reason, active_min, computed_at)
 		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
-		 $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,now())
+		 $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,now())
 		ON CONFLICT (user_id, day) DO UPDATE SET
 		 readiness=EXCLUDED.readiness, state=EXCLUDED.state, recovery=EXCLUDED.recovery,
 		 strain=EXCLUDED.strain, sleep_performance=EXCLUDED.sleep_performance,
@@ -1066,7 +1066,8 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 sleep_need_base_min=EXCLUDED.sleep_need_base_min, sleep_need_strain_min=EXCLUDED.sleep_need_strain_min,
 		 sleep_need_debt_min=EXCLUDED.sleep_need_debt_min, sleep_need_nap_min=EXCLUDED.sleep_need_nap_min,
 		 model_version=EXCLUDED.model_version, baseline_hrv_days=EXCLUDED.baseline_hrv_days,
-		 baseline_rhr_days=EXCLUDED.baseline_rhr_days, calibrating_reason=EXCLUDED.calibrating_reason, computed_at=now()
+		 baseline_rhr_days=EXCLUDED.baseline_rhr_days, calibrating_reason=EXCLUDED.calibrating_reason,
+		 active_min=EXCLUDED.active_min, computed_at=now()
 		RETURNING (SELECT recovery FROM old) IS NULL AND recovery IS NOT NULL,
 		 NOT EXISTS (SELECT 1 FROM old o WHERE (`+oldHistoryInputs+`) IS NOT DISTINCT FROM (`+newHistoryInputs+`))`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
@@ -1075,7 +1076,7 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		zones, l.TRIMP, l.HRMin, d.HRVBaselineMS, d.RHRBaseline, d.BaselineDays, d.Steps, d.ActiveKcal,
 		l.MuscularTRIMP, d.StrengthMin, d.VolumeKG, d.NapMin, d.SleepQuality, d.SleepConsistency,
 		d.SleepNeedBaseMin, d.SleepNeedStrainMin, d.SleepNeedDebtMin, d.SleepNeedNapMin, d.ModelVersion,
-		d.BaselineHRVDays, d.BaselineRHRDays, d.CalibratingReason).Scan(&w.FirstRecovery, &w.InputsChanged)
+		d.BaselineHRVDays, d.BaselineRHRDays, d.CalibratingReason, d.ActiveMin).Scan(&w.FirstRecovery, &w.InputsChanged)
 	return w, err
 }
 
@@ -1173,7 +1174,7 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 		strength_min, volume_kg, sleep_performance, sleep_need_min,
 		sleep_need_base_min, sleep_need_strain_min, sleep_need_debt_min, sleep_need_nap_min, nap_min, sleep_quality, sleep_consistency,
 		sleep_actual_min, sleep_debt_min, hrv_ms, rhr, resp_rate, spo2, hrv_baseline_ms, rhr_baseline, baseline_days,
-		baseline_hrv_days, baseline_rhr_days, calibrating, calibrating_reason, details, computed_at, model_version
+		baseline_hrv_days, baseline_rhr_days, calibrating, calibrating_reason, details, computed_at, model_version, active_min
 		FROM daily_scores WHERE user_id=$1 AND day >= $2::date AND day <= $3::date ORDER BY day`, userID, from, to)
 	if err != nil {
 		return nil, err
@@ -1187,7 +1188,7 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 			&d.SleepActualMin,
 			&d.SleepDebtMin, &d.HRVms, &d.RHR, &d.RespRate, &d.SpO2, &d.HRVBaselineMS, &d.RHRBaseline,
 			&d.BaselineDays, &d.BaselineHRVDays, &d.BaselineRHRDays, &d.Calibrating, &d.CalibratingReason,
-			&details, &d.ComputedAt, &d.ModelVersion)
+			&details, &d.ComputedAt, &d.ModelVersion, &d.ActiveMin)
 		if err != nil {
 			return d, err
 		}

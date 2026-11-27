@@ -223,7 +223,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 
 | Package | Owns | Depends on | Tested by |
 | --- | --- | --- | --- |
-| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, appattest, apple, auth, behavior, config, connect, connect/fake, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, nutrition, periodization, ratelimit, scoring, sealed, store, train, wearables | 54 files (Postgres) |
+| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, appattest, apple, auth, behavior, config, connect, connect/fake, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, nutrition, periodization, ratelimit, scoring, sealed, store, train, wearables | 55 files (Postgres) |
 | `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | app, auth, config, connect, connect/fake, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 15 files (Postgres) |
 | `cmd/migrate` | migrate applies the migrations as the schema owner, loads the built-in exercises and plans, and sets the service roles' passwords where they changed. | db, httpx, smoke | none |
 | `cmd/notify` | notify wires internal/notify to its push routes and the 15-minute tick. | apns, app, config, eventbus, events, logx, notify, store | 1 file |
@@ -240,7 +240,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/config` | owns the services' environment configuration: what each variable means, its default and which combinations are refused. | appattest | 6 files |
 | `internal/connect` | is the provider-agnostic side of direct connections: what a provider's adapter implements, the OAuth helpers and the registry (D257). | model | 3 files |
 | `internal/connect/fake` | is the one provider adapter of phase 1 (D257), a provider with no network, for tests, compose and make smoke. | connect, model | 1 file |
-| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 24 files (Postgres) |
+| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 25 files (Postgres) |
 | `internal/energy` | models exercise expenditure, training load and energy balance. | model, wearables | 2 files |
 | `internal/evaluation` | computes forecast errors and bounded calibration updates. | energy, model | 2 files |
 | `internal/eventbus` | owns building a service's Pub/Sub transport from its configuration: the Bus, the push verifier, the push and tick handlers and the wait sender. | auth, config, events, events/pubsub | 1 file |
@@ -262,11 +262,11 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/periodization` | turns training and nutrition observations into bounded daily targets. | energy, model | 2 files |
 | `internal/ratelimit` | owns the in-memory token bucket per user and the platform's per-request-class limits. | none | 2 files |
 | `internal/retry` | owns start-up retry with backoff and jitter for dependencies that may not be up yet. | none | 1 file |
-| `internal/scoring` | owns the Recovery, Strain, Sleep and Readiness model and the Engine that applies it to stored data and writes the daily rows. | config, events, metrics, model, scoring/workoutdup, store, train | 26 files (Postgres) |
+| `internal/scoring` | owns the Recovery, Strain, Sleep and Readiness model and the Engine that applies it to stored data and writes the daily rows. | config, events, metrics, model, scoring/workoutdup, store, train | 28 files (Postgres) |
 | `internal/scoring/workoutdup` | owns the two rules that make one activity one workout: the same-source fold and the cross-source duplicate mark. | model | 1 file |
 | `internal/sealed` | encrypts the few secrets the platform stores (Apple refresh tokens, direct connections' tokens and PKCE verifiers) with AES-256-GCM. | none | 1 file |
 | `internal/smoke` | owns the Go end-to-end smoke against a running stack. | model | 1 file |
-| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, connect, energy, evaluation, events, events/outbox, flags, logx, metrics, model, nutrition, nutrition/score, periodization, scoring/workoutdup, train, wearables | 46 files (Postgres) |
+| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, connect, energy, evaluation, events, events/outbox, flags, logx, metrics, model, nutrition, nutrition/score, periodization, scoring/workoutdup, train, wearables | 47 files (Postgres) |
 | `internal/testsupport` | holds the helpers the Postgres-backed tests of several packages share. | none | via cmd/api, cmd/ingest, db, events/outbox, store |
 | `internal/train` | holds the pure rules of the Train feature that are not scoring. | model | 2 files |
 | `internal/wearables` | normalizes workout facts and resolves overlapping observations. | model | 2 files |
@@ -294,7 +294,7 @@ whose tests import it. `make smoke` and the golden fixtures are not attributed t
 - `samples(user_id, type, start_at, end_at, value, unit, source)` — the raw time series. `type` is a closed vocabulary: `heart_rate, hrv_sdnn, resting_hr, respiratory_rate, spo2, vo2max, active_energy, steps`. Unique on `(user, type, start, end, source)` → re-uploads are no-ops.
 - `sleep_segments` — HealthKit sleep analysis as-is: `inbed, asleep, core, deep, rem, awake`.
 - `workouts` — one row per user and HKWorkout (`(user_id, id)`, `id` = HK UUID), with `strain`, `trimp` and `zone_minutes` filled by scoring.
-- `daily_scores(user_id, day)` — the product: readiness + state, recovery, strain, baselines and `baseline_days` with its two counts `baseline_hrv_days` / `baseline_rhr_days` and `calibrating_reason` (0027), sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, daily `steps` and `active_kcal` (migration 0008), `muscular_trimp`, `strength_min`, `volume_kg` (0011), `calibrating`, and a `details` JSONB with the breakdown the UI can show.
+- `daily_scores(user_id, day)` — the product: readiness + state, recovery, strain, baselines and `baseline_days` with its two counts `baseline_hrv_days` / `baseline_rhr_days` and `calibrating_reason` (0027), sleep performance / need / actual / debt, overnight HRV, RHR, respiratory rate, SpO2, daily `steps` and `active_kcal` (migration 0008), `muscular_trimp`, `strength_min`, `volume_kg` (0011), `active_min` (0071), `calibrating`, and a `details` JSONB with the breakdown the UI can show. The day routes read `vo2max`, `vo2max_delta_7d` and `hrr_bpm` from the caller's samples when returning stored scores (D311).
 - **Journal** (0016, D74–D77): `behaviors` (built-ins with `user_id NULL` and fixed ids from the seeds, custom rows per user), `user_behaviors(user_id, behavior_id)` (the user's choice over `default_on`), `journal_days(user_id, day)` (a saved day) and `journal_entries(user_id, day, behavior_id)` with `value_bool` and `value_num`. The impact on the morning after is computed on request (`internal/behavior`), not stored.
 - `feature_flags(key)` — remote config (0014): `enabled`, `rollout_pct`, `allow_user_ids`.
 - `push_tokens(user_id, device_id)` — the app's APNs token per install (unique), `env`, `locale` (0015); `notifications_sent(user_id, day, category)` — what notify sent, claimed before sending. `users.notify_categories` (off switches), `quiet_from` / `quiet_to`.
