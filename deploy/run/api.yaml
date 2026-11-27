@@ -68,6 +68,7 @@ spec:
             # Without it the three routes answer 501, and warn or on refuse to start (check_cloudrun.py refuses them).
             - { name: APP_ATTEST, value: "${APP_ATTEST}" }
             - { name: APP_ATTEST_EXEMPT_USERS, value: "${APP_ATTEST_EXEMPT_USERS}" }
+            - { name: APP_ATTEST_TOKEN_KEYS, valueFrom: { secretKeyRef: { name: app-attest-token-key, key: "1" } } }
             # Direct connections (D257, design §9): the providers served and Garmin's user cap from config.env
             # (CONNECT_PROVIDERS one line for api and ingest), the redirect URI's base (<base>/v1/connect/
             # <provider>/callback). Phase 2 adds, in the PR that puts garmin into CONNECT_PROVIDERS, the client

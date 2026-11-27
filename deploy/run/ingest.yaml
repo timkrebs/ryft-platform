@@ -50,6 +50,7 @@ spec:
             # warn flip (api.yaml shows it), here and in api.yaml at the same version.
             - { name: APP_ATTEST, value: "${APP_ATTEST}" }
             - { name: APP_ATTEST_EXEMPT_USERS, value: "${APP_ATTEST_EXEMPT_USERS}" }
+            - { name: APP_ATTEST_TOKEN_KEYS, valueFrom: { secretKeyRef: { name: app-attest-token-key, key: "1" } } }
             # Direct connections (D257, design §9): the providers whose pushes the hook takes, the same line of
             # config.env as api's (check_cloudrun.py refuses a difference). A push secret comes in phase 2 only
             # if the programme's verification needs one; the fake (CONNECT_FAKE*) is compose only.
