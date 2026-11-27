@@ -102,6 +102,20 @@ func TestMigrateRecovery(t *testing.T) {
 	if _, err := pool.Exec(ctx, rating, user, workout, "8"); err == nil {
 		t.Error("a second rating of the same workout must be refused")
 	}
+	// Workout ids are unique per user only (0007): the foreign key is (user_id, id), so another account cannot rate it.
+	if _, err := pool.Exec(ctx, rating, other, workout, "5"); err == nil {
+		t.Error("a rating of another account's workout must be refused")
+	}
+	// The merge moves a workout with UPDATE workouts SET user_id; its rating follows through ON UPDATE CASCADE.
+	if _, err := pool.Exec(ctx, `UPDATE workouts SET user_id = $1 WHERE id = $2`, other, workout); err != nil {
+		t.Fatalf("moving a rated workout: %v", err)
+	}
+	if n := scalar[int](t, pool, `SELECT count(*) FROM workout_ratings WHERE user_id = $1 AND workout_id = $2`, other, workout); n != 1 {
+		t.Errorf("the rating did not follow its workout to the other account: %d", n)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workouts SET user_id = $1 WHERE id = $2`, user, workout); err != nil {
+		t.Fatal(err)
+	}
 
 	// A workout's deletion (a HealthKit deletion, the fold) takes its rating; an account's takes both tables' rows.
 	if _, err := pool.Exec(ctx, `DELETE FROM workouts WHERE id = $1`, workout); err != nil {

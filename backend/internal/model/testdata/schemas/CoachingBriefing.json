@@ -26,12 +26,19 @@
     "readiness": {
       "type": "string"
     },
+    "readiness_display": {
+      "type": "string"
+    },
     "readiness_reasons": {
       "items": {
         "type": "string"
       },
       "nullable": true,
       "type": "array"
+    },
+    "recovery": {
+      "$ref": "RecoveryStatus",
+      "nullable": true
     },
     "training_load": {
       "$ref": "CoachingLoad"
@@ -48,7 +55,9 @@
     "n2r",
     "plan",
     "readiness",
+    "readiness_display",
     "readiness_reasons",
+    "recovery",
     "training_load",
     "yesterday_n2r"
   ],

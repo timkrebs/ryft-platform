@@ -936,8 +936,25 @@ func (s *Store) EnsureSessionWorkout(ctx context.Context, userID, workoutID, ses
 // session → workout). Workouts scoring created for such sessions go.
 func (s *Store) ReleaseSessionWorkouts(ctx context.Context, userID uuid.UUID, daySessions []uuid.UUID, chosen map[uuid.UUID]uuid.UUID) error {
 	keep := make([]uuid.UUID, 0, len(chosen))
-	for _, w := range chosen {
+	var from, to []uuid.UUID
+	for session, w := range chosen {
 		keep = append(keep, w)
+		if own := train.SessionWorkoutID(userID, session); own != w {
+			from, to = append(from, own), append(to, w)
+		}
+	}
+	// A session now attached to a HealthKit workout takes the rating of the workout scoring made for it before the
+	// delete below drops that one (the delete cascades to a rating, D293). Scoring may repoint a rating by its key
+	// columns, never read its value (0063). The target keeps its own rating when it has one.
+	if len(from) > 0 {
+		if _, err := s.pool.Exec(ctx, `UPDATE workout_ratings r SET workout_id = t.to_id, updated_at = now()
+			FROM unnest($2::uuid[], $3::uuid[]) AS t(from_id, to_id)
+			WHERE r.user_id = $1 AND r.workout_id = t.from_id
+			AND EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = $1 AND w.id = t.to_id)
+			AND NOT EXISTS (SELECT 1 FROM workout_ratings k WHERE k.user_id = $1 AND k.workout_id = t.to_id)`,
+			userID, from, to); err != nil {
+			return err
+		}
 	}
 	stale := `session_id IS NOT NULL AND (
 		NOT EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = workouts.user_id AND s.id = workouts.session_id AND s.status = 'completed')

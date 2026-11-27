@@ -175,6 +175,12 @@ var contractTypes = map[string]reflect.Type{
 	"N2RGuidanceCard":           reflect.TypeOf(N2RGuidanceCard{}),
 	"N2RGuidance":               reflect.TypeOf(N2RGuidance{}),
 
+	"RecoveryCheckinPut": reflect.TypeOf(RecoveryCheckinPut{}),
+	"RecoveryComponents": reflect.TypeOf(RecoveryComponents{}),
+	"RecoveryCheckin":    reflect.TypeOf(RecoveryCheckin{}),
+	"RecoveryStatus":     reflect.TypeOf(RecoveryStatus{}),
+	"WorkoutRPEPut":      reflect.TypeOf(WorkoutRPEPut{}),
+
 	"Connection":          reflect.TypeOf(Connection{}),
 	"AvailableConnection": reflect.TypeOf(AvailableConnection{}),
 	"ConnectionProvider":  reflect.TypeOf(ConnectionProvider{}),

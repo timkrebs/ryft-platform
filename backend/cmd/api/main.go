@@ -284,6 +284,7 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	// Nutrition inherits the authenticated v1 chain and has its own rollout flag (D265, D266).
 	h.nutritionRoutes(api)
 	h.coachingRoutes(api)
+	h.recoveryRoutes(api)
 	api.HandleFunc("/v1/", httpx.NotFound)
 	limits := ratelimit.NewUserLimits()
 	authOpts := auth.Options{
@@ -528,6 +529,7 @@ func (h *handler) recompute(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusTooManyRequests, "a recompute was requested less than a minute ago")
 		return
 	}
+	h.rescoreStaleCheckins(r) // a model bump rescores stored check-ins here (D292)
 	ev := model.IngestedEvent{UserID: u.ID, Days: []string{req.From, req.To}, Reason: "recompute", RequestID: requestID(r)}
 	dedup := fmt.Sprintf("recompute:%s:%s:%s", u.ID, req.From, req.To)
 	if err := h.bus.PublishIngested(r.Context(), ev, dedup); err != nil {

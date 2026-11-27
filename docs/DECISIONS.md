@@ -7126,3 +7126,45 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
      rate known), as on the heart-rate path, so a workout with `avg_hr` but no resting heart rate takes the
      rating.
 - **Rejected:** emitting both drop reasons (the contract's table and the app's copy key on one).
+
+## D297 — The no-watch recovery implementation: the details the contract leaves to the store and the routes (2026-11-27)
+
+- **Context:** the implementation of D291–D296 (`internal/store/recovery.go`, `cmd/api/recovery.go`). None of this
+  changes a sentence of `docs/API.md`.
+- **Decision:**
+  1. **The score is injected into the store.** `internal/scoring` imports `internal/store`, so the store cannot call
+     `scoring.CheckinScore`. It gathers the facts (`CheckinFacts`: the report, the sleep base, the prior ratings and
+     nights, yesterday's N2R and tags, the journal of the day before) and takes a `CheckinScorer`; the api passes
+     `scoreCheckin`. One transaction holds the upsert and the rescoring of the later check-ins within 14 days
+     (`lockCheckin`, advisory class 7419010). The store's tests use a stand-in scorer; the real numbers (29, 93, 77,
+     the z blend, 62 with regularity) are pinned through the api.
+  2. **`wearableNight` is `recovery IS NOT NULL AND (sleep_has_stages OR hrv_ms IS NOT NULL)`** on the day's
+     `daily_scores`: `sleep_has_stages` is what core, deep and rem set, `hrv_ms` is the stored sleep-window HRV. A
+     night of the unspecified `asleep` stage alone (older Garmin firmware) counts only through an HRV: it cannot be
+     told from an `in_bed` night in `daily_scores`, and asking such a user once more is the safe side.
+  3. **Confounders are those of the save.** They are computed from the live D − 1 N2R (with the check-in's bedtime) and
+     the journal of the day before when the check-in is saved or rescored, and stored; the briefing reads the stored
+     ones. A meal logged afterwards moves D − 1's N2R at once but the check-in's confounders at the next rescore (a
+     later check-in, a recompute, a model bump).
+  4. **Suggestions** take the check-ins of the 7 days **before** today (`today − 7 … today − 1`, at least 3); medians
+     are taken across midnight (the clock shifted by 12 h), over each check-in's own clock (`tz_offset_sec`).
+  5. **The flag is a kill switch for counting, not for showing.** While it is off the status, the readiness path, the
+     load, the N2R bedtime and `n2r_bedtime_applied` ignore check-ins and ratings; `Workout.session_rpe` and the check-in
+     reads still show what is stored (the owner's access, as for the DELETEs). `GET /v1/workouts` and the day read
+     `RatedWorkoutsBetween`; scoring reads `VisibleWorkoutsBetween`, which has no rating (its role cannot read the value).
+  6. **Required fields:** `tz_offset_sec` and `soreness` are pointers in `RecoveryCheckinPut` and `session_rpe` in
+     `WorkoutRPEPut`, so a missing one is a `422` and not a silent 0 or false. A malformed `{id}` is `400` as in
+     `GET /v1/workouts/{id}`.
+  7. **A model bump** rescores stored check-ins at the next `POST /v1/recompute` of the account
+     (`RescoreStaleCheckins`; best effort, never fails the recompute), and any `PUT`/`DELETE` rescores the later ones.
+  8. **Migration 0063 is corrected before it ships:** the foreign key to `workouts(id)` cannot exist (the key of
+     `workouts` has been `(user_id, id)` since 0007), so it is `(user_id, workout_id) REFERENCES workouts (user_id, id)
+     ON DELETE CASCADE ON UPDATE CASCADE`. That also keeps a rating its workout's owner's in the database, and the
+     merge's `UPDATE workouts SET user_id` carries the rating with it. `ryft_scoring` gets the key columns to read
+     and `workout_id, updated_at` to update: `ReleaseSessionWorkouts` moves the rating of a Train session's own
+     workout to the HealthKit workout the session is now attached to before it deletes the former.
+- **Known gap, accepted:** when a completed session's times are edited, scoring replaces its own workout (delete,
+  then insert under the same id, `EnsureSessionWorkout`) and the cascade removes that workout's rating. Scoring may
+  not read or write a value, so it cannot carry it over; the user rates again. Rare, and visible in the app.
+- **Rejected:** a `scoring` grant to insert ratings (a service that derives numbers writing a user's input); keeping
+  the confounders live in the briefing (the N2R history read would run per check-in on every briefing).

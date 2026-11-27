@@ -336,6 +336,12 @@ func TestServiceRoleGrants(t *testing.T) {
 		{"ryft_ingest", "session_rpe", "INSERT", false}, {"ryft_ingest", "workout_id", "INSERT", false},
 		{"ryft_api", "session_rpe", "UPDATE", true}, {"ryft_api", "session_rpe", "INSERT", true},
 		{"ryft_scoring", "session_rpe", "SELECT", false}, {"ryft_notify", "session_rpe", "SELECT", false},
+		// scoring's re-attach moves a rating off a workout it deletes: the key columns, never the value.
+		{"ryft_scoring", "workout_id", "SELECT", true}, {"ryft_scoring", "user_id", "SELECT", true},
+		{"ryft_scoring", "workout_id", "UPDATE", true}, {"ryft_scoring", "updated_at", "UPDATE", true},
+		{"ryft_scoring", "session_rpe", "UPDATE", false}, {"ryft_scoring", "user_id", "UPDATE", false},
+		{"ryft_scoring", "session_rpe", "INSERT", false}, {"ryft_scoring", "workout_id", "INSERT", false},
+		{"ryft_notify", "workout_id", "SELECT", false},
 	} {
 		if has := scalar[bool](t, pool, `SELECT has_column_privilege($1, 'public.workout_ratings', $2, $3)`, c.role, c.col, c.priv); has != c.want {
 			t.Errorf("%s %s workout_ratings.%s: %v, want %v", c.role, c.priv, c.col, has, c.want)

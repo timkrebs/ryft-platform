@@ -50,6 +50,18 @@ func TestMergeUsers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Recovery without a watch: from rated both its workouts (one is also to's: to's row wins, the rating stays
+	// with from's), and has two check-ins, one of them a wake day to has too.
+	rate(t, pool, from, wkOwn, 7)
+	rate(t, pool, from, wkShared, 5)
+	for _, c := range []struct {
+		user uuid.UUID
+		day  string
+	}{{from, "2026-11-24"}, {from, "2026-11-25"}, {to, "2026-11-25"}} {
+		if _, err := st.PutCheckin(ctx, c.user, c.day, report(c.day, 6), now, fakeScorer); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// One phone for both accounts, and a second device only from used.
 	phone, tablet := uuid.New(), uuid.New()
 	for _, d := range []struct{ user, id uuid.UUID }{{from, phone}, {to, phone}, {from, tablet}} {
@@ -136,7 +148,8 @@ func TestMergeUsers(t *testing.T) {
 	}
 	want := map[string][2]int64{"samples": {1, 1}, "sleep_segments": {1, 0}, "workouts": {1, 1}, "devices": {1, 1},
 		"push_tokens": {1, 0}, "exercises": {1, 1}, "sessions": {1, 1}, "behaviors": {0, 1}, "journal_days": {1, 1},
-		"feedback": {1, 0}, "user_sources": {1, 0}, "app_attest_keys": {0, 2}, "app_attest_challenges": {0, 1}}
+		"feedback": {1, 0}, "user_sources": {1, 0}, "app_attest_keys": {0, 2}, "app_attest_challenges": {0, 1},
+		"workout_ratings": {1, 1}, "recovery_checkins": {1, 1}}
 	check := func(step string, r MergeResult) {
 		t.Helper()
 		got := byTable(r)
@@ -181,6 +194,10 @@ func TestMergeUsers(t *testing.T) {
 	}{
 		{`SELECT count(*) FROM samples WHERE user_id = $1`, []any{to}, 2},
 		{`SELECT count(*) FROM workouts WHERE user_id = $1`, []any{to}, 2},
+		// the rating of the workout that moved follows it; the shared one's stays with from (to's row won)
+		{`SELECT count(*) FROM workout_ratings WHERE user_id = $1 AND workout_id = $2`, []any{to, wkOwn}, 1},
+		{`SELECT count(*) FROM workout_ratings WHERE user_id = $1`, []any{to}, 1},
+		{`SELECT count(*) FROM recovery_checkins WHERE user_id = $1`, []any{to}, 2},
 		{`SELECT count(*) FROM devices WHERE user_id = $1`, []any{to}, 2},
 		{`SELECT count(*) FROM push_tokens WHERE user_id = $1`, []any{to}, 1},
 		{`SELECT count(*) FROM sessions WHERE user_id = $1`, []any{to}, 2},

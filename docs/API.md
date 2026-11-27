@@ -744,7 +744,7 @@ The signed-in, allow-listed Nutrition account uses the same v1 auth, App Attest 
 
 <!-- type: model.CoachingBriefing -->
 ```json
-{"local_date":"2026-11-24","plan":null,"readiness":"UNKNOWN","readiness_reasons":[],"training_load":{"acute_7d":0,"chronic_28d_weekly":0,"acwr":null,"tsb":0},"n2r":null,"yesterday_n2r":null,"morning_biometrics":null,"cards":[]}
+{"local_date":"2026-11-24","plan":null,"readiness":"UNKNOWN","readiness_display":"UNKNOWN","readiness_reasons":[],"training_load":{"acute_7d":0,"chronic_28d_weekly":0,"acwr":null,"tsb":0},"n2r":null,"yesterday_n2r":null,"morning_biometrics":null,"cards":[],"recovery":null}
 ```
 
 The plan includes `energy_target_kcal`, `protein_target_g`, `carb_target_g`, `fat_target_g`, estimated `net_exercise_kcal`, `session_class`, `deficit_suspended`, `train_low`, availability evidence and optional fueling. Its energy and carb targets also feed `n2r.budget` in existing Nutrition routes. Availability can be `UNKNOWN`, `GREEN`, `YELLOW` or `RED`. The colors are product guardrails for calorie deficits. The probability used in the evaluation is a shadow score. Athlete-facing medical diagnosis and injury predictions are outside this contract.
@@ -2984,9 +2984,9 @@ is the fallback, never a second opinion (D291).
 (an unknown route) until the implementation PR. After it, while the flag `recovery.checkin` (`GET /v1/config`)
 is off for the account, the two writes and `GET /v1/recovery/status` answer that `404`; the reads of stored
 check-ins and both `DELETE`s keep working. **On that `404`, hide the check-in and the RPE prompt; never drop
-the workout, the day or any other local data** (it is not the `404` of a resource that is gone). The examples
-are `http` blocks until the server has the model types (`model.RecoveryCheckin`, `RecoveryCheckinPut`,
-`RecoveryStatus`, `WorkoutRPEPut`; D295), as for Connections.
+the workout, the day or any other local data** (it is not the `404` of a resource that is gone). The bodies
+of the examples are `json` blocks tied to their model types (`model.RecoveryCheckin`, `RecoveryCheckinPut`,
+`RecoveryStatus`, `WorkoutRPEPut`; D295); the request and status lines stay `http`.
 
 **The wearable night** (D291). One rule decides everything below: the night ending on the day is a
 **wearable night** when it has asleep stages (`asleep`, `core`, `deep`, `rem`; an `in_bed`-only night, such
@@ -3039,7 +3039,10 @@ body twice gives the same check-in, `created_at` unchanged). Body `RecoveryCheck
 PUT /v1/recovery/checkins/2026-11-26
 Authorization: Bearer <access token>
 Content-Type: application/json
+```
 
+<!-- type: model.RecoveryCheckinPut -->
+```json
 { "bedtime": "2026-11-25T22:10:00Z", "wake_time": "2026-11-26T05:40:00Z", "tz_offset_sec": 3600,
   "perceived_sleep_quality": 7, "perceived_freshness": 6, "soreness": false }
 ```
@@ -3060,10 +3063,8 @@ the wake day, older than 14 days or in the future, a `wake_time` more than 5 min
 while the flag is off.
 `200` with the `RecoveryCheckin`:
 
-```http
-HTTP/2 200
-content-type: application/json
-
+<!-- type: model.RecoveryCheckin -->
+```json
 { "date": "2026-11-26", "bedtime": "2026-11-25T22:10:00Z", "wake_time": "2026-11-26T05:40:00Z", "tz_offset_sec": 3600,
   "perceived_sleep_quality": 7, "perceived_freshness": 6, "soreness": false,
   "sleep_duration_min": 450, "recovery_score": 77,
@@ -3119,10 +3120,10 @@ work while the flag is off.
 
 ```http
 GET /v1/recovery/checkins?from=2026-11-25&to=2026-11-26
+```
 
-HTTP/2 200
-content-type: application/json
-
+<!-- type: []model.RecoveryCheckin -->
+```json
 [ { "date": "2026-11-26", "bedtime": "2026-11-25T22:10:00Z", "wake_time": "2026-11-26T05:40:00Z", "tz_offset_sec": 3600,
     "perceived_sleep_quality": 7, "perceived_freshness": 6, "soreness": false,
     "sleep_duration_min": 450, "recovery_score": 77,
@@ -3139,10 +3140,10 @@ is off.
 
 ```http
 GET /v1/recovery/status
+```
 
-HTTP/2 200
-content-type: application/json
-
+<!-- type: model.RecoveryStatus -->
+```json
 { "date": "2026-11-26", "source": "none", "confidence": null, "recovery_score": null, "needs_checkin": true,
   "checkin": null, "suggested_bedtime": "22:45", "suggested_wake_time": "06:45", "suggestion_basis": "expected_bedtime" }
 ```
@@ -3170,12 +3171,17 @@ workout effort score as `session_rpe` (decided 2026-11-27).
 PUT /v1/workouts/7d1b6c3e-2c1a-4b8e-9d3a-5a0e4f6b8c12/rpe
 Authorization: Bearer <access token>
 Content-Type: application/json
+```
 
+<!-- type: model.WorkoutRPEPut -->
+```json
 { "session_rpe": 8 }
+```
 
-HTTP/2 200
-content-type: application/json
+`200` with the `Workout`:
 
+<!-- type: model.Workout -->
+```json
 { "id": "7d1b6c3e-2c1a-4b8e-9d3a-5a0e4f6b8c12", "activity": "strength", "start": "2026-11-25T17:00:00Z", "end": "2026-11-25T18:00:00Z",
   "source": "Tim's iPhone", "session_rpe": 8, "session_rpe_load": 480 }
 ```
@@ -3244,10 +3250,8 @@ A fat-loss account with one rated workout (60 minutes at RPE 8, no heart rate) i
 short night it rated 3 and 4; yesterday's logging was below the N2R threshold, so `n2r_score` is `null` and
 the check-in has no `n2r` part (an excerpt: `…` stands for fields that do not change):
 
-```http
-HTTP/2 200
-content-type: application/json
-
+<!-- type: model.CoachingBriefing shape -->
+```json
 { "local_date": "2026-11-26",
   "plan": { "energy_target_kcal": 2480, "session_class": "REST", "deficit_suspended": true, … },
   "readiness": "LOW_RECOVERY_UNEXPLAINED", "readiness_display": "LOW_RECOVERY_UNEXPLAINED",

@@ -53,6 +53,14 @@
       "nullable": true,
       "type": "string"
     },
+    "session_rpe": {
+      "nullable": true,
+      "type": "number"
+    },
+    "session_rpe_load": {
+      "nullable": true,
+      "type": "integer"
+    },
     "source": {
       "type": "string"
     },

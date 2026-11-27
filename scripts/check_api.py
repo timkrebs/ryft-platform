@@ -790,6 +790,61 @@ for i in imp["impacts"]:
     check((i["status"] == "locked") == (i["recovery"] is None) and set(i["needed"]) == {"yes", "no"}, f"impact shape: {i}")
 ok(f"journal: alcohol before the 5 weakest mornings → recovery {r['delta']} (90 % {r['ci_lo']} to {r['ci_hi']}), HRV {a['hrv_pct']['delta']} %")
 
+# ---- recovery without a watch: the check-in round trip (D291-D296) ---------------
+# A fresh account: with the flag off (it ships dark) the two writes and the status answer 404 without a code and the
+# reads and the DELETE work; allow-listed (apikey mode, the admin key) a check-in is saved, saved again unchanged,
+# read, listed, shown in the status, deleted twice, and the flag goes back to dark.
+KEY_R = f"{KEY}:{uuid.uuid4()}"
+R_ID = KEY_R.split(":", 1)[1]
+consent(KEY_R)
+tz_r = ZoneInfo(get("/v1/me", key=KEY_R)["tz"])
+wake_r = (datetime.now(timezone.utc) - timedelta(minutes=2)).replace(microsecond=0)
+wake_local = wake_r.astimezone(tz_r)
+day_r = wake_local.date().isoformat()
+tz_off_r = int(wake_local.utcoffset().total_seconds())
+body_r = {"bedtime": (wake_r - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%SZ"), "wake_time": wake_r.strftime("%Y-%m-%dT%H:%M:%SZ"),
+          "tz_offset_sec": tz_off_r, "perceived_sleep_quality": 7, "perceived_freshness": 6, "soreness": False}
+for method, path, want in (("PUT", f"/v1/recovery/checkins/{day_r}", 404), ("GET", "/v1/recovery/status", 404),
+                           ("GET", f"/v1/recovery/checkins/{day_r}", 404), ("GET", "/v1/recovery/checkins", 200),
+                           ("DELETE", f"/v1/recovery/checkins/{day_r}", 204)):
+    status, _, err = raw(method, path, jbody(body_r) if method == "PUT" else None, key=KEY_R)
+    check(status == want and (status != 404 or (is_error(err) and "code" not in err)), f"recovery.checkin off: {method} {path}: {status}, want {want}")
+if ADMIN and os.environ.get("AUTH_MODE", "apikey") == "apikey":
+    def recovery_flag(allow):
+        status, _, f = raw("PUT", "/v1/admin/flags/recovery.checkin",
+                           jbody({"enabled": True, "rollout_pct": 0, "allow_user_ids": allow}), key=ADMIN)
+        check(status in (200, 201) and f["allow_user_ids"] == allow, f"PUT the flag recovery.checkin: {status} {f}")
+    recovery_flag([R_ID])
+    try:
+        status, _, put1 = raw("PUT", f"/v1/recovery/checkins/{day_r}", jbody(body_r), key=KEY_R)
+        check(status == 200 and put1["date"] == day_r and put1["sleep_duration_min"] == 480 and 0 <= put1["recovery_score"] <= 100
+              and put1["confidence"] in ("medium", "low") and put1["superseded"] is False and put1["confounders"] == [], f"PUT a check-in: {status} {put1}")
+        check(set(put1["components"]) == {"wellness", "wellness_absolute", "wellness_personal", "duration", "regularity", "n2r"},
+              f"components: {put1['components']}")
+        status, _, put2 = raw("PUT", f"/v1/recovery/checkins/{day_r}", jbody(body_r), key=KEY_R)
+        check(status == 200 and put2 == put1, f"the same check-in twice is one check-in: {put2} vs {put1}")
+        check(raw("PUT", f"/v1/recovery/checkins/{day_r}", jbody({**body_r, "perceived_freshness": 11}), key=KEY_R)[0] == 422, "freshness 11 is 422")
+        check(raw("PUT", f"/v1/recovery/checkins/{day_r}", jbody({**body_r, "mood": 1}), key=KEY_R)[0] == 400, "an unknown field is 400")
+        check(get(f"/v1/recovery/checkins/{day_r}", key=KEY_R) == put1, "GET the check-in")
+        check(get(f"/v1/recovery/checkins?from={day_r}&to={day_r}", key=KEY_R) == [put1], "the range read lists it")
+        status_r = get("/v1/recovery/status", key=KEY_R)
+        check(set(status_r) == {"date", "source", "confidence", "recovery_score", "needs_checkin", "checkin", "suggested_bedtime",
+                                "suggested_wake_time", "suggestion_basis"}, f"status keys: {sorted(status_r)}")
+        if day_r == datetime.now(tz_r).date().isoformat():  # not a run in the first minutes after local midnight
+            check(status_r["source"] == "checkin" and status_r["checkin"] == put1 and status_r["needs_checkin"] is False
+                  and status_r["recovery_score"] == put1["recovery_score"], f"status: {status_r}")
+        check(raw("DELETE", f"/v1/recovery/checkins/{day_r}", key=KEY_R)[0] == 204, "DELETE the check-in")
+        check(raw("DELETE", f"/v1/recovery/checkins/{day_r}", key=KEY_R)[0] == 204, "DELETE again is 204")
+        check(raw("GET", f"/v1/recovery/checkins/{day_r}", key=KEY_R)[0] == 404, "the deleted check-in is 404")
+    finally:
+        recovery_flag([])
+    status, _, _ = raw("PUT", f"/v1/recovery/checkins/{day_r}", jbody(body_r), key=KEY_R)
+    check(status == 404, f"the flag back to dark: {status}")
+    ok("recovery without a watch: dark 404s, then a check-in saved twice, read, listed, in the status, deleted; the flag back to dark")
+else:
+    ok("recovery without a watch: the dark 404s and the open reads (the round trip needs ADMIN_API_KEY, apikey mode)")
+raw("DELETE", "/v1/me", key=KEY_R)
+
 # ---- workouts across midnight -------------------------------------------------
 # An 80-minute run from 23:20 to 00:40 local, 40 days back (outside every window
 # checked above). Its load must cover all 80 minutes, not just those before midnight.

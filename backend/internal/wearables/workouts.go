@@ -50,6 +50,9 @@ type Workout struct {
 	HasRR           bool               `json:"rr_intervals_available"`
 	Strain          float64            `json:"strain,omitempty"`
 	SuuntoPlus      map[string]float64 `json:"suunto_plus,omitempty"`
+	// RPE is the user's session RPE of the workout (D293; 0 = unrated), set by the store from workout_ratings while
+	// the flag recovery.checkin is on, never part of a partner payload.
+	RPE float64 `json:"-"`
 }
 
 func finiteIn(n, lo, hi float64) bool { return n >= lo && n <= hi }

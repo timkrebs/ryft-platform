@@ -5057,7 +5057,27 @@ it is on, `GET /v1/config` → `analytics` is set (GCP → **PostHog's project k
 in. Testers first, by the allow-list; `{"enabled": false, "rollout_pct": 100}` is the kill switch.
 Nothing on the server checks the flag, so it takes effect at the app's next config.
 
-**Stop if**, before the first account goes on its allow-list, the privacy policy in force (the
+**`recovery.checkin`: the morning check-in and the session RPE (D291–D296).** The flag ships dark
+(migration 0064: enabled, 0 %, an empty allow-list) and stays so until a published privacy version names the
+check-in; no percentage rollout, neither for the beta at large nor for the Nutrition pilot, without a new decision.
+Then **one tester** first, by the allow-list (the user ID: `GET /v1/me` → `id`; `PUT` replaces the whole flag, so
+send the IDs already on it too):
+
+```bash
+adm "$API/v1/admin/flags" | jq '.[] | select(.key=="recovery.checkin")'     # who is on it now
+adm -X PUT "$API/v1/admin/flags/recovery.checkin" \
+  -d '{"enabled": true, "rollout_pct": 0, "allow_user_ids": ["<uuid>"]}'
+```
+
+While it is off for an account the check-in and rating writes and `GET /v1/recovery/status` answer `404` without a
+`code`, the briefing's `recovery` is `null`, and **stored check-ins and ratings count nowhere**: readiness is the
+HRV path's (or `UNKNOWN`), the coaching load has no rated workouts, and yesterday's N2R uses the expected bedtime.
+Nothing is deleted, and the reads of stored check-ins and both `DELETE`s keep working. That is the kill switch:
+`{"enabled": false, "rollout_pct": 100}` (the app then hides the check-in at its next config, within six hours).
+Rollback needs no data step. `ryft_recovery_writes_total{op}` counts the writes; no log line holds a rating, a time
+or a score (`TestRecoveryCheckinScoresAndIsIdempotent`).
+
+**`analytics.enabled`, stop if**, before the first account goes on its allow-list, the privacy policy in force (the
 version `GET /v1/config` → `privacy_policy_version` names, published at `https://ryftlab.de/privacy`)
 doesn't name PostHog (EU Cloud) as a processor, with the purpose and the opt-in, or PostHog's project
 doesn't have **Discard client IP data** on. Testers are real people: their events would reach a
@@ -5278,6 +5298,17 @@ scripts/seed_demo.py`.
   letter's `Ryft-Error` header kept as well. The logs and the dead-letter queues of that time
   kept 14 days, so all of it is gone 14 days after the deploy of this change
   (`docs/STATUS.md` has the date).
+- **Recovery without a watch (0062, 0063; D291–D296), the two tables:** `recovery_checkins` (a morning check-in:
+  bed and wake time, the two 1–10 ratings, soreness, and what was computed from them) and `workout_ratings` (a
+  workout's session RPE) hold health data a user typed in. Retention: **account-bound, no age limit**: kept until
+  the user deletes a check-in or a rating (`DELETE /v1/recovery/checkins/{date}`, `DELETE /v1/workouts/{id}/rpe`),
+  the workout (a HealthKit deletion, or the same-source fold, which moves the rating to the copy that stays first)
+  or the account (`DELETE /v1/me`, `DeleteUser`: both tables; the foreign keys cascade as a safety net). The merge
+  moves them (a check-in for a day the kept account has stays with the old one; a rating follows its workout).
+  The export reads `GET /v1/recovery/checkins`; the workout export carries the rating. Backups keep them as long
+  as any backup of the database (7 days on Pro). No other service reads a check-in; ingest and scoring may only
+  repoint a rating, never write a value (0063; scoring reads its key columns only). Logs: the routes log their pattern (`/v1/recovery/checkins/{date}`),
+  never the date, a rating, a time or a score. Turning `recovery.checkin` off deletes nothing (Feature flags).
 - **Where and how long:** Cloud Logging's bucket `ryft-logs` in `europe-west1`, **14 days**
   (`infra/gcp/logging.tf`); `_Default` is off, so what no sink takes is stored nowhere. From
   `edge = "built"` on the sink excludes most of Google's request logs (OBSERVABILITY → Logs →

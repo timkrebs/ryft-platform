@@ -171,25 +171,29 @@ type coachingData struct {
 	forecasts map[string]float64
 }
 
-func readWorkoutFacts(ctx context.Context, tx pgx.Tx, user uuid.UUID, from, to time.Time) ([]wearables.Workout, error) {
+// readWorkoutFacts reads the workouts of the coaching load. With ratings (the flag recovery.checkin is on) each
+// carries the user's session RPE (D293); without, none does, whatever is stored.
+func readWorkoutFacts(ctx context.Context, tx pgx.Tx, user uuid.UUID, from, to time.Time, ratings bool) ([]wearables.Workout, error) {
 	rows, err := tx.Query(ctx, `SELECT source_provider,external_id,coalesce(parent_workout_id,''),'' AS label,'' AS bundle,
 		was_user_entered,start_at,end_at,tz_offset_sec,sport_type,duration_sec,active_kcal_raw,mechanical_work_kj,distance_m,avg_hr,max_hr,
-		normalized_power_w,ftp_w,rr_intervals_available,0::float8
+		normalized_power_w,ftp_w,rr_intervals_available,0::float8,0::float8
 		FROM nutrition.canonical_workouts WHERE user_id=$1 AND start_at >= $2 AND end_at <= $3
 		UNION ALL
 		SELECT CASE WHEN w.source=$4 THEN 'MANUAL' ELSE 'APPLE_HEALTHKIT' END,w.id::text,'',w.source,coalesce(w.coaching_source_bundle_id,''),
 		coalesce(w.coaching_user_entered,false),w.start_at,w.end_at,coalesce(w.coaching_tz_offset_sec,0),w.activity,
 		extract(epoch from w.end_at-w.start_at)::float8,coalesce(w.energy_kcal,0),0,coalesce(w.distance_m,0),coalesce(w.avg_hr,0),
-		coalesce(w.max_hr,0),0,0,false,coalesce(w.strain,0)
+		coalesce(w.max_hr,0),0,0,false,coalesce(w.strain,0),
+		CASE WHEN $5::bool THEN coalesce((SELECT r.session_rpe::float8 FROM public.workout_ratings r
+			WHERE r.user_id=w.user_id AND r.workout_id=w.id),0) ELSE 0 END
 		FROM public.workouts w WHERE w.user_id=$1 AND w.start_at >= $2 AND w.end_at <= $3`,
-		user, from, to, model.SessionSource)
+		user, from, to, model.SessionSource, ratings)
 	if err != nil {
 		return nil, err
 	}
 	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (wearables.Workout, error) {
 		var w wearables.Workout
 		err := row.Scan(&w.Provider, &w.ExternalID, &w.ParentID, &w.Source, &w.Bundle, &w.UserEntered, &w.Start, &w.End, &w.OffsetSec, &w.Sport, &w.DurationSec,
-			&w.RawKcal, &w.WorkKJ, &w.DistanceM, &w.AvgHR, &w.MaxHR, &w.NormalizedPower, &w.FTP, &w.HasRR, &w.Strain)
+			&w.RawKcal, &w.WorkKJ, &w.DistanceM, &w.AvgHR, &w.MaxHR, &w.NormalizedPower, &w.FTP, &w.HasRR, &w.Strain, &w.RPE)
 		if w.Source == "" {
 			w.Source = string(w.Provider)
 		}
@@ -347,7 +351,10 @@ func readCoachNights(ctx context.Context, tx pgx.Tx, user uuid.UUID, start, end 
 	return out, rows.Err()
 }
 
-func loadCoaching(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile, first, last, asOf time.Time, profile *coachingProfile) (coachingData, error) {
+// loadCoaching builds the days of the coaching load, readiness and plan. withRecovery says the flag recovery.checkin
+// is on: only then do a current check-in count for readiness where the HRV path yields UNKNOWN (D294) and a
+// session RPE for the load of a workout without heart rate or power (D293).
+func loadCoaching(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile, first, last, asOf time.Time, profile *coachingProfile, withRecovery bool) (coachingData, error) {
 	var out coachingData
 	if profile == nil || profile.birthYear == nil {
 		return out, nil
@@ -355,11 +362,17 @@ func loadCoaching(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile, 
 	out.profile = profile
 	start := first.AddDate(0, 0, -coachingHistoryDays)
 	firstKey, lastKey := start.Format(time.DateOnly), last.Format(time.DateOnly)
-	workouts, err := readWorkoutFacts(ctx, tx, user, start.Add(-48*time.Hour), asOf)
+	workouts, err := readWorkoutFacts(ctx, tx, user, start.Add(-48*time.Hour), asOf, withRecovery)
 	if err != nil {
 		return out, err
 	}
 	out.workouts = workouts
+	var checkins map[string]*periodization.CheckinState
+	if withRecovery {
+		if checkins, err = readCheckinStates(ctx, tx, user, firstKey, lastKey); err != nil {
+			return out, err
+		}
+	}
 	intakes, err := readCoachIntake(ctx, tx, user, firstKey, lastKey, asOf)
 	if err != nil {
 		return out, err
@@ -414,7 +427,7 @@ func loadCoaching(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile, 
 				continue
 			}
 			clip := w.Slice(maxTimeForCoach(day, w.Start), minTimeForCoach(next, w.End))
-			x := energy.Workout(clip, phys)
+			x := energy.RatedWorkout(clip, phys, w.RPE)
 			input.NetExercise += x.NetKcal
 			input.Load += x.Load()
 			minutes += clip.Seconds() / 60
@@ -485,7 +498,7 @@ func loadCoaching(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile, 
 			}
 		}
 		adapt := energy.Learn(out.days, priorTDEE, prev, profile.Density, switched)
-		ready, reasons := periodization.Readiness(recovery, ea)
+		ready, reasons := periodization.ReadinessWithCheckin(recovery, ea, checkins[key])
 		netWorkout := input.NetExercise
 		if f.Session != nil && minutes == 0 && f.Session.Class != periodization.Rest && f.Session.Start.After(asOf) {
 			w := wearables.Workout{Sport: f.Session.Sport, Start: f.Session.Start, End: f.Session.Start.Add(time.Duration(f.Session.Minutes * float64(time.Minute)))}
@@ -497,7 +510,7 @@ func loadCoaching(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile, 
 			lost = &v
 		}
 		plan := periodization.Plan(periodization.Input{Profile: profile.GoalProfile, Day: day, Sex: p.Sex, Mass: lastMass, FFM: ffm,
-			Base: adapt.Base, NetExercise: netWorkout, Minutes: minutes, PeakReserve: peak, Availability: ea, Readiness: ready,
+			Base: adapt.Base, NetExercise: netWorkout, Minutes: minutes, PeakReserve: peak, Availability: ea, Readiness: ready, ReadinessReasons: reasons,
 			SweatRate:   coachingVal(profile.SweatRate, coachingVal(p.SweatRateLPH, .8)),
 			SweatSodium: coachingVal(profile.Parameters.SweatSodium, coachingVal(profile.GoalProfile.SweatSodium, coachingVal(p.SweatSodiumMgL, 900))), Session: f.Session, LostMass: lost, WeightChange: adapt.WeightChange})
 		state := coachingPlanDay{Plan: plan, Load: energy.Load(out.days), Readiness: ready, Reasons: reasons,

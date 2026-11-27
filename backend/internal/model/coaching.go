@@ -91,15 +91,17 @@ type CoachingLoad struct {
 
 // CoachingBriefing combines one waking day’s nutrition, readiness and guidance.
 type CoachingBriefing struct {
-	Date       string            `json:"local_date"`
-	Plan       *CoachingPlan     `json:"plan"`
-	Readiness  string            `json:"readiness"`
-	Reasons    []string          `json:"readiness_reasons"`
-	Load       CoachingLoad      `json:"training_load"`
-	N2R        *N2RScore         `json:"n2r"`
-	Yesterday  *N2RScore         `json:"yesterday_n2r"`
-	Biometrics *N2RBiometrics    `json:"morning_biometrics"`
-	Cards      []N2RGuidanceCard `json:"cards"`
+	Date             string            `json:"local_date"`
+	Plan             *CoachingPlan     `json:"plan"`
+	Readiness        string            `json:"readiness"`
+	ReadinessDisplay string            `json:"readiness_display"` // Readiness with AUTONOMIC_FATIGUE shown as LOW_RECOVERY_UNEXPLAINED (D294); always present, whatever the flag
+	Reasons          []string          `json:"readiness_reasons"`
+	Load             CoachingLoad      `json:"training_load"`
+	N2R              *N2RScore         `json:"n2r"`
+	Yesterday        *N2RScore         `json:"yesterday_n2r"`
+	Biometrics       *N2RBiometrics    `json:"morning_biometrics"`
+	Cards            []N2RGuidanceCard `json:"cards"`
+	Recovery         *RecoveryStatus   `json:"recovery"` // today's status, also when local_date is still yesterday; null while recovery.checkin is off (D291)
 }
 
 // EvaluationCohort reports operator-facing aggregate evaluation results.

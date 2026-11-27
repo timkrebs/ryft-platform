@@ -1,0 +1,51 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "checkin": {
+      "$ref": "RecoveryCheckin",
+      "nullable": true
+    },
+    "confidence": {
+      "nullable": true,
+      "type": "string"
+    },
+    "date": {
+      "type": "string"
+    },
+    "needs_checkin": {
+      "type": "boolean"
+    },
+    "recovery_score": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "source": {
+      "type": "string"
+    },
+    "suggested_bedtime": {
+      "nullable": true,
+      "type": "string"
+    },
+    "suggested_wake_time": {
+      "nullable": true,
+      "type": "string"
+    },
+    "suggestion_basis": {
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "checkin",
+    "confidence",
+    "date",
+    "needs_checkin",
+    "recovery_score",
+    "source",
+    "suggested_bedtime",
+    "suggested_wake_time",
+    "suggestion_basis"
+  ],
+  "title": "RecoveryStatus",
+  "type": "object"
+}

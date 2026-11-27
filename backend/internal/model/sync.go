@@ -152,6 +152,10 @@ type Workout struct {
 	SessionID    *uuid.UUID `json:"session_id,omitempty"`
 	// Read-only: the scoring model of strain (ignored on upload).
 	ModelVersion *string `json:"model_version,omitempty"`
+	// Read-only (ignored on upload, D293): the user's session RPE (PUT /v1/workouts/{id}/rpe) and Foster's session
+	// load, the duration in whole minutes × the rating; omitted without a rating.
+	SessionRPE     *float64 `json:"session_rpe,omitempty"`
+	SessionRPELoad *int     `json:"session_rpe_load,omitempty"`
 	// Read-only: the sources of other recordings of this workout the server hid
 	// (cross-source duplicates), distinct and sorted; omitted when none.
 	AlsoRecordedBy []string `json:"also_recorded_by,omitempty"`
