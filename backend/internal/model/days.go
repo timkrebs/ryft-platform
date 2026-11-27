@@ -62,13 +62,30 @@ type DailyScore struct {
 	ScoringState string `json:"scoring_state"`
 }
 
-// DayDetail is GET /v1/days/{day}: one day's score with its sleep, strain and workouts.
+// DayDetail is GET /v1/days/{day}: one day's score with its sleep, strain, workouts and muscle freshness.
 // Sleep and Strain are null, not absent, when the day has no data for them.
 type DayDetail struct {
-	Score    DailyScore   `json:"score"`
-	Sleep    *SleepDetail `json:"sleep"`  // null when no sleep was recorded for the night
-	Strain   *DayStrain   `json:"strain"` // null when there was no heart-rate data
-	Workouts []Workout    `json:"workouts"`
+	Score    DailyScore        `json:"score"`
+	Sleep    *SleepDetail      `json:"sleep"`  // null when no sleep was recorded for the night
+	Strain   *DayStrain        `json:"strain"` // null when there was no heart-rate data
+	Workouts []Workout         `json:"workouts"`
+	Muscles  []MuscleFreshness `json:"muscles"` // null without a completed session, otherwise in Muscles order
+}
+
+// Muscle freshness states (D309).
+const (
+	FreshnessFresh      = "fresh"
+	FreshnessRecovering = "recovering"
+	FreshnessFatigued   = "fatigued"
+)
+
+// MuscleFreshness is one muscle's recovery from working sets as of the evaluation time.
+type MuscleFreshness struct {
+	Muscle        string     `json:"muscle"`
+	Freshness     int        `json:"freshness"`
+	State         string     `json:"state"`
+	LastTrainedAt *time.Time `json:"last_trained_at"`
+	Sets7d        int        `json:"sets_7d"`
 }
 
 // DayStrain is the load behind DailyScore.strain: heart rate plus the muscular

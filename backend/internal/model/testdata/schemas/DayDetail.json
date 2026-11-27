@@ -1,6 +1,13 @@
 {
   "additionalProperties": false,
   "properties": {
+    "muscles": {
+      "items": {
+        "$ref": "MuscleFreshness"
+      },
+      "nullable": true,
+      "type": "array"
+    },
     "score": {
       "$ref": "DailyScore"
     },
@@ -21,6 +28,7 @@
     }
   },
   "required": [
+    "muscles",
     "score",
     "sleep",
     "strain",

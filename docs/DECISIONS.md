@@ -7522,3 +7522,45 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   unchanged.
 - **Cost:** the merge transaction now also deletes `from`; it is bounded by `deleteTimeout` and the route is
   admin-only. Rollback: revert; no migration.
+
+## D309 — Muscle freshness: hard sets, a decay per muscle size (implementation PR 6 of D304, 2026-11-27)
+
+**Context.** D304 defines a per-muscle recovery figure for the Fitness tab. The API serves it on `DayDetail`
+for unscored as well as scored days. It returns `null` until the account has any completed session, then
+returns all 18 muscles in contract order. (D306–D308 are left for #266, #267 and #268, which all number
+themselves D306 at the time of writing.)
+
+**Decision.** Evaluate at request time for today and at the next local midnight for a past or future day.
+
+- Count sets completed strictly before that time in a completed session, excluding warm-ups. Use the
+  exercise's current muscle tags when it is built-in or belongs to the account. Primary muscles get 1,
+  secondary muscles get 0.5, and primary wins if both lists contain the muscle. Each unilateral set counts
+  once. Ignore names outside the muscle vocabulary.
+- A set of an exercise of kind `cardio` (rowing, jump rope, the sled) weighs `× 0.3` in the fatigue, Strength's
+  cardio load factor (`DefaultLoadFactor`): ten jump-rope rounds leave the calves at 76, not at 40 like ten heavy
+  calf raises. It is still a working set for `sets_7d` and `last_trained_at`, as the contract defines them.
+- Sum the weighted sets over the last 14 × 24 h, with both endpoints excluded, decaying each weight by
+  `exp(−age / τ_m)`. Use `τ_m = 24 h + 24 h × muscleMass[m]` from Strength. A set at the outer edge contributes
+  about 0.00091 fatigue at the longest time constant.
+- Convert fatigue `F` to freshness with `round(100 × exp(−F / K))`, clamped to 0–100, using `K = 10 / ln(2.5)`.
+  Ten primary working sets give 40 immediately after the session. The rounded score determines the state:
+  `fresh` ≥ 80, `recovering` 50–79, `fatigued` < 50.
+- Keep the latest qualifying set before the evaluation time in `last_trained_at` across all history.
+  Count each set loading the muscle once in `sets_7d` over the open interval of 7 × 24 h. Compute the result
+  on read from existing rows without a model-version bump.
+
+**Alternatives.** An e1RM-weighted load would require exercise intensity history on the read path. Hard-set
+volume follows how training volume is prescribed and requires only completed sets and muscle tags. One time
+constant for all muscles would apply the same recovery curve regardless of size. The existing `muscleMass`
+weights let the heuristic vary the curve with the size of the muscle.
+
+**Known limits.** A past day is computed from today's rows: re-tagging a custom exercise, discarding or editing a
+session moves the figures of the days before it (nothing is stored, so there is nothing to rescore). **Cost:** one statement per request (`store.MuscleHistory`): the account's
+working sets are read once (a CTE used twice) for the 14-day sets, the latest time per muscle and the
+completed-session check. `session_sets` has no index on `completed_at`, so that is the account's whole set history
+through the `(user_id, session_exercise_id)` index, also for the 14 days. That is fine at the beta's size; an imported
+multi-year history is the case to watch on `GET /v1/days/{day}` latency, and the fix then is a partial index on
+`session_sets (user_id, completed_at)` in a new migration. The constants are a RYFT heuristic,
+open to the beta's feedback like the Strength anchors.
+
+**Rollback.** Revert this change. No migration is required.
