@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -143,6 +144,26 @@ VALUES (gen_random_uuid(),'a7e40c6e-bfb4-47eb-ad64-aea61136db01','bls','M111300'
 	}
 	if role := scalar[string](t, pool, "SELECT current_user"); role == "ryft_nutrition_etl" {
 		t.Fatal("the ETL role leaked onto a pooled connection")
+	}
+	// 0062 (D296): BLS 4.0 codes may carry capitals in position 3 and 4. Same row shape as
+	// the accepted M111300 above, only the code differs, so a refusal can only be the check.
+	const blsSource = `INSERT INTO nutrition.food_sources(id,food_id,provider,external_id,dataset_version,license_identifier,attribution)
+		VALUES (gen_random_uuid(),'a7e40c6e-bfb4-47eb-ad64-aea61136db01','bls','%s','4.0','CC-BY-4.0','Max Rubner-Institut')`
+	for _, code := range []string{"M5B1600", "U57B100", "P2A3000", "M1A5200"} {
+		if err := asETL(fmt.Sprintf(blsSource, code)); err != nil {
+			t.Errorf("BLS code %s refused: %v", code, err)
+		}
+	}
+	for _, code := range []string{"m5b1600", "M5B160", "M5B16000", "HINWEIS", "MA51600", "M5b1600", "M5B16A0"} {
+		err := asETL(fmt.Sprintf(blsSource, code))
+		if err == nil {
+			t.Errorf("BLS code %q accepted", code)
+		} else if !strings.Contains(err.Error(), "nutrition_bls_attribution") {
+			t.Errorf("BLS code %q refused by something other than the check: %v", code, err)
+		}
+	}
+	if n := scalar[int](t, pool, "SELECT count(*) FROM nutrition.food_sources WHERE provider='bls' AND external_id IN ('M111300','M5B1600','U57B100','P2A3000','M1A5200')"); n != 5 {
+		t.Errorf("%d of 5 valid BLS sources stored", n)
 	}
 	const portion = `INSERT INTO nutrition.portions(id,food_id,source_id,label,quantity,unit,weight_g,origin,source_portion_id,is_default)
 		SELECT gen_random_uuid(),s.food_id,s.id,'%s',1,'portion',100,'python_etl','%s',%t
