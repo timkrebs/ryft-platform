@@ -6901,3 +6901,19 @@ The SR Legacy dry run `--source sr-legacy --limit 10000` on image `d53bb29` (exe
 Not reproduced locally: the headless session that wrote this couldn't run Python. The buffer threshold comes from DuckDB's sorted-aggregate implementation, and the 1000-vs-10000 contrast fits it. The CI test runs the SR Legacy shape at a sixth of the production limit.
 
 Staples: all 13 USDA staples are SR Legacy IDs, and bounded runs order them first (`ORDER BY list_contains(staples, fdc_id) DESC`). Any `--limit` ≥ 13 reaches them. SR Legacy has 7,793 foods, so `--limit 10000` already reads the whole release, and `--full` adds nothing for it.
+
+## D288 — Clean USDA portion labels catalog-wide; staples match source portions, not guessed IDs (2026-11-26)
+
+Outside the 16 curated staples, a USDA portion's `label` was the raw source text (`1 medium (3" dia)`) and `labels` was empty, so Go's `portionLabels` showed the raw text in both languages. The ETL now cleans every non-curated USDA portion (`transform.clean_portion`):
+- **What it removes:** placeholder measures (`undetermined`, …), parentheticals with imperial measures, and inch marks outside them.
+- **How it maps:** the amount, head and qualifier map through three pinned tables (`SIZES`, `UNITS`, `QUALIFIERS`) to an English label, a German label, short labels and a sort order. Sizes: Klein 10, Mittel 20, Groß 30, Sehr klein 5, Sehr groß 35, Jumbo 38. Household units from 40 up: Stück 40/41, Scheibe 42 … EL 70, TL 72, US-Tasse 80. Unknown heads keep `100 + priority`.
+- **Fallback rules:** a cup stays a "US cup"/"US-Tasse", as in the staples. `oz` and `lb` become grams and `fl oz` becomes ml. If any qualifier word is unmapped, there's no German label at all, and Go falls back to the clean English one, so labels are never half translated. Two labels that collide with different grams get ` (<g> g)`.
+- **Curated stays curated:** staples keep precedence. `is_default` stays curated-only, because `default_portion` promises a measured, explicit default and a heuristic ("Mittel if present") would move people's logged amounts.
+
+IDs don't move. A keyed portion's ID hashes the USDA portion ID and the measure, not the label. An unkeyed portion's ID hashes `legacy_label`, which stays byte-identical. The raw dedupe key is unchanged, so the set of portions per food is unchanged. `legacy_label` now also goes into the staging row, so the merge's manual-twin check matches the Go importer's rows (label = raw text) as before.
+
+The four new staples (Kartoffeln gekocht 170440, Avocado 171705, Tomate 170457, Karotte 170393) and four extras (Salatgurke 168409, rote Paprika 170108, Zwiebel 170000, Naturjoghurt 171284) match their portions **by G1 key, text prefix or grams, never by a USDA portion ID**. The session that wrote them couldn't fetch FDC, and guessing an ID risks a curated label on the wrong measure. They also carry a `source_description` guard: a wrong FDC ID leaves a plain USDA food, and the dry run reports it. Weights always come from the source row, so the user's reference numbers (Kartoffel 60/100/150 g, Avocado ½ 75 g / ganz 150 g, Tomate 90/120/180 g, Karotte 50/70/100 g) are shown for comparison, not imported. Avocado ½ is derived (`half_of`) from the measured whole fruit and is its default.
+
+The staples version goes from 1 to 2. The merge treats a changed checksum under an unchanged `dataset_version` as a conflict, so without the bump the rerun would write nothing. Also in the merge: a curated `portion_key` that moves between surviving rows is released before the upsert, as defaults already are (unique `nutrition_portions_semantic_key`).
+
+Not covered: USDA portions written by the Go importer (`origin='manual'`) keep their raw labels. RLS keeps the ETL role off them by design. The runbook has a read-only count, and cleaning them would be a separate, reviewed operator step.
