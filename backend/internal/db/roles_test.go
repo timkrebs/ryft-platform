@@ -50,7 +50,8 @@ var (
 	journalTables = []string{"behaviors", "user_behaviors", "journal_days", "journal_entries"}
 	betaTables    = []string{"consents", "beta_invite_codes", "user_sources", "feedback", "admin_audit", "score_queue", "outbox", "admin_accounts", "beta_invite_uses",
 		"app_attest_keys", "app_attest_challenges", "smoke_account",
-		"connections", "connection_tokens", "connection_pending", "connection_states", "connection_deregistrations", "provider_inbox"}
+		"connections", "connection_tokens", "connection_pending", "connection_states", "connection_deregistrations", "provider_inbox",
+		"recovery_checkins", "workout_ratings"}
 )
 
 // trainTables are migration 0011's.
@@ -70,6 +71,9 @@ var grants = map[string]map[string][]string{
 		"provider_inbox": crud,
 		// 0060: the operator writes smoke_account (scripts/sql/bind_smoke_account.sql); ingest only reads it.
 		"smoke_account": {"SELECT"},
+		// 0063 (D293): the same-source fold, run by ingest's sync, moves a dropped duplicate's rating to the
+		// survivor or drops it; UPDATE of workout_id and updated_at only (below). recovery_checkins: none.
+		"workout_ratings": {"SELECT", "DELETE"},
 	},
 	"ryft_scoring": {
 		"users": {"SELECT"}, "devices": {"SELECT"}, "samples": {"SELECT"}, "sleep_segments": {"SELECT"},
@@ -100,6 +104,8 @@ var grants = map[string]map[string][]string{
 		// 0042: the api alone holds the OAuth side; a state is never updated; the inbox only by column (below).
 		"connections": crud, "connection_tokens": crud, "connection_pending": crud, "connection_deregistrations": crud,
 		"connection_states": {"SELECT", "INSERT", "DELETE"}, "provider_inbox": {"DELETE"},
+		// 0062, 0063 (D291–D293): the api alone writes a check-in and a rating; no other service reads a check-in.
+		"recovery_checkins": crud, "workout_ratings": crud,
 		"exercises": crud, "plans": crud, "plan_days": crud, "plan_exercises": crud, "plan_enrollments": crud,
 		"sessions": crud, "session_exercises": crud, "session_sets": crud, "personal_records": crud,
 	},
@@ -318,6 +324,21 @@ func TestServiceRoleGrants(t *testing.T) {
 		}
 		if has != c.want {
 			t.Errorf("%s %s %s.%s: %v, want %v", c.role, c.priv, c.table, c.col, has, c.want)
+		}
+	}
+	// 0063: ingest's fold may repoint a rating (workout_id, updated_at), never write or create a value.
+	for _, c := range []struct {
+		role, col, priv string
+		want            bool
+	}{
+		{"ryft_ingest", "workout_id", "UPDATE", true}, {"ryft_ingest", "updated_at", "UPDATE", true},
+		{"ryft_ingest", "session_rpe", "UPDATE", false}, {"ryft_ingest", "user_id", "UPDATE", false},
+		{"ryft_ingest", "session_rpe", "INSERT", false}, {"ryft_ingest", "workout_id", "INSERT", false},
+		{"ryft_api", "session_rpe", "UPDATE", true}, {"ryft_api", "session_rpe", "INSERT", true},
+		{"ryft_scoring", "session_rpe", "SELECT", false}, {"ryft_notify", "session_rpe", "SELECT", false},
+	} {
+		if has := scalar[bool](t, pool, `SELECT has_column_privilege($1, 'public.workout_ratings', $2, $3)`, c.role, c.col, c.priv); has != c.want {
+			t.Errorf("%s %s workout_ratings.%s: %v, want %v", c.role, c.priv, c.col, has, c.want)
 		}
 	}
 	// 0042: each queue's sequence belongs to its one writer.

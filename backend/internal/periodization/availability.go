@@ -28,6 +28,9 @@ const (
 	ReadinessLifestyle = "ACUTE_LIFESTYLE_SUPPRESSION"
 	ReadinessFatigue   = "AUTONOMIC_FATIGUE"
 	ReadinessGuardrail = "LEA_GUARDRAIL_ACTIVE"
+	// ReadinessLowUnexplained is a check-in's drop without a lifestyle
+	// explanation (D294), and the display name of ReadinessFatigue.
+	ReadinessLowUnexplained = "LOW_RECOVERY_UNEXPLAINED"
 )
 
 // Recovery carries baseline changes and observations for readiness and availability checks.

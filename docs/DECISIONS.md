@@ -7097,3 +7097,32 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   ratings, soreness or session RPE, and #252 defers N2R and coaching to a later version. The sentences #252
   needs, and what waits for the N2R version, are in `docs/work/2026-11-26-no-watch-recovery/implementation.md`
   → Privacy. The feature stays dark until a published version names it.
+
+## D296 — The check-in score's open details: which drop reason wins, and how the numbers are computed (2026-11-27)
+
+- **Context:** implementing D292–D294 (`internal/scoring/checkin.go`, `internal/energy`, `internal/periodization/checkin.go`)
+  left details the contract does not fix. None changes a pinned case of `docs/API.md` or D292.
+- **Decision:**
+  1. **Both drop rules hold → `checkin_below_usual`.** A check-in can be both 1.5 SD below the user's usual and
+     rated ≤ 4 twice. One reason is emitted (the contract's table names one), and the personal comparison wins:
+     it is what `acute_drop` is about ("well below the user's usual"), and for a user whose ratings are always
+     low it is the one that says something; the absolute rule is the fallback for the first weeks, when there is
+     no `z`. Copy for both says what the user reported, so neither choice claims more than the other.
+  2. **The score uses the unrounded parts**; the components are reported rounded. The pinned cases (29, 93, 32,
+     77, 31) come out the same either way; unrounded avoids double rounding.
+  3. **Personal SD is the sample SD (n − 1)** of the prior absolutes, recomputed from their quality and freshness
+     (the stored component is rounded: 14 × 6/6 then 5/5 gives the pinned `z` −1.85 only unrounded), then floored
+     at 6. The mean and SD exclude the day itself.
+  4. **`sleep_duration_min` truncates** to whole minutes (`wake − bed`), as "in whole minutes" reads.
+  5. **Regularity without a mean direction is `null`:** prior midpoints that cancel out on the clock (e.g. 00:00,
+     06:00, 12:00, 18:00) have no circular mean; the part is left out rather than scored against noise. Only the
+     newest 7 midpoints count (the caller passes them newest first).
+  6. **Late caffeine:** `last_caffeine` counts when it is at most 8 h before the reported bedtime, the boundary
+     included, and also when it is after the bedtime (a report that late is late caffeine).
+  7. **`confounders` are `[]` without `acute_drop`** (`periodization.CheckinConfounders` takes the drop), so the
+     stored check-in and the readiness reasons cannot disagree.
+  8. **sRPE load takes the workout's moving time** (`Workout.Seconds()`, as the heart-rate TRIMP does) and a
+     rating outside 1–10 counts as none; heart rate counts as usable only with a reserve (resting and max heart
+     rate known), as on the heart-rate path, so a workout with `avg_hr` but no resting heart rate takes the
+     rating.
+- **Rejected:** emitting both drop reasons (the contract's table and the app's copy key on one).

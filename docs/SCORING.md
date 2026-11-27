@@ -692,9 +692,89 @@ the Today screen has the reason within a pass of the deploy. Older days keep `nu
 
 N2R v1.0.0 combines dynamic food quality, CGM impact, fuel adequacy and dose- and timing-dependent penalties. Account profiles opt into N2R through the Nutrition API. Nighttime observations calibrate the N2R caffeine model. See [calibration and context rules](architecture/nutrition/10-nutrition-to-recovery.md).
 
+## Check-in recovery
+
+A morning without a wearable night (D291: no asleep stages or sleep-window HRV, or no `DailyScore.recovery`) can
+have a **check-in**: bedtime, wake time, `perceived_sleep_quality` and `perceived_freshness` (1–10) and `soreness`.
+`scoring.CheckinScore` (`internal/scoring/checkin.go`, a pure function; D292, D296) turns it into an estimate 0–100
+with the scoring `ModelVersion` (from 2026.11.1). It is an **estimate from self-report**, shown as such
+(`RecoveryStatus.source` `checkin`, `confidence` `medium`/`low`), never written into `DailyScore.recovery`, and never
+part of baselines, trends or insights. A wearable night supersedes it. Not medical: no number here is a threshold
+for anything but the app's own wording.
+
+**Sources.** Self-reported wellness as a monitor of the response to training: Hooper & Mackinnon (1995, *Sports Med*
+20:321, the questionnaire of sleep, fatigue, stress and soreness); Saw, Main & Gastin (2016, *Br J Sports Med* 50:281,
+a systematic review: subjective measures track acute and chronic training load at least as well as common objective
+ones). **Every constant below is a RYFT heuristic** (from the product spec, D292), not a published value; they are
+versioned and will be calibrated against users with both a watch and check-ins.
+
+| Part | Formula | Constants (all RYFT heuristic) |
+| --- | --- | --- |
+| `wellness_absolute` | `(0.65·quality + 0.35·freshness − 1) / 9 · 100` (1/1 → 0, 10/10 → 100) | 0.65 / 0.35 |
+| `wellness_personal` | from ≥ 5 check-ins in the 14 days before (not the day): `z = (absolute − mean) / max(SD, 6)`, `personal = clamp(50 + 25·z, 0, 100)`; the sample SD of the unrounded prior absolutes | 5, 14 days, SD floor 6, 50, 25 |
+| `wellness` | `0.7·absolute + 0.3·personal`; `= absolute` without the personal part | 0.7 / 0.3 |
+| `duration` | `L` = 450 min, or `User.sleep_base_min` clamped to 360–600 while `sleep_base_source` is `learned` or `manual`. 100 from `L` to `L + 120`; below `L` linear to 40 at 300 min, 40 below; above `L + 120` −10 per hour, floor 75. `sleep_duration_min` = `wake − bed` in whole minutes (truncated): time in bed as reported | 450, 360–600, 120, 300 → 40, −10/h, 75 |
+| `regularity` | today's sleep midpoint on the local clock (`tz_offset_sec`) against the circular mean of the newest ≤ 7 prior nights (a wearable night where the day has one, else its check-in), ≥ 3 of them: 100 within 30 min, 50 from 120 min, linear between; `null` with fewer or without a mean direction (D296) | 7, 3, 30, 120 → 50 |
+| `n2r` | yesterday's Nutrition-to-Recovery score as is; `null` without one | |
+| `recovery_score` | `0.50·wellness + 0.30·duration + 0.10·regularity + 0.10·n2r` over the parts present (a `null` part leaves out its weight; the others are scaled up), unrounded parts, rounded, clamped 0–100 | 0.50 / 0.30 / 0.10 / 0.10 |
+| `acute_drop` | `z ≤ −1.5`, or quality ≤ 4 and freshness ≤ 4. Reason `checkin_below_usual` when `z ≤ −1.5` (also when both hold, D296), else `checkin_low_quality_and_freshness` | −1.5, 4 |
+| `soreness` | **zero weight** (decided 2026-11-27, D292): stored, shown, kept for a later calibration; moves neither the score, `acute_drop` nor the readiness state; adds the reason `soreness_reported` only | 0 |
+
+Why renormalise rather than count a missing part as 0: most no-watch users have no N2R and no regularity in their
+first week, and a 0 would mark them down for data they cannot have yet.
+
+**Calibration** (`checkin_test.go`; each case worked out in its comment):
+
+| Case | Parts | Score |
+| --- | --- | --- |
+| 5 h, 3/3, no history | absolute 22, duration 40 | **29**, drop (low ratings) |
+| 8 h, 9/9, no history | absolute 89, duration 100 | **93** |
+| 7.5 h, 7/6 (the contract's example) | absolute 63, duration 100 | 77 |
+| 5 h, 3/4 (the briefing example) | absolute 26, duration 40 | 31, drop (low ratings) |
+| 14 × 6/6 (55.6, SD 0 → 6), then 5/5 (44.4), 8 h | `z` −1.85, personal 4 (3.7), wellness 32 | 58, drop (below usual) |
+| 4 check-ins before | no personal part, wellness = absolute | |
+| Duration (`L` 450) | 300 → 40, 375 → 70, 450 → 100, 570 → 100, 630 → 90, 720 → 75, 900 → 75; `sleep_base_min` 480 manual → `L` 480 | |
+| Regularity | 2 prior → `null`; 03:00 ×3 vs 03:25 → 100, vs 05:00 → 50; 23:50 ×3 vs 00:10 → 100 (circular) | |
+| Renormalisation (7/6, 7.5 h) | no regularity, no N2R: weights / 0.8 → 77; with N2R 50: / 0.9 → 74; all four parts, regularity 100 → 76 | |
+
+**Readiness from a check-in** (`periodization.ReadinessWithCheckin`, D294): only where the HRV path yields `UNKNOWN`,
+after the availability guardrail. No drop → `OPTIMAL`; a drop with a confounder of the evening before →
+`ACUTE_LIFESTYLE_SUPPRESSION` (the confounders, then the drop reason); a drop without → `LOW_RECOVERY_UNEXPLAINED`.
+Confounders (`periodization.CheckinConfounders`): the D − 1 N2R tags `alcohol_above_035gkg`, `caffeine_bed_high`,
+`late_satfat_meal`, and the journal of the **day before** the wake day: `alcohol`/`alcohol_drinks` → `journal_alcohol`,
+`caffeine_after_2pm` or `last_caffeine` at most 8 h before the reported bedtime (RYFT heuristic) →
+`journal_late_caffeine`, `late_meal` → `journal_late_meal`, `sick`/`travel`/`work_stress` → `journal_sick`/
+`journal_travel`/`journal_work_stress`. `LOW_RECOVERY_UNEXPLAINED`, and `ACUTE_LIFESTYLE_SUPPRESSION` with
+`journal_sick`, get the HRV unexplained drop's protective plan (no fat-loss deficit, carbohydrate ≥ 4.5 g/kg). A
+check-in never yields `AUTONOMIC_FATIGUE`; `CoachingBriefing.readiness_display` (`periodization.ReadinessDisplay`)
+shows that HRV state as `LOW_RECOVERY_UNEXPLAINED`.
+
+### Session RPE
+
+A workout the user rates 1–10 (halves; `PUT /v1/workouts/{id}/rpe`) has Foster's **session load**
+(Foster et al. 2001, *J Strength Cond Res* 15:109): `session_rpe_load` = round(round(minutes) × RPE) in arbitrary
+units (60 min at 8 → 480; 45.4 min at 7 → 45 × 7 = 315), `energy.SessionRPELoad`, display only.
+
+For the **coaching load** (acute 7 d, chronic 28 d, ACWR, TSB; `energy.Load`) a rated workout with neither usable
+heart rate (no heart-rate reserve: no TRIMP) nor power (no TSS) counts on the TRIMP scale (`energy.RatedWorkout`,
+D293): Banister's TRIMP with `r = RPE / 10` in place of the heart-rate-reserve fraction,
+`minutes × r × a × e^(b·r)`, with the heart-rate path's constants for the sex (Banister 1991: 0.64/1.92 male,
+0.86/1.67 female; 0.75/1.795, their midpoint, otherwise). Reading RPE × 10 as the reserve percentage is a **RYFT
+heuristic**. A flat AU → TRIMP factor was rejected: TRIMP per AU is `0.075·e^(0.1795·RPE)` with the default
+constants (0.13 at RPE 3, 0.32 at 8), so one factor overstates easy sessions up to 2.3×.
+
+| 60 min at | sex unspecified | male | female |
+| --- | --- | --- | --- |
+| RPE 8 (480 AU) | **151** | 143 | 157 |
+| RPE 3 (180 AU) | 23 | | |
+
+Heart rate or power, when present, wins and the rating only shows. **Day strain does not use the rating**
+(decided 2026-11-27, D293): `DailyScore.strain`, its sleep-need top-up and `WorkoutDetail.trimp` stay heart-rate
+and muscular-load based, so no stored daily number moves. Net energy is not moved by the rating either.
+
 ## Model version
 
-`internal/scoring/version.go` names the model, `ModelVersion = "2026.10.3"`
+`internal/scoring/version.go` names the model, `ModelVersion = "2026.11.1"`
 (year.month.n). Scoring writes it on every `daily_scores` row and every workout it puts
 a load on (`model_version`, migration 0018); rows scored before 2026-10-20 have `null`
 until they are rescored. `GET /v1/model` serves it with the changelog
@@ -741,9 +821,20 @@ digest and the field digest did not (CI runs it: the `golden-guard` job).
 
 | Version | Date | What moved | Decisions |
 | --- | --- | --- | --- |
+| 2026.11.1 | 2026-11-27 | Recovery without a watch: the check-in estimate (`scoring.CheckinScore`, stored on `recovery_checkins` with its version) and the session-RPE coaching load (`energy.RatedWorkout`); see Check-in recovery. No `daily_scores`, workout or session value moves: the golden files change only in `model_version`. `affects`: `[]`. | D292, D293, D294, D296 |
 | 2026.10.3 | 2026-10-31 | Workouts: one activity, one workout. Same-source copies (same activity, both ends within 120 s, overlap ≥ 50 % of the shorter) are folded to the last upload by ingest; cross-source recordings (same activity or either `other`, overlap ≥ 80 % of the shorter) are shown once, primary by specific activity, own heart rate, length, id. Moves `details.workouts`, which workout carries a session's muscular load (that workout's `strain`, `session_id`, `muscular_load`; `sessions.workout_id`) and the new `workouts.duplicate_of`. `affects`: `[]`, no trend metric (day strain counts the muscular load once whichever workout carries it). | D146, D147 |
 | 2026.10.2 | 2026-10-26 | Strength: the e1RM reference is the best of the 90 days before a session's end, its own sets always included; the history ends at the session's last set when that is after `ended_at`; assisted bodyweight sets count with the support taken off and hold no record; `pct_1rm` targets use the same 90-day e1RM. `affects`: `strain` and `volume_kg` directly; `sleep`, `sleep_quality`, `recovery` and `readiness` through the next night's need (3 min per strain point) and the readiness penalty. | D134, D135, D138 |
 | 2026.10.1 | 2026-10-20 | The model at the start of the beta. | D80 |
+
+**2026.11.1, before and after.** The new functions have no caller in the scoring engine: `CheckinScore` runs on the
+api's check-in write, and `energy`/`periodization` feed only the coaching briefing (store), which is computed on read.
+`energy.Workout` keeps its numbers (the sex constants moved into one helper, unchanged; an unrated workout has the
+same load), and the HRV readiness path and its plans are unchanged (`plan_test.go`, `checkin_test.go`). So before =
+after for every stored daily number, workout and session; what moves is the `model_version` label on rows scored
+again, and the coaching load of accounts with a rated workout without heart rate (none before the feature: the
+rating is new). **Rescore:** not needed for any number; the 15-minute pass relabels today and yesterday, and a full
+rescore (`OPERATIONS.md` → Rescoring) only relabels older rows. Stored check-ins carry the version they were scored
+with; a later model rescores them on the next recompute (the outline's Rescoring row).
 
 **2026.10.3, before and after.** Only users with several recordings of one activity are affected: a source that
 re-wrote workouts without the app sending deletions (the reporter: 6 copies on 2026-10-20), or two sources recording
