@@ -88,7 +88,8 @@ func owned(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) int {
 		(SELECT count(*) FROM plans WHERE user_id=$1) + (SELECT count(*) FROM exercises WHERE user_id=$1) +
 		(SELECT count(*) FROM connections WHERE user_id=$1) + (SELECT count(*) FROM connection_tokens WHERE user_id=$1) +
 		(SELECT count(*) FROM connection_pending WHERE user_id=$1) + (SELECT count(*) FROM connection_states WHERE user_id=$1) +
-		(SELECT count(*) FROM provider_inbox WHERE user_id=$1) + (SELECT count(*) FROM smoke_account WHERE user_id=$1)`, id).Scan(&n)
+		(SELECT count(*) FROM provider_inbox WHERE user_id=$1) + (SELECT count(*) FROM smoke_account WHERE user_id=$1) +
+		(SELECT count(*) FROM recovery_checkins WHERE user_id=$1) + (SELECT count(*) FROM workout_ratings WHERE user_id=$1)`, id).Scan(&n)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,9 +117,16 @@ func seedUser(t *testing.T, st *Store, pool *pgxpool.Pool, id uuid.UUID) {
 	if _, err := st.UpsertSleep(ctx, id, []model.SleepSegment{{Start: now.Add(-8 * time.Hour), End: now, Stage: "core", Source: "test"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.UpsertWorkouts(ctx, id, []model.Workout{{ID: uuid.New(), Activity: "running", Start: now.Add(-time.Hour), End: now, Source: "test"}}); err != nil {
+	rated := uuid.New()
+	if _, err := st.UpsertWorkouts(ctx, id, []model.Workout{{ID: rated, Activity: "running", Start: now.Add(-time.Hour), End: now, Source: "test"}}); err != nil {
 		t.Fatal(err)
 	}
+	// Recovery without a watch (0064, 0065): a check-in, and the session rating of that workout.
+	if _, err := st.PutCheckin(ctx, id, nil, now.Format(time.DateOnly), CheckinReport{Bedtime: now.Add(-8 * time.Hour), WakeTime: now, Quality: 6, Freshness: 6},
+		now, fakeScorer); err != nil {
+		t.Fatal(err)
+	}
+	rate(t, pool, id, rated, 7)
 	if _, err := pool.Exec(ctx, `INSERT INTO daily_scores (user_id, day) VALUES ($1, current_date)`, id); err != nil {
 		t.Fatal(err)
 	}

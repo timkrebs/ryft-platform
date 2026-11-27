@@ -1,5 +1,13 @@
 # RYFT platform — status
 
+## No-watch recovery: the implementation, dark (2026-11-27, D291–D295, D298, D299, PR #260)
+
+Done: the contract of #255 is served behind `recovery.checkin` (enabled, 0 %, empty allow-list). The morning check-in (`PUT`/`GET`/`DELETE /v1/recovery/checkins/{date}`, the range route), `GET /v1/recovery/status`, the session RPE (`PUT`/`DELETE /v1/workouts/{id}/rpe`, `Workout.session_rpe`, `session_rpe_load`), `CoachingBriefing.recovery` and readiness from a check-in where the HRV path is `UNKNOWN` (`LOW_RECOVERY_UNEXPLAINED`, `ACUTE_LIFESTYLE_SUPPRESSION` with the journal confounders, the protective plan for `journal_sick`), `readiness_display` on every briefing (not behind the flag), `N2RScore.bedtime_source` with the check-in bedtime as N2R's live fallback, and rated workouts without HR or power in the coaching load only (Banister TRIMP with `r = RPE/10`). One wearable-night rule decides the tiers, `needs_checkin`, `superseded` and the readiness path. The flag is a kill switch. Migrations **0064** `recovery_checkins`, **0065** `workout_ratings` (composite FK to `workouts`, D299), **0066** the flag seed (0061–0063 are the BLS import's, #257 and #259). D296 and D297 went to #257 and #258 while this ran, so this work's own decisions are **D298** (the score's details) and **D299** (store and routes). Scoring model **2026.11.1** (`affects: []`): the golden files change in `model_version` only; no stored daily number, day strain or `WorkoutDetail.trimp` moves. Reviews: `docs/work/2026-11-26-no-watch-recovery/review-impl.md`.
+
+On merge: `deploy.yml`'s migrate job runs 0064–0066; api, ingest and scoring roll (the model version, the fold's rating move). Nothing changes for any account: the flag is at 0 %.
+
+Open: the privacy text (#252 or the next version, the sentences in `implementation.md` → Privacy) before any tester goes on the allow-list; then one tester (OPERATIONS → Feature flags → `recovery.checkin`). The app builds the check-in screen, the RPE prompt and `readiness_display` copy.
+
 ## The sync button: the sync status contract, docs only (2026-11-27, D297)
 
 Done: `docs/API.md` → `GET /v1/me/sync` → The sync button. The route gains `sources` (per source: `healthkit` or a provider id, `last_sync_at`, `status` `ok`/`pending`/`error`, `reason`), `freshness` (`current`/`scores_pending`) and `scores_pending_since`. No new route; `POST /v1/sync` is unchanged and does not wait for scoring. "Scores pending" means one of two things. A day is queued that is today, yesterday, or a past day queued in the last 10 minutes (its rescore reaches today). Or a connection's delivery is not stored yet. Not tracked: the N2R morning baseline, the briefing built on it, and the pilot's partner deliveries, all on the 15-minute tick (D297 says why). Garmin and Suunto are listed only while a connection is live, served and flagged on. The app rule (five steps, polling bounded at 3 minutes) is in the section. The Swift mirror and a changelog row are in. The examples are `http` blocks until the server has the types.
@@ -23,7 +31,7 @@ Needs you, in order:
 6. Write: the same with `--args=--source,bls,--full,--write`. Expect 7,023 `inserted`, 3 `updated` (the BLS staples' nutrients and attribution), 0 `unchanged`, 0 `conflict`, and `stale_twins` all `imported: false`. A rerun gives 7,026 `unchanged`.
 7. Legal: put the D296 attribution sentence on the site's licences/legal page (#252), and ask the app lead to add it to the About/licences screen.
 
-Size: ~250k rows, ~30–45 MB in Supabase. To roll back, re-pin the previous digest. Imported rows stay; retire them by `status` if they must go. 0061 rolls back by re-applying 0059's body. **0061–0063 are taken now** (0062/0063 by the BLS data PR): the no-watch recovery implementation (below) starts at 0064.
+Size: ~250k rows, ~30–45 MB in Supabase. To roll back, re-pin the previous digest. Imported rows stay; retire them by `status` if they must go. 0061 rolls back by re-applying 0059's body. **0061–0063 are taken now** (0062/0063 by the BLS data PR): the no-watch recovery implementation (above) starts at 0064.
 
 ## No-watch recovery: the contract, docs only (2026-11-26, D291–D295)
 

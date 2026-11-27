@@ -51,7 +51,7 @@
       "workouts": 0
     }
   },
-  "model_version": "2026.10.3",
+  "model_version": "2026.11.1",
   "numbers": "rounded to 1e-6, printed shortest; ids replaced by labels; digests: first 64 bits of a SHA-256, inputs over the generator's canonical field=value lines, fields over the files' field names",
   "regenerate": "make golden-update: after a ModelVersion bump, or for the users whose generator inputs changed; GOLDEN_MODE=additive for new fields only, GOLDEN_MODE=init for the first set; commit before the next update",
   "seed": 20261104,

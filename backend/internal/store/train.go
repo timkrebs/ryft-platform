@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/train"
@@ -716,10 +718,11 @@ func (s *Store) CompleteSessionWith(ctx context.Context, userID, id uuid.UUID, c
 	return err
 }
 
-// SetSessionLoad is scoring's write: the load it computed and the workout it
-// attached the session to. The api writes what the user enters, scoring what it derives (D63).
-func (s *Store) SetSessionLoad(ctx context.Context, userID, id uuid.UUID, trimp, strain, volume float64, workoutID uuid.UUID) error {
-	_, err := s.pool.Exec(ctx, `UPDATE sessions SET muscular_trimp=$3, strain=$4, volume_kg=$5, workout_id=$6
+// setSessionLoad is scoring's write: the load it computed and the workout it
+// attached the session to. The api writes what the user enters, scoring what it derives (D63). It runs inside
+// ApplySessionPass.
+func setSessionLoad(ctx context.Context, q execQueryer, userID, id uuid.UUID, trimp, strain, volume float64, workoutID uuid.UUID) error {
+	_, err := q.Exec(ctx, `UPDATE sessions SET muscular_trimp=$3, strain=$4, volume_kg=$5, workout_id=$6
 		WHERE user_id=$1 AND id=$2 AND (muscular_trimp, strain, volume_kg, workout_id) IS DISTINCT FROM ($3::float8, $4::float8, $5::float8, $6::uuid)`,
 		userID, id, trimp, strain, volume, workoutID)
 	return err
@@ -897,9 +900,69 @@ func (s *Store) LastWorkingSets(ctx context.Context, userID, exerciseID uuid.UUI
 
 // ---- workouts carrying a session's load (scoring) ------------------------------------
 
-// AttachSession puts a session's load on one of the phone's workouts.
-func (s *Store) AttachSession(ctx context.Context, userID, workoutID, sessionID uuid.UUID, load float64) error {
-	_, err := s.pool.Exec(ctx, `UPDATE workouts SET muscular_load=$4, session_id=$3 WHERE user_id=$1 AND id=$2
+// execQueryer is what a pool and a transaction share: the pass's statements run on either.
+type execQueryer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+// SessionAttachment is one completed session's result in a day's pass: the workout it is attached to and the load
+// scoring computed. Own: no HealthKit workout matched, WorkoutID is the one scoring owns for the session
+// (train.SessionWorkoutID), with Start and End as its times.
+type SessionAttachment struct {
+	SessionID, WorkoutID uuid.UUID
+	Own                  bool
+	Start, End           time.Time
+	TRIMP, Strain        float64
+	VolumeKG             float64
+}
+
+// sessionPassFault is a test hook: it runs in ApplySessionPass after the attachments and before the rating moves,
+// and its error rolls the pass back. Nil in production.
+var sessionPassFault func() error
+
+// ApplySessionPass is a day's strength pass as one transaction: every session's attachment (a HealthKit workout, or
+// the workout scoring owns) and load, then the rating moves and the releases of the attachments that no longer
+// hold (releaseSessionWorkouts). previous maps a session to the workout it was attached to when the pass read it
+// (Session.WorkoutID; missing: none). The pass either happens whole or not at all, so a retry after a failure starts
+// from the same mapping and the ratings follow the sessions to the same workouts: committing the attachments before
+// the move would let the retry read the new mapping as the old one. daySessions are the sessions the pass scored
+// (those of atts); a session of the day missing from atts is released.
+func (s *Store) ApplySessionPass(ctx context.Context, userID uuid.UUID, atts []SessionAttachment, previous map[uuid.UUID]uuid.UUID) error {
+	day := make([]uuid.UUID, 0, len(atts))
+	chosen := make(map[uuid.UUID]uuid.UUID, len(atts))
+	for _, a := range atts {
+		day = append(day, a.SessionID)
+		chosen[a.SessionID] = a.WorkoutID
+	}
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		for _, a := range atts {
+			var err error
+			if a.Own {
+				err = ensureSessionWorkout(ctx, tx, userID, a.WorkoutID, a.SessionID, a.Start, a.End, a.TRIMP)
+			} else {
+				err = attachSession(ctx, tx, userID, a.WorkoutID, a.SessionID, a.TRIMP)
+			}
+			if err == nil {
+				err = setSessionLoad(ctx, tx, userID, a.SessionID, a.TRIMP, a.Strain, a.VolumeKG, a.WorkoutID)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		if sessionPassFault != nil {
+			if err := sessionPassFault(); err != nil {
+				return err
+			}
+		}
+		return releaseSessionWorkouts(ctx, tx, userID, day, chosen, previous)
+	})
+}
+
+// attachSession puts a session's load on one of the phone's workouts.
+func attachSession(ctx context.Context, q execQueryer, userID, workoutID, sessionID uuid.UUID, load float64) error {
+	_, err := q.Exec(ctx, `UPDATE workouts SET muscular_load=$4, session_id=$3 WHERE user_id=$1 AND id=$2
 		AND (muscular_load, session_id) IS DISTINCT FROM ($4::float8, $3::uuid)`, userID, workoutID, sessionID, load)
 	return err
 }
@@ -908,47 +971,211 @@ func (s *Store) AttachSession(ctx context.Context, userID, workoutID, sessionID 
 // matching HealthKit workout) exists with the session's times and load.
 func (s *Store) EnsureSessionWorkout(ctx context.Context, userID, workoutID, sessionID uuid.UUID, start, end time.Time, load float64) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		var a, b time.Time
-		err := tx.QueryRow(ctx, `SELECT start_at, end_at FROM workouts WHERE user_id=$1 AND id=$2 AND source=$3`,
-			userID, workoutID, model.SessionSource).Scan(&a, &b)
-		switch {
-		case err == nil && a.Equal(start) && b.Equal(end):
-			_, err = tx.Exec(ctx, `UPDATE workouts SET muscular_load=$3, session_id=$4 WHERE user_id=$1 AND id=$2
-				AND (muscular_load, session_id) IS DISTINCT FROM ($3::float8, $4::uuid)`, userID, workoutID, load, sessionID)
-			return err
-		case err == nil:
-			// Times changed: scoring may not move a workout, only replace its own.
-			if _, err := tx.Exec(ctx, `DELETE FROM workouts WHERE user_id=$1 AND id=$2 AND source=$3`, userID, workoutID, model.SessionSource); err != nil {
-				return err
-			}
-		case !errors.Is(err, pgx.ErrNoRows):
+		return ensureSessionWorkout(ctx, tx, userID, workoutID, sessionID, start, end, load)
+	})
+}
+
+func ensureSessionWorkout(ctx context.Context, q execQueryer, userID, workoutID, sessionID uuid.UUID, start, end time.Time, load float64) error {
+	var a, b time.Time
+	err := q.QueryRow(ctx, `SELECT start_at, end_at FROM workouts WHERE user_id=$1 AND id=$2 AND source=$3`,
+		userID, workoutID, model.SessionSource).Scan(&a, &b)
+	switch {
+	case err == nil && a.Equal(start) && b.Equal(end):
+		_, err = q.Exec(ctx, `UPDATE workouts SET muscular_load=$3, session_id=$4 WHERE user_id=$1 AND id=$2
+			AND (muscular_load, session_id) IS DISTINCT FROM ($3::float8, $4::uuid)`, userID, workoutID, load, sessionID)
+		return err
+	case err == nil:
+		// Times changed: the session's own workout follows them in place, so its rating stays (a delete and insert
+		// would cascade it away). Scoring has no grant on the times: 0065's function sets them from the owner's
+		// completed session the workout belongs to (it takes no times), and reports whether it found one.
+		var moved bool
+		if err := q.QueryRow(ctx, `SELECT public.scoring_follow_session_times($1, $2)`, userID, workoutID).Scan(&moved); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO workouts (user_id, id, activity, start_at, end_at, source, session_id, muscular_load)
-			VALUES ($1,$2,'strength',$3,$4,$5,$6,$7)`, userID, workoutID, start, end, model.SessionSource, sessionID, load)
+		if !moved {
+			return fmt.Errorf("session workout %s: its session %s is no longer completed", workoutID, sessionID)
+		}
+		// The load columns start over as a new row's do: the day's pass scores the workout again.
+		_, err = q.Exec(ctx, `UPDATE workouts SET muscular_load=$3, session_id=$4,
+			strain=NULL, trimp=NULL, zone_minutes=NULL, model_version=NULL
+			WHERE user_id=$1 AND id=$2 AND source=$5`, userID, workoutID, load, sessionID, model.SessionSource)
 		return err
-	})
+	case !errors.Is(err, pgx.ErrNoRows):
+		return err
+	}
+	_, err = q.Exec(ctx, `INSERT INTO workouts (user_id, id, activity, start_at, end_at, source, session_id, muscular_load)
+		VALUES ($1,$2,'strength',$3,$4,$5,$6,$7)`, userID, workoutID, start, end, model.SessionSource, sessionID, load)
+	return err
 }
 
 // ReleaseSessionWorkouts undoes stale attachments after a day's pass: a
 // workout keeps a session's load only if the session is completed and, when it
 // is one of daySessions, the workout is the one chosen for it (chosen maps
 // session → workout). Workouts scoring created for such sessions go.
-func (s *Store) ReleaseSessionWorkouts(ctx context.Context, userID uuid.UUID, daySessions []uuid.UUID, chosen map[uuid.UUID]uuid.UUID) error {
+//
+// previous maps a session to the workout it was attached to before this pass (Session.WorkoutID as read at its
+// start; nil or missing: none). A session's rating belongs to the session: where the session moved to another
+// workout, from a HealthKit workout to another, or back to its own, the rating moves with it (D293). The move and
+// the releases run in one transaction (ApplySessionPass runs them in the pass's own, after the attachments, so
+// previous is the mapping from before the pass; a workout of the user that still carries the session through
+// workouts.session_id and is not the chosen one gives up its rating too, as a last resort).
+func (s *Store) ReleaseSessionWorkouts(ctx context.Context, userID uuid.UUID, daySessions []uuid.UUID, chosen, previous map[uuid.UUID]uuid.UUID) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		return releaseSessionWorkouts(ctx, tx, userID, daySessions, chosen, previous)
+	})
+}
+
+func releaseSessionWorkouts(ctx context.Context, q execQueryer, userID uuid.UUID, daySessions []uuid.UUID, chosen, previous map[uuid.UUID]uuid.UUID) error {
 	keep := make([]uuid.UUID, 0, len(chosen))
 	for _, w := range chosen {
 		keep = append(keep, w)
 	}
+	if err := moveRatings(ctx, q, userID, chosen, previous); err != nil {
+		return err
+	}
 	stale := `session_id IS NOT NULL AND (
-		NOT EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = workouts.user_id AND s.id = workouts.session_id AND s.status = 'completed')
-		OR (session_id = ANY($2) AND NOT (id = ANY($3))))`
-	if _, err := s.pool.Exec(ctx, `UPDATE workouts SET muscular_load=NULL, session_id=NULL
+	NOT EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = workouts.user_id AND s.id = workouts.session_id AND s.status = 'completed')
+	OR (session_id = ANY($2) AND NOT (id = ANY($3))))`
+	if _, err := q.Exec(ctx, `UPDATE workouts SET muscular_load=NULL, session_id=NULL
 		WHERE user_id=$1 AND source <> '`+model.SessionSource+`' AND `+stale, userID, daySessions, keep); err != nil {
 		return err
 	}
-	_, err := s.pool.Exec(ctx, `DELETE FROM workouts WHERE user_id=$1 AND source = '`+model.SessionSource+`'
+	_, err := q.Exec(ctx, `DELETE FROM workouts WHERE user_id=$1 AND source = '`+model.SessionSource+`'
 		AND (session_id IS NULL OR `+stale+`)`, userID, daySessions, keep)
 	return err
+}
+
+// ratingMove is one candidate move of a rating: the session's rating from the workout it had to the one it has now.
+type ratingMove struct {
+	from, to uuid.UUID
+	rank     int // 0 the workout the session was attached to, 1 the one scoring makes for it, 2 one that still carries it
+}
+
+// moveRatings repoints the ratings of the sessions' workouts to the workouts the sessions have now (chosen),
+// planned from one snapshot of which workouts are rated. Scoring may repoint a rating by its key columns, never
+// read its value (0065). A target keeps its own rating when it has one, unless that rating itself moves away
+// (a session that moves on to another workout frees the one it leaves for another session: a chain of
+// reassignments ends with each rating on its session's workout, moved in the order that keeps the primary key
+// free). Of two ratings that would move to one target the better-ranked source wins. Two sessions that swap two
+// rated workouts would each move onto the other's rating: that cycle is left as it is.
+func moveRatings(ctx context.Context, q execQueryer, userID uuid.UUID, chosen, previous map[uuid.UUID]uuid.UUID) error {
+	if len(chosen) == 0 {
+		return nil
+	}
+	sessions := make([]uuid.UUID, 0, len(chosen))
+	targets := make([]uuid.UUID, 0, len(chosen))
+	for session, w := range chosen {
+		sessions, targets = append(sessions, session), append(targets, w)
+	}
+	rows, err := q.Query(ctx, `SELECT session_id, id FROM workouts WHERE user_id = $1 AND session_id = ANY($2)`, userID, sessions)
+	if err != nil {
+		return err
+	}
+	type carrier struct{ session, workout uuid.UUID }
+	carriers, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (carrier, error) {
+		var c carrier
+		return c, r.Scan(&c.session, &c.workout)
+	})
+	if err != nil {
+		return err
+	}
+	var cands []ratingMove
+	for session, w := range chosen {
+		// The workout it had (preferred) and the one scoring makes for it: a rating on either follows the session.
+		for rank, old := range []uuid.UUID{previous[session], train.SessionWorkoutID(userID, session)} {
+			if old != uuid.Nil && old != w {
+				cands = append(cands, ratingMove{old, w, rank})
+			}
+		}
+	}
+	for _, c := range carriers {
+		if w := chosen[c.session]; c.workout != w {
+			cands = append(cands, ratingMove{c.workout, w, 2})
+		}
+	}
+	if len(cands) == 0 {
+		return nil
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		a, b := cands[i], cands[j]
+		switch {
+		case a.rank != b.rank:
+			return a.rank < b.rank
+		case a.to != b.to:
+			return a.to.String() < b.to.String()
+		}
+		return a.from.String() < b.from.String()
+	})
+	var ids []uuid.UUID
+	for _, c := range cands {
+		ids = append(ids, c.from, c.to)
+	}
+	rated, err := idSet(ctx, q, `SELECT workout_id FROM workout_ratings WHERE user_id = $1 AND workout_id = ANY($2)`, userID, ids)
+	if err != nil {
+		return err
+	}
+	existing, err := idSet(ctx, q, `SELECT id FROM workouts WHERE user_id = $1 AND id = ANY($2)`, userID, targets)
+	if err != nil {
+		return err
+	}
+	// One move per target and per source, from a rated workout to a workout that exists.
+	var moves []ratingMove
+	toTaken, fromTaken := map[uuid.UUID]bool{}, map[uuid.UUID]bool{}
+	for _, c := range cands {
+		if rated[c.from] && existing[c.to] && !toTaken[c.to] && !fromTaken[c.from] {
+			moves = append(moves, c)
+			toTaken[c.to], fromTaken[c.from] = true, true
+		}
+	}
+	// A target that holds a rating which does not move away keeps it, and so do the moves that wait on it.
+	for changed := true; changed; {
+		changed = false
+		leaving := map[uuid.UUID]bool{}
+		for _, m := range moves {
+			leaving[m.from] = true
+		}
+		kept := moves[:0]
+		for _, m := range moves {
+			if rated[m.to] && !leaving[m.to] {
+				changed = true
+				continue
+			}
+			kept = append(kept, m)
+		}
+		moves = kept
+	}
+	// Run a move once its target is free; what is left waits on a cycle.
+	for progress := true; progress && len(moves) > 0; {
+		progress = false
+		pending := moves[:0]
+		for _, m := range moves {
+			if rated[m.to] {
+				pending = append(pending, m)
+				continue
+			}
+			if _, err := q.Exec(ctx, `UPDATE workout_ratings SET workout_id = $3, updated_at = now() WHERE user_id = $1 AND workout_id = $2`,
+				userID, m.from, m.to); err != nil {
+				return err
+			}
+			rated[m.from], rated[m.to] = false, true
+			progress = true
+		}
+		moves = pending
+	}
+	return nil
+}
+
+func idSet(ctx context.Context, q execQueryer, sql string, userID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]bool, error) {
+	rows, err := q.Query(ctx, sql, userID, ids)
+	if err != nil {
+		return nil, err
+	}
+	list, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	set := make(map[uuid.UUID]bool, len(list))
+	for _, id := range list {
+		set[id] = true
+	}
+	return set, err
 }
 
 // ---- plans ----------------------------------------------------------------------------

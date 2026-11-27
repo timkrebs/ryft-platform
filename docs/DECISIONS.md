@@ -7149,6 +7149,122 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   needs, and what waits for the N2R version, are in `docs/work/2026-11-26-no-watch-recovery/implementation.md`
   → Privacy. The feature stays dark until a published version names it.
 
+## D298 — The check-in score's open details: which drop reason wins, and how the numbers are computed (2026-11-27)
+
+- **Context:** implementing D292–D294 (`internal/scoring/checkin.go`, `internal/energy`, `internal/periodization/checkin.go`)
+  left details the contract does not fix. None changes a pinned case of `docs/API.md` or D292.
+- **Decision:**
+  1. **Both drop rules hold → `checkin_below_usual`.** A check-in can be both 1.5 SD below the user's usual and
+     rated ≤ 4 twice. One reason is emitted (the contract's table names one), and the personal comparison wins:
+     it is what `acute_drop` is about ("well below the user's usual"), and for a user whose ratings are always
+     low it is the one that says something; the absolute rule is the fallback for the first weeks, when there is
+     no `z`. Copy for both says what the user reported, so neither choice claims more than the other.
+  2. **The score uses the unrounded parts**; the components are reported rounded. The pinned cases (29, 93, 32,
+     77, 31) come out the same either way; unrounded avoids double rounding.
+  3. **Personal SD is the sample SD (n − 1)** of the prior absolutes, recomputed from their quality and freshness
+     (the stored component is rounded: 14 × 6/6 then 5/5 gives the pinned `z` −1.85 only unrounded), then floored
+     at 6. The mean and SD exclude the day itself.
+  4. **`sleep_duration_min` truncates** to whole minutes (`wake − bed`), as "in whole minutes" reads.
+  5. **Regularity without a mean direction is `null`:** prior midpoints that cancel out on the clock (e.g. 00:00,
+     06:00, 12:00, 18:00) have no circular mean; the part is left out rather than scored against noise. Only the
+     newest 7 midpoints count (the caller passes them newest first).
+  6. **Late caffeine:** `last_caffeine` counts when it is at most 8 h before the reported bedtime, the boundary
+     included, and also when it is after the bedtime (a report that late is late caffeine).
+  7. **`confounders` are `[]` without `acute_drop`** (`periodization.CheckinConfounders` takes the drop), so the
+     stored check-in and the readiness reasons cannot disagree.
+  8. **sRPE load takes the workout's moving time** (`Workout.Seconds()`, as the heart-rate TRIMP does) and a
+     rating outside 1–10 counts as none; heart rate counts as usable only with a reserve (resting and max heart
+     rate known), as on the heart-rate path, so a workout with `avg_hr` but no resting heart rate takes the
+     rating.
+- **Rejected:** emitting both drop reasons (the contract's table and the app's copy key on one).
+
+## D299 — The no-watch recovery implementation: the details the contract leaves to the store and the routes (2026-11-27)
+
+- **Context:** the implementation of D291–D295 and D298 (`internal/store/recovery.go`, `cmd/api/recovery.go`). None of this
+  changes a sentence of `docs/API.md`.
+- **Decision:**
+  1. **The score is injected into the store.** `internal/scoring` imports `internal/store`, so the store cannot call
+     `scoring.CheckinScore`. It gathers the facts (`CheckinFacts`: the report, the sleep base, the prior ratings and
+     nights, yesterday's N2R and tags, the journal of the day before) and takes a `CheckinScorer`; the api passes
+     `scoreCheckin`. One transaction holds the upsert and the rescoring of the later check-ins within 14 days
+     (`lockCheckin`, advisory class 7419010). The store's tests use a stand-in scorer; the real numbers (29, 93, 77,
+     the z blend, 62 with regularity) are pinned through the api.
+  2. **`wearableNightSQL` is the contract's rule:** the day's `daily_scores.recovery` is not null, and the night has
+     asleep stages or an overnight HRV. The stages are `sleep_segments` of stage `asleep`, `core`, `deep` or `rem`
+     ending in scoring's night window of the day (local 20:00 before to 13:00, `scoring.NightWindow`); an `inbed`-only
+     night has none. `daily_scores.sleep_has_stages` (core, deep or rem when it was scored) and `hrv_ms` (the stored
+     sleep-window HRV) answer first, so the `sleep_segments` lookup (index `sleep_user_end`) runs only for a day that has
+     a recovery and neither, such as the older Garmin firmware that writes `asleep` alone. The one rule is a SQL
+     fragment used by the range read, the status, the readiness states and the regularity's nights.
+  3. **Confounders are those of the save.** They are computed from the live D − 1 N2R (with the check-in's bedtime) and
+     the journal of the day before when the check-in is saved or rescored, and stored; the briefing reads the stored
+     ones. A meal logged afterwards moves D − 1's N2R at once but the check-in's confounders at the next rescore (a
+     later check-in, a recompute, a model bump).
+  4. **Suggestions** take the check-ins of the 7 days **before** today (`today − 7 … today − 1`, at least 3); medians
+     are taken across midnight (the clock shifted by 12 h), over each check-in's own clock (`tz_offset_sec`).
+  5. **The flag is a kill switch for counting, not for showing.** While it is off the status, the readiness path, the
+     load, the N2R bedtime and `n2r_bedtime_applied` ignore check-ins and ratings; `Workout.session_rpe` and the check-in
+     reads still show what is stored (the owner's access, as for the DELETEs). `GET /v1/workouts` and the day read
+     `RatedWorkoutsBetween`; scoring reads `VisibleWorkoutsBetween`, which has no rating (its role cannot read the value).
+     A check-in's bedtime goes into N2R only: not into the nutrition diary's meal-timing score, and not into a stored
+     N2R night (`refreshN2RNight` reads its history with the flag off), which would outlive the kill switch.
+  6. **Required fields:** `tz_offset_sec` and `soreness` are pointers in `RecoveryCheckinPut` and `session_rpe` in
+     `WorkoutRPEPut`, so a missing one is a `422` and not a silent 0 or false. A malformed `{id}` is `400` as in
+     `GET /v1/workouts/{id}`.
+  7. **A model bump** rescores stored check-ins at the next `POST /v1/recompute` of the account
+     (`RescoreStaleCheckins`; best effort, never fails the recompute), and any `PUT`/`DELETE` rescores the later ones.
+  8. **Migration 0065 is corrected before it ships:** the foreign key to `workouts(id)` cannot exist (the key of
+     `workouts` has been `(user_id, id)` since 0007), so it is `(user_id, workout_id) REFERENCES workouts (user_id, id)
+     ON DELETE CASCADE ON UPDATE CASCADE`. That also keeps a rating its workout's owner's in the database, and the
+     merge's `UPDATE workouts SET user_id` carries the rating with it. The grants end up as follows. `ryft_ingest`
+     (the fold): `SELECT (user_id, workout_id, updated_at)` and `UPDATE (workout_id, updated_at)`, no `DELETE` (a dropped
+     copy's rating goes with its workout through the foreign key, as the owner), never the value. `ryft_scoring`:
+     `SELECT (user_id, workout_id)` and `UPDATE (workout_id, updated_at)` on `workout_ratings`, and
+     `UPDATE (start_at, end_at)` on `workouts` (per column, not per row: the statement is limited to source
+     `ryft-session`). `ryft_api` has the table.
+  9. **A rating follows its session.** A Train session's own workout whose times are edited is **updated in place**
+     (`EnsureSessionWorkout`; its load columns start over and the day's pass scores it again, as for a new row),
+     where it used to be deleted and inserted under the same id, so the cascade no longer drops the rating. When
+     scoring attaches a session to another workout, `ReleaseSessionWorkouts` moves the rating **from the workout the
+     session had before this pass** (`sessions.workout_id` as read at its start, passed in as `previous`) and from its
+     own workout, to the one chosen: own to HealthKit, HealthKit to HealthKit, HealthKit back to own. A target that has
+     a rating keeps it, and of two ratings for one target the previous workout's wins. The move and the releases run
+     in one transaction.
+- **Rejected:** a `scoring` grant to insert ratings (a service that derives numbers writing a user's input); keeping
+  the confounders live in the briefing (the N2R history read would run per check-in on every briefing).
+
+## D300 — The no-watch recovery's second pass: consent at the write, a recovery-free plan, one strength transaction, no times grant (2026-11-27)
+
+- **Context:** a static adversarial review of #260 against `main` found six holes. All six were checked in the code,
+  confirmed, and fixed with a test (`docs/work/2026-11-26-no-watch-recovery/review-codex.md`). This entry amends D299.
+- **Decision:**
+  1. **Consent is checked again at the write.** `PutCheckin` and `PutWorkoutRating` take the admitting consent grant
+     and revalidate it in their transaction under the consent lock `RevokeConsent` takes (`lockApply` before
+     `lockCheckin`), as the HealthKit sync does. A withdrawal committed in between answers `consent_required` and stores
+     nothing.
+  2. **A saved plan carries a recovery-free twin.** When a check-in changed the day's plan, `daily_energy_states.plan`
+     also holds the plan as it would be with recovery off (`recovery_off`; jsonb, no schema change). Readers with the
+     flag off and the stored N2R night restore it. The capture computes projection, the evaluation's history and calibration
+     with the flag off. The evaluation's adherence and availability are measured against the plan the user was
+     shown, which is the `recovery_off` one once the flag is off. So a check-in leaves no trace in any number stored
+     after the flag goes off.
+  3. **Reconcile keeps a rating.** When `wearables.Reconcile` drops a rated copy of a session, the kept copy takes its
+     session RPE if it has none. Measured HR or power load still wins over the rating, and the rating counts once.
+  4. **The day's strength pass is one transaction** (`Store.ApplySessionPass`): attachments, session loads, rating
+     moves and releases, planned from the mapping read before the pass. A failure rolls it all back, and the retry starts
+     from the same mapping. Rating moves follow chains of reassignments. A swap of two rated workouts leaves both
+     ratings where they are.
+  5. **Scoring has no grant on workout times** (amends D299 item 8). 0065 is changed in place (unmerged, applied
+     nowhere): the `UPDATE (start_at, end_at)` column grant and its trigger are gone (the file revokes and drops them, so
+     a rerun stays clean). `public.scoring_follow_session_times(user, workout)` is SECURITY DEFINER with
+     `search_path = pg_catalog` and EXECUTE for `ryft_scoring` only. It takes no times: it reads them from the owner's
+     completed session of that workout. `EnsureSessionWorkout` calls it.
+  6. **The outermost log redactor covers the recovery paths** (`redactPrivatePath`, formerly `redactNutritionPath`):
+     `/v1/recovery/checkins/{date}` and `/v1/workouts/{id}/rpe` log their pattern even when auth, the rate limit, App
+     Attest, the beta gate or the mux rejects the request.
+- **Rejected:** rebuilding a flag-off plan on every read (the stored plan is what was shown; a second copy is cheaper
+  than replaying the day); a trigger that checks ownership on the times (it still lets the caller pick the times).
+
 ## D297 — The sync button reads `GET /v1/me/sync`: per-source status and "scores pending", no new route (2026-11-27; contract only)
 
 - **Context:** the home screen gets a sync button (syncing, up to date < 30 min, stale ≥ 30 min, error; a long

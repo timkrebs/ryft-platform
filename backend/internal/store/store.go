@@ -211,6 +211,10 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 			`DELETE FROM journal_days WHERE user_id=$1`,
 			`DELETE FROM user_behaviors WHERE user_id=$1`,
 			`DELETE FROM behaviors WHERE user_id=$1`,
+			// Recovery without a watch (0064, 0065, D295): the morning check-ins and the session ratings, the
+			// ratings before the workouts they name (the foreign key cascades too).
+			`DELETE FROM recovery_checkins WHERE user_id=$1`,
+			`DELETE FROM workout_ratings WHERE user_id=$1`,
 			// Train: sessions cascade to their exercises and sets; plans to
 			// their days, exercises and enrolments.
 			`DELETE FROM personal_records WHERE user_id=$1`,
@@ -695,9 +699,9 @@ func (s *Store) WorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to 
 }
 
 // VisibleWorkoutsBetween returns the workouts starting in [from,to) a user sees; see
-// ListWorkoutsBetween.
+// ListWorkoutsBetween. Without ratings: scoring and the Train attach read it.
 func (s *Store) VisibleWorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]model.Workout, error) {
-	return s.ListWorkoutsBetween(ctx, userID, from, to, false)
+	return listWorkoutsBetween(ctx, s.pool, userID, from, to, false, false)
 }
 
 // ListWorkoutsBetween returns the workouts starting in [from,to). A workout is hidden
@@ -706,12 +710,24 @@ func (s *Store) VisibleWorkoutsBetween(ctx context.Context, userID uuid.UUID, fr
 // workout is never hidden. Hidden ones are left out, or with includeHidden returned with
 // DuplicateOf set. Each visible primary carries AlsoRecordedBy, the distinct sorted sources
 // of the duplicates pointing at it. The primary lookup is the primary key; the duplicates
-// are read once through workouts_user_start, the range padded by two days.
+// are read once through workouts_user_start, the range padded by two days. The workouts carry the user's session
+// RPE (api only: scoring's role cannot read the value, so it reads VisibleWorkoutsBetween, which has none).
 func (s *Store) ListWorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to time.Time, includeHidden bool) ([]model.Workout, error) {
-	return listWorkoutsBetween(ctx, s.pool, userID, from, to, includeHidden)
+	return listWorkoutsBetween(ctx, s.pool, userID, from, to, includeHidden, true)
 }
 
-func listWorkoutsBetween(ctx context.Context, q querier, userID uuid.UUID, from, to time.Time, includeHidden bool) ([]model.Workout, error) {
+// RatedWorkoutsBetween is VisibleWorkoutsBetween with each workout's session RPE (api only, D293).
+func (s *Store) RatedWorkoutsBetween(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]model.Workout, error) {
+	return listWorkoutsBetween(ctx, s.pool, userID, from, to, false, true)
+}
+
+// listWorkoutsBetween reads the range; with ratings, also each workout's rating and its session load. The scoring
+// service reads without: its role has no grant on the value.
+func listWorkoutsBetween(ctx context.Context, q querier, userID uuid.UUID, from, to time.Time, includeHidden, ratings bool) ([]model.Workout, error) {
+	rating := `NULL::float8`
+	if ratings {
+		rating = `(SELECT r.session_rpe::float8 FROM workout_ratings r WHERE r.user_id = w.user_id AND r.workout_id = w.id)`
+	}
 	rows, err := q.Query(ctx, `WITH dups AS (
 		  SELECT d.duplicate_of AS id, array_agg(DISTINCT d.source ORDER BY d.source) AS sources
 		  FROM workouts d WHERE d.user_id=$1 AND d.duplicate_of IS NOT NULL AND d.source <> '' AND d.source <> $4
@@ -723,7 +739,8 @@ func listWorkoutsBetween(ctx context.Context, q querier, userID uuid.UUID, from,
 		      WHERE p.user_id = w.user_id AND p.id = w.duplicate_of AND p.duplicate_of IS NULL)) AS hidden
 		  FROM workouts w WHERE w.user_id=$1 AND w.start_at >= $2 AND w.start_at < $3)
 		SELECT w.id, w.activity, w.start_at, w.end_at, w.avg_hr, w.max_hr, w.energy_kcal, w.distance_m, w.source, w.strain,
-		  w.muscular_load, w.session_id, w.model_version, dups.sources, CASE WHEN w.hidden THEN w.duplicate_of END
+		  w.muscular_load, w.session_id, w.model_version, dups.sources, CASE WHEN w.hidden THEN w.duplicate_of END,
+		  `+rating+`
 		FROM ws w LEFT JOIN dups ON dups.id = w.id AND NOT w.hidden
 		WHERE $5::bool OR NOT w.hidden
 		ORDER BY w.start_at, w.id`, userID, from, to, model.SessionSource, includeHidden)
@@ -732,8 +749,10 @@ func listWorkoutsBetween(ctx context.Context, q querier, userID uuid.UUID, from,
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.Workout, error) {
 		var w model.Workout
+		var rpe *float64
 		err := r.Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM, &w.Source, &w.Strain,
-			&w.MuscularLoad, &w.SessionID, &w.ModelVersion, &w.AlsoRecordedBy, &w.DuplicateOf)
+			&w.MuscularLoad, &w.SessionID, &w.ModelVersion, &w.AlsoRecordedBy, &w.DuplicateOf, &rpe)
+		withRating(&w, rpe)
 		return w, err
 	})
 }
@@ -817,22 +836,25 @@ type WorkoutRow struct {
 func (s *Store) Workout(ctx context.Context, userID, id uuid.UUID) (WorkoutRow, error) {
 	var w WorkoutRow
 	var zones []byte
+	var rpe *float64
 	err := s.pool.QueryRow(ctx, `SELECT id, activity, start_at, end_at, avg_hr, max_hr, energy_kcal, distance_m,
 		source, strain, zone_minutes, trimp, muscular_load, session_id, model_version,
 		(SELECT array_agg(DISTINCT d.source ORDER BY d.source) FROM workouts d
 		  WHERE d.user_id = workouts.user_id AND d.duplicate_of = workouts.id AND d.source <> ''
 		    AND d.source <> $3
 		    AND d.start_at >= workouts.start_at - interval '2 days' AND d.start_at < workouts.start_at + interval '2 days'
-		    AND EXISTS (SELECT 1 FROM workouts p WHERE p.user_id = d.user_id AND p.id = d.duplicate_of AND p.duplicate_of IS NULL))
+		    AND EXISTS (SELECT 1 FROM workouts p WHERE p.user_id = d.user_id AND p.id = d.duplicate_of AND p.duplicate_of IS NULL)),
+		(SELECT r.session_rpe::float8 FROM workout_ratings r WHERE r.user_id = workouts.user_id AND r.workout_id = workouts.id)
 		FROM workouts WHERE user_id=$1 AND id=$2`, userID, id, model.SessionSource).
 		Scan(&w.ID, &w.Activity, &w.Start, &w.End, &w.AvgHR, &w.MaxHR, &w.EnergyKcal, &w.DistanceM,
-			&w.Source, &w.Strain, &zones, &w.TRIMP, &w.MuscularLoad, &w.SessionID, &w.ModelVersion, &w.AlsoRecordedBy)
+			&w.Source, &w.Strain, &zones, &w.TRIMP, &w.MuscularLoad, &w.SessionID, &w.ModelVersion, &w.AlsoRecordedBy, &rpe)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return w, ErrNotFound
 	}
 	if err != nil {
 		return w, err
 	}
+	withRating(&w.Workout, rpe)
 	if len(zones) > 0 {
 		if err := json.Unmarshal(zones, &w.ZoneMinutes); err != nil {
 			return w, fmt.Errorf("workout %s zone_minutes: %w", id, logx.JSONError(err))

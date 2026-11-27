@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "duration": {
+      "type": "integer"
+    },
+    "n2r": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "regularity": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "wellness": {
+      "type": "integer"
+    },
+    "wellness_absolute": {
+      "type": "integer"
+    },
+    "wellness_personal": {
+      "nullable": true,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "duration",
+    "n2r",
+    "regularity",
+    "wellness",
+    "wellness_absolute",
+    "wellness_personal"
+  ],
+  "title": "RecoveryComponents",
+  "type": "object"
+}

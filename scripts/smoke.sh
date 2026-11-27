@@ -84,6 +84,9 @@ done
 echo "→ GET /v1/days (last $DAYS days)"
 curl -fsS "$API_URL/v1/days?from=$FROM&to=$TO" -H "Authorization: Bearer $API_KEY" | python3 "$HERE/print_days.py"
 
+# check_api.py also runs the no-watch recovery round trip (D291): a throwaway account, the flag recovery.checkin
+# allow-listed for it through the admin key (apikey mode; compose has ADMIN_API_KEY) and put back to dark afterwards:
+# a check-in saved twice, read, listed, shown in the status and deleted.
 echo "→ API contract checks"
 ADMIN_API_KEY="${ADMIN_API_KEY-$( [ "$AUTH_MODE" = apikey ] && echo dev-admin-key-change-me-0123456789abcdef)}" \
 NOTIFY_METRICS_URL="${NOTIFY_METRICS_URL-$( [ "$AUTH_MODE" = apikey ] && echo http://localhost:9093/metrics)}" \
