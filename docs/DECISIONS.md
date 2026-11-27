@@ -6918,6 +6918,31 @@ The staples version goes from 1 to 2. The merge treats a changed checksum under 
 
 Not covered: USDA portions written by the Go importer (`origin='manual'`) keep their raw labels. RLS keeps the ETL role off them by design. The runbook has a read-only count, and cleaning them would be a separate, reviewed operator step.
 
+## D296 — Import BLS 4.0 in full from a committed, reviewed extract; curated synonyms, no machine translation (2026-11-27)
+
+The user decided on 2026-11-27 to import the Bundeslebensmittelschlüssel fully, with curated aliases and no machine translation. OFF at scale (G3) is deferred. Only about 130 production foods have a German name today.
+
+**Licence.** BLS 4.0 is published under **CC BY 4.0** (Creative Commons Namensnennung 4.0 International). The Max Rubner-Institut must be named as publisher ([blsdb.de/download](https://blsdb.de/download), [OpenAgrar](https://www.openagrar.de/receive/openagrar_mods_00112643), both from search snippets: the session could open neither page). The FAQ names app and software development as a use ([blsdb.de/faq](https://blsdb.de/faq), search). CC BY 4.0 allows commercial use, storage, adaptation and redistribution, including serving the data through our API and showing it in the app. It needs credit, a licence link and a note that we changed the data (CC BY 4.0 §3(a)), "in any reasonable manner" for the medium. Nothing blocks our use. Citation: *Max Rubner-Institut (2025): Bundeslebensmittelschlüssel (BLS), Version 4.0 — Deutsche Nährstoffdatenbank. Karlsruhe.* DOI 10.25826/Data20251217-134202-0. Where it appears:
+- **Per food:** `food_sources.attribution` (`Max Rubner-Institut (2025), Bundeslebensmittelschlüssel (BLS), Version 4.0`) and `license_identifier` `CC-BY-4.0`, served as `sources[].attribution`.
+- **The site's licences/legal page (#252) and the app's About/licences screen:** DE: "Enthält Daten aus dem Bundeslebensmittelschlüssel (BLS), Version 4.0, Max Rubner-Institut (2025), Karlsruhe, DOI 10.25826/Data20251217-134202-0, lizenziert unter CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/deed.de). RYFT hat eine Auswahl der Nährstoffe in eigene Einheiten umgerechnet, Suchbegriffe ergänzt und Lebensmittel ausgelassen, die ein kuratiertes Grundnahrungsmittel doppeln." EN: "Contains data from the German Nutrient Database Bundeslebensmittelschlüssel (BLS), Version 4.0, Max Rubner-Institut (2025), Karlsruhe, DOI 10.25826/Data20251217-134202-0, licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). RYFT converted a selection of nutrients to its units, added search terms and left out foods that duplicate a curated staple."
+- **The repository:** `scripts/etl/data/README.md`.
+
+**Source of the data.** The job does not download BLS. `scripts/etl/bls_convert.py` (stdlib only, a streaming xlsx reader) turns the official `BLS_4_0_Daten_2025_DE.xlsx` into `scripts/etl/data/bls_4_0.csv`: code, German name, English name, and our registry nutrients in our units. It also writes `bls_4_0.manifest.json`: the source sha256, the header → component → unit mapping, unparsed cells and counts. Both are committed after review. Why: the download page's layout and links are unknown to us, and a committed extract gives a reviewable diff, deterministic input and stable IDs. The image needs no new dependency, no DuckDB and no network for BLS. The converter fails closed. It exits without output on unknown units, missing macros, name columns that don't look like code/German/English, or unparsable numbers in required components, and it lists what it found. The session that built this could download neither the file nor its documentation, so the layout comes from documentation snippets (columns 1–3: code, German and English name; three columns per component: value per 100 g, origin, reference; EuroFIR-style codes such as ENERCC, PROT625, FAT, CHO).
+
+**Import.** Provider `bls`, external ID = the BLS code, food UUID uuid5(`bls:<code>`), so IDs are stable across reruns. `canonical_name` is the German name, with `de` and `en` names and `markets` `DE`. Nutrients are per 100 g edible portion. BLS gives no density or volume basis that we found, so no BLS food has a per-100-ml basis. The categories come from `classify` with the BLS main group (the code's first letter) as a hint. They are discovery only and carry no `ryft_nutrition` scoring profile, the same as OFF, because the BLS names give no single-ingredient evidence we have reviewed. `food_form` comes from a German state word in the name (`roh`, `gekocht`, `gegart`, `gebraten`, `gebacken`, `getrocknet`, `tiefgefroren`). BLS foods get no `canonical_group_key`, so the forms never move a row in the ranking. Version: `py-etl4:bls_4_0:staples<v>:<sha256 of CSV, curation, staples and BLS_TRANSFORM_VERSION>`. Changed inputs give `updated`, never `conflict`, and a rerun gives `unchanged`. Without the CSV, `--source bls` does exactly what it did before (3 staples, `py-etl4:bls_4_0:staples2`, `unchanged` in production).
+
+**Staples and duplicates.** The curated BLS staples (M111300, M111200, M713100) keep their names, aliases, portions, group, form and density. Their nutrients now come from the CSV, and the dry run reports `staple_nutrient_drift`. A BLS food that is the same food as a curated USDA staple (a *twin*, e.g. "Möhre, roh" next to the staple Karotte) is listed in `scripts/etl/bls_curation.v1.json` → `twins`, with its expected German name as a guard. It is **not imported**, so a German query shows the staple once. On a name mismatch it imports as a normal food (`twin_mismatch`). The list ships empty because nobody has seen the file yet. The dry run proposes `twin_candidates` (the first name segment equals a staple's German name or alias). They are reviewed with the data commit, before the first write. The merge never retires rows, so a twin added after a write stays visible (`stale_twins` in the dry run) until it is retired by hand.
+
+**Aliases.** `bls_curation.v1.json` → `synonyms`: 40 curated DACH synonym groups (Möhre/Karotte/Mohrrübe/Rüebli, Speisequark/Quark/Topfen, Brötchen/Semmel/Schrippe/Weckle, Sahne/Rahm/Obers, Blumenkohl/Karfiol, Tomate/Paradeiser, Aprikose/Marille, Hackfleisch/Gehacktes/Faschiertes, Porree/Lauch, Rotkohl/Rotkraut/Blaukraut, Rote Bete/Rote Rübe, Feldsalat/Rapunzel/Nüsslisalat, Frikadelle/Bulette/Fleischpflanzerl, …). Each is applied case-sensitively to whole words of the BLS German name, with at most 6 aliases per food. Case sensitivity keeps German nouns apart from adjectives ("Paprika, orange" gets no "Apfelsine"), and whole words keep compounds such as "Lauchzwiebel" and "Sauerrahm" out. This is substitution, not translation. Pairs we weren't sure of were left out: Pflaume/Zwetschge, Pfannkuchen/Eierkuchen, Krapfen/Berliner, Paprika/Peperoni, Champignon/Egerling.
+
+**Portions.** None for BLS foods: they get `reference_portion` (100 g) and the app's g/ml input. We don't link BLS foods to USDA portion sets: there is no reviewed crosswalk, and those sets are US sizes. Twins are skipped, so the staple's curated portions serve that food. The three BLS staples keep theirs.
+
+**Ranking (migration 0061).** For `de`, BLS German names reach match 7 (exact), 6 (prefix) or 4 (text). SR Legacy rows have only English names and reach a German query only through the D283 alternate term (tier 2), so BLS ranks above SR Legacy ("Linsen" → "Linsen, getrocknet" before "Lentils, raw"). Staples keep tiers 10/9 through promoted groups ("Apfel", "Gurke", "Karotte"). One gap needed a change: a BLS row whose German name equals the query and a staple whose alias equals it both land in tier 7, and the tie-break read `preferred_market` first (BLS `DE`, USDA none), so BLS won ("Möhre"). 0061 replaces `search_foods_v2` with `c.is_canonical_staple DESC` right after `c.match DESC`. The signature is unchanged, so older API binaries keep working. For `en`, BLS English names and SR Legacy compete as equals. On a tie, a caller in market DE gets BLS first, and others get language, quality, completeness and similarity order. D283 and D284 are otherwise unchanged.
+
+**Size.** About 7,140 foods × (1 food, 1 source, ~2.1 names, ~30 nutrient values, 1 classification) ≈ 250k rows. That is ~30–45 MB with indexes (the research note's per-row sizes), against the 8 GB of the Pro plan. The job reads a ~1.5–2.5 MB CSV and uses no DuckDB for BLS, so the 4 GiB job and the 768 MB DuckDB cap (D287) are untouched. The offline converter streams the sheet. A CI test parses a full-size synthetic sheet (7,140 × 418) and asserts peak RSS under 512 MiB, with `RLIMIT_AS` 1 GiB on Linux.
+
+**Not done.** The extract itself: the session could not download the file (curl and WebFetch need approval), so whether blsdb.de asks for a registration or acceptance is unknown. There is no English-name crosswalk to SR Legacy and no scoring profile for BLS foods. Both are follow-ups once the data is in. Migration 0061 is now taken, so the no-watch recovery implementation (D291–D295, "0061+") starts at 0062.
+
 ## D291 — Recovery without a watch: three tiers, the wearable wins, a check-in is the fallback (2026-11-26; contract only)
 
 The brief reserved D290–D294; the legal PR #252 already takes D290, so this work uses **D291–D295**.
@@ -7098,7 +7123,7 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   needs, and what waits for the N2R version, are in `docs/work/2026-11-26-no-watch-recovery/implementation.md`
   → Privacy. The feature stays dark until a published version names it.
 
-## D296 — The check-in score's open details: which drop reason wins, and how the numbers are computed (2026-11-27)
+## D298 — The check-in score's open details: which drop reason wins, and how the numbers are computed (2026-11-27)
 
 - **Context:** implementing D292–D294 (`internal/scoring/checkin.go`, `internal/energy`, `internal/periodization/checkin.go`)
   left details the contract does not fix. None changes a pinned case of `docs/API.md` or D292.
@@ -7127,9 +7152,9 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
      rating.
 - **Rejected:** emitting both drop reasons (the contract's table and the app's copy key on one).
 
-## D297 — The no-watch recovery implementation: the details the contract leaves to the store and the routes (2026-11-27)
+## D299 — The no-watch recovery implementation: the details the contract leaves to the store and the routes (2026-11-27)
 
-- **Context:** the implementation of D291–D296 (`internal/store/recovery.go`, `cmd/api/recovery.go`). None of this
+- **Context:** the implementation of D291–D295 and D298 (`internal/store/recovery.go`, `cmd/api/recovery.go`). None of this
   changes a sentence of `docs/API.md`.
 - **Decision:**
   1. **The score is injected into the store.** `internal/scoring` imports `internal/store`, so the store cannot call
@@ -7181,3 +7206,79 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
      in one transaction.
 - **Rejected:** a `scoring` grant to insert ratings (a service that derives numbers writing a user's input); keeping
   the confounders live in the briefing (the N2R history read would run per check-in on every briefing).
+
+## D297 — The sync button reads `GET /v1/me/sync`: per-source status and "scores pending", no new route (2026-11-27; contract only)
+
+- **Context:** the home screen gets a sync button (syncing, up to date < 30 min, stale ≥ 30 min, error; a long
+  press lists Apple Health, Garmin and Suunto). The user's spec asked for `synced_at`, `sources`
+  (`last_sync_utc`, `status` OK/PENDING/ERROR) and `data_freshness` (`UP_TO_DATE`/`SYNCING_CLOUD`/`STALE`), and
+  for the button not to turn green before the scores, readiness, N2R and the briefing include the new data.
+- **Where:** `GET /v1/me/sync` (D91), which already says what the server has and what it is doing with it
+  (`last_sync_at`, `pending_days`, `expected_within_sec`), is behind a 10 s cache and passes the beta gate. A new
+  `GET /v1/sync/status` would be a second answer to the same question. `GET /v1/me` is heavier (`samples_7d`,
+  `account_hint`), uncached, and the Profile screen's. `POST /v1/sync` cannot say when scoring ends (below).
+  So the route gains three fields: `sources`, `freshness`, `scores_pending_since`.
+- **Names follow the contract, not the spec:** `synced_at` is the existing `last_sync_at` (no second field for
+  the same time); `last_sync_utc` is `last_sync_at` (every time in the API is UTC with an `_at` name); the status
+  values are lower case like every closed enum here. `data_freshness` becomes `freshness` with only what the
+  server knows: `current` or `scores_pending`. `UP_TO_DATE` and `STALE` are the app's 30-minute rule on
+  `last_sync_at`; the server reports times and work in progress, never a colour.
+- **"Scores pending", the server's rule:** either of:
+  1. a `score_queue` row with `scored_at IS NULL` (in `pending_days`) for today or yesterday (local), or for a
+     day of the last 30 queued in the last 10 minutes. Scoring a past day rescores up to 30 stored days after
+     it in the same pass (`baselineDays`), today included, before the row is marked;
+  2. a `provider_inbox` row of the user in state `pending` (a connection's delivery not stored yet).
+
+  Readiness is part of the day's score. A sync stores its records, then its apply transaction queues their
+  days (`ApplySync` → `queueAndEmit`), both before the `200`. The window between the two lies inside the
+  uploading app's own request, which shows syncing anyway. A direct delivery is stored, its days queued and
+  its inbox row processed in one transaction (`ApplyDirect`).
+- **Why the day window:** a day queued long ago that scoring never clears (a dead letter, or an account that
+  scoring skips for consent) would otherwise keep the button off green for good, and a 400-day recompute would
+  spin it for minutes. Such days stay in `pending_days`; the home screen does not show them.
+- **What it does not track, and why:** for accounts with Nutrition-to-Recovery, the morning N2R baseline
+  (`daily_biometric_baselines`, written by the api tick's `RefreshN2RNights`) and the coaching briefing built
+  on it; and the coaching pilot's partner deliveries (`nutrition.wearable_inbox`, drained by
+  `processWearables` on the same tick). They follow within one 15-minute pass, and the contract says so. The
+  first version tracked them (a baseline older than its day's score, an uncompleted job), but review showed
+  the baseline term fires almost always. Scoring's 15-minute pass rewrites today and yesterday for every
+  active user and moves `computed_at` even when nothing changed. The same scheduler job ticks scoring and the
+  api, so `processed_at < computed_at` recurs every tick, and the button would never turn green. The job term
+  would have needed `claim_wearable`'s conditions and a new grant for a pilot-only path. Tracking them exactly
+  needs an event-driven N2R refresh after scoring, or `computed_at` moving only on a change: a question for
+  the user, not decided here.
+- **Not exact, and why it is acceptable:** `MarkScored` clears a day queued before its run started
+  (`queued_at <= started`). `queued_at` is the queueing transaction's start time (`now()`), and `started` is
+  the scoring instance's clock. A run that starts while `ApplyDirect`'s transaction is open, before its
+  commit, does not see the records, but marks the day done. The delivery's own event then rescores it seconds
+  later, and the silent refresh push follows. The contract says so. Making it exact (clear only when
+  `queued_at` still equals the value the run read at its start) is a scoring change, follow-up F1 in the
+  implementation outline. `scores_pending_since` restarts when a day is queued again (`queued_at = now()` on
+  conflict), so it measures the current wave, not the first arrival.
+- **Per source:** `healthkit` always, with `last_sync_at` from `devices.last_sync_at`, `ok`, or `error` with the
+  code of the gate that refuses it, each gate checked against its own mode (beta `warn` with consent `on` and
+  no consent is `consent_required`); `warn` lets syncs through and stays `ok`. The server never says `pending`
+  for it: an upload in flight is the app's state. A provider is listed when its connection is `connected` or
+  `needs_reauth`, the server serves the provider and `connect.<provider>` is on for the account. The rule is
+  written out, not "what `GET /v1/me/connections` lists", because that route filters only `available` by
+  flag. It has `last_data_at`, `error`/`needs_reauth`, `pending` while an inbox row waits, else `ok`. So Garmin
+  and Suunto are absent, not `error`, until Connections is live. A `revoked` connection is absent; the Connect
+  screen explains it. A `failed` inbox row (one record ingest could not parse) is no source error: the user can
+  do nothing about it, and the operator's gauges show it. The coaching pilot's partner links (D271) are not
+  sources: they are operator-provisioned, pilot-only, and a second Garmin entry next to a Connections one would
+  confuse.
+- **The sync does not wait for scoring:** scoring is another service behind Pub/Sub (D218), taking seconds to
+  tens of seconds (`expected_within_sec`), more for a backfill; a held `POST /v1/sync` would hold a Cloud Run request slot and the app's background time,
+  and a timeout retry would send the page again. A sync is many pages too. The app takes `scoring.queued_days`
+  from the response as pending at once, polls `GET /v1/me/sync` no sooner than `max(expected_within_sec, 10)` s
+  (the cache) at that interval for at most 3 minutes, and reloads today and the briefing when `freshness` turns
+  `current`. The silent refresh push ends the wait early, but it comes at most once per 5 minutes. A long-poll
+  (`?wait=`) was rejected for the same request-slot reason.
+- **The bound:** pending work older than 3 minutes shows stale with "Scores are still being calculated", not
+  syncing forever and not an error: the data is stored. `scores_pending_since` lets the app apply that after a
+  relaunch too.
+- **Enums:** `freshness` and `status` are closed (Swift enums); `source` and `reason` are open, so Suunto and new
+  reasons need no `/v2`.
+- **Examples as `http` blocks** until the model types exist (as D257, D291). The implementation is outlined in
+  `docs/work/2026-11-27-sync-status/implementation.md`: one indexed query more behind the cache, a column grant
+  on `provider_inbox.received_at` for the api and a partial index, no new table.
