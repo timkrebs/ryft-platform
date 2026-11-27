@@ -7543,12 +7543,19 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
 - **The grant is re-checked whenever the gate admits a type:** with `CONSENT_ENFORCE` off or `warn` a sync normally
   writes without a grant. When the Fitness gate admits a stream, the request runs as under `on`: both write
   transactions require the exact consent the gate read (`requireGrant`, under the withdrawal lock). A withdrawal
-  between the phases then ends in `403 consent_required`, as it does under `on`.
+  between the phases then ends in `403 consent_required`, as it does under `on`. The refusal is counted under the
+  configured mode (`ryft_gate_refusals_total`), so an `off` deployment shows no `on` refusal.
+- **Direct connections never store the three types:** `screenRecord` fails a record that carries one (`parse`),
+  because D304 gates them on sync only. No adapter emits them today.
+- **Order:** screening runs before the gate, as on the pilot path. A gated sample outside the window is counted
+  `outside_window`, not `unknown_type`: either way it is not stored.
 - **`GET /v1/config` reports the whole gate:** `flags["sync.fitness_types"]` is `true` only when the flag is on **and**
   the active consent names the types. API.md defines the flag as true "when the server stores" the types "for this
   account", and the app moves its HealthKit anchors on it. A tester allow-listed before consenting to the new policy
   therefore sees `false` and loses no samples. API.md is unchanged.
-- **Kinds:** `basal_energy` → `energy`, `heart_rate_recovery` → `hr`, `body_mass` none (D304). `samples_7d` is not
+- **Kinds:** `basal_energy` → `energy`, `heart_rate_recovery` → `hr`, `body_mass` none (D304). A source that sends only
+  recovery samples therefore counts as a heart-rate source for the "no heart rate" insight; one that records recovery
+  records heart rate too. `samples_7d` is not
   served on main yet (a known drift), so its new keys wait for it.
 - **Erasure and merge:** both are type-agnostic on `samples` (`DELETE FROM samples WHERE user_id`, the merge's move). A `deleted` entry still removes a stored sample
   after the flag is turned off (tested).

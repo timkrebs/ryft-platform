@@ -267,7 +267,7 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user, _ := auth.UserFrom(ctx)
 	userID := user.ID
-	beta := h.beta
+	forceGrant := false
 	if hasSampleStream(req, gatedType) {
 		// D304, D306: the flag and a consent (auth loads the active one) to a policy that names the types.
 		on, err := h.st.SyncFitnessTypesAllowed(ctx, userID)
@@ -288,12 +288,11 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		// A stream admitted by the Fitness gate needs its grant rechecked in both transactions.
-		if fitness && hasSampleStream(req, func(typ string) bool {
+		// A stream admitted by the Fitness gate needs its grant rechecked in both transactions,
+		// whatever CONSENT_ENFORCE says (D306).
+		forceGrant = fitness && hasSampleStream(req, func(typ string) bool {
 			return !keepGated(typ, pilot, false)
-		}) {
-			beta.Consent = config.ModeOn
-		}
+		})
 		ignored.Samples.UnknownType += dropGated(&req, pilot, fitness)
 	}
 	sent := model.SyncCounts{Samples: len(req.Samples), Sleep: len(req.Sleep), Workouts: len(req.Workouts)}
@@ -303,14 +302,21 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var grant *model.Consent
-	if beta.Consent == config.ModeOn {
-		grant = user.Consent
+	if h.beta.Consent == config.ModeOn || forceGrant {
+		grant = user.Consent // the gate above (or the Fitness gate) already validated its policy version
 	}
 	consentChanged := func(err error) bool {
 		if !errors.Is(err, store.ErrHealthKitConsentChanged) {
 			return false
 		}
-		gate.Consent(w, r, beta, model.User{}, "ingest")
+		if h.beta.Consent != config.ModeOn {
+			// The Fitness gate's own re-check: answered as under on, counted under the configured mode.
+			metrics.GateRefusals.WithLabelValues(model.CodeConsentRequired, string(h.beta.Consent), "ingest").Inc()
+			httpx.WriteCodedError(w, r, http.StatusForbidden, model.CodeConsentRequired,
+				"consent to the privacy policy "+h.beta.PrivacyPolicyVersion+" is required before uploading health data")
+			return true
+		}
+		gate.Consent(w, r, h.beta, model.User{}, "ingest")
 		return true
 	}
 	counts, sourceErr, err := h.st.WriteHealthKitRecords(ctx, userID, grant, req)

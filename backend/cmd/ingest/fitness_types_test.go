@@ -9,11 +9,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
+	"github.com/timkrebs/ryft/internal/connect"
 	"github.com/timkrebs/ryft/internal/events/outbox"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
@@ -50,6 +52,20 @@ func TestDropGated(t *testing.T) {
 					t.Fatal("ordinary sample changed")
 				}
 			})
+		}
+	}
+}
+
+// A direct connection never stores the D304 types: they are gated on sync only (D306).
+func TestConnectionsRefuseGatedTypes(t *testing.T) {
+	now := time.Now()
+	c := &connectHook{now: func() time.Time { return now }}
+	at := now.Add(-time.Hour)
+	for typ, want := range map[string]string{model.SampleBasalEnergy: "parse", model.SampleHeartRateRecovery: "parse",
+		model.SampleBodyMass: "parse", model.SampleHeartRate: ""} {
+		rec := connect.Records{Samples: []model.Sample{{Type: typ, Start: at, End: at, Value: 1}}}
+		if _, code := c.screenRecord(store.InboxItem{}, rec, time.UTC); code != want {
+			t.Errorf("%s: code %q, want %q", typ, code, want)
 		}
 	}
 }
