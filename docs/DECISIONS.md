@@ -6901,9 +6901,10 @@ the bases they propose and every legal reading stay with the user and their revi
   8. **Terms 2026-11-26** (new file; `/terms/2026-10-20` stays): the provider as `TODO(user)`, minimum age 16
      (the platform's `MinAge`, not 13), Apple or Google sign-in, the food diary and its catalog attribution, the
      planned connections and other services (new §7, §8); §9-§12 unchanged in words.
-  9. **`CONNECT_MIN_POLICY_VERSION` stays `2026-10-26`.** The runbook moves it when a policy change touches
-     health-data processing, which this one does; no connection is live, so it changes nothing today, and the line
-     is outside this PR's scope. The user decides it before the merge (LEGAL_CHECKLIST U14).
+  9. **`CONNECT_MIN_POLICY_VERSION` moves to `2026-11-26`** (decided 2026-11-27 under the user's rule, LEGAL_CHECKLIST
+     U14). The runbook moves it when a policy change touches health-data processing, which this one does (D259); no
+     connection is live, so it changes nothing today. It equals `PRIVACY_POLICY_VERSION`, which `check_cloudrun.py`
+     allows (not after it).
 - **Rejected:** a draft page (CI refuses it, and the version would sit in force with a draft); editing 2026-10-26
   in place (it is the record of consents given); describing CGM, N2R and coaching now (not in the app, and their
   data model may still move); naming the BLS (excluded on main pending review,
@@ -6954,6 +6955,20 @@ privacy text now matches today's RYFT (sources: `docs/work/2026-11-26-legal-part
   deleting an account does to its events). 24 remain in the four files (privacy 18, terms 2, Impressum 3, support
   1), plus 3 in `messages/en.json`. The markers that need the user's details (controller, Impressum, Microsoft and
   GoDaddy, Supabase, DPO, authority) are unchanged.
+
+**Amended 2026-11-27, before the merge** (head architect, on the same rule):
+- **U14 decided:** `CONNECT_MIN_POLICY_VERSION=2026-11-26` (item 9).
+- **Effective 2026-11-27** on privacy and terms (the planned merge day); the version id stays `2026-11-26`, which
+  consents reference. No guard ties the two: `legal.test.ts` only wants a date, `check-policy-version.mjs` and the
+  live check read the version.
+- **No `TODO(user)` renders on the site** (supersedes "open points stay `TODO(user)`" for page text; item 7's
+  Impressum edit is withdrawn). The Impressum stays exactly as live on `main` (an Impressum without a provider is not
+  sound under § 5 DDG; the details on it were already public). Privacy §1 and terms §1 say "the provider named in the
+  legal notice". The transfer sentences keep the facts the markers carried; Art. 77 names the member state where the
+  user lives or works; every other marker is dropped without a replacement sentence (nothing invented). `/support`
+  loses the response-time line, `/licenses` names the provider in the legal notice as rights holder, the styleguide's
+  demo loses its literal marker. `beta.missingEmail` stays: `deploy.yml` refuses a build without `SUPPORT_EMAIL`, so it
+  never renders in production. The open points stay in LEGAL_CHECKLIST U1-U15 and RFT-155.
 
 ## D286 — The production smoke signs in as a Google service account, mapped to the smoke account only (2026-11-26)
 

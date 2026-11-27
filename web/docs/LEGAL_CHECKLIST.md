@@ -18,13 +18,15 @@ text is published now, open points stay `TODO(user)` (or a PR note), and a lawye
 The revision brings the privacy text to today's RYFT (App Attest in `warn`, the no-watch morning check-in, BLS 4.0,
 usage analytics; D290, "Amended 2026-11-27"). Sources: `docs/work/2026-11-26-legal-partners/revision-2026-11-27.md`.
 
-**`TODO(user)` count: 24 in the content files** (privacy 2026-11-26: 18, terms 2026-11-26: 2, Impressum: 3,
-support: 1; after the review of #252: Google sign-in in terms and support, the older email accounts and the
-deregistration-under-withdrawn-consent gap in privacy; the revision of 2026-11-27 closed four in privacy: PostHog's
-GeoIP and session recording, its retention, its transfer basis, and what deleting an account does to its events),
-plus 3 in `messages/en.json` (`legal.contact.responseTodo`, the response time on `/support`; `licenses.holderTodo`,
-the rights holder on `/licenses`; `beta.missingEmail`): **27 in all.** The
-older pages have none.
+**No `TODO(user)` renders on the site (decided 2026-11-27).** The 27 markers (24 in the content files: privacy
+2026-11-26: 18, terms 2026-11-26: 2, Impressum: 3, support: 1; 3 in `messages/en.json`) were all page text except
+`beta.missingEmail`, which shows only in a build without `SUPPORT_EMAIL` (`deploy.yml` refuses that build). They are
+now tracked here (U1-U15) instead of on the pages: the Impressum is back to the page live on `main` (its provider
+fields unchanged); privacy §1 and terms §1 name "the provider named in the legal notice"; the transfer sentences keep
+the facts the markers carried (Google's DPF certification and SCCs, Supabase's SCCs); Art. 77 names the member state
+where you live or work; the rest of the markers were dropped with no replacement sentence (nothing invented). `/support`
+no longer shows a response time (U12), and `/licenses` names "the provider named in the legal notice" as the rights
+holder. The older pages have none.
 
 ---
 
@@ -45,8 +47,9 @@ the new texts, this repository's new files, variables or commits, and the spots 
   the reviewer accepts in place of a private phone. The site has no forms by design.
 - **Already published, and kept:** privacy 2026-10-26 §1 and terms 2026-10-20 §1 carry your name and home
   address, and the Impressum on `main` carries them and your phone. The two versioned pages stay as they are:
-  they are the record of what people consented to (D290). The Impressum is a single page: this PR removes them
-  from it. Git keeps the history either way.
+  they are the record of what people consented to (D290). The Impressum is a single page: since 2026-11-27 this PR
+  leaves it exactly as live (an Impressum without a provider is not sound under § 5 DDG); replacing the details there
+  waits for U1/U5/U6. Git keeps the history either way.
 - **App Store, later:** Apple asks EU sellers to declare trader status under the Digital Services Act; for
   traders the store shows an address, phone and email. TestFlight doesn't ask.
 
@@ -88,7 +91,7 @@ the new texts, this repository's new files, variables or commits, and the spots 
 | U11 | privacy §6, §8 | Console facts: Cloud Trace storage and retention; Supabase log retention and its auth records; the Microsoft tenant's data location; GoDaddy's access to the mailboxes; how long support emails are kept. PostHog's are answered (2026-11-27): the IP address is discarded and no location is derived, session recording is not used (no screen recordings), retention is 12 months, and deleting an account does not reach the events because their random id is not linked to it (Art. 11 GDPR) |
 | U12 | `messages/en.json` `legal.contact.responseTodo` (not this PR's file) | The response time shown on `/support` |
 | U13 | terms 2026-11-26 | That the changed terms are announced in the app before they apply (terms §12 says so; the app has no such notice at ea52758) |
-| U14 | `deploy/run/config.env` `CONNECT_MIN_POLICY_VERSION` | Whether the consent cutoff moves to 2026-11-26 (D259; `docs/OPERATIONS.md` → Moving the consent cutoff: it moves when a change touches health-data processing, which this one does). This PR leaves it at 2026-10-26; no connection is live, so it has no effect today |
+| U14 | `deploy/run/config.env` `CONNECT_MIN_POLICY_VERSION` | **Decided 2026-11-27:** the consent cutoff moves to 2026-11-26 in this PR (D259; `docs/OPERATIONS.md` → Moving the consent cutoff: it moves when a change touches health-data processing, which this one does; D290 item 9). No connection is live, so it has no effect today |
 | U15 | the legal review as a whole | The questions of `docs/work/2026-11-20-privacy-c2/anwalt.md` (PR #228) that still apply, plus: describing features that are not yet available in a policy put into force (privacy §2); English only for Art. 9 consent |
 
 ## 3. Facts the texts depend on that need a fix elsewhere (not legal questions)
@@ -107,12 +110,12 @@ the new texts, this repository's new files, variables or commits, and the spots 
 ## 4. The version (D290)
 
 `2026-11-26` is the new privacy version: page, `privacy-versions.json`, `PRIVACY_POLICY_VERSION` in
-`deploy/run/config.env` and `docker-compose.yml`, in one PR. It is `status: published` with `effective:
-'2026-11-26'`, because `scripts/check_policy_in_force.sh` (CI's manifests job, against the base) refuses a PR
+`deploy/run/config.env` and `docker-compose.yml`, in one PR. It is `status: published` (with a date in `effective`), because `scripts/check_policy_in_force.sh` (CI's manifests job, against the base) refuses a PR
 that moves the version to a page that is not published. **The merge puts it into force:** api and ingest roll
 with the new version, the site job ships the page and checks that `/privacy` shows it, and every user is asked to
 consent again before the next upload. The version stays `2026-11-26` after the revision of 2026-11-27: it was never
-in force anywhere, so the id is re-used. Set `effective` to the merge date if it is later. 2026-10-20 and
+in force anywhere, so the id is re-used. `effective` is `2026-11-27` (the planned merge day) on privacy and terms;
+no guard ties it to the version id (`legal.test.ts` only wants a date; the live check reads the "Version" line). 2026-10-20 and
 2026-10-26 keep their pages and words. Terms move to 2026-11-26 the same way (no guard; 2026-10-20 stays at
 `/terms/2026-10-20`).
 
@@ -123,7 +126,7 @@ merge. The `TODO(user)` markers stay in the text until the user answers; a lawye
 (Linear RFT-155).
 
 1. `npm run check:policy`, `npm run brand`, `npm test`, the build, the e2e tests, all green in CI.
-2. Decide `CONNECT_MIN_POLICY_VERSION` (U14); the merge asks every user to consent again.
+2. `CONNECT_MIN_POLICY_VERSION` is decided (U14: 2026-11-26); the merge asks every user to consent again.
 3. Mark the PR ready and merge; the merge deploys (D290 lists the order).
 
 Open after the merge, none of it blocking: U1-U15 (every `TODO(user)` resolved in the content files and U12 in

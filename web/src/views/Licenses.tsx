@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { PageShell } from '@/components/chrome';
-import { Container, Label, Todo } from '@/components/ui';
+import { Container, Label } from '@/components/ui';
 import { format, messages, type Locale } from '@/lib/i18n';
 import { pageMetadata } from '@/lib/metadata';
 import { BUILD_YEAR } from '@/lib/site';
@@ -32,7 +32,7 @@ export function LicensesPage({ locale }: { locale: Locale }) {
           <h1>{t.title}</h1>
           <p className={styles.copyright}>
             {format(before, { year: BUILD_YEAR })}
-            <Todo>{t.holderTodo}</Todo>
+            {t.holder}
             {after}
           </p>
           <p className={styles.intro}>{t.intro}</p>

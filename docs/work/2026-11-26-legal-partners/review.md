@@ -26,7 +26,7 @@ Re-consent (privacy reviewer): the version bump is the right, conservative choic
 | S3 | should | privacy:40 | Failed inbox rows keep payload; purged 7 d after failing → up to 14 d (`inbox.go:314,355,366`); the 30-day record holds record_id, kind, timestamps (`0042_connections.sql:210-226`) | "14 days"; reword record | fixed |
 | S4 | should | privacy:76 | 90-day listing only for provider-side ends; in-app disconnect deletes the row (`store/connections.go:525-527`, `direct.go:358`) | reword | fixed |
 | S5 | should | messages/en.json :298 iOS 17, :279/:285/:316 invite codes vs BETA_GATE=off (D241), :396 "Change password" alt | fix in this PR | fixed (see commit) |
-| S6 | should | config.env:65 | CONNECT_MIN_POLICY_VERSION stays 2026-10-26 against D259's rule | left for the user (U14), recorded in D290 and the PR | open (user) |
+| S6 | should | config.env:65 | CONNECT_MIN_POLICY_VERSION stays 2026-10-26 against D259's rule | moved to 2026-11-26 (U14 decided 2026-11-27 under the user's rule; D290 item 9) | decided |
 | N1 | nit | privacy:41 | retry queue also keeps account id and provider user id (`connections.go:516-519`) | reword | fixed |
 | N2 | nit | privacy:73 | backups 7 days has no facts row (console item) | facts row + note | fixed |
 | N3 | nit | privacy App Attest | no installation id stored; key is (user_id, key_id) (`0037_app_attest.sql:44`) | "per account and key" | fixed |

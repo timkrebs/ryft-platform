@@ -1,7 +1,7 @@
 import { PageShell } from '@/components/chrome';
 import { Prose, mdxComponents } from '@/components/prose';
 import { Screenshot } from '@/components/Screenshot';
-import { ButtonLink, Container, Label, Todo } from '@/components/ui';
+import { ButtonLink, Container, Label } from '@/components/ui';
 import { format, intlLocale, localePath, messages, type Locale } from '@/lib/i18n';
 import { isDraft, isVersioned, loadLegal, versionsOf, type LegalDoc } from '@/lib/legal';
 import { pageMetadata } from '@/lib/metadata';
@@ -132,9 +132,6 @@ function SupportExtras({ locale }: { locale: Locale }) {
             <ButtonLink href={`mailto:${SUPPORT_EMAIL}`}>{t.contact.button}</ButtonLink>
           </p>
         )}
-        <p>
-          {t.contact.response} <Todo>{t.contact.responseTodo}</Todo>
-        </p>
       </section>
     </>
   );

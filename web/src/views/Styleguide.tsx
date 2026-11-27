@@ -109,7 +109,7 @@ export function StyleguidePage() {
             </Tile>
             <Card>
               <p>
-                A draft value: <Todo>TODO(user): support email address</Todo>
+                A draft value: <Todo>support email address</Todo>
               </p>
               <SampleNote>Sample data</SampleNote>
             </Card>
