@@ -11,9 +11,13 @@ Implements the no-watch recovery contract merged in #255 (`docs/API.md` → Reco
 - **Data:** deletion, merge, the same-source fold and the session re-attach cover both tables; no rating, time or score in a log line.
 
 ## On merge (`deploy.yml`)
-1. The migrate job runs **0064** `recovery_checkins`, **0065** `workout_ratings`, **0066** the flag seed. (`0061` stays reserved for the BLS import.)
-2. The services roll (api: the routes; ingest: the fold's rating move; scoring: model 2026.11.1). No site change beyond the science page's model version.
-3. Nothing changes for any account: the flag is at 0 % with an empty allow-list.
+1. The migrate job runs **0064** `recovery_checkins`, **0065** `workout_ratings`, **0066** the flag seed (0061–0063 are main's BLS migrations). 0065 also gives scoring `UPDATE (start_at, end_at)` on `workouts`, guarded by a trigger to a session's own workout.
+2. The services roll (api: the routes; ingest: the fold's rating move; scoring: model 2026.11.1, a session's own workout updated in place on a time edit).
+3. The site job (with `SITE_DEPLOY` on) ships the science page's model version 2026.11.1; nothing else on the site changes.
+4. Nothing changes for any account: the flag is at 0 % with an empty allow-list. On every account the briefing gains `readiness_display` and N2R gains `bedtime_source` (additive).
+
+## Reviews
+`docs/work/2026-11-26-no-watch-recovery/review-impl.md`: one code-reviewer pass and a re-verification; every finding fixed.
 
 ## What you run, in order (later, not on merge)
 1. Publish a privacy version that names the check-in (`docs/work/2026-11-26-no-watch-recovery/implementation.md` → Privacy).
