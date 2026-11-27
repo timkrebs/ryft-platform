@@ -117,7 +117,7 @@ func (h *handler) days(w http.ResponseWriter, r *http.Request) {
 
 // withTrainingLoad fills scored rows (oldest first, as DailyScores returns them)
 // from one shared lookback: the 27 days before the first row through the last
-// (docs/API.md → Training load; SCORING.md → Training load (Fitness); D306).
+// (docs/API.md → Training load; SCORING.md → Training load (Fitness); D308).
 // The span follows the rows, not the request, so a wide ?from= reads no more
 // than the scored days need. A fixed number of queries per request: the day
 // values, the flag, the rated workouts, one batched heart-rate read for those
@@ -184,7 +184,7 @@ func (h *handler) withTrainingLoad(r *http.Request, loc *time.Location, rows []m
 			continue
 		}
 		// A Train session's workout carries its load in the muscular part (its
-		// sets); a rating on it must not add cardio too (D306).
+		// sets); a rating on it must not add cardio too (D308).
 		if workout.SessionID != nil || workout.Source == model.SessionSource {
 			continue
 		}

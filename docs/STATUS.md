@@ -4,7 +4,7 @@
 
 Done (branch `docs/fitness-contract`): `docs/API.md` gains `User.goal`, `sex`, `weight_kg`, `weight_source`, `weight_measured_at` (and `UserPatch`), with the goal ↔ `GoalProfile.goal` table. `DailyScore` gains `training_load` (cardio and muscular: 7 d against 28 d, the band, `state`, coverage; computed on read), `energy` (intake, active, resting, net, `missing`, `confidence`), `vo2max`, `vo2max_delta_7d`, `hrr_bpm` and `active_min`. `DayDetail` gains `muscles`. `POST /v1/sync` gains `basal_energy`, `heart_rate_recovery`, and `body_mass` for everyone. The server stores the new types only while the flag `sync.fitness_types` is on and the consent is to a policy version that names them. A `PATCH` of `sex`/`weight_kg` needs that consent too. The Swift mirror and a changelog entry are in; the examples are `http` blocks. The plan and the implementation order are in `docs/work/2026-11-27-fitness-contract/plan.md`. Merging deploys nothing new.
 
-Implementation PR 2 (D306, `feat/training-load`) serves the Fitness training load on both day reads, computed on read with no migration, flag or scoring model bump.
+Implementation PR 2 (D308, `feat/training-load`) serves the Fitness training load on both day reads, computed on read with no migration, flag or scoring model bump.
 
 Open: the remaining implementation PRs (see plan.md). The bundled privacy update (basal energy, heart-rate recovery, body mass from Apple Health, sex, weight, goal) must be live before the flag goes on. The app sends the types only while the flag is `true`. Reviews: `docs/work/2026-11-27-fitness-contract/review.md`.
 

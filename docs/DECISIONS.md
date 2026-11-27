@@ -7486,7 +7486,7 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   energy, (5) VO₂ max, HRR and active time, (6) muscle freshness. About 9–10 days. 2 and 6 can run beside 1.
   Rollback: this PR is docs only.
 
-## D306 — Training load on read: the rounding, the rated-workout rule, no model bump (2026-11-27)
+## D308 — Training load on read: the rounding, the rated-workout rule, no model bump (2026-11-27)
 
 - **Context:** D304 implementation PR 2 adds `DailyScore.training_load` to both day reads. The API
   fills every scored row and returns null on the never-scored detail placeholder.

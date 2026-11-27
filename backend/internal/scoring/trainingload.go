@@ -7,7 +7,7 @@ import (
 	"github.com/timkrebs/ryft/internal/model"
 )
 
-// The Fitness training load's constants (SCORING.md → Training load (Fitness), D306):
+// The Fitness training load's constants (SCORING.md → Training load (Fitness), D308):
 // the 28-day window (also the lookback the api reads), the 7 acute days, the
 // divisor to weekly units, the band 0.8–1.3 × chronic, and the 21 data days a
 // state needs.

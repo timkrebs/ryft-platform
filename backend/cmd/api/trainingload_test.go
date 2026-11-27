@@ -61,7 +61,7 @@ func TestDaysServeTrainingLoad(t *testing.T) {
 	addWorkout(a, midnightWorkout.AddDate(0, 0, -2), "phone", nil, 10)
 	addWorkout(a, curveWorkout.Add(12*time.Hour+30*time.Minute), "phone", nil, 2.5)
 	// A rated Train session's workout without heart rate (Oct 25, 17:00 Berlin):
-	// its sets are the muscular part, so the rating adds no cardio TRIMP (D306).
+	// its sets are the muscular part, so the rating adds no cardio TRIMP (D308).
 	lift := addWorkout(a, curveWorkout.Add(5*time.Hour), "phone", nil, 10)
 	if _, err := rr.pool.Exec(ctx, `UPDATE workouts SET session_id=$2 WHERE user_id=$1 AND id=$3`, a, sessionA, lift); err != nil {
 		t.Fatal(err)

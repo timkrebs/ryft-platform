@@ -783,7 +783,7 @@ and muscular-load based, so no stored daily number moves. Net energy is not move
 
 ## Training load (Fitness)
 
-D306 serves `DailyScore.training_load` on both day reads. The API computes it on read from
+D308 serves `DailyScore.training_load` on both day reads. The API computes it on read from
 stored day scores, visible workout ratings and the first completed session. It writes no stored
 number, so the scoring model version stays the same. The current day includes load so far.
 

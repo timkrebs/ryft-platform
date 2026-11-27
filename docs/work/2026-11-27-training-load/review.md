@@ -1,4 +1,4 @@
-# Review: training load on read (D306, branch `feat/training-load`)
+# Review: training load on read (D308, branch `feat/training-load`)
 
 ## The lead's review of the Codex draft (before code-reviewer)
 
@@ -22,7 +22,7 @@ the store reads, the handler, the tests and the docs. Behaviour issues found and
 | # | Finding | Severity | Outcome |
 | --- | --- | --- | --- |
 | 1 | One heart-rate query per rated workout without `avg_hr`, on an uncapped range; the lookback follows the request's `from`/`to`, not the rows | should-fix | fixed: range clamped to the returned rows; one batched sample read for all candidates |
-| 2 | A rated Train session's workout with no heart rate counts twice: muscular (its sets) and cardio (the rating) | should-fix | fixed: a workout of a Train session (`session_id` set, or the session source) adds no rated cardio TRIMP and makes no cardio data day; D306, SCORING.md, API.md |
+| 2 | A rated Train session's workout with no heart rate counts twice: muscular (its sets) and cardio (the rating) | should-fix | fixed: a workout of a Train session (`session_id` set, or the session source) adds no rated cardio TRIMP and makes no cardio data day; D308, SCORING.md, API.md |
 | 3 | `from=0001-01-01` now 500 (`0000-12-05` as `::date`) | nit | fixed by the clamp |
 | 4 | Untested: the drop of a padded workout before the lookback; an api row with `days_with_data ≥ 21` | nit | first: test added; second: covered by the pure tests (left) |
 | 5 | Changelog "(`days_with_data` of 21)" ambiguous | nit | fixed |
