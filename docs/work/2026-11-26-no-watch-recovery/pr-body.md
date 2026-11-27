@@ -1,4 +1,4 @@
-Implements the no-watch recovery contract merged in #255 (`docs/API.md` → Recovery without a watch; D291–D295, plus D296 and D297 from the implementation).
+Implements the no-watch recovery contract merged in #255 (`docs/API.md` → Recovery without a watch; D291–D295, plus D298 and D299 from the implementation).
 
 ## What it does
 - **Routes:** `PUT`/`GET`/`DELETE /v1/recovery/checkins/{date}`, `GET /v1/recovery/checkins?from&to` (≤ 400 days, the export), `GET /v1/recovery/status`, `PUT`/`DELETE /v1/workouts/{id}/rpe`.

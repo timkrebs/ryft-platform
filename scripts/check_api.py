@@ -790,7 +790,7 @@ for i in imp["impacts"]:
     check((i["status"] == "locked") == (i["recovery"] is None) and set(i["needed"]) == {"yes", "no"}, f"impact shape: {i}")
 ok(f"journal: alcohol before the 5 weakest mornings → recovery {r['delta']} (90 % {r['ci_lo']} to {r['ci_hi']}), HRV {a['hrv_pct']['delta']} %")
 
-# ---- recovery without a watch: the check-in round trip (D291-D296) ---------------
+# ---- recovery without a watch: the check-in round trip (D291-D295, D298, D299) ---------------
 # A fresh account: with the flag off (it ships dark) the two writes and the status answer 404 without a code and the
 # reads and the DELETE work; allow-listed (apikey mode, the admin key) a check-in is saved, saved again unchanged,
 # read, listed, shown in the status, deleted twice, and the flag goes back to dark.

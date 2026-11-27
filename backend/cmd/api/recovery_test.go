@@ -22,7 +22,7 @@ import (
 	"github.com/timkrebs/ryft/internal/scoring"
 )
 
-// Recovery without a watch through the api (D291–D296; docs/API.md → Recovery without a watch): the gates, the
+// Recovery without a watch through the api (D291–D295, D298, D299; docs/API.md → Recovery without a watch): the gates, the
 // contract's numbers, validation, the N2R bedtime, the session RPE and the coaching briefing. All of it needs a
 // Postgres (RYFT_TEST_POSTGRES_URL), as the other api tests do.
 

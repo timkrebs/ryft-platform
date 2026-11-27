@@ -19,12 +19,12 @@ import (
 	"github.com/timkrebs/ryft/internal/periodization"
 )
 
-// Recovery without a watch (D291–D296; docs/API.md → Recovery without a watch): the morning check-in, the session
+// Recovery without a watch (D291–D295, D298, D299; docs/API.md → Recovery without a watch): the morning check-in, the session
 // RPE of a workout, today's recovery status and the flag that switches them.
 //
 // The pure check-in score lives in internal/scoring, which imports this package, so the store cannot call it: it
 // gathers what the score depends on (CheckinFacts) and takes the function as a CheckinScorer, which the api
-// injects. That keeps one transaction around a write and the rescoring of the later check-ins (D292, D297).
+// injects. That keeps one transaction around a write and the rescoring of the later check-ins (D292, D299).
 
 const (
 	// checkinHistoryDays is how far back a check-in's score looks (the personal blend: 14 days), and how far

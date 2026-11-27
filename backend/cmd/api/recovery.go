@@ -19,7 +19,7 @@ import (
 	"github.com/timkrebs/ryft/internal/store"
 )
 
-// Recovery without a watch (docs/API.md → Recovery without a watch; D291–D296): the morning check-in, today's
+// Recovery without a watch (docs/API.md → Recovery without a watch; D291–D295, D298, D299): the morning check-in, today's
 // recovery status and the session RPE of a workout.
 //
 // The gates: the two writes and the status answer 404 (no code) while the flag recovery.checkin is off for the

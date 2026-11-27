@@ -73,7 +73,7 @@ const (
 )
 
 // The reasons a check-in counts as an acute drop (readiness_reasons, D294).
-// When both hold, CheckinDropBelowUsual wins (D296).
+// When both hold, CheckinDropBelowUsual wins (D298).
 const (
 	CheckinDropBelowUsual          = "checkin_below_usual"
 	CheckinDropLowQualityFreshness = "checkin_low_quality_and_freshness"

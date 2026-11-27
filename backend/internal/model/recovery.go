@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-// Recovery without a watch (docs/API.md → Recovery without a watch; D291–D296): a morning check-in, its recovery
+// Recovery without a watch (docs/API.md → Recovery without a watch; D291–D295, D298, D299): a morning check-in, its recovery
 // estimate and the session RPE of a workout.
 
 // FlagRecoveryCheckin is the feature flag that serves the check-in and session RPE writes and the status route

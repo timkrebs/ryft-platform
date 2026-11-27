@@ -941,13 +941,16 @@ func (s *Store) EnsureSessionWorkout(ctx context.Context, userID, workoutID, ses
 // previous maps a session to the workout it was attached to before this pass (Session.WorkoutID as read at its
 // start; nil or missing: none). A session's rating belongs to the session: where the session moved to another
 // workout, from a HealthKit workout to another, or back to its own, the rating moves with it (D293). The move and
-// the releases run in one transaction.
+// the releases run in one transaction. previous is not enough alone: a pass that failed after SetSessionLoad saved
+// the new attachment sees it as the previous one when it retries, so a workout of the user that still carries the
+// session (workouts.session_id, which the release below clears) and is not the chosen one gives up its rating too.
 func (s *Store) ReleaseSessionWorkouts(ctx context.Context, userID uuid.UUID, daySessions []uuid.UUID, chosen, previous map[uuid.UUID]uuid.UUID) error {
 	keep := make([]uuid.UUID, 0, len(chosen))
-	var from, to []uuid.UUID
+	var from, to, sessions, targets []uuid.UUID
 	var prio []int32
 	for session, w := range chosen {
 		keep = append(keep, w)
+		sessions, targets = append(sessions, session), append(targets, w)
 		// The workout it had (preferred) and the one scoring makes for it: a rating on either follows the session.
 		for rank, old := range []uuid.UUID{previous[session], train.SessionWorkoutID(userID, session)} {
 			if old != uuid.Nil && old != w {
@@ -958,17 +961,23 @@ func (s *Store) ReleaseSessionWorkouts(ctx context.Context, userID uuid.UUID, da
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		// Scoring may repoint a rating by its key columns, never read its value (0063). The target keeps its own
 		// rating when it has one; of two ratings that would move to one target the previous workout's wins.
-		if len(from) > 0 {
-			if _, err := tx.Exec(ctx, `WITH moves AS (
+		if len(sessions) > 0 {
+			if _, err := tx.Exec(ctx, `WITH candidates AS (
+					SELECT from_id, to_id, prio FROM unnest($2::uuid[], $3::uuid[], $4::int[]) AS t(from_id, to_id, prio)
+					UNION ALL
+					SELECT w.id, c.to_id, 2 FROM unnest($5::uuid[], $6::uuid[]) AS c(session_id, to_id)
+					JOIN workouts w ON w.user_id = $1 AND w.session_id = c.session_id AND w.id <> c.to_id
+				), moves AS (
 					SELECT DISTINCT ON (t.to_id) t.from_id, t.to_id
-					FROM unnest($2::uuid[], $3::uuid[], $4::int[]) AS t(from_id, to_id, prio)
+					FROM candidates t
 					JOIN workout_ratings r ON r.user_id = $1 AND r.workout_id = t.from_id
 					WHERE EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = $1 AND w.id = t.to_id)
 					AND NOT EXISTS (SELECT 1 FROM workout_ratings k WHERE k.user_id = $1 AND k.workout_id = t.to_id)
 					ORDER BY t.to_id, t.prio
 				)
 				UPDATE workout_ratings r SET workout_id = moves.to_id, updated_at = now()
-				FROM moves WHERE r.user_id = $1 AND r.workout_id = moves.from_id`, userID, from, to, prio); err != nil {
+				FROM moves WHERE r.user_id = $1 AND r.workout_id = moves.from_id`,
+				userID, from, to, prio, sessions, targets); err != nil {
 				return err
 			}
 		}

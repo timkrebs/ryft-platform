@@ -57,9 +57,23 @@ GRANT UPDATE (workout_id, updated_at) ON workout_ratings TO ryft_ingest;
 GRANT SELECT (user_id, workout_id) ON workout_ratings TO ryft_scoring;
 GRANT UPDATE (workout_id, updated_at) ON workout_ratings TO ryft_scoring;
 -- scoring: a completed session's own workout follows an edit of the session's times in place, so its rating stays.
--- The statement is restricted to source 'ryft-session' (store.EnsureSessionWorkout); the grant is per column, not per
--- row, as for the load columns above. scoring still cannot change a workout's source, activity or owner.
+-- The grant is per column, not per row, and 0011's restrictive row policies cover DELETE and INSERT only (an UPDATE
+-- policy would also bind the load columns scoring writes on every workout), so a trigger limits the times to the
+-- workouts scoring owns (source 'ryft-session'), on plain Postgres and on Supabase alike. It fires only for a
+-- statement that sets start_at or end_at on another source's row, and refuses only ryft_scoring (ingest's upsert
+-- moves HealthKit workouts). scoring still cannot change a workout's source, activity or owner.
 GRANT UPDATE (start_at, end_at) ON workouts TO ryft_scoring;
+
+CREATE OR REPLACE FUNCTION workouts_scoring_moves_own_only() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+    IF current_user = 'ryft_scoring' THEN
+        RAISE EXCEPTION 'ryft_scoring may move only the workouts it owns (source ryft-session)' USING ERRCODE = '42501';
+    END IF;
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS workouts_scoring_moves_own_only ON workouts;
+CREATE TRIGGER workouts_scoring_moves_own_only BEFORE UPDATE OF start_at, end_at ON workouts
+    FOR EACH ROW WHEN (OLD.source <> 'ryft-session') EXECUTE FUNCTION workouts_scoring_moves_own_only();
 
 DROP POLICY IF EXISTS workout_ratings_services ON workout_ratings;
 CREATE POLICY workout_ratings_services ON workout_ratings TO ryft_api, ryft_ingest, ryft_scoring USING (true) WITH CHECK (true);

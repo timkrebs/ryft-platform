@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/timkrebs/ryft/internal/testsupport"
@@ -84,6 +85,23 @@ func testMigrateWorkoutDuplicates(t *testing.T, supabase bool) {
 		if _, err := scoring.Exec(ctx, q, u); err == nil {
 			t.Errorf("scoring must not run %q", q)
 		}
+	}
+	// 0063: scoring moves the times of a session's own workout (so its rating stays), never a HealthKit workout's.
+	// The column grant is not per row; a trigger refuses the rest.
+	own := "aaaaaaaa-0000-0000-0000-000000000034"
+	if _, err := pool.Exec(ctx, `INSERT INTO workouts (id, user_id, activity, start_at, end_at, source) VALUES ($1, $2, 'strength', now(), now(), 'ryft-session')`, own, u); err != nil {
+		t.Fatal(err)
+	}
+	if ct, err := scoring.Exec(ctx, `UPDATE workouts SET start_at = now() - interval '1 h', end_at = now() WHERE user_id = $1 AND id = $2`, u, own); err != nil || ct.RowsAffected() != 1 {
+		t.Errorf("scoring moves the times of its own workout: %v %v", ct, err)
+	}
+	for _, q := range []string{`UPDATE workouts SET start_at = now() WHERE user_id = $1 AND id = $2`, `UPDATE workouts SET end_at = now() WHERE user_id = $1 AND id = $2`} {
+		if _, err := scoring.Exec(ctx, q, u, w1); err == nil || !strings.Contains(err.Error(), "ryft_scoring may move only") {
+			t.Errorf("scoring must not move a HealthKit workout's times (%q): %v", q, err)
+		}
+	}
+	if _, err := ingest.Exec(ctx, `UPDATE workouts SET start_at = start_at WHERE user_id = $1 AND id = $2`, u, w1); err != nil {
+		t.Errorf("the trigger is scoring's alone; ingest's upsert moves HealthKit workouts: %v", err)
 	}
 	// The api reads it and cannot write it; ingest reads it too (and see below for its UPDATE).
 	if _, err := scoring.Exec(ctx, `UPDATE workouts SET duplicate_of = $2 WHERE user_id = $1 AND id = $3`, u, w1, w2); err != nil {

@@ -16,7 +16,7 @@ import (
 	"github.com/timkrebs/ryft/internal/train"
 )
 
-// Postgres tests of the recovery-without-a-watch store (D291–D296): check-ins and their rescoring, the wearable
+// Postgres tests of the recovery-without-a-watch store (D291–D295, D298, D299): check-ins and their rescoring, the wearable
 // night and the tiers, the N2R bedtime precedence, and the session rating's life with its workout. The score itself
 // is internal/scoring's (the store takes it as a CheckinScorer, as scoring imports the store): these tests use a
 // simple stand-in whose result depends on the history the way the real one does. The real numbers are pinned
@@ -600,6 +600,36 @@ func TestReleaseSessionWorkoutsMovesTheRating(t *testing.T) {
 		owns := countRows(t, pool, `SELECT count(*) FROM workouts WHERE user_id=$1 AND id=$2`, u, ids["own"])
 		if keeps := c.chosen == "own"; keeps && owns != 1 || !keeps && owns != 0 {
 			t.Errorf("%s: the session's own workout: %d rows", c.name, owns)
+		}
+	}
+}
+
+// A pass that failed after SetSessionLoad saved the new attachment runs again with that attachment as the previous
+// one: the rating still on the workout that carries the session moves to the chosen one.
+func TestReleaseSessionWorkoutsRetryMovesTheRating(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+	scoring := New(dupRolePool(t, pool, "ryft_scoring"))
+	u := applyUser(t, st)
+	session := uuid.New()
+	at := utc("2026-11-25T17:00:00Z")
+	hk1 := seedWorkout(t, pool, u, seedW{source: "Watch", start: at})
+	hk2 := seedWorkout(t, pool, u, seedW{source: "Garmin", start: at})
+	if _, err := pool.Exec(ctx, `UPDATE workouts SET session_id=$2 WHERE user_id=$1 AND id=$3`, u, session, hk1); err != nil { // the first attachment
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO sessions (user_id, id, started_at, ended_at, status, workout_id) VALUES ($1, $2, $3, $3::timestamptz + interval '1 h', 'completed', $4)`,
+		u, session, at, hk2); err != nil { // SetSessionLoad already saved the new one
+		t.Fatal(err)
+	}
+	rate(t, pool, u, hk1, 8)
+	chosen := map[uuid.UUID]uuid.UUID{session: hk2}
+	for i := 0; i < 2; i++ { // and again: the move is idempotent
+		if err := scoring.ReleaseSessionWorkouts(ctx, u, []uuid.UUID{session}, chosen, chosen); err != nil {
+			t.Fatal(err)
+		}
+		if got := ratings(t, pool, u); len(got) != 1 || got[hk2] != 8 {
+			t.Fatalf("pass %d: ratings %v, want 8 on the chosen workout", i+1, got)
 		}
 	}
 }

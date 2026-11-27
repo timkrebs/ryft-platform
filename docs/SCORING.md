@@ -696,7 +696,7 @@ N2R v1.0.0 combines dynamic food quality, CGM impact, fuel adequacy and dose- an
 
 A morning without a wearable night (D291: no asleep stages or sleep-window HRV, or no `DailyScore.recovery`) can
 have a **check-in**: bedtime, wake time, `perceived_sleep_quality` and `perceived_freshness` (1–10) and `soreness`.
-`scoring.CheckinScore` (`internal/scoring/checkin.go`, a pure function; D292, D296) turns it into an estimate 0–100
+`scoring.CheckinScore` (`internal/scoring/checkin.go`, a pure function; D292, D298) turns it into an estimate 0–100
 with the scoring `ModelVersion` (from 2026.11.1). It is an **estimate from self-report**, shown as such
 (`RecoveryStatus.source` `checkin`, `confidence` `medium`/`low`), never written into `DailyScore.recovery`, and never
 part of baselines, trends or insights. A wearable night supersedes it. Not medical: no number here is a threshold
@@ -714,10 +714,10 @@ versioned and will be calibrated against users with both a watch and check-ins.
 | `wellness_personal` | from ≥ 5 check-ins in the 14 days before (not the day): `z = (absolute − mean) / max(SD, 6)`, `personal = clamp(50 + 25·z, 0, 100)`; the sample SD of the unrounded prior absolutes | 5, 14 days, SD floor 6, 50, 25 |
 | `wellness` | `0.7·absolute + 0.3·personal`; `= absolute` without the personal part | 0.7 / 0.3 |
 | `duration` | `L` = 450 min, or `User.sleep_base_min` clamped to 360–600 while `sleep_base_source` is `learned` or `manual`. 100 from `L` to `L + 120`; below `L` linear to 40 at 300 min, 40 below; above `L + 120` −10 per hour, floor 75. `sleep_duration_min` = `wake − bed` in whole minutes (truncated): time in bed as reported | 450, 360–600, 120, 300 → 40, −10/h, 75 |
-| `regularity` | today's sleep midpoint on the local clock (`tz_offset_sec`) against the circular mean of the newest ≤ 7 prior nights (a wearable night where the day has one, else its check-in), ≥ 3 of them: 100 within 30 min, 50 from 120 min, linear between; `null` with fewer or without a mean direction (D296) | 7, 3, 30, 120 → 50 |
+| `regularity` | today's sleep midpoint on the local clock (`tz_offset_sec`) against the circular mean of the newest ≤ 7 prior nights (a wearable night where the day has one, else its check-in), ≥ 3 of them: 100 within 30 min, 50 from 120 min, linear between; `null` with fewer or without a mean direction (D298) | 7, 3, 30, 120 → 50 |
 | `n2r` | yesterday's Nutrition-to-Recovery score as is; `null` without one | |
 | `recovery_score` | `0.50·wellness + 0.30·duration + 0.10·regularity + 0.10·n2r` over the parts present (a `null` part leaves out its weight; the others are scaled up), unrounded parts, rounded, clamped 0–100 | 0.50 / 0.30 / 0.10 / 0.10 |
-| `acute_drop` | `z ≤ −1.5`, or quality ≤ 4 and freshness ≤ 4. Reason `checkin_below_usual` when `z ≤ −1.5` (also when both hold, D296), else `checkin_low_quality_and_freshness` | −1.5, 4 |
+| `acute_drop` | `z ≤ −1.5`, or quality ≤ 4 and freshness ≤ 4. Reason `checkin_below_usual` when `z ≤ −1.5` (also when both hold, D298), else `checkin_low_quality_and_freshness` | −1.5, 4 |
 | `soreness` | **zero weight** (decided 2026-11-27, D292): stored, shown, kept for a later calibration; moves neither the score, `acute_drop` nor the readiness state; adds the reason `soreness_reported` only | 0 |
 
 Why renormalise rather than count a missing part as 0: most no-watch users have no N2R and no regularity in their
@@ -821,7 +821,7 @@ digest and the field digest did not (CI runs it: the `golden-guard` job).
 
 | Version | Date | What moved | Decisions |
 | --- | --- | --- | --- |
-| 2026.11.1 | 2026-11-27 | Recovery without a watch: the check-in estimate (`scoring.CheckinScore`, stored on `recovery_checkins` with its version) and the session-RPE coaching load (`energy.RatedWorkout`); see Check-in recovery. No `daily_scores`, workout or session value moves: the golden files change only in `model_version`. `affects`: `[]`. | D292, D293, D294, D296 |
+| 2026.11.1 | 2026-11-27 | Recovery without a watch: the check-in estimate (`scoring.CheckinScore`, stored on `recovery_checkins` with its version) and the session-RPE coaching load (`energy.RatedWorkout`); see Check-in recovery. No `daily_scores`, workout or session value moves: the golden files change only in `model_version`. `affects`: `[]`. | D292, D293, D294, D298 |
 | 2026.10.3 | 2026-10-31 | Workouts: one activity, one workout. Same-source copies (same activity, both ends within 120 s, overlap ≥ 50 % of the shorter) are folded to the last upload by ingest; cross-source recordings (same activity or either `other`, overlap ≥ 80 % of the shorter) are shown once, primary by specific activity, own heart rate, length, id. Moves `details.workouts`, which workout carries a session's muscular load (that workout's `strain`, `session_id`, `muscular_load`; `sessions.workout_id`) and the new `workouts.duplicate_of`. `affects`: `[]`, no trend metric (day strain counts the muscular load once whichever workout carries it). | D146, D147 |
 | 2026.10.2 | 2026-10-26 | Strength: the e1RM reference is the best of the 90 days before a session's end, its own sets always included; the history ends at the session's last set when that is after `ended_at`; assisted bodyweight sets count with the support taken off and hold no record; `pct_1rm` targets use the same 90-day e1RM. `affects`: `strain` and `volume_kg` directly; `sleep`, `sleep_quality`, `recovery` and `readiness` through the next night's need (3 min per strain point) and the readiness penalty. | D134, D135, D138 |
 | 2026.10.1 | 2026-10-20 | The model at the start of the beta. | D80 |

@@ -196,7 +196,7 @@ func TestCheckinRenormalisation(t *testing.T) {
 
 func TestCheckinDropReasonsAndSoreness(t *testing.T) {
 	// Both rules hold (14 × 6/6, then 4/4: absolute 33.3, z = −22.2/6 = −3.7):
-	// the personal comparison names it (D296).
+	// the personal comparison names it (D298).
 	in := night(480, 4, 4)
 	in.Prior = priorRatings(14, 6, 6)
 	if r := CheckinScore(in); !r.AcuteDrop || r.DropReason != CheckinDropBelowUsual {
