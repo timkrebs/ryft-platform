@@ -47,6 +47,7 @@ func (s *Store) HealthKitWeighIn(ctx context.Context, user uuid.UUID) (*float64,
 	var measuredAt time.Time
 	err := s.pool.QueryRow(ctx, `SELECT value, start_at FROM samples
 		WHERE user_id=$1 AND type='body_mass' AND origin='healthkit' AND start_at <= now()
+		  AND unit='kg' AND value BETWEEN 25 AND 350
 		ORDER BY start_at DESC, id DESC LIMIT 1`, user).Scan(&kg, &measuredAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, time.Time{}, nil

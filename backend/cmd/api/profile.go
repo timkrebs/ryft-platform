@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/gate"
@@ -31,7 +34,17 @@ func profileFail(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.Fail(w, r, context.DeadlineExceeded)
 		return
 	}
-	httpx.Fail(w, r, errors.New("profile store operation failed"))
+	httpx.Fail(w, r, profileErr(err))
+}
+
+// profileErr keeps what diagnoses a failure and holds no value: a Postgres error's SQLSTATE and constraint
+// name (its message and detail can quote a row), otherwise the error's type.
+func profileErr(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return fmt.Errorf("profile store operation failed: sqlstate %s, constraint %q", pgErr.Code, pgErr.ConstraintName)
+	}
+	return fmt.Errorf("profile store operation failed: %T", err)
 }
 
 // withWeight resolves the public weight fields for GET and PATCH /v1/me.

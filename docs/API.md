@@ -882,8 +882,8 @@ sample types the Fitness tab, net energy and the profile's weight need. `basal_e
 HealthKit records in slices (kcal; the day's resting energy is their sum); `heart_rate_recovery` is the 1-minute
 drop in beats per minute after a workout (bpm); `body_mass` is a weigh-in in kilograms. They come from Apple
 Health, so they change the privacy text, and the server therefore stores them **only for an account whose
-consent is to a policy version that names them** (`User.consent.policy_version`; the operator sets which
-versions do when that policy ships) **and while the flag `sync.fitness_types` is on for the account**
+consent is to a policy version that names them** (`User.consent.policy_version`; a version names them when
+its text does, and the server lists it in the release that ships that text, D305) **and while the flag `sync.fitness_types` is on for the account**
 (`GET /v1/config` → `flags["sync.fitness_types"]`). For any other account, and on a server before the
 implementing change, each such sample is counted `ignored.samples.unknown_type`: `200`, never an error, and
 nothing in the request is refused. A `cursor` whose `stream` is one of the three types is skipped under the
@@ -1195,7 +1195,11 @@ clears the manual weigh-in only, see **Goal, sex and weight** above); a value ou
 answers `400` (unknown field) and applies nothing, the other fields of the body included. **`sex` and `weight_kg`
 (a value or `null`) need a consent to a policy version that names them** (`User.consent.policy_version`), else
 `403` with `code` `consent_required` and the whole request is refused; **`goal` is not gated**, and a body
-without `sex` and `weight_kg` is never refused for consent. A `weight_kg` sets `weight_source` to `manual` and `weight_measured_at` to the request's time; `weight_source`
+without `sex` and `weight_kg` is never refused for consent. **No policy version names them yet** (the next
+privacy version will): until the build that ships with it, send `goal` in a body of its own and no `sex` or
+`weight_kg`. A `403 consent_required` to a body with `sex` or `weight_kg` while `User.consent.policy_version`
+already equals `GET /v1/config` → `privacy_policy_version` means that version does not name them: do not show
+the consent screen again or re-send; keep the values on the device. A `weight_kg` sets `weight_source` to `manual` and `weight_measured_at` to the request's time; `weight_source`
 and `weight_measured_at` are not accepted in the body (unknown fields are `400`).
 Returns the updated `User`. `422` on an unknown zone, an out-of-range value,
 `sleep_base_min` together with `sleep_base_manual: false`, or `max_hr` together with
@@ -4426,7 +4430,7 @@ struct User: Codable {
     let maxHrSource: MaxHRSource
     let sources: [UserSource]
     let accountHint: AccountHint?
-    // D304, not served yet: absent before the implementing change, null until set
+    // D304, served from D305: absent from a server before it, null until set
     var goal: UserGoal? = nil             // open: an unknown value decodes (isKnown == false); show it like nil
     var sex: Sex? = nil                   // closed
     var weightKg: Double? = nil           // 25–350, one decimal
@@ -4724,7 +4728,7 @@ struct UserPatch: Codable {   // PATCH /v1/me, every field optional
     var birthYear: Int?
     var sleepBaseMin: Int?
     var sleepBaseManual: Bool?
-    // D304, not served yet. Double optional: nil leaves the field out (unchanged), .some(nil) sends null (clears)
+    // D304, served from D305. Double optional: nil leaves the field out (unchanged), .some(nil) sends null (clears)
     // Send these only when the last GET /v1/me had the key "goal" (see User); sex and weightKg (a value or
     // .some(nil)) also need the consent to a policy version that names them: else 403 consent_required, whole request refused.
     var goal: UserGoal??            // not gated by consent

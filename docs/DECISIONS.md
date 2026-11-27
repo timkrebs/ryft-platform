@@ -7555,4 +7555,8 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
 - **The goal→Nutrition table** is `scoring.NutritionGoalFor` with `scoring.DominantIsCycling`, pinned by tests; no
   route calls it yet (the app pre-fills from the same table). Cycling is every variant `wearables.Sport` maps to
   `cycling`, plus Nutrition's `ride`; a tie for the most minutes is not cycling.
+- **Open, to decide before a policy names the data (review finding 1):** the contract gates a clear (`null`) like a
+  value, so an account that set `sex` or a weight under a naming version and then withdrew, or moved to a version
+  that does not name them, could clear them only by deleting the account. That cannot happen while the set is empty.
+  The privacy update / PR 3 decides, with api-contract-owner: clears without consent, or `RevokeConsent` clears both.
 - **Rollback:** revert the code. The migration only adds nullable columns, so it can stay.

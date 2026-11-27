@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/config"
@@ -92,6 +94,20 @@ func TestProfilePatchValidation(t *testing.T) {
 				t.Errorf("expected consent_required: %s", resp.Body)
 			}
 		})
+	}
+}
+
+func TestProfileErrKeepsNoValue(t *testing.T) {
+	pg := &pgconn.PgError{Code: "23514", ConstraintName: "users_weight_manual_kg_check",
+		Message: "new row violates check constraint", Detail: "Failing row contains (64.5, female)."}
+	got := profileErr(fmt.Errorf("update: %w", pg)).Error()
+	if !strings.Contains(got, "23514") || !strings.Contains(got, "users_weight_manual_kg_check") {
+		t.Errorf("lost the diagnosis: %s", got)
+	}
+	for _, leak := range []string{"64.5", "female", "Failing row"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("logs %q: %s", leak, got)
+		}
 	}
 }
 
