@@ -7486,6 +7486,40 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   energy, (5) VO₂ max, HRR and active time, (6) muscle freshness. About 9–10 days. 2 and 6 can run beside 1.
   Rollback: this PR is docs only.
 
+## D306 — Training load on read: the rounding, the rated-workout rule, no model bump (2026-11-27)
+
+- **Context:** D304 implementation PR 2 adds `DailyScore.training_load` to both day reads. The API
+  fills every scored row and returns null on the never-scored detail placeholder.
+- **Rounding:** round the 7-day sum and the 28-day sum divided by 4 to one decimal first. Derive
+  both band edges from rounded chronic load, then round them to one decimal. The ratio divides
+  the two rounded loads and rounds to two decimals. Compare the values the app sees so equality
+  at either band edge is `optimal`. Each part needs 21 data days before showing the band and state.
+  At zero rounded chronic load, the ratio is null and the available band is 0–0.
+- **Rated workouts:** count valid ratings on visible workouts by the local date of the start,
+  **only while `recovery.checkin` is on for the account**: the flag is the ratings' kill switch
+  (D298, D299) and no published privacy version names the rating yet, so a Fitness read must not
+  be the one place that counts them. A rated day is a cardio data day even at zero load, and also
+  when it has no score row (a phone-only day is the case the rating exists for). The rating adds
+  TRIMP only when there is no `avg_hr` and fewer than two heart-rate samples after scoring's window
+  and source selection. Convert elapsed minutes and session RPE with the day-strain formula
+  (`trimpPerMinute(rpe / 10)`), including its 0.25 floor, so ratings 1–2.5 add none. The same
+  scale applies to every account (no sex constants, unlike `energy.SessionRPETRIMP`). A rating on a
+  hidden duplicate does not count; the visible copy carries the load (usually by heart rate). The
+  workout of a Train session (`session_id` set, or the `ryft-session` source) is left out of the
+  rated cardio part and makes no cardio data day: its sets already are the muscular part, so a
+  phone-only lifter rating a session 8 would otherwise gain about 115 cardio TRIMP for lifting
+  (code-reviewer, `docs/work/2026-11-27-training-load/review.md`).
+- **Read path:** the API shares one lookback per request, from 27 days before the first returned
+  row to the last (the rows, not `?from=`, so a wide range reads no more than the scored days
+  need): the stored load columns, the flag, the visible rated workouts (read padded by a day each
+  side, bucketed by local date, so no timezone or DST edge drops one), one batched heart-rate read
+  (`SamplesInWindows`) for the rated workouts without an average heart rate, and the first
+  completed session start. A fixed number of queries whatever the range. Muscular coverage starts on the
+  account's first completed session's local date and counts calendar dates from there, including
+  gaps in scores.
+- **Model version:** the new field uses read-time calculations only, with no migration or new flag.
+  This leaves stored values and the scoring model version intact.
+
 ## D302 — The account merge moves and erases `from` in one transaction (RFT-88, 2026-11-27)
 
 - **Context:** the merge (D90) committed the move, and the handler then erased `from` in a second transaction.

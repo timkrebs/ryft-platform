@@ -60,6 +60,33 @@ type DailyScore struct {
 	ModelVersion *string `json:"model_version"`
 	// Set by the api on read: scored, pending, waiting_for_sleep (today), stale (today).
 	ScoringState string `json:"scoring_state"`
+	// Computed on read for scored days; nil on the never-scored placeholder.
+	TrainingLoad *TrainingLoad `json:"training_load"`
+}
+
+// Fitness training-load states, a closed enum.
+const (
+	LoadStateBelow   = "below"
+	LoadStateOptimal = "optimal"
+	LoadStateAbove   = "above"
+)
+
+// TrainingLoad is the Fitness view's rolling load for one scored day.
+type TrainingLoad struct {
+	Cardio   LoadPart `json:"cardio"`
+	Muscular LoadPart `json:"muscular"`
+}
+
+// LoadPart describes acute load relative to the weekly average of the chronic window.
+type LoadPart struct {
+	Acute7D          float64  `json:"acute_7d"`
+	Chronic28DWeekly float64  `json:"chronic_28d_weekly"`
+	Ratio            *float64 `json:"ratio"`
+	OptimalLow       *float64 `json:"optimal_low"`
+	OptimalHigh      *float64 `json:"optimal_high"`
+	State            *string  `json:"state"`
+	DaysWithData     int      `json:"days_with_data"`
+	WindowDays       int      `json:"window_days"`
 }
 
 // DayDetail is GET /v1/days/{day}: one day's score with its sleep, strain and workouts.

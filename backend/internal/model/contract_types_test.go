@@ -34,6 +34,8 @@ var contractTypes = map[string]reflect.Type{
 	"SyncStatus":             reflect.TypeOf(SyncStatus{}),
 	"SyncSource":             reflect.TypeOf(SyncSource{}),
 	"DailyScore":             reflect.TypeOf(DailyScore{}),
+	"TrainingLoad":           reflect.TypeOf(TrainingLoad{}),
+	"LoadPart":               reflect.TypeOf(LoadPart{}),
 	"DayDetail":              reflect.TypeOf(DayDetail{}),
 	"DayStrain":              reflect.TypeOf(DayStrain{}),
 	"HRSample":               reflect.TypeOf(HRSample{}),

@@ -781,6 +781,54 @@ rate or power still wins over it. **Day strain does not use the rating**
 (decided 2026-11-27, D293): `DailyScore.strain`, its sleep-need top-up and `WorkoutDetail.trimp` stay heart-rate
 and muscular-load based, so no stored daily number moves. Net energy is not moved by the rating either.
 
+## Training load (Fitness)
+
+D306 serves `DailyScore.training_load` on both day reads. The API computes it on read from
+stored day scores, visible workout ratings and the first completed session. It writes no stored
+number, so the scoring model version stays the same. The current day includes load so far.
+
+- **Cardio** adds the unrounded `daily_scores.trimp` and the RPE-derived TRIMP of visible workouts
+  starting on that local date with a valid session rating (1–10) and no usable heart rate. A workout has
+  usable heart rate if it has an `avg_hr` or at least two heart-rate samples after de-duplication and
+  trimming to the workout window, as in `WorkoutSamples`. A cardio data day has `hr_min > 0` or at
+  least one valid rating, including ratings that add zero load. Ratings count only while the flag
+  `recovery.checkin` is on for the account, their kill switch (D298, D299); with it off the cardio
+  part is the stored heart-rate TRIMP alone. The workout of a Train session (`session_id` set, or
+  the session's own `ryft-session` workout) is left out: its sets are the muscular part, and a
+  rating on it would count the same session twice.
+- **Muscular** uses the unrounded `daily_scores.muscular_trimp`, the sum of completed session loads for
+  the day. Muscular data days start on the local date of the first completed session, inclusive.
+  Per-set RPE is outside this calculation.
+- A null stored load contributes zero. A date without a score row contributes no stored load, but a
+  rated workout on it still adds its RPE-derived TRIMP and makes it a cardio data day (a phone-only
+  day is the case the rating is for). Muscular data days count calendar dates even across gaps in scores.
+
+`RatedWorkoutTRIMP(minutes, rpe)` uses the workout's elapsed minutes, including fractions. Set
+`i = max(0, rpe / 10 − 0.25) / 0.75`, then compute `minutes × i × 0.64 × exp(1.92 × i)`. This uses
+the same coefficients and heart-rate-reserve floor as day strain. Invalid ratings and non-positive
+durations contribute zero. Sex does not enter the Fitness calculation. The coaching pilot's
+`CoachingBriefing.training_load` uses `energy.Load`, with sex-specific TRIMP coefficients and power
+load (TSS).
+
+| 60 minutes at | TRIMP to one decimal |
+| --- | --- |
+| RPE 3 | 2.9 |
+| RPE 5 | 24.3 |
+| RPE 8 | 115.1 |
+| RPE 10 | 261.9 |
+
+For each part, acute load sums the last **7** local calendar dates. Chronic load sums the last
+**28** and divides by **4** for weekly units. Both windows include the selected date. Below **21**
+data days in the 28-day window, `state`, `ratio` and the band edges are null. The band is
+**0.8–1.3** times weekly chronic load, a RYFT display heuristic after Gabbett 2016. Use it as a
+training guide only, without medical or injury-risk claims.
+
+Round acute and weekly chronic to one decimal before deriving the band, ratio and state. Round the
+two band edges to one decimal and the ratio of rounded acute to rounded chronic to two. State is
+`below`, `optimal` or `above` by comparing rounded acute with the rounded edges. Equality at
+either edge is `optimal`. With enough data and rounded chronic of zero, the band is 0–0, the ratio
+is null, and state is `optimal` at zero acute load and `above` at positive acute load.
+
 ## Model version
 
 `internal/scoring/version.go` names the model, `ModelVersion = "2026.11.1"`

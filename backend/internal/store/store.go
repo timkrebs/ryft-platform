@@ -650,6 +650,40 @@ func (s *Store) SamplesBetween(ctx context.Context, userID uuid.UUID, typ string
 	})
 }
 
+// SampleWindow is one [From, To) range of SamplesInWindows.
+type SampleWindow struct{ From, To time.Time }
+
+// SamplesInWindows is SamplesBetween for many windows in one query: out[i] holds the
+// samples of type typ starting in windows[i], oldest first (a sample in two
+// overlapping windows is in both). Each window is an index range scan.
+func (s *Store) SamplesInWindows(ctx context.Context, userID uuid.UUID, typ string, windows []SampleWindow) ([][]model.Sample, error) {
+	out := make([][]model.Sample, len(windows))
+	if len(windows) == 0 {
+		return out, nil
+	}
+	froms, tos := make([]time.Time, len(windows)), make([]time.Time, len(windows))
+	for i, w := range windows {
+		froms[i], tos[i] = w.From, w.To
+	}
+	rows, err := s.pool.Query(ctx, `SELECT w.k, x.type, x.start_at, x.end_at, x.value, x.unit, x.source
+		FROM unnest($3::timestamptz[], $4::timestamptz[]) WITH ORDINALITY AS w(f, t, k)
+		JOIN samples x ON x.user_id=$1 AND x.type=$2 AND x.start_at >= w.f AND x.start_at < w.t
+		ORDER BY w.k, x.start_at`, userID, typ, froms, tos)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k int64
+		var x model.Sample
+		if err := rows.Scan(&k, &x.Type, &x.Start, &x.End, &x.Value, &x.Unit, &x.Source); err != nil {
+			return nil, err
+		}
+		out[k-1] = append(out[k-1], x)
+	}
+	return out, rows.Err()
+}
+
 // SleepEndingBetween returns segments whose end falls in [from,to).
 func (s *Store) SleepEndingBetween(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]model.SleepSegment, error) {
 	rows, err := s.pool.Query(ctx, `SELECT start_at, end_at, stage, source FROM sleep_segments
@@ -1142,6 +1176,28 @@ func (s *Store) DayLoadOf(ctx context.Context, userID uuid.UUID, day string) (Da
 		}
 	}
 	return l, nil
+}
+
+// TrainingLoadDay is the stored input for a scored date's Fitness load.
+type TrainingLoadDay struct {
+	Day           string
+	TRIMP         float64
+	HRMin         int
+	MuscularTRIMP float64
+}
+
+// TrainingLoadDays returns the load inputs of scored days in [from,to] (local dates).
+func (s *Store) TrainingLoadDays(ctx context.Context, userID uuid.UUID, from, to string) ([]TrainingLoadDay, error) {
+	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), coalesce(trimp, 0), coalesce(hr_min, 0), coalesce(muscular_trimp, 0)
+		FROM daily_scores WHERE user_id=$1 AND day >= $2::date AND day <= $3::date`, userID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (TrainingLoadDay, error) {
+		var d TrainingLoadDay
+		err := r.Scan(&d.Day, &d.TRIMP, &d.HRMin, &d.MuscularTRIMP)
+		return d, err
+	})
 }
 
 // SleepNights returns the nights in [from, to] (inclusive local days) that have
