@@ -340,7 +340,8 @@ class PipelineTests(unittest.TestCase):
     def test_offline_cli(self):
         result = subprocess.run(
             [sys.executable, "run_etl.py", "--source", "all", "--limit", "10000", "--memory-mb", "128",
-             "--off-parquet", str(self.parquet), "--foundation-zip", str(self.archive), "--sr-legacy-zip", str(self.archive)],
+             "--off-parquet", str(self.parquet), "--foundation-zip", str(self.archive), "--sr-legacy-zip", str(self.archive),
+             "--no-bls-csv"],  # the committed BLS extract, once there, has its own tests (test_bls.py)
             cwd=Path(__file__).resolve().parents[1], check=True, capture_output=True, text=True,
         )
         off, foundation, legacy, bls = map(json.loads, result.stdout.splitlines())
@@ -355,6 +356,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(usda["staples"], {"applied": 0, "description_mismatch": [], "unmatched": {}})
         self.assertNotIn("portions", off)
         self.assertNotIn("staples", bls)
+        self.assertFalse(bls["bls_full"])
 
 
 def labels_of(portion):

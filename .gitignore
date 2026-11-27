@@ -32,3 +32,6 @@ scripts/load/out/
 
 # CI's scratch files inside the checkout (the manifests job's base config.env for make cloudrun-check)
 /.ci/
+
+# The BLS workbook is downloaded for scripts/etl/bls_convert.py and never committed; only its CSV extract is
+scripts/etl/**/*.xlsx

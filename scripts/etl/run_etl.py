@@ -21,7 +21,8 @@ from tqdm import tqdm
 from download import CLIENT_HEADERS, extract_usda, file_sha256, resolve_off, resolve_usda, stage_usda
 from extract import connection, off_rows, usda_rows
 from import_pg import connect, load_batch
-from transform import STAPLES, ImportNotes, Reject, bls_food, off_food, usda_food
+from transform import (BLS_CSV_PATH, STAPLES, BlsNotes, ImportNotes, Reject, Skip, bls_csv_rows, bls_food,
+                       bls_input_digest, bls_row_food, load_curation, off_food, usda_food, verify_bls_extract)
 
 PIPELINE_VERSION = "py-etl4"
 USDA_KINDS = ("foundation_food", "sr_legacy_food")
@@ -48,6 +49,9 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--off-parquet", type=Path, help="local parquet artifact")
     parser.add_argument("--foundation-zip", type=Path, help="local Foundation Foods CSV archive")
     parser.add_argument("--sr-legacy-zip", type=Path, help="local SR Legacy CSV archive")
+    bls = parser.add_mutually_exclusive_group()
+    bls.add_argument("--bls-csv", type=Path, help="BLS extract to import (default: data/bls_4_0.csv when present)")
+    bls.add_argument("--no-bls-csv", action="store_true", help="import only the curated BLS staples, even if the extract exists")
     parser.add_argument("--write", action="store_true", help="merge results into PostgreSQL")
     return parser.parse_args()
 
@@ -65,6 +69,9 @@ def process(rows, normalize_row, version: str, conn, label: str, summary=None) -
                 outcomes["processed"] += 1
                 try:
                     food = normalize_row(row, version)
+                except Skip:
+                    outcomes["skipped"] += 1  # a deliberate omission the summary explains, no quality reject
+                    continue
                 except Reject as invalid:
                     rejects[str(invalid)] += 1
                     outcomes["rejected"] += 1
@@ -122,11 +129,24 @@ def run(args: argparse.Namespace) -> None:
                                   "has_category_table": "food_category.csv" in files,
                                   **result_metadata, **result}, sort_keys=True), flush=True)
         if args.source in ("all", "bls"):
-            ids = list(STAPLES["bls"])[:limit]
-            batches = ([{"external_id": external_id} for external_id in ids[start:start + args.batch_size]]
-                       for start in range(0, len(ids), args.batch_size))
-            version = f"{PIPELINE_VERSION}:bls_4_0:staples{STAPLES['version']}"
-            result = process(batches, bls_food, version, conn, "bls")
+            csv_path = args.bls_csv or (None if args.no_bls_csv or not BLS_CSV_PATH.is_file() else BLS_CSV_PATH)
+            if csv_path is None:
+                # No extract committed: the three curated staples exactly as before, same version, so a rerun is unchanged.
+                ids = list(STAPLES["bls"])[:limit]
+                batches = ([{"external_id": external_id} for external_id in ids[start:start + args.batch_size]]
+                           for start in range(0, len(ids), args.batch_size))
+                version = f"{PIPELINE_VERSION}:bls_4_0:staples{STAPLES['version']}"
+                result = process(batches, bls_food, version, conn, "bls", lambda: {"bls_full": False})
+            else:
+                # The extract must be the one its manifest describes, and the whole file is checked before the first batch.
+                verify_bls_extract(csv_path)
+                # The version carries the digest of the CSV, the curation, the staples and the transform version, so a
+                # changed input is an update, never a conflict.
+                version = f"{PIPELINE_VERSION}:bls_4_0:staples{STAPLES['version']}:{bls_input_digest(csv_path)}"
+                notes = BlsNotes()
+                batches = bls_csv_rows(csv_path, args.batch_size, limit)
+                result = process(batches, partial(bls_row_food, curation=load_curation(), notes=notes), version, conn,
+                                 "bls", partial(notes.summary, conn))
             print(json.dumps({"mode": "write" if args.write else "dry-run", **result}, sort_keys=True), flush=True)
 
 

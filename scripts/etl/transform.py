@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import csv
 import math
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -99,7 +101,37 @@ UNIT_MASS_G = {"g": 1, "mg": 0.001, "ug": 0.000001}
 BLS_ATTRIBUTION = "Max Rubner-Institut (2025), Bundeslebensmittelschlüssel (BLS), Version 4.0"
 USDA_PORTION_ID = re.compile(r"[1-9][0-9]{0,19}")
 UNKNOWN_MEASURES = {"undetermined", "unspecified", "unknown", "not specified", "n/a", "none"}
-STAPLES = loads(Path(__file__).with_name("staples.v1.json").read_text(encoding="utf-8"))
+STAPLES_PATH = Path(__file__).with_name("staples.v1.json")
+STAPLES = loads(STAPLES_PATH.read_text(encoding="utf-8"))
+
+# G4 (D296): the full BLS 4.0 import. The CSV is the reviewed extract that scripts/etl/bls_convert.py writes.
+BLS_METHOD = "bls:4.0"
+BLS_ID = re.compile(r"[A-Z][0-9]{6}")
+BLS_CSV_FIXED = ("bls_code", "name_de", "name_en")
+# The registry codes a BLS row can carry. BLS CHO is the available carbohydrate: `carbohydrates`, never the USDA total.
+BLS_NUTRIENT_CODES = frozenset({code for code, _ in USDA_NUTRIENTS.values()} - {"carbohydrates_total", "added_sugar"}
+                               | {"carbohydrates"})
+BLS_CSV_PATH = Path(__file__).with_name("data") / "bls_4_0.csv"
+BLS_CURATION_PATH = Path(__file__).with_name("bls_curation.v1.json")
+# Part of the BLS dataset version (bls_input_digest). Bump it when bls_row_food, the forms, the main groups, the alias
+# logic or the categorizer's output for BLS changes: the same CSV then gives `updated`, never `conflict`.
+BLS_TRANSFORM_VERSION = "bls1"
+BLS_ALIAS_LIMIT = 6
+STAPLE_DRIFT_FRACTION = 0.01
+# The BLS main group (first letter of the code) as a category hint for classify().
+BLS_MAIN_GROUPS = {
+    "B": "Brot und Kleingebäck", "C": "Getreide und Getreideerzeugnisse", "D": "Dauerbackwaren und Kuchen",
+    "E": "Eier und Teigwaren", "F": "Obst und Obsterzeugnisse", "G": "Gemüse und Gemüseerzeugnisse",
+    "H": "Hülsenfrüchte, Ölsamen und Schalenfrüchte", "K": "Kartoffeln und Pilze", "M": "Milch und Milcherzeugnisse",
+    "N": "Alkoholfreie Getränke", "P": "Alkoholische Getränke", "Q": "Fette und Öle",
+    "R": "Gewürze und Würzmittel", "S": "Zucker und Süßwaren", "T": "Fische und Meeresfrüchte", "U": "Fleisch",
+    "V": "Wild, Geflügel und Innereien", "W": "Wurstwaren",
+}
+# German state words of a food name -> food_form. Whole words, any case. The first entry that matches wins.
+BLS_FORMS = tuple(
+    (re.compile(rf"(?<!\w)(?:{word})(?!\w)", re.IGNORECASE), form) for word, form in (
+        ("roh", "raw"), ("gekocht", "boiled"), ("gegart", "cooked"), ("gebraten", "fried"),
+        ("gebacken", "baked"), ("getrocknet", "dried"), ("tiefgefroren|tiefgekühlt", "frozen")))
 
 
 # G1 (D288): clean USDA portion labels. Everything below is table-driven; the tests pin these constants.
@@ -781,11 +813,12 @@ def staple_aliases(entry: dict, *extra: tuple[str, str]) -> tuple[tuple[str, str
     return tuple(sorted(set(aliases + list(extra)) - preferred))
 
 
-def bls_food(row: dict, version: str) -> Food:
-    external_id = row["external_id"]
+def bls_staple(external_id: str, version: str, amounts: dict[str, Nutrient] | None = None) -> Food:
+    """A curated BLS staple. Its nutrients are the curated selection unless the caller brings the full CSV row's."""
     entry = STAPLES["bls"][external_id]
     name = entry["names"]["en"]
-    amounts = {code: Nutrient(code, amount, "bls:4.0") for code, amount in entry["nutrients"].items()}
+    if amounts is None:
+        amounts = {code: Nutrient(code, amount, BLS_METHOD) for code, amount in entry["nutrients"].items()}
     portions = []
     for key, portion in sorted(entry["portions"].items(), key=lambda item: item[1]["order"]):
         ml = portion.get("ml")
@@ -795,9 +828,265 @@ def bls_food(row: dict, version: str) -> Food:
         portions.append(Portion(labels["en"], "portion", weight_g=grams, volume_ml=ml, portion_key=key, labels=labels,
                                 short_label_en=shorts["en"], short_label_de=shorts["de"],
                                 is_default=portion.get("default", False), sort_order=portion["order"]))
+    alcohol = amounts.get("alcohol")
     return Food("bls", external_id, version, name, "", list(entry["names"].items()), ["DE"], None, None,
                 sorted(amounts.values(), key=lambda n: n.code), classify(name, [], provider="bls"), None,
-                validate(name, amounts, False), portions=tuple(portions), is_canonical_staple=True,
-                canonical_group_key=entry["group"], food_form=entry["form"], subtitles=entry["subtitles"],
-                aliases=staple_aliases(entry), attribution=BLS_ATTRIBUTION,
+                validate(name, amounts, alcohol is not None and alcohol.amount > 0), portions=tuple(portions),
+                is_canonical_staple=True, canonical_group_key=entry["group"], food_form=entry["form"],
+                subtitles=entry["subtitles"], aliases=staple_aliases(entry), attribution=BLS_ATTRIBUTION,
                 density_g_ml=entry.get("density_g_per_ml"))
+
+
+def bls_food(row: dict, version: str) -> Food:
+    """The staples-only path, used while no CSV extract is committed."""
+    return bls_staple(row["external_id"], version)
+
+
+class Skip(Exception):
+    """A row that is deliberately not imported (a twin of a curated staple). It is not a quality rejection."""
+
+
+@dataclass(frozen=True)
+class Curation:
+    groups: tuple[tuple[str, ...], ...]
+    patterns: tuple[tuple[tuple[str, re.Pattern[str]], ...], ...]  # per group: (member, whole-word pattern)
+    twins: dict[str, dict[str, str]]
+    usda_labels: dict[str, tuple[str, ...]]  # normalized German staple name or alias -> "usda:<fdc_id>" keys
+
+
+def curation_error(message: str) -> ValueError:
+    return ValueError(f"bls_curation.v1.json: {message}")
+
+
+def parse_curation(data: object) -> Curation:
+    """Validate the curation data (synonym groups and twins) and compile it. Anything odd stops the run."""
+    if not isinstance(data, dict) or set(data) != {"version", "synonyms", "twins"} or data["version"] != 1:
+        raise curation_error("expected version 1 with the keys synonyms and twins")
+    if not isinstance(data["synonyms"], list) or not isinstance(data["twins"], dict):
+        raise curation_error("synonyms must be a list of groups and twins an object")
+    groups = []
+    for index, group in enumerate(data["synonyms"]):
+        if not isinstance(group, list) or len(group) < 2:
+            raise curation_error(f"synonym group {index} needs at least two members")
+        if not all(isinstance(member, str) and member and member == member.strip() for member in group):
+            raise curation_error(f"synonym group {index} has an empty or padded member")
+        members = tuple(unicodedata.normalize("NFC", member) for member in group)
+        if len(set(members)) != len(members):
+            raise curation_error(f"synonym group {index} repeats a member")
+        groups.append(members)
+    twins = {}
+    for code, entry in data["twins"].items():
+        if not BLS_ID.fullmatch(code) or code in STAPLES["bls"]:
+            raise curation_error(f"twin {code!r} is not a BLS code of a food outside the curated BLS staples")
+        if not isinstance(entry, dict) or set(entry) != {"staple", "name_de"}:
+            raise curation_error(f"twin {code} needs exactly staple and name_de")
+        staple, name = entry["staple"], entry["name_de"]
+        if not isinstance(staple, str) or staple.removeprefix("usda:") not in STAPLES["usda"] \
+                or not staple.startswith("usda:"):
+            raise curation_error(f"twin {code} names {staple!r}, which is no curated USDA staple")
+        if not isinstance(name, str) or len(normalize(name)) < 2:
+            raise curation_error(f"twin {code} needs the expected German name")
+        twins[code] = {"staple": staple, "name_de": unicodedata.normalize("NFC", name)}
+    labels: dict[str, set[str]] = {}
+    for fdc_id, staple in STAPLES["usda"].items():
+        for label in (staple["names"].get("de"), *staple["aliases"].get("de", ())):
+            if label and normalize(label):
+                labels.setdefault(normalize(label), set()).add(f"usda:{fdc_id}")
+    return Curation(
+        tuple(groups),
+        tuple(tuple((member, re.compile(rf"(?<!\w){re.escape(member)}(?!\w)")) for member in group)
+              for group in groups),
+        twins, {label: tuple(sorted(keys)) for label, keys in labels.items()})
+
+
+def load_curation(path: Path = BLS_CURATION_PATH) -> Curation:
+    return parse_curation(loads(path.read_text(encoding="utf-8")))
+
+
+def synonym_aliases(curation: Curation, name_de: str, taken: set[str]) -> tuple[tuple[str, str], ...]:
+    """German aliases from the curated synonym groups. Substitution, not translation.
+
+    Every member that is a whole word of the (case-sensitive) name is replaced by each other member of its group.
+    Groups and members are walked in file order, so the result is deterministic. An alias whose normalized form is
+    already a name of the food (`taken`) or an earlier alias is dropped, and at most BLS_ALIAS_LIMIT remain.
+    """
+    seen = set(taken)
+    aliases: list[tuple[str, str]] = []
+    for group, patterns in zip(curation.groups, curation.patterns):
+        for member, pattern in patterns:
+            if not pattern.search(name_de):
+                continue
+            for other in group:
+                if other == member:
+                    continue
+                alias = clean(pattern.sub(lambda _, other=other: other, name_de), 200)
+                key = normalize(alias)
+                if len(key) < 2 or key in seen:
+                    continue
+                seen.add(key)
+                aliases.append(("de", alias))
+                if len(aliases) == BLS_ALIAS_LIMIT:
+                    return tuple(aliases)
+    return tuple(aliases)
+
+
+@dataclass
+class BlsNotes:
+    """What the dry run reports about the full BLS import. Counting never changes what is written."""
+
+    aliases_added: int = 0
+    skipped_twin: int = 0
+    twin_mismatch: dict[str, dict[str, str]] = field(default_factory=dict)
+    twin_candidates: dict[str, dict] = field(default_factory=dict)
+    staple_nutrient_drift: dict[str, dict[str, list]] = field(default_factory=dict)
+    staples_seen: set[str] = field(default_factory=set)
+    twins_seen: set[str] = field(default_factory=set)
+
+    def stale_twins(self, conn=None) -> dict[str, dict]:
+        """Twin codes of the curation that appear in the CSV. With a connection, whether the catalog already holds a
+        `bls` source for each (a twin added after a write leaves the earlier import behind). Read-only."""
+        found: set[str] = set()
+        if conn is not None and self.twins_seen:
+            rows = conn.execute("SELECT external_id FROM nutrition.food_sources WHERE provider='bls' AND external_id = ANY(%s)",
+                                (sorted(self.twins_seen),)).fetchall()
+            found = {code for (code,) in rows}
+        return {code: {"imported": None if conn is None else code in found} for code in sorted(self.twins_seen)}
+
+    def summary(self, conn=None) -> dict:
+        return {"bls_full": True, "aliases_added": self.aliases_added, "skipped_twin": self.skipped_twin,
+                "twin_mismatch": dict(sorted(self.twin_mismatch.items())),
+                "twin_candidates": dict(sorted(self.twin_candidates.items())),
+                "stale_twins": self.stale_twins(conn),
+                "staple_nutrient_drift": dict(sorted(self.staple_nutrient_drift.items())),
+                "staples_missing": sorted(set(STAPLES["bls"]) - self.staples_seen)}
+
+
+def bls_amounts(row: dict) -> dict[str, Nutrient]:
+    amounts: dict[str, Nutrient] = {}
+    for code, text in row.items():
+        if code in BLS_NUTRIENT_CODES and text and (value := store_amount(code, number(text), BLS_METHOD)):
+            amounts[code] = value
+    if "energy_kcal" not in amounts and "energy_kj" in amounts:
+        if derived := store_amount("energy_kcal", amounts["energy_kj"].amount / 4.184, "bls:kcal_from_kj"):
+            amounts["energy_kcal"] = derived
+    return amounts
+
+
+def bls_food_form(name: str) -> str | None:
+    return next((form for pattern, form in BLS_FORMS if pattern.search(name)), None)
+
+
+def staple_drift(curated: dict[str, float], amounts: dict[str, Nutrient]) -> dict[str, list]:
+    """Nutrients of a curated staple whose CSV value differs by more than 1 %: {code: [curated, csv or None]}."""
+    drift = {}
+    for code, value in curated.items():
+        found = amounts.get(code)
+        other = found.amount if found else None
+        if other is None or abs(other - value) > abs(value) * STAPLE_DRIFT_FRACTION:
+            drift[code] = [value, other]
+    return drift
+
+
+def bls_row_food(row: dict, version: str, curation: Curation, notes: BlsNotes | None = None) -> Food:
+    """One row of data/bls_4_0.csv as a catalog food.
+
+    A curated staple keeps today's overlay (names, aliases, portions, group, form, density) and takes its nutrients from
+    the row. A twin of a USDA staple whose German name still matches its guard is skipped (`Skip`); one whose name
+    changed imports normally and is reported. Every other food is a plain generic food with a category hint, a form
+    from its German state words, no portions and the curated synonym aliases.
+    """
+    code = (row.get("bls_code") or "").strip()
+    if not BLS_ID.fullmatch(code):
+        raise Reject("invalid_bls_code")
+    name_de = clean(unicodedata.normalize("NFC", row.get("name_de") or ""), 200)
+    name_en = clean(unicodedata.normalize("NFC", row.get("name_en") or ""), 200)
+    amounts = bls_amounts(row)
+    staple = STAPLES["bls"].get(code)
+    if staple:
+        if notes is not None:
+            notes.staples_seen.add(code)
+            if drift := staple_drift(staple["nutrients"], amounts):
+                notes.staple_nutrient_drift[code] = drift
+        return bls_staple(code, version, amounts)
+    twin = curation.twins.get(code)
+    if twin:
+        if notes is not None:
+            notes.twins_seen.add(code)
+        if normalize(twin["name_de"]) == normalize(name_de):
+            if notes is not None:
+                notes.skipped_twin += 1
+            raise Skip(code)
+        if notes is not None:
+            notes.twin_mismatch[code] = {"expected": twin["name_de"], "found": name_de}
+    if notes is not None and (staples := curation.usda_labels.get(normalize(name_de.split(",", 1)[0]))):
+        notes.twin_candidates[code] = {"name_de": name_de, "staples": list(staples)}
+    alcohol = amounts.get("alcohol")
+    warnings = validate(name_de, amounts, alcohol is not None and alcohol.amount > 0)
+    names = [("de", name_de)]
+    if len(normalize(name_en)) >= 2:
+        names.append(("en", name_en))
+    aliases = synonym_aliases(curation, name_de, {normalize(label) for _, label in names})
+    if notes is not None:
+        notes.aliases_added += len(aliases)
+    group = BLS_MAIN_GROUPS.get(code[0])
+    return Food("bls", code, version, name_de, "", names, ["DE"], None, None,
+                sorted(amounts.values(), key=lambda n: n.code), classify(name_de, [group] if group else [], provider="bls"),
+                None, warnings, food_form=bls_food_form(name_de), aliases=aliases, attribution=BLS_ATTRIBUTION)
+
+
+def bls_csv_rows(path: Path, batch_size: int, limit: int | None = None):
+    """Batches of dict rows from the committed extract.
+
+    The whole file is read and checked (columns, field counts, BLS codes, duplicates, numbers) before the first batch
+    exists, so a bad extract stops the run before anything is processed or written. `limit` applies afterwards.
+    """
+    rows: list[dict] = []
+    codes: set[str] = set()
+    with path.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream)
+        header = tuple(reader.fieldnames or ())
+        unknown = [column for column in header[len(BLS_CSV_FIXED):] if column not in BLS_NUTRIENT_CODES]
+        if header[:len(BLS_CSV_FIXED)] != BLS_CSV_FIXED or unknown or len(set(header)) != len(header):
+            raise ValueError(f"{path.name} does not have the columns {', '.join(BLS_CSV_FIXED)} and registry nutrients"
+                             + (f" (unknown: {', '.join(unknown)})" if unknown else ""))
+        for row in reader:
+            where = f"{path.name} line {reader.line_num}"
+            if None in row or None in row.values():
+                raise ValueError(f"{where} does not have {len(header)} fields")
+            code = row["bls_code"]
+            if not BLS_ID.fullmatch(code):
+                raise ValueError(f"{where}: {code[:20]!r} is not a BLS code")
+            if code in codes:
+                raise ValueError(f"{where}: BLS code {code} appears twice")
+            codes.add(code)
+            for column in header[len(BLS_CSV_FIXED):]:
+                if row[column] and number(row[column]) is None:
+                    raise ValueError(f"{where}: {column} of {code} is not a number")
+            rows.append(row)
+    if limit is not None:
+        rows = rows[:limit]
+    return iter([rows[start:start + batch_size] for start in range(0, len(rows), batch_size)])
+
+
+def verify_bls_extract(csv_path: Path) -> None:
+    """The CSV must be the one its manifest describes (`csv_sha256`), so a torn pair is refused."""
+    manifest_path = csv_path.with_suffix(".manifest.json")
+    try:
+        manifest = loads(manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise ValueError(f"{manifest_path.name} is missing next to {csv_path.name}; regenerate both with bls_convert.py") from None
+    except ValueError:
+        raise ValueError(f"{manifest_path.name} is not valid JSON; regenerate both with bls_convert.py") from None
+    expected = manifest.get("csv_sha256") if isinstance(manifest, dict) else None
+    if expected != sha256(csv_path.read_bytes()).hexdigest():
+        raise ValueError(f"{csv_path.name} does not match the csv_sha256 in {manifest_path.name}; "
+                         "regenerate both with bls_convert.py")
+
+
+def bls_input_digest(csv_path: Path) -> str:
+    """The digest that makes the BLS dataset version: the CSV, the curation, the staples and the transform version."""
+    digest = sha256()
+    for part in (csv_path.read_bytes(), BLS_CURATION_PATH.read_bytes(), STAPLES_PATH.read_bytes(),
+                 BLS_TRANSFORM_VERSION.encode()):
+        digest.update(sha256(part).digest())  # hash of hashes: no input can borrow bytes from its neighbour
+    return digest.hexdigest()
