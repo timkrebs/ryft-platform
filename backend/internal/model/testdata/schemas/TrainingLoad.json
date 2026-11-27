@@ -1,0 +1,17 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "cardio": {
+      "$ref": "LoadPart"
+    },
+    "muscular": {
+      "$ref": "LoadPart"
+    }
+  },
+  "required": [
+    "cardio",
+    "muscular"
+  ],
+  "title": "TrainingLoad",
+  "type": "object"
+}

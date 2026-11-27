@@ -7,10 +7,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/timkrebs/ryft/internal/auth"
 	"github.com/timkrebs/ryft/internal/httpx"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/scoring"
+	"github.com/timkrebs/ryft/internal/store"
 )
 
 const dayLayout = "2006-01-02"
@@ -98,15 +101,126 @@ func (h *handler) days(w http.ResponseWriter, r *http.Request) {
 	if rows == nil {
 		rows = []model.DailyScore{}
 	}
-	today, _, err := h.localToday(r)
+	today, loc, err := h.localToday(r)
 	if err == nil {
 		err = h.withScoringStates(r.Context(), userOf(r).ID, today, rows)
+	}
+	if err == nil {
+		err = h.withTrainingLoad(r, loc, rows)
 	}
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, 200, rows)
+}
+
+// withTrainingLoad fills scored rows (oldest first, as DailyScores returns them)
+// from one shared lookback: the 27 days before the first row through the last
+// (docs/API.md → Training load; SCORING.md → Training load (Fitness); D308).
+// The span follows the rows, not the request, so a wide ?from= reads no more
+// than the scored days need. A fixed number of queries per request: the day
+// values, the flag, the rated workouts, one batched heart-rate read for those
+// without avg_hr, and the first completed session.
+func (h *handler) withTrainingLoad(r *http.Request, loc *time.Location, rows []model.DailyScore) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	ctx, userID := r.Context(), userOf(r).ID
+	// Stored days are valid dates. Step in UTC before turning the bounds into
+	// local midnights, independent of the length of a local day.
+	first, err := time.Parse(dayLayout, rows[0].Day)
+	if err != nil {
+		return fmt.Errorf("training load first day: %w", err)
+	}
+	last, err := time.Parse(dayLayout, rows[len(rows)-1].Day)
+	if err != nil {
+		return fmt.Errorf("training load last day: %w", err)
+	}
+	to := last.Format(dayLayout)
+	first = first.AddDate(0, 0, 1-scoring.TrainingLoadWindowDays)
+	firstDay := first.Format(dayLayout)
+	// The workout read is padded by a day on each side, so no timezone or DST
+	// transition can cut off an edge date; the local date key decides below.
+	start := time.Date(first.Year(), first.Month(), first.Day()-1, 0, 0, 0, 0, loc)
+	end := time.Date(last.Year(), last.Month(), last.Day()+2, 0, 0, 0, 0, loc)
+	stored, err := h.st.TrainingLoadDays(ctx, userID, firstDay, to)
+	if err != nil {
+		return fmt.Errorf("read training load days: %w", err)
+	}
+	// Ratings count only while recovery.checkin is on for the account: the flag
+	// is the kill switch for counting them anywhere (D298, D299), so with it off
+	// the load is heart rate and sessions alone.
+	ratingsOn, err := h.st.RecoveryEnabled(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("read training load rating flag: %w", err)
+	}
+	var workouts []model.Workout
+	if ratingsOn {
+		if workouts, err = h.st.RatedWorkoutsBetween(ctx, userID, start, end); err != nil {
+			return fmt.Errorf("read training load workouts: %w", err)
+		}
+	}
+	firstSession, err := h.st.FirstCompletedSessionStart(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("read first completed session: %w", err)
+	}
+	firstSessionDay := ""
+	if firstSession != nil {
+		firstSessionDay = firstSession.In(loc).Format(dayLayout)
+	}
+	inputs := make(map[string]scoring.TrainingLoadDay, len(stored))
+	for _, d := range stored {
+		inputs[d.Day] = scoring.TrainingLoadDay{
+			CardioTRIMP: d.TRIMP, HasHR: d.HRMin > 0, MuscularTRIMP: d.MuscularTRIMP,
+		}
+	}
+	// The rated workouts that count, and among them those whose heart rate must be
+	// looked at (no avg_hr): their sample windows are read in one query.
+	var rated, noAvg []model.Workout
+	var windows []store.SampleWindow
+	for _, workout := range workouts {
+		if workout.SessionRPE == nil || !scoring.ValidWorkoutRPE(*workout.SessionRPE) {
+			continue
+		}
+		// A Train session's workout carries its load in the muscular part (its
+		// sets); a rating on it must not add cardio too (D308).
+		if workout.SessionID != nil || workout.Source == model.SessionSource {
+			continue
+		}
+		if day := workout.Start.In(loc).Format(dayLayout); day < firstDay || day > to {
+			continue
+		}
+		rated = append(rated, workout)
+		if workout.AvgHR == nil {
+			from, end := scoring.SampleWindow(workout.Start, scoring.WorkoutWindowEnd(workout))
+			noAvg, windows = append(noAvg, workout), append(windows, store.SampleWindow{From: from, To: end})
+		}
+	}
+	around, err := h.st.SamplesInWindows(ctx, userID, model.SampleHeartRate, windows)
+	if err != nil {
+		return fmt.Errorf("read training load heart-rate samples: %w", err)
+	}
+	noHR := make(map[uuid.UUID]bool, len(noAvg))
+	for i, workout := range noAvg {
+		noHR[workout.ID] = len(scoring.WorkoutSamples(workout, around[i])) < 2
+	}
+	for _, workout := range rated {
+		// A rated workout counts on its local date whether or not the date has a
+		// score row: a phone-only day is exactly the case the rating is for.
+		day := workout.Start.In(loc).Format(dayLayout)
+		input := inputs[day]
+		input.HasRating = true
+		if noHR[workout.ID] {
+			input.RatedTRIMP += scoring.RatedWorkoutTRIMP(workout.End.Sub(workout.Start).Minutes(), *workout.SessionRPE)
+		}
+		inputs[day] = input
+	}
+	for i := range rows {
+		load := scoring.TrainingLoadOn(rows[i].Day, inputs, firstSessionDay)
+		rows[i].TrainingLoad = &load
+	}
+	return nil
 }
 
 // day is the Today / Sleep "Day" / Strain view: the score, last night in
@@ -145,6 +259,10 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 	out := model.DayDetail{Workouts: workouts,
 		Score: model.DailyScore{Day: day, State: model.StateCalibrating, Details: map[string]any{}}}
 	if len(scores) > 0 {
+		if err := h.withTrainingLoad(r, loc, scores); err != nil {
+			httpx.Fail(w, r, err)
+			return
+		}
 		out.Score = scores[0]
 		load, err := h.st.DayLoadOf(ctx, userOf(r).ID, day)
 		if err != nil {

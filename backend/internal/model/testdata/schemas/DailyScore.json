@@ -135,6 +135,10 @@
       "nullable": true,
       "type": "integer"
     },
+    "training_load": {
+      "$ref": "TrainingLoad",
+      "nullable": true
+    },
     "volume_kg": {
       "nullable": true,
       "type": "number"
@@ -175,6 +179,7 @@
     "steps",
     "strain",
     "strength_min",
+    "training_load",
     "volume_kg"
   ],
   "title": "DailyScore",

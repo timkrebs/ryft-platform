@@ -1,0 +1,45 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "acute_7d": {
+      "type": "number"
+    },
+    "chronic_28d_weekly": {
+      "type": "number"
+    },
+    "days_with_data": {
+      "type": "integer"
+    },
+    "optimal_high": {
+      "nullable": true,
+      "type": "number"
+    },
+    "optimal_low": {
+      "nullable": true,
+      "type": "number"
+    },
+    "ratio": {
+      "nullable": true,
+      "type": "number"
+    },
+    "state": {
+      "nullable": true,
+      "type": "string"
+    },
+    "window_days": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "acute_7d",
+    "chronic_28d_weekly",
+    "days_with_data",
+    "optimal_high",
+    "optimal_low",
+    "ratio",
+    "state",
+    "window_days"
+  ],
+  "title": "LoadPart",
+  "type": "object"
+}

@@ -750,6 +750,21 @@ func (s *Store) DeleteSession(ctx context.Context, userID, id uuid.UUID) (model.
 	return out, err
 }
 
+// FirstCompletedSessionStart returns when the account's earliest completed session started.
+// It returns nil when the account has no completed sessions.
+func (s *Store) FirstCompletedSessionStart(ctx context.Context, userID uuid.UUID) (*time.Time, error) {
+	var start time.Time
+	err := s.pool.QueryRow(ctx, `SELECT started_at FROM sessions WHERE user_id=$1 AND status='completed'
+		ORDER BY started_at LIMIT 1`, userID).Scan(&start)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &start, nil
+}
+
 // SessionSummaries lists sessions started in [from, to), newest first (or
 // oldest first with ascending), optionally of one status ("" = all).
 func (s *Store) SessionSummaries(ctx context.Context, userID uuid.UUID, from, to time.Time, status string, ascending bool) ([]model.SessionSummary, error) {
