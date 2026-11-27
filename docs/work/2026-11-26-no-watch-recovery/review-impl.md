@@ -29,8 +29,10 @@ index probe. Two new should-fix items:
 
 | # | Rank | Finding | Fix |
 | --- | --- | --- | --- |
-| r1 | Should fix | `0063:62`: scoring's `UPDATE (start_at, end_at) ON workouts` is guarded for `ryft-session` only by the code; 0011 guards scoring's DELETE/INSERT with restrictive row policies. | |
-| r2 | Should fix | `strength_day.go:71` + `train.go:953-972`: `SetSessionLoad` saves the new attachment before the move's transaction; a failed pass that retries sees the new workout as `previous`, and the rating stays behind. | |
+| r1 | Should fix | `0063:62`: scoring's `UPDATE (start_at, end_at) ON workouts` is guarded for `ryft-session` only by the code; 0011 guards scoring's DELETE/INSERT with restrictive row policies. | 7bdfd1f: a BEFORE UPDATE OF start_at, end_at trigger refuses `ryft_scoring` on non-`ryft-session` rows (a restrictive policy would block the load-column updates); test in `migrate_duplicates_test`. |
+| r2 | Should fix | `strength_day.go:71` + `train.go:953-972`: `SetSessionLoad` saves the new attachment before the move's transaction; a failed pass that retries sees the new workout as `previous`, and the rating stays behind. | 7bdfd1f: the move also takes ratings off any workout still linked to the session that isn't chosen; `TestReleaseSessionWorkoutsRetryMovesTheRating`. |
+
+Main took D296/D297 during the run (#257, #258): this work's decisions are **D298** and **D299** (merged main in f9c7030).
 
 None found: status codes and gates; nullability/omitempty and closed enums; the kill switch (status, briefing,
 readiness, load, N2R bedtime, `n2r_bedtime_applied`); one wearable-night rule; upsert and the locked 14-day
