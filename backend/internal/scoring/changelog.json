@@ -1,5 +1,12 @@
 [
   {
+    "version": "2026.11.1",
+    "date": "2026-11-27",
+    "summary_en": "Recovery without a watch. On a morning without a measured night, a short check-in (when you went to bed and woke up, how well you slept, how fresh you feel) gives an estimated recovery from 0 to 100: mostly your two ratings, compared with your own last two weeks once you have five check-ins, then how long you were in bed, how regular your sleep times are and, when you have one, yesterday's nutrition-to-recovery score. It is marked as estimated and never enters your trends. A workout without heart rate can be rated from 1 to 10 for how hard it felt; the rating then counts in your training load. Measured data always wins, and no stored daily score changes.",
+    "summary_de": "Erholung ohne Uhr. An einem Morgen ohne gemessene Nacht ergibt ein kurzer Check-in (wann du ins Bett gegangen und aufgewacht bist, wie gut du geschlafen hast, wie frisch du dich fühlst) eine geschätzte Erholung von 0 bis 100: vor allem aus deinen beiden Bewertungen, ab fünf Check-ins verglichen mit deinen eigenen letzten zwei Wochen, dazu wie lange du im Bett warst, wie regelmäßig deine Schlafzeiten sind und, wenn vorhanden, der Nutrition-to-Recovery-Wert von gestern. Sie ist als geschätzt gekennzeichnet und fließt nie in deine Verläufe ein. Ein Training ohne Herzfrequenz kannst du von 1 bis 10 danach bewerten, wie anstrengend es war; die Bewertung zählt dann in deiner Trainingslast. Gemessene Daten haben immer Vorrang, und kein gespeicherter Tageswert ändert sich.",
+    "affects": []
+  },
+  {
     "version": "2026.10.3",
     "date": "2026-10-31",
     "summary_en": "Workouts recorded twice. When a source re-writes a workout in the Health app, the extra copies are removed and the copy the Health app still has stays. When two of your sources record the same workout (a watch and a second tracker on one run), it is shown once: the recording with the specific activity, then the one with its own heart rate, then the longer one, with the other sources named on it. Your scores do not change, because the day's strain already counted heart rate once. What changes is the number of workouts on a day and which workout carries a logged strength session's load.",

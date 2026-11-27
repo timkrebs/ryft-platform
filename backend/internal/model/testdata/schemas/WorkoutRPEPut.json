@@ -1,0 +1,14 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "session_rpe": {
+      "nullable": true,
+      "type": "number"
+    }
+  },
+  "required": [
+    "session_rpe"
+  ],
+  "title": "WorkoutRPEPut",
+  "type": "object"
+}

@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/timkrebs/ryft/internal/model"
+	"github.com/timkrebs/ryft/internal/store"
 	"github.com/timkrebs/ryft/internal/train"
 )
 
@@ -43,35 +44,33 @@ func (e *Engine) strength(ctx context.Context, userID uuid.UUID, dayStart, dayEn
 		return out, err
 	}
 	taken := map[uuid.UUID]bool{}
-	chosen := map[uuid.UUID]uuid.UUID{}
-	ids := make([]uuid.UUID, 0, len(sessions))
+	// What each session was attached to before this pass: its rating follows it to the workout it gets now.
+	previous := map[uuid.UUID]uuid.UUID{}
+	atts := make([]store.SessionAttachment, 0, len(sessions))
 	for _, s := range sessions {
-		ids = append(ids, s.ID)
+		if s.WorkoutID != nil {
+			previous[s.ID] = *s.WorkoutID
+		}
 		load, err := e.loadOf(ctx, userID, s, exercises)
 		if err != nil {
 			return out, err
 		}
 		end := SessionEnd(s)
-		workoutID := train.SessionWorkoutID(userID, s.ID)
+		att := store.SessionAttachment{SessionID: s.ID, WorkoutID: train.SessionWorkoutID(userID, s.ID), Own: true,
+			Start: s.StartedAt, End: end, TRIMP: load.TRIMP, Strain: load.Strain, VolumeKG: load.VolumeKG}
 		if w := MatchWorkout(s, candidates, taken); w != nil {
-			workoutID = w.ID
+			att.WorkoutID, att.Own = w.ID, false
 			taken[w.ID] = true
-			if err := e.st.AttachSession(ctx, userID, w.ID, s.ID, load.TRIMP); err != nil {
-				return out, err
-			}
-		} else if err := e.st.EnsureSessionWorkout(ctx, userID, workoutID, s.ID, s.StartedAt, end, load.TRIMP); err != nil {
-			return out, err
 		}
-		chosen[s.ID] = workoutID
-		if err := e.st.SetSessionLoad(ctx, userID, s.ID, load.TRIMP, load.Strain, load.VolumeKG, workoutID); err != nil {
-			return out, err
-		}
+		atts = append(atts, att)
 		out.TRIMP += load.TRIMP
 		out.VolumeKG += load.VolumeKG
 		out.Minutes += int(math.Round(end.Sub(s.StartedAt).Minutes()))
 		out.Sessions++
 	}
-	if err := e.st.ReleaseSessionWorkouts(ctx, userID, ids, chosen); err != nil {
+	// The attachments, the session pointers, the rating moves and the releases are one transaction, planned from
+	// the mapping read above: a failure leaves nothing half done, and the retry starts from the same mapping.
+	if err := e.st.ApplySessionPass(ctx, userID, atts, previous); err != nil {
 		return out, err
 	}
 	out.Week, err = e.strengthWeek(ctx, userID, dayStart.AddDate(0, 0, -6), dayEnd)

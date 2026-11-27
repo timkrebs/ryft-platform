@@ -233,6 +233,10 @@ var (
 		Name: "ryft_journal_saves_total",
 		Help: "Journal days saved (PUT /v1/journal/{day}).",
 	})
+	RecoveryWrites = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ryft_recovery_writes_total",
+		Help: "Writes of the recovery without a watch routes (D291), by op (checkin_saved, checkin_deleted, rpe_saved, rpe_deleted).",
+	}, []string{"op"})
 	BehaviorImpactSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ryft_behavior_impact_seconds",
 		Help:    "CPU time of the behavior-impact computation per request (GET /v1/behaviors/impact, the insight), by caller; above ~0.1 s at p95 it belongs in a worker (D76).",

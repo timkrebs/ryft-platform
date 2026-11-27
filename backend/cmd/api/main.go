@@ -284,6 +284,7 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	// Nutrition inherits the authenticated v1 chain and has its own rollout flag (D265, D266).
 	h.nutritionRoutes(api)
 	h.coachingRoutes(api)
+	h.recoveryRoutes(api)
 	api.HandleFunc("/v1/", httpx.NotFound)
 	limits := ratelimit.NewUserLimits()
 	authOpts := auth.Options{
@@ -312,7 +313,7 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	// app token, the beta gate, then the routes. DELETE /v1/me above and /v1/admin/* below are not
 	// wrapped: they never need an app token.
 	attest := appAttestGate(o.attest, log)
-	mux.Handle("/v1/", redactNutritionPath(auth.Middleware(authOpts, attest(betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))))
+	mux.Handle("/v1/", redactPrivatePath(auth.Middleware(authOpts, attest(betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))))
 	// The training import gets 50 s instead of readTimeout, like a sync (D129).
 	mux.Handle("POST /v1/train/import", importRoute(authOpts, o.gate, attest, h.trainImport))
 	// The operator's routes: ADMIN_API_KEY, or an allow-listed operator's Supabase token (only with
@@ -528,6 +529,7 @@ func (h *handler) recompute(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusTooManyRequests, "a recompute was requested less than a minute ago")
 		return
 	}
+	h.rescoreStaleCheckins(r) // a model bump rescores stored check-ins here (D292)
 	ev := model.IngestedEvent{UserID: u.ID, Days: []string{req.From, req.To}, Reason: "recompute", RequestID: requestID(r)}
 	dedup := fmt.Sprintf("recompute:%s:%s:%s", u.ID, req.From, req.To)
 	if err := h.bus.PublishIngested(r.Context(), ev, dedup); err != nil {

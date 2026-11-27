@@ -25,17 +25,86 @@ type Physiology struct {
 }
 
 // Exercise separates measured-load availability from estimated net expenditure.
+// RPETRIMP is the load from the user's session RPE (RatedWorkout, D293), set
+// only when neither heart rate (TRIMP) nor power (TSS) gives one.
 type Exercise struct {
-	NetKcal, TSS, TRIMP float64
-	HasTSS, HasTRIMP    bool
+	NetKcal, TSS, TRIMP, RPETRIMP float64
+	HasTSS, HasTRIMP, HasRPE      bool
 }
 
-// Load uses the power training-load estimate when present.
+// Load uses the power training-load estimate when present, then heart rate,
+// then the session RPE.
 func (x Exercise) Load() float64 {
-	if x.HasTSS {
+	switch {
+	case x.HasTSS:
 		return x.TSS
+	case x.HasTRIMP:
+		return x.TRIMP
 	}
-	return x.TRIMP
+	return x.RPETRIMP
+}
+
+// banister returns Banister's TRIMP weighting constants a and b for the sex
+// (Banister 1991; 0.64/1.92 male, 0.86/1.67 female, the midpoint otherwise).
+func banister(sex string) (float64, float64) {
+	switch sex {
+	case "female":
+		return .86, 1.67
+	case "male":
+		return .64, 1.92
+	}
+	return .75, 1.795
+}
+
+// Session RPE (Foster et al. 2001), 1..10 in halves; the api validates the steps.
+const (
+	minSessionRPE = 1
+	maxSessionRPE = 10
+)
+
+func validRPE(rpe float64) bool {
+	return !math.IsNaN(rpe) && rpe >= minSessionRPE && rpe <= maxSessionRPE
+}
+
+// SessionRPELoad is Foster's session load in arbitrary units: the duration in
+// whole minutes (rounded) × the rating, rounded (60 min at 8 → 480; 45.4 min
+// at 7 → 45 × 7 = 315). Workout.session_rpe_load; display only. 0 without a
+// valid rating or a duration.
+func SessionRPELoad(minutes, rpe float64) int {
+	if !validRPE(rpe) || !(minutes > 0) {
+		return 0
+	}
+	return int(math.Round(math.Round(minutes) * rpe))
+}
+
+// SessionRPETRIMP maps a session RPE onto the TRIMP scale (D293): Banister's
+// TRIMP with r = rpe/10 in place of the heart-rate-reserve fraction,
+// minutes × r × a × e^(b·r), with the sex constants of the heart-rate path.
+// Reading RPE × 10 as the reserve percentage is a RYFT heuristic. 60 min at 8
+// → 151 (sex unspecified), 143 male, 157 female; 60 min at 3 → 23.
+func SessionRPETRIMP(minutes, rpe float64, sex string) float64 {
+	if !validRPE(rpe) || !(minutes > 0) {
+		return 0
+	}
+	a, b := banister(sex)
+	r := rpe / 10
+	return minutes * r * a * math.Exp(b*r)
+}
+
+// RatedWorkout is Workout for a workout the user rated (session_rpe; 0 when
+// unrated): when neither heart rate nor power yields a load, the rating does
+// (RPETRIMP, HasRPE), so the coaching load (acute, chronic, ACWR, TSB) counts
+// it. Measured load wins; net energy is Workout's, the rating does not move it.
+// Day strain and WorkoutDetail.trimp (internal/scoring) never read it.
+func RatedWorkout(w wearables.Workout, p Physiology, rpe float64) Exercise {
+	x := Workout(w, p)
+	if x.HasTRIMP || x.HasTSS || !validRPE(rpe) {
+		return x
+	}
+	if mins := w.Seconds() / 60; mins > 0 {
+		x.RPETRIMP, x.HasRPE = SessionRPETRIMP(mins, rpe, p.Sex), true
+	}
+	return x
 }
 
 // Reserve returns the observed HR reserve fraction when the inputs can establish it.
@@ -55,14 +124,7 @@ func Workout(w wearables.Workout, p Physiology) Exercise {
 	reserve, validHR := Reserve(w, p)
 	x := Exercise{HasTRIMP: validHR}
 	if validHR {
-		a, b := .64, 1.92
-		switch p.Sex {
-		case "female":
-			a, b = .86, 1.67
-		case "male":
-		default:
-			a, b = .75, 1.795
-		}
+		a, b := banister(p.Sex)
 		x.TRIMP = mins * reserve * a * math.Exp(b*reserve)
 	}
 	ftp := w.FTP

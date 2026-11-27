@@ -1,0 +1,89 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "acute_drop": {
+      "type": "boolean"
+    },
+    "bedtime": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "components": {
+      "$ref": "RecoveryComponents"
+    },
+    "confidence": {
+      "type": "string"
+    },
+    "confounders": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "date": {
+      "type": "string"
+    },
+    "model_version": {
+      "type": "string"
+    },
+    "n2r_bedtime_applied": {
+      "type": "boolean"
+    },
+    "perceived_freshness": {
+      "type": "integer"
+    },
+    "perceived_sleep_quality": {
+      "type": "integer"
+    },
+    "recovery_score": {
+      "type": "integer"
+    },
+    "sleep_duration_min": {
+      "type": "integer"
+    },
+    "soreness": {
+      "type": "boolean"
+    },
+    "superseded": {
+      "type": "boolean"
+    },
+    "tz_offset_sec": {
+      "type": "integer"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "wake_time": {
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "acute_drop",
+    "bedtime",
+    "components",
+    "confidence",
+    "confounders",
+    "created_at",
+    "date",
+    "model_version",
+    "n2r_bedtime_applied",
+    "perceived_freshness",
+    "perceived_sleep_quality",
+    "recovery_score",
+    "sleep_duration_min",
+    "soreness",
+    "superseded",
+    "tz_offset_sec",
+    "updated_at",
+    "wake_time"
+  ],
+  "title": "RecoveryCheckin",
+  "type": "object"
+}

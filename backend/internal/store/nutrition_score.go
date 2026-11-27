@@ -78,7 +78,8 @@ func scoreNutritionDays(ctx context.Context, tx pgx.Tx, user uuid.UUID, days []m
 	var bedtimes map[string]*time.Time
 	var localTimes map[uuid.UUID]time.Time
 	if chrononutrition {
-		bedtimes, err = nutritionBedtimes(ctx, tx, user, from, to)
+		// The meal-timing score reads measured sleep only: the contract puts a check-in's bedtime into N2R (D293).
+		bedtimes, _, err = nutritionBedtimesWith(ctx, tx, user, from, to, false)
 		if err != nil {
 			return err
 		}
@@ -139,21 +140,44 @@ func nutritionMealLocalTimes(meals []model.NutritionMeal) map[uuid.UUID]time.Tim
 	return times
 }
 
-func nutritionBedtimes(ctx context.Context, tx pgx.Tx, user uuid.UUID, from, to string) (map[string]*time.Time, error) {
+// nutritionBedtimesWith are the bedtimes of the nights that follow the days in [from, to], by day, with whose each is
+// (model.N2RBedtimeWearable or N2RBedtimeCheckin). The precedence is the night's measured sleep start
+// (daily_scores.sleep_start of the next day), then, with checkins (the caller says: the flag recovery.checkin is on
+// and the reader is N2R), the next morning's check-in bedtime (D293); the expected bedtime is the profile's and is
+// added by the caller.
+func nutritionBedtimesWith(ctx context.Context, tx pgx.Tx, user uuid.UUID, from, to string, checkins bool) (map[string]*time.Time, map[string]string, error) {
 	rows, err := tx.Query(ctx, `SELECT to_char(day-1,'YYYY-MM-DD'), sleep_start FROM daily_scores
 		WHERE user_id=$1 AND day BETWEEN $2::date+1 AND $3::date+1 AND sleep_start IS NOT NULL AND sleep_actual_min > 0`, user, from, to)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	out := make(map[string]*time.Time)
+	source := make(map[string]string)
 	for rows.Next() {
 		var date string
 		var start time.Time
 		if err := rows.Scan(&date, &start); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		out[date] = &start
+		out[date], source[date] = &start, model.N2RBedtimeWearable
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	rows.Close()
+	if !checkins {
+		return out, source, nil
+	}
+	reported, err := checkinBedtimes(ctx, tx, user, from, to)
+	if err != nil {
+		return nil, nil, err
+	}
+	for date, at := range reported {
+		if _, measured := out[date]; !measured {
+			bed := at
+			out[date], source[date] = &bed, model.N2RBedtimeCheckin
+		}
+	}
+	return out, source, nil
 }

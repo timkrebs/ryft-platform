@@ -105,10 +105,12 @@ type n2rHistory struct {
 	Meals    map[string][]model.NutritionMeal
 	Workouts []model.Workout
 	Bedtimes map[string]*time.Time
-	Omega    map[string]float64
-	Glucose  map[uuid.UUID]model.NutritionMealGlucoseScore
-	BaseKcal float64
-	Coaching coachingData
+	// BedSource says whose bedtime Bedtimes holds for a date: model.N2RBedtimeWearable or N2RBedtimeCheckin (D293).
+	BedSource map[string]string
+	Omega     map[string]float64
+	Glucose   map[uuid.UUID]model.NutritionMealGlucoseScore
+	BaseKcal  float64
+	Coaching  coachingData
 }
 
 func parseN2RDay(date string, loc *time.Location) time.Time {
@@ -142,6 +144,16 @@ func n2rMeals(ctx context.Context, tx pgx.Tx, user uuid.UUID, from, to string, a
 }
 
 func readN2RHistory(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile, from, to string, asOf time.Time) (n2rHistory, error) {
+	on, err := recoveryOn(ctx, tx, user)
+	if err != nil {
+		return n2rHistory{}, err
+	}
+	return readN2RHistoryWith(ctx, tx, user, p, from, to, asOf, on)
+}
+
+// readN2RHistoryWith is readN2RHistory with the flag recovery.checkin decided by the caller: with recovery off no
+// check-in bedtime, no check-in readiness and no rating counts (the kill switch, D295).
+func readN2RHistoryWith(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile, from, to string, asOf time.Time, recovery bool) (n2rHistory, error) {
 	if p.NextWorkoutAt != nil && p.NextWorkoutAt.Before(asOf) {
 		p.NextWorkoutAt = nil
 	}
@@ -161,7 +173,7 @@ func readN2RHistory(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile
 		return h, err
 	}
 	h.BaseKcal = goals.Targets["energy_kcal"]
-	h.Workouts, err = listWorkoutsBetween(ctx, tx, user, start, last.AddDate(0, 0, 2), false)
+	h.Workouts, err = listWorkoutsBetween(ctx, tx, user, start, last.AddDate(0, 0, 2), false, false)
 	if err != nil {
 		return h, err
 	}
@@ -170,7 +182,7 @@ func readN2RHistory(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile
 	if err != nil {
 		return h, err
 	}
-	h.Coaching, err = loadCoaching(ctx, tx, user, p, history, last, asOf, coaching)
+	h.Coaching, err = loadCoaching(ctx, tx, user, p, history, last, asOf, coaching, recovery)
 	if err != nil {
 		return h, err
 	}
@@ -195,7 +207,7 @@ func readN2RHistory(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile
 			}
 		}
 	}
-	h.Bedtimes, err = nutritionBedtimes(ctx, tx, user, from, to)
+	h.Bedtimes, h.BedSource, err = nutritionBedtimesWith(ctx, tx, user, from, to, recovery)
 	if err != nil {
 		return h, err
 	}
@@ -223,10 +235,30 @@ func readN2RHistory(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile
 }
 
 func (h n2rHistory) input(date string, measuredBed bool) score.N2RInput {
+	in, _ := h.inputSource(date, measuredBed)
+	return in
+}
+
+// n2r is the score of a day with the bedtime it used named in BedtimeSource (D293).
+func (h n2rHistory) n2r(date string, measuredBed bool) model.N2RScore {
+	in, source := h.inputSource(date, measuredBed)
+	result := score.N2R(in)
+	result.BedtimeSource = source
+	return result
+}
+
+// inputSource is input and which bedtime it holds: the night's measured sleep start (wearable), else the next
+// morning's check-in (checkin), else the profile's expected bedtime (expected); empty without any. Only a night
+// that has passed (measuredBed) takes a measured or reported one.
+func (h n2rHistory) inputSource(date string, measuredBed bool) (score.N2RInput, string) {
 	day := parseN2RDay(date, h.Profile.Location)
 	bed := expectedBedtime(day, h.Profile)
+	source := ""
+	if bed != nil {
+		source = model.N2RBedtimeExpected
+	}
 	if actual := h.Bedtimes[date]; measuredBed && actual != nil {
-		bed = actual
+		bed, source = actual, h.BedSource[date]
 	}
 	var history []score.OmegaDay
 	for age := 1; age <= n2rLookback; age++ {
@@ -243,7 +275,7 @@ func (h n2rHistory) input(date string, measuredBed bool) score.N2RInput {
 		input.CoachingHalfH = &h.Coaching.profile.Caffeine
 		input.Profile.BodyMassKG = state.Physiology.MassKG
 	}
-	return input
+	return input, source
 }
 
 func addN2RDays(ctx context.Context, tx pgx.Tx, user uuid.UUID, days []model.NutritionDaily, now time.Time) error {
@@ -257,7 +289,7 @@ func addN2RDays(ctx context.Context, tx pgx.Tx, user uuid.UUID, days []model.Nut
 	}
 	today := now.In(p.Location).Format(time.DateOnly)
 	for i := range days {
-		value := score.N2R(h.input(days[i].LocalDate, days[i].LocalDate < today))
+		value := h.n2r(days[i].LocalDate, days[i].LocalDate < today)
 		days[i].N2R = &value
 	}
 	return nil

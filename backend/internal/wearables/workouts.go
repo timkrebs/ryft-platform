@@ -50,6 +50,9 @@ type Workout struct {
 	HasRR           bool               `json:"rr_intervals_available"`
 	Strain          float64            `json:"strain,omitempty"`
 	SuuntoPlus      map[string]float64 `json:"suunto_plus,omitempty"`
+	// RPE is the user's session RPE of the workout (D293; 0 = unrated), set by the store from workout_ratings while
+	// the flag recovery.checkin is on, never part of a partner payload. Reconcile carries it to the copy it keeps.
+	RPE float64 `json:"-"`
 }
 
 func finiteIn(n, lo, hi float64) bool { return n >= lo && n <= hi }
@@ -190,17 +193,29 @@ func Reconcile(input []Workout) []Workout {
 		}
 	}
 	var chosen, result []Workout
+	var owner []int // owner[k] is the index in chosen of the recording result[k] is a piece of
 	for _, w := range ordered {
 		if !w.Valid() || native(w.Provider) && children[[2]string{family(w.Provider), w.ExternalID}] {
 			continue
 		}
 		w.Sport = Sport(w.Sport)
 		pieces := []Workout{w}
-		for _, hi := range chosen {
+		for j, hi := range chosen {
 			sameProviderID := native(hi.Provider) && native(w.Provider) && family(hi.Provider) == family(w.Provider) && hi.ExternalID == w.ExternalID
 			if sameProviderID || hi.Sport == w.Sport && hi.Start.Before(w.End) && w.Start.Before(hi.End) &&
 				math.Abs(hi.Start.Sub(w.Start).Seconds()) <= startTolerance.Seconds() &&
 				math.Abs(hi.Seconds()-w.Seconds()) <= durationTolerance*max(hi.Seconds(), w.Seconds()) {
+				// The same session: the selected copy keeps its measurements and takes the user's rating of a
+				// dropped copy when it has none (D293), so the rating counts once whichever copy wins. Heart rate or
+				// power on the selected copy still win over it (energy.RatedWorkout).
+				if hi.RPE == 0 && w.RPE > 0 {
+					chosen[j].RPE = w.RPE
+					for k := range result {
+						if owner[k] == j {
+							result[k].RPE = w.RPE
+						}
+					}
+				}
 				pieces = nil
 				break
 			}
@@ -225,6 +240,9 @@ func Reconcile(input []Workout) []Workout {
 			pieces = uncovered
 		}
 		if len(pieces) > 0 {
+			for range pieces {
+				owner = append(owner, len(chosen))
+			}
 			chosen = append(chosen, w)
 			result = append(result, pieces...)
 		}

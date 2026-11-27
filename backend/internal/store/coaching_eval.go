@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"time"
 
@@ -65,7 +66,11 @@ func (s *Store) captureCoachingDay(ctx context.Context, user uuid.UUID, key stri
 		}
 		day := parseN2RDay(key, n2r.Location)
 		yesterday := day.AddDate(0, 0, -1).Format(time.DateOnly)
-		h, err := readN2RHistory(ctx, tx, user, *n2r, yesterday, key, now)
+		// The projection, the evaluation's history and the calibration come from the day as if recovery.checkin
+		// were off, so they do not outlive the kill switch (D295); only the evaluation's adherence follows the flag
+		// (the plan shown while on, recovery_off once off). With the flag on, the plan the user is shown (a
+		// check-in's readiness can move it) is saved, and the recovery-off one beside it when they differ (frozenPlan).
+		h, err := readN2RHistoryWith(ctx, tx, user, *n2r, yesterday, key, now, false)
 		if err != nil {
 			return err
 		}
@@ -73,12 +78,27 @@ func (s *Store) captureCoachingDay(ctx context.Context, user uuid.UUID, key stri
 		if !ok {
 			return nil
 		}
+		saved := frozenPlan{CoachingPlan: state.Plan}
+		on, err := recoveryOn(ctx, tx, user)
+		if err != nil {
+			return err
+		}
+		if on {
+			live, err := readN2RHistoryWith(ctx, tx, user, *n2r, yesterday, key, now, true)
+			if err != nil {
+				return err
+			}
+			if shown, ok := live.Coaching.plans[key]; ok && !reflect.DeepEqual(shown.Plan, state.Plan) {
+				off := state.Plan
+				saved = frozenPlan{CoachingPlan: shown.Plan, RecoveryOff: &off}
+			}
+		}
 		projection := score.N2R(h.input(key, false))
 		b, err := json.Marshal(projection)
 		if err != nil {
 			return err
 		}
-		data, err := json.Marshal(state.Plan)
+		data, err := json.Marshal(saved)
 		if err != nil {
 			return err
 		}
@@ -93,7 +113,7 @@ func (s *Store) captureCoachingDay(ctx context.Context, user uuid.UUID, key stri
 		if err != nil {
 			return err
 		}
-		if err := writeCoachingEvaluation(ctx, tx, user, day, now, h); err != nil {
+		if err := writeCoachingEvaluation(ctx, tx, user, day, now, h, on); err != nil {
 			return err
 		}
 		if profile.calibrated != nil && profile.calibrated.Format(time.DateOnly) >= yesterday {
@@ -103,7 +123,10 @@ func (s *Store) captureCoachingDay(ctx context.Context, user uuid.UUID, key stri
 	})
 }
 
-func writeCoachingEvaluation(ctx context.Context, tx pgx.Tx, user uuid.UUID, day, now time.Time, h n2rHistory) error {
+// writeCoachingEvaluation records yesterday's evaluation. withRecovery is the flag recovery.checkin: adherence and
+// availability are measured against the saved plan the user was shown, with the flag off against its recovery_off
+// (D295).
+func writeCoachingEvaluation(ctx context.Context, tx pgx.Tx, user uuid.UUID, day, now time.Time, h n2rHistory, withRecovery bool) error {
 	yesterday := day.AddDate(0, 0, -1).Format(time.DateOnly)
 	today := day.Format(time.DateOnly)
 	frozen, err := readFrozenCoachDays(ctx, tx, user, day.AddDate(0, 0, -2).Format(time.DateOnly), yesterday, now)
@@ -114,6 +137,7 @@ func writeCoachingEvaluation(ctx context.Context, tx pgx.Tx, user uuid.UUID, day
 	if !has {
 		return nil
 	}
+	plan := saved.plan(withRecovery)
 	state := h.Coaching.plans[today]
 	prior := h.Coaching.plans[yesterday]
 	profile := h.Coaching.profile
@@ -169,8 +193,8 @@ func writeCoachingEvaluation(ctx context.Context, tx pgx.Tx, user uuid.UUID, day
 			attributed = attributed || slices.Contains(p.Tags, t)
 		}
 	}
-	older := frozen[day.AddDate(0, 0, -2).Format(time.DateOnly)].state.Plan.Availability.State
-	priorAvailability := saved.state.Plan.Availability.State
+	older := frozen[day.AddDate(0, 0, -2).Format(time.DateOnly)].plan(withRecovery).Availability.State
+	priorAvailability := plan.Availability.State
 	if (older == periodization.AvailabilityRed || older == periodization.AvailabilityYellow) && priorAvailability != "" && priorAvailability != periodization.AvailabilityUnknown {
 		ok := priorAvailability == periodization.AvailabilityGreen
 		recovered = &ok
@@ -182,8 +206,8 @@ func writeCoachingEvaluation(ctx context.Context, tx pgx.Tx, user uuid.UUID, day
 			actual *float64
 			target float64
 		}{
-			"energy": {d.Intake, saved.state.Plan.EnergyKcal}, "carbs": {d.Carbs, saved.state.Plan.CarbsG},
-			"protein": {d.Protein, saved.state.Plan.ProteinG}, "fat": {d.Fat, saved.state.Plan.FatG},
+			"energy": {d.Intake, plan.EnergyKcal}, "carbs": {d.Carbs, plan.CarbsG},
+			"protein": {d.Protein, plan.ProteinG}, "fat": {d.Fat, plan.FatG},
 		} {
 			if pair.actual != nil && pair.target > 0 {
 				adherence[name] = *pair.actual / pair.target
@@ -197,13 +221,13 @@ func writeCoachingEvaluation(ctx context.Context, tx pgx.Tx, user uuid.UUID, day
 	if f.RPE != nil {
 		adherence["rpe"] = *f.RPE
 	}
-	if f.IntraCarbs != nil && saved.state.Plan.Fuel != nil && saved.state.Plan.Fuel.CarbMinGPerH > 0 {
+	if f.IntraCarbs != nil && plan.Fuel != nil && plan.Fuel.CarbMinGPerH > 0 {
 		minutes := coachingVal(f.WorkoutMinutes, 0)
 		if minutes <= 0 && f.Session != nil {
 			minutes = f.Session.Minutes
 		}
 		if minutes > 0 {
-			adherence["intra_workout_carbs"] = *f.IntraCarbs / (saved.state.Plan.Fuel.CarbMinGPerH * minutes / 60)
+			adherence["intra_workout_carbs"] = *f.IntraCarbs / (plan.Fuel.CarbMinGPerH * minutes / 60)
 		}
 	}
 	data, err := json.Marshal(adherence)

@@ -49,7 +49,10 @@ type N2RScore struct {
 	LateMealPenalty float64                   `json:"late_meal_penalty"`
 	AutoPenalty     float64                   `json:"autonomic_penalty"`
 	Bedtime         *time.Time                `json:"bedtime"`
-	Tags            []string                  `json:"tags"`
+	// BedtimeSource says which bedtime was used (D293): expected, wearable or checkin; a closed set, absent when
+	// Bedtime is null.
+	BedtimeSource string   `json:"bedtime_source,omitempty"`
+	Tags          []string `json:"tags"`
 }
 
 // N2RBiometrics compares a wake day's observations with the preceding baseline.
