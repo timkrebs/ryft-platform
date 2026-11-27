@@ -108,7 +108,8 @@ STAPLES = loads(STAPLES_PATH.read_text(encoding="utf-8"))
 
 # G4 (D296): the full BLS 4.0 import. The CSV is the reviewed extract that scripts/etl/bls_convert.py writes.
 BLS_METHOD = "bls:4.0"
-BLS_ID = re.compile(r"[A-Z][0-9]{6}")
+# bls_convert.BLS_CODE and the nutrition_bls_attribution constraint (migration 0062): "M111300", "M5B1600", "U57B100".
+BLS_ID = re.compile(r"[A-Z][0-9][0-9A-Z]{2}[0-9]{3}")
 BLS_CSV_FIXED = ("bls_code", "name_de", "name_en")
 # The registry codes a BLS row can carry. BLS CHO is the available carbohydrate: `carbohydrates`, never the USDA total.
 BLS_NUTRIENT_CODES = frozenset({code for code, _ in USDA_NUTRIENTS.values()} - {"carbohydrates_total", "added_sugar"}

@@ -42,5 +42,9 @@
     ["Joghurt", "Jogurt"],
     ["Pilze", "Schwammerl"]
   ],
-  "twins": {}
+  "twins": {
+    "B111000": {"staple": "usda:172690", "name_de": "Weizenvollkornbrot"},
+    "F110600": {"staple": "usda:173933", "name_de": "Apfelsaft"},
+    "Q120000": {"staple": "usda:171413", "name_de": "Olivenöl"}
+  }
 }

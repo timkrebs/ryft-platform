@@ -188,17 +188,19 @@ class ConverterTests(unittest.TestCase):
         self.assertEqual(rows["G300000"]["name_de"], "Möhre, roh")  # composed
         self.assertEqual((rows["G300000"]["fat"], rows["G300000"]["fiber"]), ("0", "2.8"))
         self.assertEqual(json.loads((self.out / "bls_4_0.manifest.json").read_text(encoding="utf-8")), manifest)
-        self.assertEqual(manifest["converter_version"], 1)
+        self.assertEqual(manifest["converter_version"], 2)
+        self.assertEqual(manifest["markers"], {"below_limit_as_zero": ["<LOD", "<LOD or <LOQ", "<LOQ", "TR"],
+                                               "no_value": ["-"]})
         self.assertEqual(manifest["source"], {
             "filename": "bls.xlsx", "sha256": hashlib.sha256(self.xlsx.read_bytes()).hexdigest(), "sheet": "Daten",
             "header_row": 2, "name_columns": [1, 2, 3], "id_headers": ["BLS-Code", "Bezeichnung", "Name (EN)"]})
         self.assertEqual(manifest["csv_sha256"], hashlib.sha256((self.out / "bls_4_0.csv").read_bytes()).hexdigest())
         verify_bls_extract(self.out / "bls_4_0.csv")  # the pair belongs together
         self.assertEqual(manifest["rows"], {"written": 3, "skipped": 2, "skipped_reasons": {"not_a_food_row": 2}})
-        # Cells that are not numbers are counted per component, with samples ("-" is the fixture's marker for fiber).
+        # "-" is BLS's no-data marker: counted as a marker, unknown in the CSV, not unparsed.
         fiber, protein = manifest["components"]["fiber"], manifest["components"]["protein"]
-        self.assertEqual((fiber["unparsed"], fiber["unparsed_samples"]), (1, ["-"]))
-        self.assertEqual((protein["unparsed"], protein["unparsed_samples"]), (0, []))
+        self.assertEqual((fiber["markers"], fiber["unparsed"], fiber["unparsed_samples"]), ({"-": 1}, 0, []))
+        self.assertEqual((protein["markers"], protein["unparsed"], protein["unparsed_samples"]), ({}, 0, []))
         energy = manifest["components"]["energy_kj"]
         self.assertEqual((energy["bls_code"], energy["unit"], energy["unit_source"], energy["factor"], energy["column"]),
                          ("ENERCJ", "kJ", "header", "1", "D"))
@@ -347,6 +349,51 @@ class ConverterTests(unittest.TestCase):
         self.assertIn("required component protein (PROT625) has 1 cell(s) that are not numbers, e.g. 'k.A.'", str(error.exception))
         self.assertIn("required component fat (FAT) has 2 cell(s) that are not numbers, e.g. 'n.b.', 'Sp.'", str(error.exception))
         self.assertFalse(self.out.exists())
+
+    def test_alphanumeric_codes_and_fatty_acid_headers_of_the_2025_workbook(self):
+        # The workbook names EPA "F20:5CN3 ... [g/100g]": the colon belongs to the code, and a code next to an unmapped
+        # "F20:0" column is no ambiguity. Codes such as M5B1600 are foods; anything else in column 1 is skipped.
+        components = [pair for pair in FIXTURE_COMPONENTS if pair[0] != "F20D5N3"] + [
+            ("F20:0", "F20:0 Fettsäure C20:0 (Arachinsäure) [g/100g]"),
+            ("F20:5CN3", "F20:5CN3 Fettsäure C20:5 n-3 all-cis (Eicosapentaensäure) [g/100g]"),
+            ("F22:6CN3", "F22:6CN3 Fettsäure C22:6 n-3 all-cis (Docosahexaensäure) [g/100g]")]
+        base = {key: value for key, value in FIXTURE_FOODS[1][3].items() if key != "F20D5N3"}
+        foods = (("M5B1600", "Gorgonzola", None, {**base, "F20:5CN3": ("n", "0.01"), "F22:6CN3": ("n", "0.02")}),
+                 ("U57B100", "Schwein Grillbauch, roh", None, base),
+                 ("MA51600", "Kein Code", None, base), ("HINWEIS", "Kein Code", None, base))
+        fixture_workbook(self.xlsx, components, foods)
+        manifest = convert(self.xlsx, out_dir=self.out)
+        rows = read_csv(self.out / "bls_4_0.csv")
+        self.assertEqual(list(rows), ["M5B1600", "U57B100"])
+        self.assertEqual((rows["M5B1600"]["epa"], rows["M5B1600"]["dha"]), ("0.01", "0.02"))
+        self.assertEqual((manifest["components"]["epa"]["bls_code"], manifest["components"]["dha"]["bls_code"]),
+                         ("F20:5CN3", "F22:6CN3"))
+        self.assertEqual(manifest["rows"]["skipped_reasons"], {"not_a_food_row": 4})  # 2 codes, the footer and M11130
+
+    def test_bls_markers_are_zero_below_the_limit_and_unknown_without_data(self):
+        base = FIXTURE_FOODS[1][3]
+        foods = (FIXTURE_FOODS[1],
+                 ("Q550000", "Kokosöl", None, {**base, "PROT625": ("s", "TR"), "FAT": ("n", "100"), "NA": ("s", "<LOQ")}),
+                 ("F110400", "Apfel getrocknet", None, {**base, "FAT": ("s", "<LOD"), "FIBT": ("s", "<LOD or <LOQ")}),
+                 ("R172000", "Glutamat", None, {**base, "FAT": ("s", "-"), "NA": ("i", " - ")}),
+                 # Only the exact spelling is a marker: anything else in a required component still stops the run.
+                 ("F200001", "Birne, roh", None, {**base, "SE": ("s", "tr")}))
+        fixture_workbook(self.xlsx, foods=foods)
+        manifest = convert(self.xlsx, out_dir=self.out)
+        rows = read_csv(self.out / "bls_4_0.csv")
+        self.assertEqual((rows["Q550000"]["protein"], rows["Q550000"]["sodium"]), ("0", "0"))
+        self.assertEqual((rows["F110400"]["fat"], rows["F110400"]["fiber"]), ("0", "0"))
+        self.assertEqual((rows["R172000"]["fat"], rows["R172000"]["sodium"]), ("", ""))
+        self.assertEqual(rows["F200001"]["selenium"], "")
+        components = manifest["components"]
+        self.assertEqual(components["fat"]["markers"], {"-": 1, "<LOD": 1})
+        self.assertEqual(components["sodium"]["markers"], {"-": 1, "<LOQ": 1})
+        self.assertEqual((components["protein"]["markers"], components["protein"]["non_null"]), ({"TR": 1}, 5))
+        self.assertEqual((components["fat"]["non_null"], components["fat"]["unparsed"]), (4, 0))
+        self.assertEqual((components["selenium"]["unparsed"], components["selenium"]["unparsed_samples"]), (1, ["tr"]))
+        fixture_workbook(self.xlsx, foods=(FIXTURE_FOODS[1], ("Q550000", "Kokosöl", None, {**base, "PROT625": ("s", "Tr")})))
+        with self.assertRaisesRegex(ConvertError, "required component protein \\(PROT625\\) has 1 cell.*'Tr'"):
+            convert(self.xlsx, out_dir=self.directory / "none")
 
     def test_german_thousands_separators_in_text_cells_are_ambiguous(self):
         base = {"ENERCJ": ("n", "100"), "ENERCC": ("n", "24"), "PROT625": ("n", "1"), "FAT": ("n", "1"), "CHO": ("n", "4")}
@@ -550,6 +597,14 @@ class TransformTests(unittest.TestCase):
         self.assertEqual(food.category, classify("Apfel, roh", ["Obst und Obsterzeugnisse"], provider="bls"))
         unknown = self.food("Z999999", "Apfel, roh")  # no main group for Z: no hint
         self.assertEqual(unknown.category, classify("Apfel, roh", [], provider="bls"))
+
+    def test_bls_codes_may_carry_capital_letters_in_positions_3_and_4(self):
+        for code in ("M5B1600", "U57B100", "P2A3000", "M111300"):
+            with self.subTest(code=code):
+                self.assertEqual(self.food(code, "Rotwein trocken").external_id, code)
+        for code in ("m5b1600", "MA51600", "M5B160", "M5B16000", "HINWEIS", "M51600B"):
+            with self.subTest(code=code), self.assertRaises(Reject):
+                self.food(code, "Rotwein trocken")
 
     def test_rows_that_fail_the_quality_rules_are_rejected(self):
         for row, reason in ((csv_row("X1", "Apfel"), "invalid_bls_code"),
