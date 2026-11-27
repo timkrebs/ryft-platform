@@ -159,6 +159,39 @@ step sample from 23:55 to 00:05 belongs to the earlier day. `NULL` when no sampl
 that type arrived. They feed `DailyScore`, `DayDetail.strain` and the trend metrics
 `steps` and `active_kcal`, and nothing else; they do not change strain.
 
+## Fitness tiles (VO2 max, heart-rate recovery, active time)
+
+On a stored day, the API reads the caller's samples by start time in the caller's local calendar
+(D311). All windows include the first local midnight and exclude the last.
+
+- **VO₂ max (`vo2max`)** is the latest reading in ml/kg/min from the start of day − 29 to the
+  start of day + 1. The larger value wins when two readings share a start time. Without a reading,
+  the tile is `null`.
+- **7-day change (`vo2max_delta_7d`)** is that reading minus the latest reading **from the same
+  source** from the start of day − 36 to the start of day − 6. Same source, so two devices with
+  different estimates do not produce a change out of their difference. Both readings must exist,
+  and the latest must fall from the start of day − 6 to the start of day + 1. Round the current value
+  and the difference to one decimal after subtracting the original readings. The shown change can
+  therefore differ by 0.1 from the difference of the two rounded values.
+- **Heart-rate recovery (`hrr_bpm`)** is the mean of the day's plausible `heart_rate_recovery`
+  readings, rounded to one decimal in bpm. The tile is `null` without a usable reading.
+- **Plausibility bounds** (D307 leaves the range check to the readers): a VO₂ max reading counts only
+  from **10 to 100 ml/kg/min** and a recovery reading only from **1 to 120 bpm**, both inclusive
+  (`vo2MaxMin`/`vo2MaxMax`, `hrrMin`/`hrrMax` in `fitness_tiles.go`; `TestVO2MaxOn`, `TestHRRMean`).
+  A reading outside them is ignored as if it had not arrived. HealthKit's estimates lie around
+  15–90 ml/kg/min and the one-minute drop around 5–80 bpm, so the bounds drop only sensor or unit errors.
+- **Active time (`active_min`)** uses the same de-duplicated heart rate, resting heart rate and
+  maximum heart rate as day Strain. From each sample at 50% of heart-rate reserve or higher, count
+  up to the next sample, capped at five minutes. Nonpositive gaps contribute zero. Heart rate
+  contributes zero when maximum heart rate is at or below resting heart rate. Combine those
+  intervals with the day's visible workouts, clip to the local day and count overlapping time once.
+  Round the total to whole minutes. With fewer than two heart-rate points and no workout, the
+  result is `null`. With data but no credited time, it is zero.
+
+Model **2026.11.2** stores active time when scoring a day. Older rows have `null` until rescored.
+The sample-based fields reflect late arrivals and deletions on the next read. A never-scored day
+has `null` for all four tiles.
+
 ## Strength (Train, M3b)
 
 Logged strength sessions (`PUT /v1/sessions/{id}`, completed with `…/complete`) become a
@@ -783,7 +816,7 @@ and muscular-load based, so no stored daily number moves. Net energy is not move
 
 ## Model version
 
-`internal/scoring/version.go` names the model, `ModelVersion = "2026.11.1"`
+`internal/scoring/version.go` names the model, `ModelVersion = "2026.11.2"`
 (year.month.n). Scoring writes it on every `daily_scores` row and every workout it puts
 a load on (`model_version`, migration 0018); rows scored before 2026-10-20 have `null`
 until they are rescored. `GET /v1/model` serves it with the changelog
@@ -830,6 +863,7 @@ digest and the field digest did not (CI runs it: the `golden-guard` job).
 
 | Version | Date | What moved | Decisions |
 | --- | --- | --- | --- |
+| 2026.11.2 | 2026-11-27 | Active time. Scoring persists the union of visible workout time and time in heart-rate zones as `daily_scores.active_min`. The sample-based tiles are computed on read. `affects`: `[]`. | D311 |
 | 2026.11.1 | 2026-11-27 | Recovery without a watch: the check-in estimate (`scoring.CheckinScore`, stored on `recovery_checkins` with its version) and the session-RPE coaching load (`energy.RatedWorkout`); see Check-in recovery. No `daily_scores`, workout or session value moves: the golden files change only in `model_version`. `affects`: `[]`. | D292, D293, D294, D298 |
 | 2026.10.3 | 2026-10-31 | Workouts: one activity, one workout. Same-source copies (same activity, both ends within 120 s, overlap ≥ 50 % of the shorter) are folded to the last upload by ingest; cross-source recordings (same activity or either `other`, overlap ≥ 80 % of the shorter) are shown once, primary by specific activity, own heart rate, length, id. Moves `details.workouts`, which workout carries a session's muscular load (that workout's `strain`, `session_id`, `muscular_load`; `sessions.workout_id`) and the new `workouts.duplicate_of`. `affects`: `[]`, no trend metric (day strain counts the muscular load once whichever workout carries it). | D146, D147 |
 | 2026.10.2 | 2026-10-26 | Strength: the e1RM reference is the best of the 90 days before a session's end, its own sets always included; the history ends at the session's last set when that is after `ended_at`; assisted bodyweight sets count with the support taken off and hold no record; `pct_1rm` targets use the same 90-day e1RM. `affects`: `strain` and `volume_kg` directly; `sleep`, `sleep_quality`, `recovery` and `readiness` through the next night's need (3 min per strain point) and the readiness penalty. | D134, D135, D138 |

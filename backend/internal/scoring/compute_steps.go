@@ -208,6 +208,7 @@ func strainRHR(rhr *float64, b baselineSet) float64 {
 // workouts with the cross-source duplicates among them.
 type strainDay struct {
 	hr       StrainResult
+	active   *int
 	dups     map[uuid.UUID]uuid.UUID // the day's hidden duplicate → primary
 	strength strengthDay
 	workouts []model.Workout // hidden duplicates included
@@ -222,7 +223,8 @@ func (e *Engine) strain(ctx context.Context, userID uuid.UUID, day string, d tim
 	if err != nil {
 		return out, err
 	}
-	out.hr = Strain(hrPoints(DedupSources(hrSamples)), rhr, maxHR)
+	points := hrPoints(DedupSources(hrSamples))
+	out.hr = Strain(points, rhr, maxHR)
 
 	// Cross-source duplicates before the sessions: a session attaches to a
 	// workout the user sees, so the hiding must be decided first (D147, D60;
@@ -240,6 +242,13 @@ func (e *Engine) strain(ctx context.Context, userID uuid.UUID, day string, d tim
 	if out.workouts, err = e.st.WorkoutsBetween(ctx, userID, dayStart, dayEnd); err != nil {
 		return out, err
 	}
+	var workouts [][2]time.Time
+	for _, w := range out.workouts {
+		if _, hidden := out.dups[w.ID]; !hidden {
+			workouts = append(workouts, [2]time.Time{w.Start, w.End})
+		}
+	}
+	out.active = ActiveMinutes(points, rhr, maxHR, workouts, dayStart, dayEnd)
 	return out, e.workoutLoads(ctx, userID, out.workouts, rhr, maxHR)
 }
 
@@ -395,6 +404,7 @@ func scoreRow(p dayScore) store.ScoreRow {
 	version := ModelVersion
 	row := model.DailyScore{
 		Day: p.day, Readiness: readiness, State: state, Recovery: recovery, Strain: strain, Steps: p.steps, ActiveKcal: p.kcal,
+		ActiveMin:        p.strain.active,
 		SleepPerformance: s.performance,
 		SleepNeedMin:     &need, SleepActualMin: actual, SleepDebtMin: &s.debt,
 		HRVms: p.night.hrv, RHR: p.night.rhr, RespRate: p.night.resp, SpO2: p.night.spo2,

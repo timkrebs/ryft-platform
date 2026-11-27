@@ -8,16 +8,18 @@ import (
 
 // Sample types. Keep in sync with HealthKitManager.swift.
 const (
-	SampleHeartRate       = "heart_rate"       // bpm
-	SampleHRVSDNN         = "hrv_sdnn"         // ms
-	SampleHRVRMSSD        = "hrv_rmssd"        // ms; what a direct connection delivers (D257), never an SDNN
-	SampleRestingHR       = "resting_hr"       // bpm, one per day from HealthKit
-	SampleRespiratoryRate = "respiratory_rate" // breaths/min
-	SampleSpO2            = "spo2"             // percent 0..100
-	SampleVO2Max          = "vo2max"           // ml/kg/min
-	SampleActiveEnergy    = "active_energy"    // kcal
-	SampleSteps           = "steps"            // count
-	SampleBodyMass        = "body_mass"        // kg
+	SampleHeartRate         = "heart_rate"          // bpm
+	SampleHRVSDNN           = "hrv_sdnn"            // ms
+	SampleHRVRMSSD          = "hrv_rmssd"           // ms; what a direct connection delivers (D257), never an SDNN
+	SampleRestingHR         = "resting_hr"          // bpm, one per day from HealthKit
+	SampleRespiratoryRate   = "respiratory_rate"    // breaths/min
+	SampleSpO2              = "spo2"                // percent 0..100
+	SampleVO2Max            = "vo2max"              // ml/kg/min
+	SampleActiveEnergy      = "active_energy"       // kcal
+	SampleBasalEnergy       = "basal_energy"        // kcal
+	SampleHeartRateRecovery = "heart_rate_recovery" // bpm, one-minute drop
+	SampleSteps             = "steps"               // count
+	SampleBodyMass          = "body_mass"           // kg
 )
 
 // KnownSampleTypes is the set of Sample.Type values ingest stores. Any other type is
@@ -27,6 +29,7 @@ var KnownSampleTypes = map[string]bool{
 	SampleHeartRate: true, SampleHRVSDNN: true, SampleRestingHR: true,
 	SampleRespiratoryRate: true, SampleSpO2: true, SampleVO2Max: true,
 	SampleActiveEnergy: true, SampleSteps: true, SampleBodyMass: true, SampleHRVRMSSD: true,
+	SampleBasalEnergy: true, SampleHeartRateRecovery: true,
 }
 
 // Sleep stages, mirroring HKCategoryValueSleepAnalysis.
@@ -120,6 +123,7 @@ const (
 var SampleKinds = map[string]string{
 	SampleHeartRate: KindHR, SampleRestingHR: KindHR, SampleVO2Max: KindHR, SampleHRVSDNN: KindHRV, SampleHRVRMSSD: KindHRV,
 	SampleRespiratoryRate: KindResp, SampleSpO2: KindSpO2, SampleActiveEnergy: KindEnergy, SampleSteps: KindSteps,
+	SampleBasalEnergy: KindEnergy, SampleHeartRateRecovery: KindHR,
 }
 
 // UserSource is an app or device that sent data recently (User.sources).

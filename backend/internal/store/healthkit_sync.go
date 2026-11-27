@@ -28,6 +28,19 @@ func (s *Store) HealthKitBodyMassAllowed(ctx context.Context, user uuid.UUID) (b
 	return err == nil && (allowlisted || flags.Bucket(user, model.FlagNutrition) < percentage), err
 }
 
+// SyncFitnessTypesAllowed evaluates the sync.fitness_types flag for ingest (D304, D307) through
+// sync_fitness_types_rollout (0069), which shows ingest the calling account's membership only. A missing or
+// disabled flag is off. The consent half of the gate is the caller's.
+func (s *Store) SyncFitnessTypesAllowed(ctx context.Context, user uuid.UUID) (bool, error) {
+	var allowlisted bool
+	var percentage int
+	err := s.pool.QueryRow(ctx, `SELECT allowlisted, rollout_pct FROM public.sync_fitness_types_rollout($1)`, user).Scan(&allowlisted, &percentage)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && (allowlisted || flags.Bucket(user, model.FlagSyncFitnessTypes) < percentage), err
+}
+
 func (s *Store) healthKitTx(ctx context.Context, user uuid.UUID, grant *model.Consent, fn func(pgx.Tx) error) error {
 	return pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, lockApply, user); err != nil {

@@ -92,17 +92,26 @@ func TestScreen(t *testing.T) {
 			{Type: "blood_glucose", Start: at(-time.Hour), End: at(-time.Hour)},
 			{Type: model.SampleSteps, Start: at(30 * time.Hour), End: at(30 * time.Hour)},
 			{Type: model.SampleSteps, Start: at(-401 * 24 * time.Hour), End: at(-401 * 24 * time.Hour)},
-			{Type: model.SampleSteps, Start: at(23 * time.Hour), End: at(23 * time.Hour)}},
+			{Type: model.SampleSteps, Start: at(23 * time.Hour), End: at(23 * time.Hour)},
+			{Type: model.SampleBasalEnergy, Start: now, End: now},
+			{Type: model.SampleHeartRateRecovery, Start: now, End: now},
+			{Type: model.SampleHeartRateRecovery, Start: now, End: now, WasUserEntered: true},
+			{Type: model.SampleBasalEnergy, Start: now, End: now, Source: "ryft-direct-garmin"},
+			{Type: model.SampleBodyMass, Start: now, End: now, WasUserEntered: true}},
 		Sleep: []model.SleepSegment{{Start: at(-8 * time.Hour), End: at(-time.Hour), Stage: "core"},
 			{Start: at(-8 * time.Hour), End: at(-time.Hour), Stage: "nap"}},
 		Workouts: []model.Workout{{ID: uuid.New(), Start: at(-2 * time.Hour), End: at(-time.Hour)},
 			{ID: uuid.New(), Start: at(48 * time.Hour), End: at(49 * time.Hour)}},
 	}
 	ig := screen(&req, now)
-	want := model.SyncIgnored{Samples: model.IgnoredCounts{OutsideWindow: 2, UnknownType: 1},
+	want := model.SyncIgnored{Samples: model.IgnoredCounts{OutsideWindow: 2, UnknownType: 3},
 		Sleep: model.IgnoredCounts{UnknownType: 1}, Workouts: model.IgnoredCounts{OutsideWindow: 1}}
-	if ig != want || len(req.Samples) != 2 || len(req.Sleep) != 1 || len(req.Workouts) != 1 {
+	if ig != want || len(req.Samples) != 5 || len(req.Sleep) != 1 || len(req.Workouts) != 1 {
 		t.Fatalf("ignored %+v, kept %d/%d/%d", ig, len(req.Samples), len(req.Sleep), len(req.Workouts))
+	}
+	if req.Samples[2].Type != model.SampleBasalEnergy || req.Samples[3].Type != model.SampleHeartRateRecovery ||
+		req.Samples[4].Type != model.SampleBodyMass || !req.Samples[4].WasUserEntered {
+		t.Fatal("valid fitness samples and user-entered body mass should pass screening")
 	}
 	// An unknown type no longer fails the sync (it is ignored instead).
 	if err := validate(&model.SyncRequest{DeviceID: uuid.New(), Samples: []model.Sample{{Type: "x", Start: now, End: now}}}); err != nil {

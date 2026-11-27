@@ -387,6 +387,8 @@ type handler struct {
 	accounts      *accounts
 	engine        *scoring.Engine // pure scoring with store lookups, for session completion
 	beta          config.Beta
+	// namesFitness reports whether the policy covers the new sample types; nil is model.NamesProfileBody.
+	namesFitness func(string) bool
 	// emails answers the confirmed email of an account, for a code bound to an email; nil: no code binds.
 	emails inviteEmails
 	// binding says whether email-bound invites work now (the Supabase project confirms emails); nil: they do not.

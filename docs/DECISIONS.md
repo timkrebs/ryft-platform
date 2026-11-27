@@ -7522,3 +7522,75 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   unchanged.
 - **Cost:** the merge transaction now also deletes `from`; it is bounded by `deleteTimeout` and the route is
   admin-only. Rollback: revert; no migration.
+
+## D307 — The new sync types behind sync.fitness_types: how the guard is wired (C1 PR 3, 2026-11-27)
+
+- **Context:** D304 lets `POST /v1/sync` store `basal_energy`, `heart_rate_recovery` and `body_mass` (for every
+  account) only while `sync.fitness_types` is on **and** the consent is to a policy version that names them. D305
+  (profile, PR 1) is the parallel PR that reads the same flag and the same policy list.
+- **One policy list, shared with PR 1:** `model.NamesProfileBody` over `profileBodyPolicyVersions` (empty), byte for
+  byte as in PR 1, in `model/fitness_types.go`. The bundled privacy update adds its version there, so the profile
+  gate and the sync gate open together. Whichever PR merges second drops its copy of the constant and the function.
+- **Ingest reads the flag through a function, not the table:** `public.sync_fitness_types_rollout(uuid)` (migration
+  0069, `SECURITY DEFINER`) returns the caller's allow-list membership and the percentage, as
+  `healthkit_body_mass_rollout` (0052) does. Ingest gets no grant on `feature_flags`, so it sees no other flag and no
+  allow-list. The lookup runs only when a request carries one of the three types or their cursor.
+- **`body_mass`:** stored when the pilot allows it (unchanged) or the Fitness gate does. Otherwise the three types,
+  and a cursor for their stream, are dropped as `ignored.samples.unknown_type`. The answer is `200` and the rest of
+  the request is unchanged. No new `422`: the new types get no range check, like the other quantities, and scoring
+  (PRs 4 and 5) filters implausible values when it reads them. `was_user_entered` stays dropped for every type but
+  `body_mass`.
+- **The grant is re-checked whenever the gate admits a type:** with `CONSENT_ENFORCE` off or `warn` a sync normally
+  writes without a grant. When the Fitness gate admits a stream, the request runs as under `on`: both write
+  transactions require the exact consent the gate read (`requireGrant`, under the withdrawal lock). A withdrawal
+  between the phases then ends in `403 consent_required`, as it does under `on`. The refusal is counted under the
+  configured mode (`ryft_gate_refusals_total`), so an `off` deployment shows no `on` refusal.
+- **Direct connections never store the three types:** `screenRecord` fails a record that carries one (`parse`),
+  because D304 gates them on sync only. No adapter emits them today.
+- **Order:** screening runs before the gate, as on the pilot path. A gated sample outside the window is counted
+  `outside_window`, not `unknown_type`: either way it is not stored.
+- **`GET /v1/config` reports the whole gate:** `flags["sync.fitness_types"]` is `true` only when the flag is on **and**
+  the active consent names the types. API.md defines the flag as true "when the server stores" the types "for this
+  account", and the app moves its HealthKit anchors on it. A tester allow-listed before consenting to the new policy
+  therefore sees `false` and loses no samples. API.md is unchanged.
+- **Kinds:** `basal_energy` → `energy`, `heart_rate_recovery` → `hr`, `body_mass` none (D304). A source that sends only
+  recovery samples therefore counts as a heart-rate source for the "no heart rate" insight; one that records recovery
+  records heart rate too. `samples_7d` is not
+  served on main yet (a known drift), so its new keys wait for it.
+- **Erasure and merge:** both are type-agnostic on `samples` (`DELETE FROM samples WHERE user_id`, the merge's move). A `deleted` entry still removes a stored sample
+  after the flag is turned off (tested).
+- **Rollback:** revert. Migration 0069 only adds a flag row and a function, and nothing is stored while the policy
+  list is empty.
+
+## D311 — Read fitness samples on the day routes and store active time (C1 PR 5, 2026-11-27)
+
+- **VO₂ max, its 7-day change and heart-rate recovery are readings.** The two day routes fill
+  the three fields only on stored scores, using each sample's start in the caller's local calendar.
+  One user-scoped VO₂ max query covers the span from 37 days before the first score to midnight
+  after the last. One user-scoped recovery query covers the scored rows' span, with the same end.
+  The sample reads keep a fixed query count even across long ranges. Late and deleted samples show
+  on the next request. Same-start VO₂ max ties take the larger reading, and the change uses the
+  original readings before rounding. The never-scored placeholder has four `null` fitness fields.
+- **Bounds and sources.** As D307 promised, the readers filter implausible values. VO₂ max counts from
+  10 to 100 ml/kg/min and recovery from 1 to 120 bpm, both inclusive; a value outside is ignored. The
+  tile shows the newest reading from any source. The 7-day change compares it only with an earlier
+  reading from the same source, so a second device's different estimate is not shown as a change.
+- **The read uses the samples already stored for the caller.** The ingest flag and policy gate
+  control storage (D307). A day request can return the caller's stored readings after the flag
+  turns off. The feature adds no sample-value logging.
+- **Active time belongs in the scoring pass.** It already has the de-duplicated heart-rate points
+  and reserve used for day Strain, plus the day's workouts and duplicate decisions. Counting the
+  union of visible workout time and zone time there keeps raw heart rate off the unbounded day
+  range route. Migration 0071 adds a nullable `active_min` with a nonnegative check. `NULL` on
+  earlier scores persists until rescore. Active time is a result, so changing it does not trigger
+  a rescore of days later in its history window.
+- **Model 2026.11.2** records active time. Existing score values stay the same, and `affects` is
+  `[]`. Rescoring fills historical active time. The migration can remain if the code is reverted.
+- **Split from the contract plan.** The contract's plan (#264, PR 5 row) put all four in the scoring pass,
+  and the brief asked for all four on read. Each half takes the cheaper path: the readings on read, and
+  active time in the pass, because `GET /v1/days` has no range cap and raw heart rate per request would be
+  unbounded.
+- **Known edges.** Workouts count on the day they start (the pass's `WorkoutsBetween`), so the minutes
+  after midnight of a late workout count on the next day only through its heart rate. After a rollback to
+  an older scoring image, that image's upsert does not write `active_min`, so a re-scored row keeps the newer
+  value, possibly stale, until the next 2026.11.2 pass. Accepted: it is one display field, and a rollback is followed by a rescore anyway.
