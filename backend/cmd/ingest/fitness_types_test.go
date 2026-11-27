@@ -56,7 +56,7 @@ func TestDropGated(t *testing.T) {
 	}
 }
 
-// A direct connection never stores the D304 types: they are gated on sync only (D306).
+// A direct connection never stores the D304 types: they are gated on sync only (D307).
 func TestConnectionsRefuseGatedTypes(t *testing.T) {
 	now := time.Now()
 	c := &connectHook{now: func() time.Time { return now }}

@@ -28,7 +28,7 @@ func (s *Store) HealthKitBodyMassAllowed(ctx context.Context, user uuid.UUID) (b
 	return err == nil && (allowlisted || flags.Bucket(user, model.FlagNutrition) < percentage), err
 }
 
-// SyncFitnessTypesAllowed evaluates the sync.fitness_types flag for ingest (D304, D306) through
+// SyncFitnessTypesAllowed evaluates the sync.fitness_types flag for ingest (D304, D307) through
 // sync_fitness_types_rollout (0069), which shows ingest the calling account's membership only. A missing or
 // disabled flag is off. The consent half of the gate is the caller's.
 func (s *Store) SyncFitnessTypesAllowed(ctx context.Context, user uuid.UUID) (bool, error) {

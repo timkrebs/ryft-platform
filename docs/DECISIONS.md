@@ -7523,7 +7523,7 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
 - **Cost:** the merge transaction now also deletes `from`; it is bounded by `deleteTimeout` and the route is
   admin-only. Rollback: revert; no migration.
 
-## D306 — The new sync types behind sync.fitness_types: how the guard is wired (C1 PR 3, 2026-11-27)
+## D307 — The new sync types behind sync.fitness_types: how the guard is wired (C1 PR 3, 2026-11-27)
 
 - **Context:** D304 lets `POST /v1/sync` store `basal_energy`, `heart_rate_recovery` and `body_mass` (for every
   account) only while `sync.fitness_types` is on **and** the consent is to a policy version that names them. D305

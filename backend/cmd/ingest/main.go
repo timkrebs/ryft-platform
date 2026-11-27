@@ -269,7 +269,7 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 	userID := user.ID
 	forceGrant := false
 	if hasSampleStream(req, gatedType) {
-		// D304, D306: the flag and a consent (auth loads the active one) to a policy that names the types.
+		// D304, D307: the flag and a consent (auth loads the active one) to a policy that names the types.
 		on, err := h.st.SyncFitnessTypesAllowed(ctx, userID)
 		if err != nil {
 			h.unavailable(w, r, fmt.Errorf("fitness sample types: %w", err))
@@ -289,7 +289,7 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		// A stream admitted by the Fitness gate needs its grant rechecked in both transactions,
-		// whatever CONSENT_ENFORCE says (D306).
+		// whatever CONSENT_ENFORCE says (D307).
 		forceGrant = fitness && hasSampleStream(req, func(typ string) bool {
 			return !keepGated(typ, pilot, false)
 		})

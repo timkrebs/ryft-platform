@@ -1,4 +1,4 @@
--- D304, D306: POST /v1/sync stores basal_energy, heart_rate_recovery and body_mass for an account only while
+-- D304, D307: POST /v1/sync stores basal_energy, heart_rate_recovery and body_mass for an account only while
 -- this flag is on for it and its consent is to a policy version that names the types (model.NamesProfileBody).
 -- That list is empty until the bundled privacy update, so the flag admits nothing yet. Seeded dark: enabled at
 -- 0 %, so only the allow-list turns it on (as recovery.checkin, 0066). Never overwritten: a later change through

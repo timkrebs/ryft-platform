@@ -440,7 +440,7 @@ func (c *connectHook) screenRecord(row store.InboxItem, rec connect.Records, loc
 	}
 	for _, s := range rec.Samples {
 		switch {
-		// The D304 types are gated on sync (flag and policy version, D306); no connection may store them.
+		// The D304 types are gated on sync (flag and policy version, D307); no connection may store them.
 		case !model.KnownSampleTypes[s.Type] || gatedType(s.Type) || s.End.Before(s.Start):
 			return r, "parse"
 		case outside(s.Start, s.End):
