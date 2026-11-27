@@ -56,14 +56,15 @@ def arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def refuse_staples_over_full_bls(conn, staples_version: str) -> None:
+def refuse_staples_over_full_bls(conn) -> None:
     """The staples-only BLS path must not write over a full BLS import: it would replace the three staples' CSV
-    nutrients with the curated subset (a new version, so `updated`). A full import's version is the staples-only
-    version plus ":<digest>". Read-only; without a connection (a dry run) there is nothing to protect."""
+    nutrients with the curated subset (a new version, so `updated`). Only a full import writes BLS foods other than
+    the curated staples, so any such source marks one, whatever the version. Read-only; without a connection (a dry
+    run) there is nothing to protect."""
     if conn is None:
         return
-    if conn.execute("SELECT 1 FROM nutrition.food_sources WHERE provider='bls' AND starts_with(dataset_version, %s) "
-                    "LIMIT 1", (f"{staples_version}:",)).fetchone():
+    if conn.execute("SELECT 1 FROM nutrition.food_sources WHERE provider='bls' AND NOT (external_id = ANY(%s)) LIMIT 1",
+                    (sorted(STAPLES["bls"]),)).fetchone():
         raise ValueError("the catalog holds the full BLS import; the staples-only path (--no-bls-csv, or an image "
                          "without data/bls_4_0.csv) would overwrite its staples. Use the image with the extract.")
 
@@ -106,6 +107,9 @@ def run(args: argparse.Namespace) -> None:
     limit = None if args.full else args.limit
     with ExitStack() as stack:
         conn = stack.enter_context(connect()) if args.write else None
+        bls_csv = args.bls_csv or (None if args.no_bls_csv or not BLS_CSV_PATH.is_file() else BLS_CSV_PATH)
+        if args.source in ("all", "bls") and bls_csv is None:
+            refuse_staples_over_full_bls(conn)  # before any source runs, so a refused run writes nothing
         client = stack.enter_context(httpx.Client(headers=CLIENT_HEADERS, timeout=45, follow_redirects=True, max_redirects=4))
         if args.source in ("all", "off"):
             release = resolve_off(client, args.off_parquet)
@@ -141,16 +145,15 @@ def run(args: argparse.Namespace) -> None:
                                   "has_category_table": "food_category.csv" in files,
                                   **result_metadata, **result}, sort_keys=True), flush=True)
         if args.source in ("all", "bls"):
-            csv_path = args.bls_csv or (None if args.no_bls_csv or not BLS_CSV_PATH.is_file() else BLS_CSV_PATH)
+            csv_path = bls_csv
             if csv_path is None:
                 # Without the extract (or with --no-bls-csv): the three curated staples under the staples-only version.
                 # Their attribution is the full citation since D296's data commit, so over the earlier staples-only
-                # rows this gives 3 `conflict` (same version, new checksum), and over a full import it is refused.
+                # rows this gives 3 `conflict` (same version, new checksum); over a full import run() refused it above.
                 ids = list(STAPLES["bls"])[:limit]
                 batches = ([{"external_id": external_id} for external_id in ids[start:start + args.batch_size]]
                            for start in range(0, len(ids), args.batch_size))
                 version = f"{PIPELINE_VERSION}:bls_4_0:staples{STAPLES['version']}"
-                refuse_staples_over_full_bls(conn, version)
                 result = process(batches, bls_food, version, conn, "bls", lambda: {"bls_full": False})
             else:
                 # The extract must be the one its manifest describes, and the whole file is checked before the first batch.

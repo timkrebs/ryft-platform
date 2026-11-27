@@ -625,12 +625,12 @@ class TransformTests(unittest.TestCase):
             def fetchone(self):
                 return self.row
 
-        refuse_staples_over_full_bls(None, "py-etl4:bls_4_0:staples2")  # a dry run has nothing to protect
+        refuse_staples_over_full_bls(None)  # a dry run has nothing to protect
         empty = Rows(None)
-        refuse_staples_over_full_bls(empty, "py-etl4:bls_4_0:staples2")
-        self.assertEqual(empty.calls[0][1], ("py-etl4:bls_4_0:staples2:",))
+        refuse_staples_over_full_bls(empty)  # only the curated staples so far: the staples-only path may write
+        self.assertEqual(empty.calls[0][1], (sorted(STAPLES["bls"]),))  # any other BLS food, under any version
         with self.assertRaisesRegex(ValueError, "holds the full BLS import"):
-            refuse_staples_over_full_bls(Rows((1,)), "py-etl4:bls_4_0:staples2")
+            refuse_staples_over_full_bls(Rows((1,)))
 
     def test_bls_codes_may_carry_capital_letters_in_positions_3_and_4(self):
         for code in ("M5B1600", "U57B100", "P2A3000", "M111300"):
@@ -968,6 +968,9 @@ class PostgresTests(unittest.TestCase):
                 second = run()
                 self.assertEqual(second["counts"], {"processed": 4, "accepted": 3, "skipped": 1, "unchanged": 3, "duplicates": 0,
                                                     "rejected": 0, "updated": 0, "inserted": 0, "conflict": 0})
+                # The real query, as the ETL role under RLS: after a full import the staples-only path is refused.
+                with self.assertRaisesRegex(ValueError, "holds the full BLS import"):
+                    refuse_staples_over_full_bls(db)
                 db.execute("RESET ROLE")
 
                 self.assertEqual(dict(db.execute("""SELECT external_id, license_identifier FROM nutrition.food_sources

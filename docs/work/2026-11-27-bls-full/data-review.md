@@ -10,4 +10,16 @@ Reviewer: code-reviewer, read-only, on commits e68c290 and 3f199b1. No blockers.
 | 4 | nit | D296: after markers become 0, "measured 0" and "below the limit" can't be told apart. | fixed |
 | 5 | nit | X/Y codes (about 2,000 dishes) have no `BLS_MAIN_GROUPS` hint. This predates the branch. | noted in D296 |
 
+## Re-verification of 25bdaa0 (code-reviewer)
+
+No blockers. All 20 twins check out: each code and name is in the CSV, and each staple is in the same state. Counts agree.
+
+| # | Severity | Finding | Status |
+|---|---|---|---|
+| 6 | should-fix | `refuse_staples_over_full_bls` matches only today's version prefix. After a `STAPLES['version']`/`PIPELINE_VERSION` bump it no longer finds today's full import. | fixed: it checks for any `bls` source outside the curated staples, under any version |
+| 7 | should-fix | No Postgres test runs the real SQL of the guard. | fixed: an assertion in `PostgresTests` after the first write |
+| 8 | nit | With `--source all --no-bls-csv --write`, the refusal comes after the OFF/USDA writes. | fixed: checked before the first source |
+| 9 | nit | `scripts/etl/README.md`: the candidate rule still says "erstes Komma-Segment". | fixed |
+| 10 | nit | `docs/STATUS.md`: "behaves exactly as before (3 staples, unchanged)" is stale. | fixed |
+
 Checked and sound: the attribution length (≈153 ≤ 300) and the DOI `source_url`; the code pattern is identical in the converter, transform and 0062; nothing else assumes 7 digits; the uuid5 IDs; the 0062/0063 split; `migrate_nutrition_test.go` logic; the marker counting and the thousands-check bypass; the colon in header codes (no new ambiguity); the three twins; the counts; a CSV spot check.
