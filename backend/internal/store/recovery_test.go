@@ -741,7 +741,9 @@ func TestStoredN2RNightIgnoresACheckinBedtime(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	recoveryFlag(t, st, a)
+	// The flag through the root pool: nutritionTestStore's exec-mode pool has no []uuid.UUID → uuid[] mapping
+	// (db.registerTypes adds it on the services' pools), so PutFlag's allow-list would not encode here.
+	recoveryFlag(t, New(root), a)
 	rep := CheckinReport{Bedtime: utc("2026-10-18T21:30:00Z"), WakeTime: utc("2026-10-19T05:30:00Z"), Quality: 6, Freshness: 6}
 	if _, err := st.PutCheckin(ctx, a, "2026-10-19", rep, now, fakeScorer); err != nil {
 		t.Fatal(err)
