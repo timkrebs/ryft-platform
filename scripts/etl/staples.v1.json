@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "bls": {
     "M111300": {
       "group": "milk",
@@ -249,7 +249,9 @@
       "names": {"de": "Salatgurke", "en": "Cucumber"},
       "subtitles": {"de": "Roh, mit Schale", "en": "Raw, with peel"},
       "aliases": {"de": ["Gurke", "Gurken", "Salatgurken"], "en": ["Cucumbers"]},
-      "portions": {}
+      "portions": {
+        "half_200_g": {"preset_grams": 200, "order": 1, "default": true, "labels": {"de": "½ Salatgurke (200 g)", "en": "½ cucumber (200 g)"}, "short_labels": {"de": "½ Gurke", "en": "½ cucumber"}}
+      }
     },
     "170108": {
       "source_description": "Peppers, sweet, red, raw",
@@ -284,7 +286,9 @@
       "names": {"de": "Naturjoghurt", "en": "Plain yogurt"},
       "subtitles": {"de": "Natur, Vollmilch", "en": "Plain, whole milk"},
       "aliases": {"de": ["Joghurt", "Joghurt natur"], "en": ["Yogurt"]},
-      "portions": {}
+      "portions": {
+        "pot_150_g": {"preset_grams": 150, "order": 1, "default": true, "labels": {"de": "1 Becher (150 g)", "en": "1 pot (150 g)"}, "short_labels": {"de": "Becher", "en": "Pot"}}
+      }
     }
   }
 }

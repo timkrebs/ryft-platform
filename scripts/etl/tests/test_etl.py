@@ -89,9 +89,14 @@ SR_TABLE = (
     ("fl oz", "1", 31.0, "30 ml", "30 ml", "30 ml", "30 ml", 85),
     ("fl oz", "2", 61.0, "59 ml", "59 ml", "59 ml", "59 ml", 85),
     ("piece", "1", 25.0, "1 piece", "1 Stück", "1 piece", "1 Stück", 41),
-    ("wedge", "1", 20.0, "1 wedge", None, None, None, None),
-    ('stalk, medium (7-1/2" to 8" long)', "1", 41.0, "1 stalk, medium", None, None, None, None),
-    ("loaf (1 lb)", "1", 450.0, "1 loaf", None, None, None, None),
+    ("wedge", "1", 20.0, "1 wedge", "1 Spalte", "1 wedge", "1 Spalte", 45),
+    ('stalk, medium (7-1/2" to 8" long)', "1", 41.0, "1 stalk, medium", "1 Stange, mittel", "1 stalk, medium",
+     "1 Stange, mittel", 47),
+    ("loaf (1 lb)", "1", 450.0, "1 loaf", "1 Laib", "1 loaf", "1 Laib", 86),
+    # Heads no table knows (D313: still counted by the dry run, still English only).
+    ("dollop", "1", 17.5, "1 dollop", None, None, None, None),
+    ("handful", "1", 33.5, "1 handful", None, None, None, None),
+    ("squirt", "1", 7.5, "1 squirt", None, None, None, None),
     ("undetermined", "1", 77.0, "77 g", "77 g", "77 g", "77 g", None),
 )
 
@@ -286,38 +291,63 @@ class PipelineTests(unittest.TestCase):
             row = next(usda_rows(db, files, 1, 1, data_type="foundation_food"))[0]
         self.assertEqual(row["fdc_id"], "12345")
 
-    def test_usda_stale_archive_retry_and_previous_release(self):
+    def test_usda_stale_archive_is_retried_on_the_newest_release(self):
+        """D313: a stale first response is retried with a fresh URL, and the newest release is what comes back."""
         good = self.archive.read_bytes()
-        with io.BytesIO() as buffer:
-            with zipfile.ZipFile(buffer, "w") as archive:
-                archive.writestr("release/foundation_food.csv", "fdc_id\n12345\n")
-            stale = buffer.getvalue()
-
-        latest = Release("https://fdc.nal.usda.gov/current.zip", "2026-10-29")
-        previous = Release("https://fdc.nal.usda.gov/previous.zip", "2026-04-30")
-        for retry_is_complete in (True, False):
-            with self.subTest(retry_is_complete=retry_is_complete):
-                requested = []
+        for complete_from in (1, 2, 3):
+            with self.subTest(complete_from=complete_from):
+                requests = []
+                stale = io.BytesIO()
+                with zipfile.ZipFile(stale, "w") as archive:
+                    archive.writestr("release/foundation_food.csv", "fdc_id\n12345\n")
 
                 def handler(request):
-                    url = request.url
-                    requested.append(url)
-                    complete = url.path == "/previous.zip" or (url.query and retry_is_complete)
-                    return httpx.Response(200, content=good if complete else stale)
+                    requests.append(request)
+                    return httpx.Response(200, content=good if len(requests) >= complete_from else stale.getvalue())
 
+                latest = Release("https://fdc.nal.usda.gov/current.zip", "2026-10-29")
+                previous = Release("https://fdc.nal.usda.gov/previous.zip", "2026-04-30")
                 with httpx.Client(transport=httpx.MockTransport(handler)) as client:
                     archive, files, selected = stage_usda(client, [latest, previous], self.directory)
                 self.assertEqual(archive.read_bytes(), good)
                 self.assertIn(b"Apples, raw", files["food.csv"].read_bytes())
-                self.assertEqual(requested[0].query, b"")
-                self.assertEqual(requested[1].path, requested[0].path)
-                self.assertIn("ryft_retry", requested[1].params)
-                self.assertEqual([url.path for url in requested[2:]], [] if retry_is_complete else ["/previous.zip"])
-                self.assertEqual(selected.version, latest.version if retry_is_complete else previous.version)
+                self.assertEqual(selected, latest)
+                self.assertEqual([request.url.path for request in requests], ["/current.zip"] * complete_from)
+                # Every attempt asks for a URL of its own.
+                tokens = [request.url.params["ryft_retry"] for request in requests]
+                self.assertEqual(len(set(tokens)), complete_from)
 
-        with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, content=stale))) as client:
-            with self.assertRaisesRegex(MissingUSDATables, "2026-10-29.*food.csv, food_nutrient.csv"):
-                stage_usda(client, [latest], self.directory)
+    def test_usda_stale_archive_three_times_fails_without_the_older_release(self):
+        requested = []
+        stale = io.BytesIO()
+        with zipfile.ZipFile(stale, "w") as archive:
+            archive.writestr("release/foundation_food.csv", "fdc_id\n12345\n")
+
+        def handler(request):
+            requested.append(request)
+            return httpx.Response(200, content=stale.getvalue())
+
+        latest = Release("https://fdc.nal.usda.gov/current.zip", "2026-10-29")
+        previous = Release("https://fdc.nal.usda.gov/previous.zip", "2026-04-30")
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            with self.assertRaisesRegex(MissingUSDATables,
+                                        "2026-10-29.*food.csv, food_nutrient.csv.*after 3 attempts"):
+                stage_usda(client, [latest, previous], self.directory)
+        self.assertEqual([request.url.path for request in requested], ["/current.zip"] * 3)
+        self.assertNotIn("/previous.zip", [request.url.path for request in requested])
+
+    def test_usda_archive_requests_are_not_cacheable(self):
+        requested = []
+
+        def handler(request):
+            requested.append(request)
+            return httpx.Response(200, content=self.archive.read_bytes())
+
+        release = Release("https://fdc.nal.usda.gov/current.zip", "2026-10-29")
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            stage_usda(client, [release], self.directory)
+        [request] = requested
+        self.assertEqual((request.headers["Cache-Control"], request.headers["Pragma"]), ("no-cache", "no-cache"))
 
     def test_off_recovery_nutrients_keep_units_and_basis(self):
         with connection(self.directory, 128) as db:
@@ -396,6 +426,49 @@ class PortionLabelTests(unittest.TestCase):
             ("nlea_serving", ("serving", "servings"), ("Portion", "Portionen"), 88, "nlea"),
             ("oz", ("oz", "oz"), ("oz", "oz"), 90, "mass"),
             ("lb", ("lb", "lb"), ("lb", "lb"), 92, "mass"),
+            # D313
+            ("item", ("item", "items"), ("Stück", "Stück"), 41, "count"),
+            ("fruit", ("fruit", "fruits"), ("Frucht", "Früchte"), 43, "count"),
+            ("wedge", ("wedge", "wedges"), ("Spalte", "Spalten"), 45, "count"),
+            ("stalk", ("stalk", "stalks"), ("Stange", "Stangen"), 47, "count"),
+            ("spear", ("spear", "spears"), ("Stange", "Stangen"), 49, "count"),
+            ("stick", ("stick", "sticks"), ("Stange", "Stangen"), 51, "count"),
+            ("leaf", ("leaf", "leaves"), ("Blatt", "Blätter"), 53, "count"),
+            ("clove", ("clove", "cloves"), ("Zehe", "Zehen"), 55, "count"),
+            ("head", ("head", "heads"), ("Kopf", "Köpfe"), 57, "count"),
+            ("bunch", ("bunch", "bunches"), ("Bund", "Bund"), 59, "count"),
+            ("sprig", ("sprig", "sprigs"), ("Zweig", "Zweige"), 61, "count"),
+            ("pod", ("pod", "pods"), ("Schote", "Schoten"), 63, "count"),
+            ("strip", ("strip", "strips"), ("Streifen", "Streifen"), 65, "count"),
+            ("ring", ("ring", "rings"), ("Ring", "Ringe"), 66, "count"),
+            ("pat", ("pat", "pats"), ("Stück", "Stück"), 67, "count"),
+            ("steak", ("steak", "steaks"), ("Steak", "Steaks"), 68, "count"),
+            ("chop", ("chop", "chops"), ("Kotelett", "Koteletts"), 69, "count"),
+            ("pinch", ("pinch", "pinches"), ("Prise", "Prisen"), 71, "count"),
+            ("drumstick", ("drumstick", "drumsticks"), ("Unterkeule", "Unterkeulen"), 73, "count"),
+            ("thigh", ("thigh", "thighs"), ("Oberkeule", "Oberkeulen"), 74, "count"),
+            ("wing", ("wing", "wings"), ("Flügel", "Flügel"), 75, "count"),
+            ("leg", ("leg", "legs"), ("Keule", "Keulen"), 76, "count"),
+            ("roll", ("roll", "rolls"), ("Brötchen", "Brötchen"), 77, "count"),
+            ("bun", ("bun", "buns"), ("Brötchen", "Brötchen"), 78, "count"),
+            ("bagel", ("bagel", "bagels"), ("Bagel", "Bagels"), 79, "count"),
+            ("muffin", ("muffin", "muffins"), ("Muffin", "Muffins"), 81, "count"),
+            ("cookie", ("cookie", "cookies"), ("Keks", "Kekse"), 82, "count"),
+            ("cracker", ("cracker", "crackers"), ("Cracker", "Cracker"), 83, "count"),
+            ("tortilla", ("tortilla", "tortillas"), ("Tortilla", "Tortillas"), 84, "count"),
+            ("loaf", ("loaf", "loaves"), ("Laib", "Laibe"), 86, "count"),
+            ("sandwich", ("sandwich", "sandwiches"), ("Sandwich", "Sandwiches"), 87, "count"),
+            ("package", ("package", "packages"), ("Packung", "Packungen"), 89, "count"),
+            ("cubic_inch", ("cubic inch", "cubic inches"), ("Kubikzoll", "Kubikzoll"), 90, "mass"),
+            ("bag", ("bag", "bags"), ("Beutel", "Beutel"), 91, "count"),
+            ("jar", ("jar", "jars"), ("Glas", "Gläser"), 93, "count"),
+            ("glass", ("glass", "glasses"), ("Glas", "Gläser"), 94, "count"),
+            ("envelope", ("envelope", "envelopes"), ("Päckchen", "Päckchen"), 95, "count"),
+            ("tablet", ("tablet", "tablets"), ("Tablette", "Tabletten"), 96, "count"),
+            ("frank", ("frank", "franks"), ("Würstchen", "Würstchen"), 97, "count"),
+            ("frankfurter", ("frankfurter", "frankfurters"), ("Würstchen", "Würstchen"), 97, "count"),
+            ("sausage", ("sausage", "sausages"), ("Wurst", "Würste"), 98, "count"),
+            ("order", ("order", "orders"), ("Portion", "Portionen"), 99, "count"),
         ])
         self.assertEqual(QUALIFIERS, {
             "chopped": "gehackt", "diced": "gewürfelt", "cubes": "gewürfelt", "cubed": "gewürfelt",
@@ -406,6 +479,9 @@ class PortionLabelTests(unittest.TestCase):
             "skin removed": "ohne Haut", "cooked": "gegart", "raw": "roh", "drained": "abgetropft",
             "crumbled": "zerbröselt", "melted": "geschmolzen", "ground": "gemahlen", "sifted": "gesiebt",
             "florets": "Röschen", "small": "klein", "medium": "mittel", "large": "groß", "whole": "ganz",
+            "peeled": "geschält", "unpeeled": "ungeschält", "pitted": "entsteint", "crushed": "zerstoßen",
+            "fresh": "frisch", "frozen": "tiefgekühlt", "dried": "getrocknet", "canned": "aus der Dose",
+            "toasted": "getoastet", "with bone": "mit Knochen", "with skin": "mit Haut",
         })
 
     def test_amounts(self):
@@ -425,7 +501,7 @@ class PortionLabelTests(unittest.TestCase):
         tally = {}
         portions = usda_measures(rows, None, tally)
         self.assertEqual(len(portions), len(SR_TABLE))
-        self.assertEqual(tally, {"unmatched": [], "unmapped_head": 3})
+        self.assertEqual(tally, {"unmatched": [], "unmapped_head": 3, "unmapped_heads": ["dollop", "handful", "squirt"]})
         self.assertEqual([portion.sort_order for portion in portions], sorted(portion.sort_order for portion in portions))
         by_grams = {portion.weight_g: portion for portion in portions}
         for position, (modifier, amount, grams, en, de, short_en, short_de, order) in enumerate(SR_TABLE, 1):
@@ -445,11 +521,11 @@ class PortionLabelTests(unittest.TestCase):
                     self.assertNotRegex(text, r"(?i)\bdia\b")
 
     def test_unmapped_heads_have_no_german_labels(self):
-        [wedge, stalk] = usda_measures([sr_row(1, "wedge", 20.0), sr_row(2, 'stalk, medium (7-1/2" to 8" long)', 41.0)])
-        self.assertEqual((wedge.label, wedge.labels, wedge.short_label_en, wedge.short_label_de, wedge.sort_order),
-                         ("1 wedge", {"en": "1 wedge"}, None, None, 101))
-        self.assertEqual((stalk.label, stalk.labels, stalk.short_label_de, stalk.sort_order),
-                         ("1 stalk, medium", {"en": "1 stalk, medium"}, None, 102))
+        [dollop, handful] = usda_measures([sr_row(1, "dollop", 20.0), sr_row(2, 'handful, medium (7-1/2" to 8" long)', 41.0)])
+        self.assertEqual((dollop.label, dollop.labels, dollop.short_label_en, dollop.short_label_de, dollop.sort_order),
+                         ("1 dollop", {"en": "1 dollop"}, None, None, 101))
+        self.assertEqual((handful.label, handful.labels, handful.short_label_de, handful.sort_order),
+                         ("1 handful, medium", {"en": "1 handful, medium"}, None, 102))
         # A mapped head with one unmapped qualifier part is not translated half way.
         [cup] = usda_measures([sr_row(1, "cup, chopped, unpacked", 90.0)])
         self.assertEqual((cup.label, cup.labels, cup.short_label_en, cup.short_label_de),
@@ -465,7 +541,7 @@ class PortionLabelTests(unittest.TestCase):
         [pieces] = usda_measures([sr_row(1, 'cup 1/2" pieces', 120.0)])
         self.assertEqual((pieces.label, pieces.labels.get("de")), ("1 US cup, pieces", "1 US-Tasse, in Stücken"))
         [ring] = usda_measures([sr_row(1, 'ring, 3" dia', 10.0)])
-        self.assertEqual(ring.labels, {"en": "1 ring"})
+        self.assertEqual(ring.labels, {"en": "1 ring", "de": "1 Ring"})
         # A label the mapping would push past 200 characters falls back instead of breaking the CHECK.
         long = clean_portion("1 cup, " + "packed, " * 24 + "packed", None, 100.0)
         self.assertEqual(long.en, "100 g")
@@ -504,6 +580,8 @@ class PortionLabelTests(unittest.TestCase):
         self.assertEqual(notes.summary(), {
             "portions": {"total": len(SR_TABLE), "relabelled": len(SR_TABLE),
                          "localized_de": sum(1 for entry in SR_TABLE if entry[4]), "unmapped_head": 3, "raw_marker": 0},
+            "unmapped_heads": [{"head": "dollop", "count": 1}, {"head": "handful", "count": 1},
+                               {"head": "squirt", "count": 1}],
             "staples": {"applied": 0, "description_mismatch": [], "unmatched": {}},
             "staple_portions": {},
         })
@@ -582,14 +660,16 @@ class StapleTests(unittest.TestCase):
                 self.assertEqual(default.weight_g, grams[1])
                 self.assertEqual(notes.summary()["staples"]["unmatched"], {})
 
-    def test_extras_import_with_their_names_and_no_default(self):
-        for fdc_id, description, word in (("168409", "Cucumber, with peel, raw", "Gurke"),
-                                          ("171284", "Yogurt, plain, whole milk", "Joghurt")):
+    def test_extras_import_with_their_names_and_their_preset_default(self):
+        # D313: the preset portion is the default and needs no source row; the source's own rows stay plain.
+        for fdc_id, description, word, key, grams in (("168409", "Cucumber, with peel, raw", "Gurke", "half_200_g", 200),
+                                                      ("171284", "Yogurt, plain, whole milk", "Joghurt", "pot_150_g", 150)):
             with self.subTest(fdc_id=fdc_id):
                 food = self.food(fdc_id, description, (("cup", 245.0),))
                 self.assertIn(normalize(word), self.german(food))
                 self.assertTrue(food.is_canonical_staple)
-                self.assertFalse(any(p.is_default for p in food.portions))
+                self.assertEqual([(p.portion_key, p.weight_g) for p in food.portions if p.is_default], [(key, grams)])
+                self.assertEqual([(p.portion_key, p.weight_g) for p in food.portions], [(key, grams), (None, 245)])
         for fdc_id, description, word in (("170108", "Peppers, sweet, red, raw", "Paprika"), ("170000", "Onions, raw", "Zwiebel")):
             with self.subTest(fdc_id=fdc_id):
                 food = self.food(fdc_id, description, (("small", 70.0), ("medium (2-1/2\" dia)", 110.0), ("large", 150.0)))
@@ -925,7 +1005,8 @@ class PostgresTests(unittest.TestCase):
                 FROM nutrition.portions WHERE food_id=%s AND weight_g=182""", (food_id,)).fetchone(),
                              ({"en": "1 medium", "de": "1 mittelgroßes Stück"}, "Medium", "Mittel", 20, None, False))
             self.assertEqual(db.execute("""SELECT labels,short_label_de FROM nutrition.portions
-                WHERE food_id=%s AND weight_g=50""", (food_id,)).fetchone(), ({"en": "1 bag"}, None))
+                WHERE food_id=%s AND weight_g=50""", (food_id,)).fetchone(),
+                             ({"en": "1 bag", "de": "1 Beutel"}, "1 Beutel"))
             # A second identical load changes nothing.
             self.assertEqual(load_batch(db, [g1]), {"unchanged": 1, "duplicates": 0})
             self.assertEqual(self.stored_portions(db, food_id), relabelled)
