@@ -7233,6 +7233,38 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
 - **Rejected:** a `scoring` grant to insert ratings (a service that derives numbers writing a user's input); keeping
   the confounders live in the briefing (the N2R history read would run per check-in on every briefing).
 
+## D300 — The no-watch recovery's second pass: consent at the write, a recovery-free plan, one strength transaction, no times grant (2026-11-27)
+
+- **Context:** a static adversarial review of #260 against `main` found six holes. All six were checked in the code,
+  confirmed, and fixed with a test (`docs/work/2026-11-26-no-watch-recovery/review-codex.md`). This entry amends D299.
+- **Decision:**
+  1. **Consent is checked again at the write.** `PutCheckin` and `PutWorkoutRating` take the admitting consent grant
+     and revalidate it in their transaction under the consent lock `RevokeConsent` takes (`lockApply` before
+     `lockCheckin`), as the HealthKit sync does. A withdrawal committed in between answers `consent_required` and stores
+     nothing.
+  2. **A saved plan carries a recovery-free twin.** When a check-in changed the day's plan, `daily_energy_states.plan`
+     also holds the plan as it would be with recovery off (`recovery_off`; jsonb, no schema change). Readers with the
+     flag off and the stored N2R night restore it. The capture computes projection, the evaluation's history and calibration
+     with the flag off. The evaluation's adherence and availability are measured against the plan the user was
+     shown, which is the `recovery_off` one once the flag is off. So a check-in leaves no trace in any number stored
+     after the flag goes off.
+  3. **Reconcile keeps a rating.** When `wearables.Reconcile` drops a rated copy of a session, the kept copy takes its
+     session RPE if it has none. Measured HR or power load still wins over the rating, and the rating counts once.
+  4. **The day's strength pass is one transaction** (`Store.ApplySessionPass`): attachments, session loads, rating
+     moves and releases, planned from the mapping read before the pass. A failure rolls it all back, and the retry starts
+     from the same mapping. Rating moves follow chains of reassignments. A swap of two rated workouts leaves both
+     ratings where they are.
+  5. **Scoring has no grant on workout times** (amends D299 item 8). 0065 is changed in place (unmerged, applied
+     nowhere): the `UPDATE (start_at, end_at)` column grant and its trigger are gone (the file revokes and drops them, so
+     a rerun stays clean). `public.scoring_follow_session_times(user, workout)` is SECURITY DEFINER with
+     `search_path = pg_catalog` and EXECUTE for `ryft_scoring` only. It takes no times: it reads them from the owner's
+     completed session of that workout. `EnsureSessionWorkout` calls it.
+  6. **The outermost log redactor covers the recovery paths** (`redactPrivatePath`, formerly `redactNutritionPath`):
+     `/v1/recovery/checkins/{date}` and `/v1/workouts/{id}/rpe` log their pattern even when auth, the rate limit, App
+     Attest, the beta gate or the mux rejects the request.
+- **Rejected:** rebuilding a flag-off plan on every read (the stored plan is what was shown; a second copy is cheaper
+  than replaying the day); a trigger that checks ownership on the times (it still lets the caller pick the times).
+
 ## D297 — The sync button reads `GET /v1/me/sync`: per-source status and "scores pending", no new route (2026-11-27; contract only)
 
 - **Context:** the home screen gets a sync button (syncing, up to date < 30 min, stale ≥ 30 min, error; a long

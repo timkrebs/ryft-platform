@@ -52,9 +52,9 @@ func privateLogPath(path string) string {
 	case strings.HasPrefix(path, recoveryCheckinPrefix): // the wake date, whatever follows it
 		return recoveryCheckinPrefix + "{date}"
 	}
-	// /v1/workouts/{id}/rpe only: GET /v1/workouts/{id} keeps its path.
+	// /v1/workouts/{id}/rpe, with or without a trailing slash, only: GET /v1/workouts/{id} keeps its path.
 	if rest, ok := strings.CutPrefix(path, workoutsPrefix); ok {
-		if id, ok := strings.CutSuffix(rest, workoutRPESuffix); ok && id != "" && !strings.Contains(id, "/") {
+		if id, ok := strings.CutSuffix(strings.TrimSuffix(rest, "/"), workoutRPESuffix); ok && id != "" && !strings.Contains(id, "/") {
 			return workoutsPrefix + "{id}" + workoutRPESuffix
 		}
 	}

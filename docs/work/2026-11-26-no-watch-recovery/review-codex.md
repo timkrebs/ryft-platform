@@ -14,4 +14,8 @@ Verdict was needs-attention. All six findings were checked against the code and 
 Local: `go vet ./...` and `go test ./...` are green. No Postgres was reachable locally, so the integration tests run in CI's `test` job only.
 
 ## Code review of the fix diff
-(pending)
+code-reviewer read the fix commit statically and found no blockers. It confirmed the lock order, the chain and cycle logic of the rating moves, single counting in Reconcile, SECURITY DEFINER hygiene, the redaction, and that the CI `test` job sets `RYFT_TEST_POSTGRES_URL` (ci.yml:220).
+- should-fix: `coaching_eval.go:128-205`: adherence and availability are measured against the shown plan even with the flag off. Use `recovery_off` there too. → scoring-scientist.
+- nit: `store/doc.go:13,18`: the pool note on `ReleaseSessionWorkouts` and the method counts are stale.
+- nit: `cmd/api/nutrition.go:56`: `/v1/workouts/{id}/rpe/` (trailing slash) logs the raw id. → backend-engineer.
+- nit (left alone, outside the scope): `EnsureSessionWorkout`/`ReleaseSessionWorkouts` are now called only from tests.

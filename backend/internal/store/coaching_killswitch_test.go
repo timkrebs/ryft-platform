@@ -51,6 +51,16 @@ func TestFrozenPlanDoesNotOutliveTheKillSwitch(t *testing.T) {
 			u, dDay, utc("2026-11-20T01:00:00Z"), utc("2026-11-20T06:00:00Z"))
 		// The morning after D has a resting heart rate (no HRV), so the stored night of W exists.
 		exec(`INSERT INTO daily_scores(user_id,day,rhr) VALUES($1,$2::date,55)`, u, wDay)
+		// A complete lunch on D (200 g carbohydrate), so the evaluation of D has an adherence.
+		meal, _, err := st.CreateNutritionMeal(ctx, u, model.NutritionMealInput{
+			ClientRequestID: uuid.New(), ConsumedAt: utc(dDay + "T12:00:00Z"), Timezone: "UTC", MealType: "lunch", InputMethod: "manual_search",
+			Items: []model.NutritionMealItemInput{{FoodID: fixtureApple, Quantity: 200, Unit: "g"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		exec(`UPDATE nutrition.meal_items SET nutrients='{"energy_kcal":{"amount":1800},"carbohydrates":{"amount":200},"protein":{"amount":120},"fat":{"amount":60}}'
+			WHERE meal_id=$1`, meal.ID)
 	}
 	recoveryFlag(t, New(root), a)
 
@@ -144,5 +154,24 @@ func TestFrozenPlanDoesNotOutliveTheKillSwitch(t *testing.T) {
 	}
 	if projA != projB {
 		t.Fatalf("saved projection: a %s, never on %s", projA, projB)
+	}
+
+	// The evaluation of D (written by W's tick, flag off) measures adherence against recovery_off: carbohydrate
+	// 200 g against the rest day's 3.5 g/kg, not the 4.5 g/kg a was shown, and the same as the never-on account's.
+	adherence := map[uuid.UUID]float64{}
+	for _, u := range []uuid.UUID{a, b} {
+		if err := st.captureCoachingDay(ctx, u, wDay, later, policy); err != nil {
+			t.Fatal(err)
+		}
+		var carbs float64
+		if err := root.QueryRow(ctx, `SELECT (adherence->>'carbs')::float8 FROM nutrition.model_evaluation_logs
+			WHERE user_id=$1 AND day=$2::date`, u, dDay).Scan(&carbs); err != nil {
+			t.Fatal(err)
+		}
+		adherence[u] = carbs
+	}
+	if adherence[a] != adherence[b] || adherence[a] != 200/off.plan.CarbsG || adherence[a] == 200/shown.plan.CarbsG {
+		t.Fatalf("carbohydrate adherence of D: a %v, never on %v, want 200/%v (not 200/%v as shown)",
+			adherence[a], adherence[b], off.plan.CarbsG, shown.plan.CarbsG)
 	}
 }

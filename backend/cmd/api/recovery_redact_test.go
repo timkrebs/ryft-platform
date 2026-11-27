@@ -36,6 +36,8 @@ func TestPrivateLogPath(t *testing.T) {
 		{"/v1/recovery/status", ""},
 		{"/v1/workouts/" + id + "/rpe", "/v1/workouts/{id}/rpe"},
 		{"/v1/workouts/not-an-id/rpe", "/v1/workouts/{id}/rpe"},
+		{"/v1/workouts/" + id + "/rpe/", "/v1/workouts/{id}/rpe"},
+		{"/v1/workouts/" + id + "/rpe//", ""},
 		{"/v1/workouts/rpe", ""},
 		{"/v1/workouts//rpe", ""},
 		{"/v1/workouts/" + id + "/x/rpe", ""},
@@ -82,8 +84,7 @@ func TestRecoveryRejectionsLogNoDateOrWorkoutID(t *testing.T) {
 	h := &handler{log: log, beta: beta, attestMode: config.ModeOff, accounts: &accounts{log: log}}
 	mux := newMux(h, muxOptions{log: log, verifier: nutritionVerifier{}, ready: func(context.Context) error { return nil },
 		tick: http.NotFoundHandler(), gate: beta.Gate, attest: config.AppAttest{Mode: config.ModeOff}, authMode: config.AuthAPIKey,
-		clients: httpx.NewClientKeys(1),
-		loadUser: func(_ context.Context, p auth.Principal) (model.User, error) { return model.User{ID: p.UserID}, nil }})
+		clients: httpx.NewClientKeys(1), loadUser: func(_ context.Context, p auth.Principal) (model.User, error) { return model.User{ID: p.UserID}, nil }})
 	srv := httpx.Instrument(log, nil, httpx.Recover(httpx.SecurityHeaders(mux)))
 	do := func(user uuid.UUID, method, path string) int {
 		t.Helper()

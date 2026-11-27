@@ -291,6 +291,15 @@ type frozenCoachDay struct {
 	recoveryOff *model.CoachingPlan
 }
 
+// plan is the saved plan a reader restores: the one shown, or with the flag recovery.checkin off its recovery_off
+// (D295).
+func (d frozenCoachDay) plan(withRecovery bool) model.CoachingPlan {
+	if !withRecovery && d.recoveryOff != nil {
+		return *d.recoveryOff
+	}
+	return d.state.Plan
+}
+
 // frozenPlan is daily_energy_states.plan: the plan the user was shown and, when the flag recovery.checkin was on
 // and a check-in's readiness changed it, the plan without that readiness (recovery_off). A reader with the flag off
 // (the stored night always) restores recovery_off, so a check-in does not outlive the kill switch through a saved
@@ -530,10 +539,7 @@ func loadCoaching(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile, 
 		state := coachingPlanDay{Plan: plan, Load: energy.Load(out.days), Readiness: ready, Reasons: reasons,
 			Physiology: phys, Adaptive: adapt, Recovery: recovery, Feedback: f, Source: source, Sport: sport}
 		if saved, ok := frozen[key]; ok && key != asOf.In(p.Location).Format(time.DateOnly) {
-			state.Plan = saved.state.Plan
-			if !withRecovery && saved.recoveryOff != nil {
-				state.Plan = *saved.recoveryOff
-			}
+			state.Plan = saved.plan(withRecovery)
 		}
 		out.plans[key] = state
 	}

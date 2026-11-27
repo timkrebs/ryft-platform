@@ -130,7 +130,7 @@ func TestRecoveryWritesWaitForAnInFlightRevoke(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer revoke.Rollback(ctx) //nolint:errcheck // already committed on the success path
+			defer revoke.Rollback(ctx) // a no-op once committed
 			if _, err := revoke.Exec(ctx, lockApply, u); err != nil {
 				t.Fatal(err)
 			}
