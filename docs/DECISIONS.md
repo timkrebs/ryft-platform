@@ -7122,3 +7122,52 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   ratings, soreness or session RPE, and #252 defers N2R and coaching to a later version. The sentences #252
   needs, and what waits for the N2R version, are in `docs/work/2026-11-26-no-watch-recovery/implementation.md`
   → Privacy. The feature stays dark until a published version names it.
+
+## D297 — The sync button reads `GET /v1/me/sync`: per-source status and "scores pending", no new route (2026-11-27; contract only)
+
+- **Context:** the home screen gets a sync button (syncing, up to date < 30 min, stale ≥ 30 min, error; a long
+  press lists Apple Health, Garmin and Suunto). The user's spec asked for `synced_at`, `sources`
+  (`last_sync_utc`, `status` OK/PENDING/ERROR) and `data_freshness` (`UP_TO_DATE`/`SYNCING_CLOUD`/`STALE`), and
+  for the button not to turn green before the scores, readiness, N2R and the briefing include the new data.
+- **Where:** `GET /v1/me/sync` (D91), which already says what the server has and what it is doing with it
+  (`last_sync_at`, `pending_days`, `expected_within_sec`), is behind a 10 s cache and passes the beta gate. A new
+  `GET /v1/sync/status` would be a second answer to the same question. `GET /v1/me` is heavier (`samples_7d`,
+  `account_hint`), uncached, and the Profile screen's. `POST /v1/sync` cannot say when scoring ends (below).
+  So the route gains three fields: `sources`, `freshness`, `scores_pending_since`.
+- **Names follow the contract, not the spec:** `synced_at` is the existing `last_sync_at` (no second field for
+  the same time); `last_sync_utc` is `last_sync_at` (every time in the API is UTC with an `_at` name); the status
+  values are lower case like every closed enum here. `data_freshness` becomes `freshness` with only what the
+  server knows: `current` or `scores_pending`. `UP_TO_DATE` and `STALE` are the app's 30-minute rule on
+  `last_sync_at`; the server reports times and work in progress, never a colour.
+- **"Scores pending", exactly:** the user has a `score_queue` row with `scored_at IS NULL` (that is
+  `pending_days`), or a `provider_inbox` row in state `pending`. A sync stores its records, then its apply
+  transaction queues their days (`ApplySync` → `queueAndEmit`), both before the `200`. The window between the
+  two lies inside the uploading app's own request, which shows syncing anyway. A direct delivery is stored,
+  its days queued and its inbox row marked `processed` in one transaction (`ApplyDirect`), so it moves from
+  "source pending" to "day pending" atomically. Scoring marks a day done only if it was queued before that
+  scoring run started (`MarkScored`: `queued_at <= started`), so a sync during a run keeps the day pending.
+  Readiness is part of the day's score; N2R and the coaching briefing are computed on read from the stored
+  scores. So once nothing is queued, each of them includes the new data.
+- **Per source:** `healthkit` always, with `last_sync_at` from `devices.last_sync_at`, `ok`, or `error` with the
+  gate's code when a gate is enforced (`warn` lets syncs through and stays `ok`). The server never says
+  `pending` for it: an upload in flight is the app's state. A provider is listed exactly when
+  `GET /v1/me/connections` lists its connection `connected` or `needs_reauth` (served, flag on). It has
+  `last_data_at`, `error`/`needs_reauth`, `pending` while an inbox row waits, else `ok`. So Garmin and Suunto are
+  absent, not `error`, until Connections is live. A `revoked` connection is absent; the Connect screen explains
+  it. A `failed` inbox row (one record ingest could not parse) is no source error: the user can do nothing about
+  it, and the operator's gauges show it.
+- **The sync does not wait for scoring:** scoring is another service behind Pub/Sub (D218), taking seconds to
+  tens of seconds (`expected_within_sec`), more for a backfill; a held `POST /v1/sync` would hold a Cloud Run request slot and the app's background time,
+  and a timeout retry would send the page again. A sync is many pages too. The app takes `scoring.queued_days`
+  from the response as pending at once, polls `GET /v1/me/sync` no sooner than `max(expected_within_sec, 10)` s
+  (the cache) at that interval for at most 3 minutes, and reloads today and the briefing when `freshness` turns
+  `current`. The silent refresh push ends the wait early, but it comes at most once per 5 minutes. A long-poll
+  (`?wait=`) was rejected for the same request-slot reason.
+- **The bound:** pending work older than 3 minutes (a stuck day, a long recompute) shows stale with "Scores are
+  taking longer than usual", not syncing forever and not an error: the data is stored. `scores_pending_since`
+  lets the app apply that after a relaunch too.
+- **Enums:** `freshness` and `status` are closed (Swift enums); `source` and `reason` are open, so Suunto and new
+  reasons need no `/v2`.
+- **Examples as `http` blocks** until the model types exist (as D257, D291). The implementation is outlined in
+  `docs/work/2026-11-27-sync-status/implementation.md`: one indexed query more behind the cache, a column grant
+  on `provider_inbox.received_at` for the api, no new table.

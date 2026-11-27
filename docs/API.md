@@ -19,6 +19,7 @@ so are the operator routes' `actor.kind` (`key` or `user`, Admin routes → The 
 
 | Screen | Numbers | Endpoint |
 | --- | --- | --- |
+| Home — the sync button (D297; the new fields not served yet) | syncing, up to date, stale, error; a long press: each source's last sync (Apple Health, Garmin, Suunto) | `GET /v1/me/sync` → `last_sync_at`, `sources`, `freshness`, `scores_pending_since` (**The sync button** there), `POST /v1/sync` → `scoring` |
 | Today | readiness ring + state, Sleep / Recovery / Strain tiles, HRV, RHR, sleep need and debt, why a day is calibrating (`calibrating_reason`, `baseline_hrv_days`, `baseline_rhr_days`) | `GET /v1/days/{today}` → `score` |
 | Today — provisional night, "based on …", which source won | `Provisional` line while the night is incomplete, hours of heart rate and HRV readings behind the numbers, the sleep and heart-rate sources | `GET /v1/days/{today}` → `score.coverage` |
 | Today — Trends card | 7-day readiness line | `GET /v1/trends?metric=readiness&range=7d` |
@@ -1725,9 +1726,128 @@ again. The request and the app's handling do not change (Admin routes → Invite
 | `pending_days` | `[day]` | Days a sync or a training import queued that scoring has not finished yet, oldest first. |
 | `expected_within_sec` | int | As in `SyncResponse.scoring`: when to look again (or wait for the silent refresh push). |
 | `resync_requested_at` | timestamp? | Set by the operator when the server is missing data (`scripts/user.sh --resync-hint`): if it is newer than the app's last full re-sync, run one (re-read the HealthKit window without anchors). `null` otherwise. |
+| `sources`, `freshness`, `scores_pending_since` | | D297, not served yet: **The sync button** below. |
 
 Cheap to call (cached 10 s per user). After a sync, poll it every `expected_within_sec`
 until `pending_days` is empty, or wait for the silent refresh push (Push).
+
+#### The sync button: `sources`, `freshness`, `scores_pending_since` (D297; not served yet)
+
+The home screen's sync button (syncing, up to date, stale, error; a long press lists each source's last
+sync) reads this route. It gains three fields, additively. Until the implementation PR they are **absent**:
+decode all three as optional, and read an absent `freshness` as `scores_pending` when `pending_days` is
+non-empty, else `current` (the same rule without the direct sources).
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `sources` | `[SyncSource]` | One entry per way data reaches RYFT, `healthkit` first, then the direct connections by `source`. Never `null`. |
+| `freshness` | string | `current` or `scores_pending`, a **closed** enum. `scores_pending`: the server holds data that its scores, readiness, N2R and the coaching briefing do not include yet. Exactly: `pending_days` is non-empty, **or** a `sources` entry is `pending`. `current` otherwise. |
+| `scores_pending_since` | timestamp? | While `scores_pending`: when the oldest of that waiting work arrived (the earliest queued day, or the earliest provider delivery not yet stored). `null` while `current`. |
+
+`SyncSource`:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `source` | string | `healthkit`, or a provider id of Connections (`garmin`, later `suunto`): an **open** set, ignore an id this build has no copy for. |
+| `last_sync_at` | timestamp? | `healthkit`: the newest accepted `POST /v1/sync` of any of the account's devices, the same time as `last_sync_at` above. A provider: when RYFT last stored a record from it (`Connection.last_data_at`). `null`: nothing yet. |
+| `status` | string | `ok`, `pending`, `error`, a **closed** enum (below). |
+| `reason` | string? | Why, with `error`: an **open** set, `null` otherwise. Today `needs_reauth` (a provider), `consent_required` and `invite_required` (`healthkit`). Show a generic error for a reason you don't know. |
+
+| `status` | `healthkit` | A provider |
+| --- | --- | --- |
+| `ok` | The server accepts this account's syncs. | `connected`, and nothing it delivered is still waiting to be stored. |
+| `pending` | Never sent: an upload in flight is the app's own state. | `connected` or `needs_reauth`, and a delivery has arrived that ingest has not stored yet (usually seconds). |
+| `error` | A gate refuses this account's syncs (`gate` is set **and** enforced; in `warn` mode syncs pass and the status stays `ok`). `reason` is the gate's `code`. | `needs_reauth`: the provider's grant needs renewing (Connections → Statuses). `reason: "needs_reauth"`. |
+
+**Which sources are listed.** `healthkit` always, also before the first sync (`last_sync_at: null`,
+`status: "ok"`). A provider exactly when `GET /v1/me/connections` lists its connection as `connected` or
+`needs_reauth`. So until Connections is served and its flag is on for the account, Garmin and Suunto are
+**absent**, never an `error`. A `revoked` connection is absent too: the Connect screen says it was removed.
+
+**What the app shows** (the server reports times and work in progress, never a colour; the 30-minute rule
+is the app's):
+
+1. **Syncing** while the app's own `POST /v1/sync` is in flight.
+2. **Error** when the app's last upload failed and has not succeeded since, or any entry of `sources` is
+   `error` (the long press names it, with Reconnect for `needs_reauth`).
+3. **Syncing** while `freshness` is `scores_pending` and `scores_pending_since` is less than 3 minutes old.
+4. **Up to date** when the newer of the app's last successful upload and `last_sync_at` is less than
+   30 minutes old.
+5. **Stale** otherwise: 30 minutes or more since the last sync, no sync yet, or scores still pending after
+   3 minutes (long press: "Scores are taking longer than usual"; the data itself is stored).
+
+The button's age is Apple Health's: that is what a tap syncs. A provider delivers on its own schedule, so
+its `last_sync_at` appears in the long press and counts for the button only through `pending` and `error`.
+
+**After a sync** (a `POST /v1/sync` with a non-empty `scoring.queued_days`): treat the scores as pending
+at once, from the response, without waiting for this route. Its first call comes no sooner than
+`max(expected_within_sec, 10)` seconds after the sync's `200` (its answer is cached for 10 s and could
+otherwise predate the sync). Then call it again at the same interval while `freshness` is `scores_pending`,
+for at most 3 minutes after the sync. The silent refresh push (Push) can end the wait early, but it comes at
+most once per 5 minutes per account, so polling stays the fallback. When `freshness` turns `current`, reload
+today (`GET /v1/days/{today}`) and, in the coaching pilot, `GET /v1/coaching/daily-briefing`: only then turn
+the button green. `POST /v1/sync` does not wait for scoring and does not change (D297): scoring runs after
+it, in another service.
+
+Fresh: synced a minute ago, everything scored (a Garmin connection last delivered at 05:02):
+
+```http
+HTTP/2 200
+content-type: application/json
+
+{ "gate": null, "last_sync_at": "2026-11-27T06:58:12Z", "last_sync_device": "iPhone",
+  "latest": { "hr": "2026-11-27T06:55:00Z", "hrv": "2026-11-27T05:02:00Z", "sleep": "2026-11-27T06:41:00Z" },
+  "today": { "day": "2026-11-27", "state": "scored", "scored_at": "2026-11-27T06:58:31Z", "model_version": "2026.10.3" },
+  "pending_days": [], "expected_within_sec": 20, "resync_requested_at": null,
+  "freshness": "current", "scores_pending_since": null,
+  "sources": [ { "source": "healthkit", "last_sync_at": "2026-11-27T06:58:12Z", "status": "ok", "reason": null },
+               { "source": "garmin", "last_sync_at": "2026-11-27T05:02:11Z", "status": "ok", "reason": null } ] }
+```
+
+Scores pending: the sync's day is queued, and a Garmin delivery is still being stored:
+
+```http
+HTTP/2 200
+content-type: application/json
+
+{ "gate": null, "last_sync_at": "2026-11-27T06:58:12Z", "last_sync_device": "iPhone",
+  "latest": { "hr": "2026-11-27T06:55:00Z", "hrv": "2026-11-26T05:01:40Z", "sleep": "2026-11-27T06:41:00Z" },
+  "today": { "day": "2026-11-27", "state": "pending", "scored_at": null, "model_version": "2026.10.3" },
+  "pending_days": ["2026-11-27"], "expected_within_sec": 20, "resync_requested_at": null,
+  "freshness": "scores_pending", "scores_pending_since": "2026-11-27T06:58:12Z",
+  "sources": [ { "source": "healthkit", "last_sync_at": "2026-11-27T06:58:12Z", "status": "ok", "reason": null },
+               { "source": "garmin", "last_sync_at": "2026-11-26T05:01:40Z", "status": "pending", "reason": null } ] }
+```
+
+Stale (at 15:20Z, the last sync at 09:10Z; scored, nothing pending; no connection, so only `healthkit`):
+the app shows stale from the age alone.
+
+```http
+HTTP/2 200
+content-type: application/json
+
+{ "gate": null, "last_sync_at": "2026-11-27T09:10:44Z", "last_sync_device": "iPhone",
+  "latest": { "hr": "2026-11-27T09:08:00Z", "sleep": "2026-11-27T06:41:00Z", "steps": "2026-11-27T09:05:00Z" },
+  "today": { "day": "2026-11-27", "state": "scored", "scored_at": "2026-11-27T09:11:02Z", "model_version": "2026.10.3" },
+  "pending_days": [], "expected_within_sec": 20, "resync_requested_at": null,
+  "freshness": "current", "scores_pending_since": null,
+  "sources": [ { "source": "healthkit", "last_sync_at": "2026-11-27T09:10:44Z", "status": "ok", "reason": null } ] }
+```
+
+A provider error: Garmin's grant needs renewing (Apple Health is fine, the scores are current):
+
+```http
+HTTP/2 200
+content-type: application/json
+
+{ "gate": null, "last_sync_at": "2026-11-27T06:58:12Z", "last_sync_device": "iPhone",
+  "latest": { "hr": "2026-11-27T06:55:00Z", "hrv": "2026-11-24T05:02:00Z", "sleep": "2026-11-27T06:41:00Z" },
+  "today": { "day": "2026-11-27", "state": "scored", "scored_at": "2026-11-27T06:58:31Z", "model_version": "2026.10.3" },
+  "pending_days": [], "expected_within_sec": 20, "resync_requested_at": null,
+  "freshness": "current", "scores_pending_since": null,
+  "sources": [ { "source": "healthkit", "last_sync_at": "2026-11-27T06:58:12Z", "status": "ok", "reason": null },
+               { "source": "garmin", "last_sync_at": "2026-11-24T05:02:11Z", "status": "error", "reason": "needs_reauth" } ] }
+```
 
 ### `GET /v1/model` — the scoring model and what changed
 
@@ -3988,6 +4108,19 @@ struct SyncStatus: Codable {    // GET /v1/me/sync
     let pendingDays: [String]
     let expectedWithinSec: Int
     let resyncRequestedAt: Date?
+    var sources: [SyncSource]? = nil           // D297, not served yet: absent until then
+    var freshness: SyncFreshness? = nil        // absent: pendingDays.isEmpty ? .current : .scoresPending
+    var scoresPendingSince: Date? = nil
+}
+
+enum SyncFreshness: String, Codable { case current; case scoresPending = "scores_pending" }   // closed
+enum SyncSourceStatus: String, Codable { case ok, pending, error }                          // closed
+
+struct SyncSource: Codable {    // GET /v1/me/sync → sources (D297)
+    let source: String          // "healthkit" or a provider id (open set: ignore unknown ids)
+    let lastSyncAt: Date?
+    let status: SyncSourceStatus
+    let reason: String?         // open set: "needs_reauth", "consent_required", "invite_required"
 }
 
 struct SyncCounts: Codable { let samples: Int; let sleep: Int; let workouts: Int }
@@ -4652,6 +4785,7 @@ struct APIErrorBody: Codable {
 
 | Date | Change |
 | --- | --- |
+| 2026-11-27 | **[The sync button](#the-sync-button-sources-freshness-scores_pending_since-d297-not-served-yet): `GET /v1/me/sync` gains `sources`, `freshness`, `scores_pending_since`** (D297; platform PR `docs: the sync status contract`, branch `docs/sync-status-contract`; the head-architect's brief of 2026-11-27). Additive; docs only, so the app can build it before the server has it: no v1 field renamed, removed or retyped, no new route. **Fields:** `sources` (`[SyncSource]`: `source`, an open set, `healthkit` or a provider id; `last_sync_at`; `status` `ok`/`pending`/`error`, closed; `reason`, an open set, `needs_reauth`/`consent_required`/`invite_required`); `freshness` (`current`/`scores_pending`, closed: `scores_pending` exactly when `pending_days` is non-empty or a source is `pending`); `scores_pending_since` (timestamp?). The brief's names map onto the contract's conventions: `synced_at` is the existing `last_sync_at`, `last_sync_utc` is `last_sync_at` (every time here is UTC), `OK`/`PENDING`/`ERROR` are lower case, and `data_freshness` is `freshness` with only what the server knows (`UP_TO_DATE` and `STALE` are the app's 30-minute rule, `SYNCING_CLOUD` is `scores_pending`). **Behaviour:** none yet. A provider is listed only while `GET /v1/me/connections` lists it `connected` or `needs_reauth`, so Garmin and Suunto stay absent until Connections is served. `POST /v1/sync` does not change and does not wait for scoring. **Old builds:** ignore the new fields. **The app:** the five-step rule under The sync button: after a sync, poll this route no sooner than `max(expected_within_sec, 10)` s, at that interval, for at most 3 minutes; reload today and the briefing when `freshness` turns `current`, and only then turn the button green. Read absent fields as an older server (`freshness` from `pending_days`). **Swift:** `SyncFreshness`, `SyncSourceStatus`, `SyncSource`; `SyncStatus.sources`, `.freshness`, `.scoresPendingSince`. The examples are `http` blocks until the server has the model types. |
 | 2026-11-27 | **[Nutrition food selection](#nutrition-food-selection): BLS 4.0 foods and a staple tie-break** (D296; platform PR `nutrition-etl: the full BLS 4.0 catalog with German names`, branch `feat/nutrition-bls-full`). No shape change: no field is added, renamed, removed or retyped. **Behaviour:** once the operator imports it, the catalog gains about 7,140 generic foods from the Bundeslebensmittelschlüssel 4.0, each with a German name, an English name and curated search synonyms as aliases (`Karotte` finds `Möhre, roh`). They have no household portions, only `reference_portion` (100 g). `sources[].attribution` names the Max Rubner-Institut (CC BY 4.0), as for the three BLS staples. Ranking: when two foods tie on match quality, a curated staple now ranks first (migration 0061). Before, the caller's market decided, so an exact German BLS name could outrank the staple whose alias it equals. **Old builds** see more German results and nothing else. **The app:** show the source attribution as for the BLS staples, and name the BLS on the About or licences screen (wording in D296). **Swift:** none. |
 | 2026-11-26 | **[Recovery without a watch](#recovery-without-a-watch--check-ins-and-session-rpe-d291d295-not-served-yet)** (D291–D295; platform PR `docs: the no-watch recovery contract`, branch `docs/no-watch-recovery-contract`; the head-architect's brief of 2026-11-26). Additive; docs only, so the app can build it before the server has it: no v1 field renamed, removed or retyped. **New routes:** `PUT /v1/recovery/checkins/{date}` (an idempotent upsert per wake day, body `RecoveryCheckinPut`: `bedtime`, `wake_time`, `tz_offset_sec`, `perceived_sleep_quality` and `perceived_freshness` 1–10, `soreness`; 14 days back; `200 RecoveryCheckin`), `GET /v1/recovery/checkins?from&to` (`/v1/days` semantics, ≤ 400 days; the export), `GET`/`DELETE /v1/recovery/checkins/{date}` (`DELETE` `204`, idempotent), `GET /v1/recovery/status` (`RecoveryStatus`: `source` `wearable`/`checkin`/`none`, `confidence` `high`/`medium`/`low`/`null`, `needs_checkin`, the pre-fill `suggested_bedtime`/`suggested_wake_time` with `suggestion_basis`; all three enums closed), `PUT`/`DELETE /v1/workouts/{id}/rpe` (body `WorkoutRPEPut` `{session_rpe}`, 1–10 in halves; `200 Workout`). **Fields:** `Workout.session_rpe` (number?) and `session_rpe_load` (int?, minutes × RPE), omitted without a rating, read-only; `CoachingBriefing.recovery` (`RecoveryStatus?`, `null` while the flag is off); `N2RScore.bedtime_source` (`expected`/`wearable`/`checkin`, closed; absent before). **Values:** `CoachingBriefing.readiness` gains `LOW_RECOVERY_UNEXPLAINED` (a check-in well below the user's usual with no lifestyle explanation; treat unknown values as `UNKNOWN`), and `readiness_reasons` gains `checkin_below_usual`, `checkin_low_quality_and_freshness`, `soreness_reported` and the `journal_*` confounders (including `journal_sick`, `journal_travel`, `journal_work_stress`); `CoachingBriefing.readiness_display` (string, the neutral name to show: `readiness`, with `AUTONOMIC_FATIGUE` shown as `LOW_RECOVERY_UNEXPLAINED`; `readiness` unchanged). **Decided 2026-11-27** (the user, D291–D294): the Today ring shows a check-in's `recovery_score`, marked as estimated from `source`/`confidence`, while `DailyScore.recovery` stays wearable-only; RPE feeds no day strain; soreness has zero weight; sick, travel and work stress explain a drop; no special case for sleep-only trackers; hand-typed sleep stays counted as measured; Apple's effort score is not read; testers by the allow-list only. **Flag:** `recovery.checkin`, enabled at 0 %; off: the writes and the status `404` without a `code`, reads and deletes keep working. **Codes:** none new; `consent_required` on both writes (`warn` acts as `on`). **Behaviour:** none yet; the implementation PR (migration 0061+) serves it, bumps the scoring model (a changelog entry in `GET /v1/model`) and counts a rated workout without heart rate or power in the coaching training load as Banister's TRIMP with `session_rpe / 10` as the reserve fraction (60 min at 8: 151); day strain does not change. One rule, the **wearable night** (asleep stages or overnight HRV, and a recovery), decides the tiers, `needs_checkin`, `superseded` and the readiness path. The flag is a kill switch: while off, stored check-ins and ratings count nowhere. A `404` without a `code` from these routes means "hide the feature", never "drop local data". **Old builds:** ignore the new fields and never call the routes. **The app:** show the check-in when `needs_checkin`; pre-fill it from the suggestions; send `tz_offset_sec` for the wake time; show `superseded` check-ins as history only; with `source` `checkin`, fill the Today ring from `RecoveryStatus.recovery_score` and mark it as estimated; ask for the RPE on a workout without heart rate (a Train session: `Session.workout_id`); key readiness copy on `readiness_display` (fallback `readiness`); copy never names a physiological cause. **Swift:** `RecoverySource`, `RecoveryConfidence`, `SuggestionBasis`, `RecoveryCheckinPut`, `RecoveryComponents`, `RecoveryCheckin`, `RecoveryStatus`, `WorkoutRPEPut`; `Workout.sessionRpe`, `.sessionRpeLoad`. The examples are `http` blocks until the server has the model types. |
 | 2026-11-23 | **Connections** (D257; platform PR `docs: the Connections contract`, branch `connect/contract`; head-architect's brief of 2026-11-23, no `API_REQUESTS.md` entry). Additive; docs only, so the app can build it before the server has it: no v1 field renamed, removed or retyped. **New:** [Connections](#connections--direct-sources-d257-not-served-yet), a direct link to a provider's own service (`{provider}` a path parameter, an open id `^[a-z][a-z0-9]{1,31}$`; the first is `garmin`, `fake` is compose only): `GET /v1/me/connections` (`{connections: [Connection], available: [AvailableConnection]}`; `Connection` = `provider`, `status` `connected` / `needs_reauth` / `revoked` (closed), `connected_at`, `last_data_at?`, `provides` (the `kinds` vocabulary), `history` (`none`, open: unknown reads as `none`), `provider_user_id?` and `permissions` (open, the provider's words; `null` and `[]` when `revoked`); `available[].accepting` `false` at the provider's user cap, always `true` for a reconnect; `available` is authoritative, not the flag); `POST /v1/me/connections/{provider}/start` (no body → `{authorize_url, expires_at}`, 10 minutes, opaque, opened in `ASWebAuthenticationSession` with the scheme `ryft`; consent with `warn` acting as `on`, then `404 unknown_provider`, then `409 connection_limit`; its own budget, bursts of 5 then one a minute; a reconnect changes nothing until its confirm); `GET /v1/connect/{provider}/callback` (the provider's redirect, no bearer, no App Attest, no gates; always `302` to `ryft://connect/{provider}?status=ok|denied|expired|error` (closed), `&ticket=<32 lowercase hex>` with `ok` only; no token, code, provider user id or health value in the URL); `POST /v1/me/connections/{provider}/confirm` (`{ticket}` → `200 Connection`; only the confirm connects; a repeat answers `200` until 10 minutes after the callback, then `410 connect_expired`; `409 connect_ticket_invalid` (also a repeat once that connection has ended: moved, replaced, removed at the provider or disconnected); a consent refusal leaves the ticket usable; a different provider account replaces the live connection and deletes its data; a provider account connected to another RYFT account moves here and ends there as `revoked`); `DELETE /v1/me/connections/{provider}` (`{status: "disconnected", deregistered: bool?, data_deleted: true}`; idempotent; works whether or not the provider is served or its flag is on; exempt from App Attest and the beta gate, like `DELETE /v1/me/consent`; `deregistered`/`connections_deregistered` `false` also when another RYFT account holds that provider account live, a grant waiting for its confirm counts as something to end). **Cap:** never counts the caller's own open states (at most 3 per account and provider), pending grant or connection. **Flag off at confirm:** `404 unknown_provider`, the pending grant handled as an expired one; `unknown` is a reserved provider id. **Data when a connection ends** (disconnect, removed at the provider, moved to another RYFT account, replaced by another provider account, account deletion): everything received through it is deleted (samples, sleep, waiting records, the `direct` source entry; the tokens after the provider's deregistration, retried 30 days) and the touched days are rescored; the same vendor's Apple Health data and every other source stay; a `revoked` entry (no provider user id, no permissions) is listed 90 days. Deliveries while the consent is not to the policy in force are dropped, not stored. **Fields:** `DELETE /v1/me` → `connections_deregistered` (`bool?`: `null` none to end, `false` retried in the background); `User.sources[].origin` (`healthkit` | `direct`, closed; absent = `healthkit`; a direct source is named by the provider's display name, `bundle_id: null`); `Sample.type` `hrv_rmssd` (ms), also a new `samples_7d` key, accepted from `POST /v1/sync` too (an older server counts it `unknown_type`; Apple Health has no RMSSD, so the app sends none); `coverage.sleep_origin` (`healthkit` | `direct` | `null`) and `coverage.hrv_metric` (`sdnn` | `rmssd` | `null`; absent with an HRV = `sdnn`), both closed. **Flag:** `connect.garmin`, shipped enabled at 0 % (testers by the allow-list), gating `available`, start and confirm. **Codes** (Errors' `code` table, the status table's `403`, `404`, `409` rows and a new `410` row): `unknown_provider` (`404`), `connection_limit` (`409`), `connect_ticket_invalid` (`409`), `connect_expired` (`410`), and `merge_has_connections` (`409`, admin merge only); `consent_required` on start and confirm. **Behaviour:** none yet. With the platform PR `connect/foundation` the routes, `origin`, `hrv_rmssd`, `connections_deregistered`, the flag and the codes are served, and sync records whose `source` starts with the reserved `ryft-direct-` are counted `unknown_type`; production serves no provider until phase 2 (`available: []`, start `404 unknown_provider`). With the platform PR `connect/scoring` (a model version, a rescore) `coverage` is built for the first time with `sleep_origin` and `hrv_metric`; `hrv_ms`, `hrv_baseline_ms`, `baseline_hrv_days` and `hrv_readings` are in the day's metric, a baseline per metric (a change of metric is `short_history` for 7 nights), a direct night beats the same vendor's Apple Health night, and `GET /v1/trends?metric=hrv` serves only the newest day's metric. Conventions → Auth, Rate limits, Units and App Attest → Exempt name the new routes. **Old builds:** they ignore the new fields and never call the routes; a `hrv_ms` in RMSSD on a connected account reads as an HRV like any other (only allow-listed testers have one). **The app:** offer Connect from `available` only (an id this build knows; `404` without a `code`: hide every entry); data card, start, the sheet, confirm at once on `ok`; after a `409`/`410` on a repeated confirm read `GET /v1/me/connections`; show `needs_reauth` as Reconnect and `revoked` as removed at the provider; say on Disconnect that it deletes; ask for consent at once after a policy change (deliveries without it are lost); decode `origin`, `sleep_origin`, `hrv_metric`, `connections_deregistered` as optional and never compare HRV across metrics. **Swift:** `SourceOrigin`, `HRVMetric`, `ConnectionStatus`, `Connection`, `AvailableConnection`, `ConnectionsResponse`, `ConnectStart`, `ConnectConfirmPost`, `ConnectionDeleted`, `ConnectCallbackStatus`, `ConnectCallback` (parses the redirect); `UserSource.origin`, `ScoreCoverage.sleepOrigin` and `.hrvMetric`, `AccountDeleted.connectionsDeregistered`; `APIErrorCode` gains `unknownProvider`, `connectionLimit`, `connectTicketInvalid`, `connectExpired`, `mergeHasConnections`. The examples are `http` blocks until the server has the model types (`model.ConnectionsResponse`, `Connection`, `AvailableConnection`, `ConnectStart`, `ConnectConfirmPost`, `ConnectionDeleted`). |
