@@ -45,9 +45,10 @@ the new texts, this repository's new files, variables or commits, and the spots 
 - **The usual ways** to meet them without private details: a business or service address that accepts legal
   mail; a company (e.g. a UG) as provider, controller and partner applicant; for the second contact, whatever
   the reviewer accepts in place of a private phone. The site has no forms by design.
-- **Already published, and kept:** privacy 2026-10-26 §1 and terms 2026-10-20 §1 carry your name and home
-  address, and the Impressum on `main` carries them and your phone. The two versioned pages stay as they are:
-  they are the record of what people consented to (D290). The Impressum is a single page: this PR removes them
+- **Already published, now removed:** privacy 2026-10-20 and 2026-10-26 §1 and terms 2026-10-20 §1 carried your
+  name and home address, and the Impressum on `main` carries them and your phone. This PR replaces them on the three
+  archived pages with "[Provider details removed on 2026-11-27; the provider is named in the current legal
+  notice.]" (wording otherwise unchanged; the original stays in git history as the record of consents, D290 item 3). The Impressum is a single page: this PR removes them
   from it, and offers a postal address for service on request by email. It is incomplete under § 5 DDG until a
   business or service address exists (Linear RFT-156 A1; U1, U5, U6). Git keeps the history either way.
 - **App Store, later:** Apple asks EU sellers to declare trader status under the Digital Services Act; for

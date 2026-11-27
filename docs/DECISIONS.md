@@ -6866,9 +6866,12 @@ the bases they propose and every legal reading stay with the user and their revi
      `PRIVACY_POLICY_VERSION`, `deploy/run/api.yaml:55`, `ingest.yaml:45`), the `site` job deploys the page and its
      live check expects `/privacy` to show 2026-11-26, and **every user is asked to consent again** before the next
      upload (D78).
-  3. **The old versions stay as published:** 2026-10-20 and 2026-10-26 keep their pages and words, the record of
-     what people consented to. Privacy 2026-10-26 §1 (and terms 2026-10-20 §1) still carry the operator's name and
-     home address; they are left as they are on purpose, and not copied anywhere new.
+  3. **The old versions stay as published:** 2026-10-20 and 2026-10-26 keep their pages and words. **Amended
+     2026-11-27 (the user's rule: no personal details online):** privacy 2026-10-20 §1, privacy 2026-10-26 §1 and
+     terms 2026-10-20 §1 lose the operator's name and home address, replaced by "[Provider details removed on
+     2026-11-27; the provider is named in the current legal notice.]"; every other word stays. The original text
+     stays in git history (the files at `origin/main` before this PR) as the record of what users consented to; no
+     guard pins the archived pages' content, so none changes.
   4. **Against 2026-10-26** (and as C2 had it): Google Cloud in Belgium, Firebase Hosting, Microsoft 365 through
      GoDaddy instead of AWS, Grafana Cloud and Google Workspace; App Attest, PostHog, the full feedback
      diagnostics, Google's firewall logs; no site access log and no browser storage; the controller, the
