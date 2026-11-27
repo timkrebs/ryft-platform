@@ -1,5 +1,9 @@
 # RYFT platform — status
 
+## The sync button: the sync status is served (2026-11-27, D297, D298)
+
+Done (branch `feat/sync-status`): `GET /v1/me/sync` answers `sources`, `freshness` and `scores_pending_since` as the contract says; the API.md examples are typed and decode. Scoring closes the queued days of an account without consent (`score_queue.closed_reason`, migration 0065), so they stop holding `freshness`. Five queries per uncached call, plus one flag read per listed provider. Not tracked: the N2R baseline, the briefing and the pilot's partner deliveries (D297). Merge applies **0065** (a column, an index, two grants; rollback-safe); the api and scoring roll with it. Open: the behaviour tests, review, F1 (`MarkScored` exact).
+
 ## The sync button: the sync status contract, docs only (2026-11-27, D297)
 
 Done: `docs/API.md` → `GET /v1/me/sync` → The sync button. The route gains `sources` (per source: `healthkit` or a provider id, `last_sync_at`, `status` `ok`/`pending`/`error`, `reason`), `freshness` (`current`/`scores_pending`) and `scores_pending_since`. No new route; `POST /v1/sync` is unchanged and does not wait for scoring. "Scores pending" means one of two things. A day is queued that is today, yesterday, or a past day queued in the last 10 minutes (its rescore reaches today). Or a connection's delivery is not stored yet. Not tracked: the N2R morning baseline, the briefing built on it, and the pilot's partner deliveries, all on the 15-minute tick (D297 says why). Garmin and Suunto are listed only while a connection is live, served and flagged on. The app rule (five steps, polling bounded at 3 minutes) is in the section. The Swift mirror and a changelog row are in. The examples are `http` blocks until the server has the types.

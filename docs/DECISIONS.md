@@ -7198,3 +7198,59 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
 - **Examples as `http` blocks** until the model types exist (as D257, D291). The implementation is outlined in
   `docs/work/2026-11-27-sync-status/implementation.md`: one indexed query more behind the cache, a column grant
   on `provider_inbox.received_at` for the api and a partial index, no new table.
+
+## D298 — The sync status is served: `closed_reason`, scoring closes the queue of an account without consent, five queries (2026-11-27)
+
+- **Context:** D297 fixed the contract (#258); this is the implementation PR (`feat/sync-status`), and the
+  calls it made that the outline left open. The user's answers of 2026-11-27: the N2R baseline, the briefing and
+  the pilot's partner deliveries stay untracked, withdrawn consent makes scoring close the queue rows, offline is
+  the app's concern.
+- **`score_queue.closed_reason` (migration 0065):** `NULL` or `'no_consent'`, a closed set (a new reason is a new
+  migration). It means something only together with `scored_at`: scoring sets both when it closes a row without
+  scoring it (`Store.CloseQueue`), and `MarkScored` sets it back to `NULL` when a day is really scored. A row
+  queued again (`scored_at = NULL`) may keep a stale value; every reader asks `scored_at IS NULL` first, so a
+  stale value on a pending row is never read. That is why the queue upserts of ingest and the api (`queueDays`)
+  do not change: no new grant for them and no change of the golden trace. `ExpectedScoreSec` counts only rows
+  with `closed_reason IS NULL`: a closed row has `scored_at - queued_at` of however long the account had been
+  without consent, which says nothing about how long scoring takes, and would pull the p95 that
+  `expected_within_sec` shows to every account.
+- **Consent closing lives in `cmd/scoring`, not in `internal/scoring`:** where scoring answers `ErrNoConsent`
+  (`handleEvent`) it now calls `CloseQueue` first, and the timer pass does the same for an active user the
+  engine does not admit (`refreshActive`). No scoring rule changes: `internal/scoring` is untouched, so no
+  `ModelVersion`, no `SCORING.md`, no rescore. A failure of `CloseQueue` is logged and the event is still acked
+  (D78: nothing to retry); the next event or the next 15-minute pass closes the rows. Closing twice closes
+  nothing the second time (the `WHERE` is `scored_at IS NULL`), so a redelivery is idempotent (D100). If the
+  account consents again, the next sync queues its days again and they are scored; closed days are not scored
+  retroactively. A closed day leaves
+  `pending_days` and stops holding `freshness`; the `healthkit` source shows `consent_required` while the consent
+  gate is `on`.
+- **Why not a retention of the old rows instead:** the day window of D297 already stops such a row holding the
+  button after two days. Closing it also removes it from `pending_days` (which the app's fallback for an older
+  server reads), and it records why the row never got a score.
+- **Migration number:** 0065. Main ends at 0061; #259 holds 0062 and 0063, #260 holds 0062 to 0064.
+- **Cost of the route, uncached:** 5 queries, up from 4: the user row with its last device and today's score;
+  the kinds; the queue (`pendingQueue`, the same primary-key range as before, with `queued_at` as one more
+  column, and `PendingDays` reads it too); the connections (`SyncConnections`: the `connections` primary key,
+  and per listed connection one probe of `provider_inbox_user_pending`, at most two today); the global p95.
+  On top, `served` reads the flag table (`Store.Flags`, one small query, not cached) once per listed
+  connection, as `available` does; none when the account has no connection or `h.conn` is nil (Connections not
+  wired), so 5 queries today and at most 7 with two providers. Reading the flags once per request would need a
+  `served` variant that takes them; not done, the table has a dozen rows. The index
+  holds only `state = 'pending'` rows, so it stays small while the processed rows stay as dedupe keys for 30
+  days. The 10 s per-user cache stays: ingest cannot invalidate the api's cache, and the contract's polling rule
+  (first call no sooner than `max(expected_within_sec, 10)` s after the sync) is built on it.
+- **Evaluation of the gates:** `healthkit` is `error` with `invite_required` only when the beta gate is `on` and
+  the account has no access, else `consent_required` only when the consent gate is `on` and the account has
+  not consented; each against its own mode. `gateFor` (the `gate` field) is untouched: it answers the first
+  failing gate whatever its mode, as D91 says.
+- **A `needs_reauth` connection with a delivery waiting is `pending`, not `error`:** API.md's status table lists
+  `pending` for "`connected` or `needs_reauth`" with a delivery not stored yet, and `freshness` follows a
+  `pending` source. Ingest stores the delivery whatever the grant's state, so the data is on its way into the
+  scores; the `error` shows again once it is stored (usually seconds). Error first would have let `freshness`
+  say `current` for data no score has.
+- **Where the window lives:** `syncFreshness` in `cmd/api/syncstatus.go`, a pure function of the queued days
+  with their `queued_at`, the user's local today and `now`. The `score_queue` primary key lists only the
+  account's unscored rows, so the filtering happens in Go, not in SQL.
+- **Not changed:** `MarkScored`'s `queued_at <= started` (F1 stays a follow-up), `POST /v1/sync`, the events,
+  the Cloud Run templates. Rollback: revert the api and scoring commits; the migration stays (a column, an
+  index and two grants nothing old reads or writes).

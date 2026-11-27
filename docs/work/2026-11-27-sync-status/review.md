@@ -28,3 +28,18 @@ by platform-lead after verifying each item against the code.
 Blocker 2 is closed.
 
 Sound: polling vs the 10 s cache across instances; open/closed enums; the Swift mirror; the anchor; `sources` never `null`.
+
+# The backend PR (`feat/sync-status`, D298)
+
+## Hand-backs (2026-11-27)
+- **database-engineer:** `0065_sync_status.sql` (+ `lock_timeout 5s`), `roles_test.go`, `migrate_syncstatus_test.go`
+  (CHECK, NULL default, api reads `received_at` not `payload`/`record_id`, scoring writes `closed_reason`
+  through RLS, EXPLAIN uses `provider_inbox_user_pending` with `enable_seqscan = off`, rerun). vet green;
+  **every Postgres test skipped locally** (no `RYFT_TEST_POSTGRES_URL`): CI is the first real run. The index is not
+  `CONCURRENTLY` (the migrator wraps each file in a transaction; the inbox is tiny).
+- **backend-engineer:** model, store, handler, `cmd/scoring` consent closing (`queueCloser` seam,
+  `closeNoConsent`), API.md typed examples + changelog row, D298, STATUS, ARCHITECTURE. vet/build/unit green,
+  `check-api-doc` green (52→56 strict blocks); `check-swift` compiled the mirror, its live-decode step needs a
+  running stack (not verified). Postgres tests skipped. Cost: `served` reads the flag once per listed provider,
+  so 5 queries + 1 per listed provider (≤ 7 today); D298 says so. The section anchor became `…-d297-d298`; no
+  link in `../app/docs` used the old one.

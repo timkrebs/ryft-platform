@@ -54,9 +54,10 @@ func queueDays(ctx context.Context, tx pgx.Tx, userID uuid.UUID, days []string) 
 // MarkScored records that scoring finished day for a computation that started
 // at started: only a queue entry from before then is done (a sync during the
 // computation stays pending). It returns when that entry was queued, for the
-// latency metric; ok false when nothing was pending.
+// latency metric; ok false when nothing was pending. A day really scored has no
+// closed_reason (D298).
 func (s *Store) MarkScored(ctx context.Context, userID uuid.UUID, day string, started time.Time) (queuedAt time.Time, ok bool, err error) {
-	err = s.pool.QueryRow(ctx, `UPDATE score_queue SET scored_at = now()
+	err = s.pool.QueryRow(ctx, `UPDATE score_queue SET scored_at = now(), closed_reason = NULL
 		WHERE user_id = $1 AND day = $2::date AND scored_at IS NULL AND queued_at <= $3 RETURNING queued_at`,
 		userID, day, started).Scan(&queuedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -71,28 +72,64 @@ func (s *Store) PruneScoreQueue(ctx context.Context) error {
 	return err
 }
 
-// PendingDays lists a user's days queued and not yet scored, oldest first.
-func (s *Store) PendingDays(ctx context.Context, userID uuid.UUID) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT to_char(day, 'YYYY-MM-DD') FROM score_queue
+// QueueClosedNoConsent is score_queue.closed_reason of a row scoring closed without scoring it because the
+// account has no current consent (D78, D298). A closed set: a new reason is a new migration.
+const QueueClosedNoConsent = "no_consent"
+
+// CloseQueue closes a user's unscored queue rows without scoring them, with reason (QueueClosedNoConsent): it
+// sets scored_at, so nothing waits for them (pending_days, the sync status), and closed_reason, so the sync
+// latency estimate skips them. It returns the number of rows closed; closing twice closes nothing the second
+// time. Only scoring calls it (D298).
+func (s *Store) CloseQueue(ctx context.Context, userID uuid.UUID, reason string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE score_queue SET scored_at = now(), closed_reason = $2
+		WHERE user_id = $1 AND scored_at IS NULL`, userID, reason)
+	return tag.RowsAffected(), err
+}
+
+// PendingDay is a queued, unscored day and when it was queued (again).
+type PendingDay struct {
+	Day      string // YYYY-MM-DD
+	QueuedAt time.Time
+}
+
+// pendingQueue lists a user's days queued and not yet scored, oldest day first.
+func (s *Store) pendingQueue(ctx context.Context, userID uuid.UUID) ([]PendingDay, error) {
+	rows, err := s.pool.Query(ctx, `SELECT to_char(day, 'YYYY-MM-DD'), queued_at FROM score_queue
 		WHERE user_id = $1 AND scored_at IS NULL ORDER BY day`, userID)
 	if err != nil {
 		return nil, err
 	}
-	days, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if days == nil {
-		days = []string{}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (PendingDay, error) {
+		var d PendingDay
+		err := row.Scan(&d.Day, &d.QueuedAt)
+		d.QueuedAt = d.QueuedAt.UTC()
+		return d, err
+	})
+}
+
+// PendingDays lists a user's days queued and not yet scored, oldest first.
+func (s *Store) PendingDays(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	q, err := s.pendingQueue(ctx, userID)
+	return pendingDayNames(q), err
+}
+
+// pendingDayNames is the days of q; never nil (it is a JSON array).
+func pendingDayNames(q []PendingDay) []string {
+	days := make([]string, len(q))
+	for i, d := range q {
+		days[i] = d.Day
 	}
-	return days, err
+	return days
 }
 
 // ExpectedScoreSec is the 95th percentile of sync-to-score over every account
 // in the last 6 hours, in whole seconds (at least 1); DefaultExpectedSec with
-// fewer than 5 entries.
+// fewer than 5 entries. Rows scoring closed without scoring them (closed_reason, D298) are no sync-to-score time.
 func (s *Store) ExpectedScoreSec(ctx context.Context) (int, error) {
 	var n int
 	var p95 *float64
 	err := s.pool.QueryRow(ctx, `SELECT count(*), percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM scored_at - queued_at))
-		FROM score_queue WHERE scored_at > now() - interval '6 hours'`).Scan(&n, &p95)
+		FROM score_queue WHERE scored_at > now() - interval '6 hours' AND closed_reason IS NULL`).Scan(&n, &p95)
 	if err != nil || n < 5 || p95 == nil {
 		return DefaultExpectedSec, err
 	}
@@ -105,6 +142,7 @@ type SyncState struct {
 	LastSyncDevice *string
 	Latest         map[string]time.Time
 	Pending        []string
+	Queued         []PendingDay // Pending with when each day was queued (again), same order
 	ResyncAt       *time.Time
 	TodayScoredAt  *time.Time
 	TodayHasSleep  bool
@@ -137,8 +175,34 @@ func (s *Store) SyncStateOf(ctx context.Context, userID uuid.UUID, today string)
 	}); err != nil {
 		return st, err
 	}
-	st.Pending, err = s.PendingDays(ctx, userID)
+	st.Queued, err = s.pendingQueue(ctx, userID)
+	st.Pending = pendingDayNames(st.Queued)
 	return st, err
+}
+
+// SyncConnection is one of a user's connections that GET /v1/me/sync may list: Status is "connected" or
+// "needs_reauth". LastDataAt is when RYFT last stored a record from it, PendingSince when the oldest delivery
+// that ingest has not stored yet arrived; each nil when there is none.
+type SyncConnection struct {
+	Provider     string
+	Status       string
+	LastDataAt   *time.Time
+	PendingSince *time.Time
+}
+
+// SyncConnections lists a user's connections that are connected or need renewing, by provider. The subquery
+// probes provider_inbox_user_pending; the api reads received_at only, never a payload.
+func (s *Store) SyncConnections(ctx context.Context, userID uuid.UUID) ([]SyncConnection, error) {
+	rows, err := s.pool.Query(ctx, `SELECT c.provider, c.status, c.last_data_at,
+		(SELECT min(i.received_at) FROM provider_inbox i
+		  WHERE i.user_id = c.user_id AND i.provider = c.provider AND i.state = 'pending') AS pending_since
+		FROM connections c
+		WHERE c.user_id = $1 AND c.status IN ('connected', 'needs_reauth')
+		ORDER BY c.provider`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[SyncConnection])
 }
 
 // NewestRecord is the latest of Latest; zero without any.

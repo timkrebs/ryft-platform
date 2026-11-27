@@ -41,7 +41,7 @@ func build(d app.Deps, beta config.Beta) (app.Parts, error) {
 	engine.OnScored(onScored(d.Log, pub))
 
 	handle := ingestHandler(d.Log, func(ctx context.Context, ev model.IngestedEvent) error {
-		return handleEvent(ctx, engine, ev)
+		return handleEvent(ctx, d.Log, engine, st, ev)
 	}, pub)
 	push, err := d.Bus.Push(events.ConsumerScoring, events.ScoringHandler(handle), nil) // nothing of scoring's is deferred
 	if err != nil {

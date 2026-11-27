@@ -136,13 +136,111 @@ func (h *handler) syncStatus(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, r, err)
 		return
 	}
+	sources, srcSince, err := h.syncSources(ctx, u, st)
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
+	pending, since := syncFreshness(st.Queued, today, now)
+	if srcSince != nil {
+		pending = true
+		if since == nil || srcSince.Before(*since) {
+			since = srcSince
+		}
+	}
+	freshness := model.FreshnessCurrent
+	if pending {
+		freshness = model.FreshnessScoresPending
+	} else {
+		since = nil
+	}
 	s := model.SyncStatus{Gate: h.gateFor(u), LastSyncAt: utc(st.LastSyncAt), LastSyncDevice: st.LastSyncDevice, Latest: st.Latest,
 		Today: model.TodayState{Day: today, State: todayState(st, today, now), ScoredAt: utc(st.TodayScoredAt),
 			ModelVersion: scoring.ModelVersion},
-		PendingDays: st.Pending, ExpectedWithinSec: expected, ResyncRequestedAt: utc(st.ResyncAt)}
+		PendingDays: st.Pending, ExpectedWithinSec: expected, ResyncRequestedAt: utc(st.ResyncAt),
+		Sources: sources, Freshness: freshness, ScoresPendingSince: since}
 	syncStatuses.put(u.ID, now, s)
 	httpx.WriteJSON(w, 200, s)
 }
+
+// Window of the sync status's pending days (D297): scoring a past day rescores up to baselineDays (30) stored days
+// after it in the same pass, today included, so a day queued within syncRescoreWindow holds the button.
+const (
+	syncPastDays      = 30
+	syncRescoreWindow = 10 * time.Minute
+)
+
+// syncFreshness says whether the queued days hold today's scores back (D297): a day does when it is today or
+// yesterday (any age of its queue row), or when it is one of the last 30 days and was queued in the last 10
+// minutes. since is the earliest queued_at among those days (UTC); nil when none. today is the user's local day.
+func syncFreshness(days []store.PendingDay, today string, now time.Time) (pending bool, since *time.Time) {
+	t, err := time.Parse(dayLayout, today)
+	if err != nil {
+		return false, nil
+	}
+	yesterday := t.AddDate(0, 0, -1).Format(dayLayout)
+	oldest := t.AddDate(0, 0, -syncPastDays).Format(dayLayout)
+	for _, d := range days {
+		hold := d.Day == today || d.Day == yesterday ||
+			(d.Day >= oldest && d.QueuedAt.After(now.Add(-syncRescoreWindow)))
+		if !hold {
+			continue
+		}
+		pending = true
+		if q := d.QueuedAt.UTC(); since == nil || q.Before(*since) {
+			since = &q
+		}
+	}
+	return pending, since
+}
+
+// syncSources is GET /v1/me/sync → sources (D297): healthkit first, then the account's connections that are
+// listed (connected or needs_reauth, the provider served and its flag on). The time is the earliest arrival among
+// the providers whose delivery is waiting to be stored (status pending); nil when none.
+func (h *handler) syncSources(ctx context.Context, u model.User, st store.SyncState) ([]model.SyncSource, *time.Time, error) {
+	hk := model.SyncSource{Source: model.SyncSourceHealthKit, LastSyncAt: utc(st.LastSyncAt), Status: model.SyncSourceOK}
+	// Each gate against its own mode (gateFor answers the first failing gate whatever its mode, for the gate field).
+	switch {
+	case h.beta.Gate == config.ModeOn && !u.BetaAccess:
+		hk.Status, hk.Reason = model.SyncSourceError, ptr(model.CodeInviteRequired)
+	case h.beta.Consent == config.ModeOn && !gate.Consented(h.beta, u):
+		hk.Status, hk.Reason = model.SyncSourceError, ptr(model.CodeConsentRequired)
+	}
+	sources := []model.SyncSource{hk}
+	if h.conn == nil {
+		return sources, nil, nil
+	}
+	conns, err := h.st.SyncConnections(ctx, u.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	var since *time.Time
+	for _, c := range conns {
+		_, ok, err := h.conn.served(ctx, c.Provider, u.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !ok {
+			continue
+		}
+		src := model.SyncSource{Source: c.Provider, LastSyncAt: utc(c.LastDataAt), Status: model.SyncSourceOK}
+		// API.md: a delivery waiting to be stored is pending for connected and needs_reauth alike (it is stored
+		// whatever the grant's state, usually within seconds); the needs_reauth error shows once it is.
+		switch {
+		case c.PendingSince != nil:
+			src.Status = model.SyncSourcePending
+			if p := c.PendingSince.UTC(); since == nil || p.Before(*since) {
+				since = &p
+			}
+		case c.Status == model.ConnectionNeedsReauth:
+			src.Status, src.Reason = model.SyncSourceError, ptr(model.SyncReasonNeedsReauth)
+		}
+		sources = append(sources, src)
+	}
+	return sources, since, nil
+}
+
+func ptr[T any](v T) *T { return &v }
 
 func utc(t *time.Time) *time.Time {
 	if t == nil {

@@ -87,10 +87,26 @@ func announce(ev model.IngestedEvent) (*model.SessionScoredEvent, *model.Refresh
 	return session, refresh
 }
 
-func handleEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEvent) error {
+// queueCloser is the part of the store that closes a user's queue rows without scoring them (D298).
+type queueCloser interface {
+	CloseQueue(ctx context.Context, userID uuid.UUID, reason string) (int64, error)
+}
+
+// closeNoConsent closes the unscored queue rows of a user scoring does not admit, so the sync status does not
+// keep reporting scores pending for days that will never be scored (D298). Closing again closes nothing. A failure
+// is logged and never returned: there is nothing to retry (D78), and the pass or the next event closes the rows.
+func closeNoConsent(ctx context.Context, log *slog.Logger, queue queueCloser, userID uuid.UUID) {
+	if _, err := queue.CloseQueue(ctx, userID, store.QueueClosedNoConsent); err != nil && ctx.Err() == nil {
+		log.ErrorContext(ctx, "close the score queue of an account without consent", "err", err)
+	}
+}
+
+func handleEvent(ctx context.Context, log *slog.Logger, engine *scoring.Engine, queue queueCloser, ev model.IngestedEvent) error {
 	err := scoreEvent(ctx, engine, ev)
 	if errors.Is(err, scoring.ErrNoConsent) {
-		return nil // withdrawn since the sync: nothing to score, nothing to retry (D78)
+		// Withdrawn since the sync: nothing to score, nothing to retry (D78); the queue rows are closed (D298).
+		closeNoConsent(ctx, log, queue, ev.UserID)
+		return nil
 	}
 	return err
 }
@@ -134,7 +150,8 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 			return
 		}
 		if !engine.Admits(user) {
-			return // withdrawn: no scores, no baseline estimate (D78)
+			closeNoConsent(ctx, log, st, id) // withdrawn: no scores, no baseline estimate (D78); nothing waits for them (D298)
+			return
 		}
 		now := time.Now().In(loc)
 		today := now.Format("2006-01-02")
