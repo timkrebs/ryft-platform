@@ -30,6 +30,7 @@ func TestHealthKitBodyMassRestrictedToProtectedPilot(t *testing.T) {
 			"device_id": d,
 			"samples": []map[string]any{
 				{"type": "body_mass", "value": 70, "unit": "kg", "start": base(), "end": base(), "source": "Scale"},
+				{"type": "basal_energy", "value": 50, "unit": "kcal", "start": base(), "end": base(), "source": "Watch"},
 				{"type": "steps", "value": 1, "unit": "count", "start": base(), "end": base(), "source": "Watch"},
 			},
 			"cursor": model.HealthKitCursor{Stream: model.SampleBodyMass, Sequence: 1, Value: "synthetic"},
@@ -38,9 +39,9 @@ func TestHealthKitBodyMassRestrictedToProtectedPilot(t *testing.T) {
 			t.Fatal(err)
 		}
 		r, out := send(e.serverFor(user), string(body))
-		wantOptional, wantIgnored := 0, 1
+		wantOptional, wantIgnored := 0, 2
 		if allowed {
-			wantOptional, wantIgnored = 1, 0
+			wantOptional, wantIgnored = 1, 1
 		}
 		if r.Code != http.StatusOK || out.Accepted.Samples != 1+wantOptional || out.Ignored.Samples.UnknownType != wantIgnored {
 			t.Fatalf("unrelated HealthKit streams affected or optional data persisted: status=%d, accepted=%d, ignored=%d",
@@ -48,6 +49,9 @@ func TestHealthKitBodyMassRestrictedToProtectedPilot(t *testing.T) {
 		}
 		if got := e.count(`SELECT count(*) FROM samples WHERE user_id=$1 AND type='body_mass'`, user.ID); got != wantOptional {
 			t.Fatalf("stored %d body mass readings, want %d", got, wantOptional)
+		}
+		if got := e.count(`SELECT count(*) FROM samples WHERE user_id=$1 AND type='basal_energy'`, user.ID); got != 0 {
+			t.Fatalf("stored %d basal energy samples, want 0", got)
 		}
 		if got := e.count(`SELECT count(*) FROM nutrition.wearable_sync_cursors WHERE user_id=$1 AND device_id=$2 AND stream='body_mass'`, user.ID, d); got != wantOptional {
 			t.Fatalf("stored %d body mass cursors, want %d", got, wantOptional)

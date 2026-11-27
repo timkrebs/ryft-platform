@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -232,6 +231,8 @@ type handler struct {
 	connect *connectHook
 	// loadUser finds or creates the caller's row; nil is st.EnsureUser (tests load a fixed user).
 	loadUser func(context.Context, auth.Principal) (model.User, error)
+	// namesFitness reports whether the policy covers the new sample types; nil is model.NamesProfileBody.
+	namesFitness func(string) bool
 
 	expMu  sync.Mutex // the cached sync-to-score estimate
 	expSec int
@@ -266,15 +267,33 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user, _ := auth.UserFrom(ctx)
 	userID := user.ID
-	if hasBodyMass(req) {
-		allowed, err := h.st.HealthKitBodyMassAllowed(ctx, userID)
+	forceGrant := false
+	if hasSampleStream(req, gatedType) {
+		// D304, D306: the flag and a consent (auth loads the active one) to a policy that names the types.
+		on, err := h.st.SyncFitnessTypesAllowed(ctx, userID)
 		if err != nil {
-			h.unavailable(w, r, fmt.Errorf("optional HealthKit stream: %w", err))
+			h.unavailable(w, r, fmt.Errorf("fitness sample types: %w", err))
 			return
 		}
-		if !allowed {
-			ignored.Samples.UnknownType += dropBodyMass(&req)
+		names := h.namesFitness
+		if names == nil {
+			names = model.NamesProfileBody
 		}
+		fitness := on && user.Consent != nil && names(user.Consent.PolicyVersion)
+		var pilot bool
+		if hasSampleStream(req, func(typ string) bool { return typ == model.SampleBodyMass }) {
+			pilot, err = h.st.HealthKitBodyMassAllowed(ctx, userID)
+			if err != nil {
+				h.unavailable(w, r, fmt.Errorf("optional HealthKit stream: %w", err))
+				return
+			}
+		}
+		// A stream admitted by the Fitness gate needs its grant rechecked in both transactions,
+		// whatever CONSENT_ENFORCE says (D306).
+		forceGrant = fitness && hasSampleStream(req, func(typ string) bool {
+			return !keepGated(typ, pilot, false)
+		})
+		ignored.Samples.UnknownType += dropGated(&req, pilot, fitness)
 	}
 	sent := model.SyncCounts{Samples: len(req.Samples), Sleep: len(req.Sleep), Workouts: len(req.Workouts)}
 	loc, err := time.LoadLocation(user.TZ)
@@ -283,12 +302,19 @@ func (h *handler) sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var grant *model.Consent
-	if h.beta.Consent == config.ModeOn {
-		grant = user.Consent // the cheap gate above already validated its policy version
+	if h.beta.Consent == config.ModeOn || forceGrant {
+		grant = user.Consent // the gate above (or the Fitness gate) already validated its policy version
 	}
 	consentChanged := func(err error) bool {
 		if !errors.Is(err, store.ErrHealthKitConsentChanged) {
 			return false
+		}
+		if h.beta.Consent != config.ModeOn {
+			// The Fitness gate's own re-check: answered as under on, counted under the configured mode.
+			metrics.GateRefusals.WithLabelValues(model.CodeConsentRequired, string(h.beta.Consent), "ingest").Inc()
+			httpx.WriteCodedError(w, r, http.StatusForbidden, model.CodeConsentRequired,
+				"consent to the privacy policy "+h.beta.PrivacyPolicyVersion+" is required before uploading health data")
+			return true
 		}
 		gate.Consent(w, r, h.beta, model.User{}, "ingest")
 		return true
@@ -369,21 +395,6 @@ const (
 	futureSlack = 24 * time.Hour
 	pastWindow  = 400 * 24 * time.Hour
 )
-
-func bodyMassSample(s model.Sample) bool { return s.Type == model.SampleBodyMass }
-
-func hasBodyMass(req model.SyncRequest) bool {
-	return (req.Cursor != nil && req.Cursor.Stream == model.SampleBodyMass) || slices.ContainsFunc(req.Samples, bodyMassSample)
-}
-
-func dropBodyMass(req *model.SyncRequest) int {
-	before := len(req.Samples)
-	req.Samples = slices.DeleteFunc(req.Samples, bodyMassSample)
-	if req.Cursor != nil && req.Cursor.Stream == model.SampleBodyMass {
-		req.Cursor = nil
-	}
-	return before - len(req.Samples)
-}
 
 // screen drops the records the server does not store and counts them: unknown
 // sample types and sleep stages (an app reading a new HealthKit type keeps

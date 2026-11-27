@@ -318,7 +318,7 @@ func (e *Engine) computeDay(ctx context.Context, userID uuid.UUID, day string) (
 	if p.strain, err = e.strain(ctx, userID, day, d, strainRHR(p.night.rhr, p.base), float64(user.MaxHR)); err != nil {
 		return false, err
 	}
-	if p.steps, p.kcal, err = e.activity(ctx, userID, d); err != nil {
+	if p.steps, p.kcal, p.restingKcal, err = e.activity(ctx, userID, d); err != nil {
 		return false, err
 	}
 	return e.persist(ctx, userID, p)
@@ -332,7 +332,7 @@ func hrPoints(samples []model.Sample) []HRPoint {
 	return pts
 }
 
-// dayTotal sums a cumulative sample type (steps, active energy) over the
+// dayTotal sums a cumulative sample type (steps, active or basal energy) over the
 // local day; nil when there are no samples.
 func (e *Engine) dayTotal(ctx context.Context, userID uuid.UUID, typ string, from, to time.Time) (*int, error) {
 	xs, err := e.st.SamplesBetween(ctx, userID, typ, from, to)

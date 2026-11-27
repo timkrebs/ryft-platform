@@ -1,0 +1,51 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "active_kcal": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "confidence": {
+      "nullable": true,
+      "type": "string"
+    },
+    "intake_kcal": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "missing": {
+      "items": {
+        "type": "string"
+      },
+      "nullable": true,
+      "type": "array"
+    },
+    "net_kcal": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "partial_day": {
+      "type": "boolean"
+    },
+    "resting_kcal": {
+      "nullable": true,
+      "type": "integer"
+    },
+    "resting_source": {
+      "nullable": true,
+      "type": "string"
+    }
+  },
+  "required": [
+    "active_kcal",
+    "confidence",
+    "intake_kcal",
+    "missing",
+    "net_kcal",
+    "partial_day",
+    "resting_kcal",
+    "resting_source"
+  ],
+  "title": "DayEnergy",
+  "type": "object"
+}

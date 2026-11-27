@@ -47,7 +47,10 @@ func (h *handler) dateRange(r *http.Request) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	now := time.Now().In(loc)
+	return dateRangeAt(r, time.Now().In(loc))
+}
+
+func dateRangeAt(r *http.Request, now time.Time) (string, string, error) {
 	from, to := r.URL.Query().Get("from"), r.URL.Query().Get("to")
 	if to == "" {
 		to = now.Format(dayLayout)
@@ -85,12 +88,19 @@ func writeRangeError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func (h *handler) days(w http.ResponseWriter, r *http.Request) {
-	from, to, err := h.dateRange(r)
+	ctx, user := r.Context(), userOf(r)
+	loc, err := h.location(r)
+	if err != nil {
+		httpx.Fail(w, r, err)
+		return
+	}
+	now := time.Now().In(loc)
+	from, to, err := dateRangeAt(r, now)
 	if err != nil {
 		writeRangeError(w, r, err)
 		return
 	}
-	rows, err := h.st.DailyScores(r.Context(), userOf(r).ID, from, to)
+	rows, err := h.st.DailyScores(ctx, user.ID, from, to)
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
@@ -98,11 +108,11 @@ func (h *handler) days(w http.ResponseWriter, r *http.Request) {
 	if rows == nil {
 		rows = []model.DailyScore{}
 	}
-	today, _, err := h.localToday(r)
-	if err == nil {
-		err = h.withScoringStates(r.Context(), userOf(r).ID, today, rows)
+	if err := h.withScoringStates(ctx, user.ID, now, rows); err != nil {
+		httpx.Fail(w, r, err)
+		return
 	}
-	if err != nil {
+	if err := h.withDayEnergy(ctx, user, from, to, now, rows); err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}
@@ -112,29 +122,30 @@ func (h *handler) days(w http.ResponseWriter, r *http.Request) {
 // day is the Today / Sleep "Day" / Strain view: the score, last night in
 // detail with its stage timeline, the day's heart-rate load and its workouts.
 func (h *handler) day(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, user := r.Context(), userOf(r)
 	day := r.PathValue("day")
 	loc, err := h.location(r)
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}
+	now := time.Now().In(loc)
 	d, err := time.ParseInLocation(dayLayout, day, loc)
 	if err != nil {
 		httpx.WriteError(w, 400, "day must be YYYY-MM-DD")
 		return
 	}
-	scores, err := h.st.DailyScores(ctx, userOf(r).ID, day, day)
+	scores, err := h.st.DailyScores(ctx, user.ID, day, day)
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}
-	nights, err := h.st.SleepNights(ctx, userOf(r).ID, day, day)
+	nights, err := h.st.SleepNights(ctx, user.ID, day, day)
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}
-	workouts, err := h.st.RatedWorkoutsBetween(ctx, userOf(r).ID, d, d.AddDate(0, 0, 1))
+	workouts, err := h.st.RatedWorkoutsBetween(ctx, user.ID, d, d.AddDate(0, 0, 1))
 	if err != nil {
 		httpx.Fail(w, r, err)
 		return
@@ -145,15 +156,19 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 	out := model.DayDetail{Workouts: workouts,
 		Score: model.DailyScore{Day: day, State: model.StateCalibrating, Details: map[string]any{}}}
 	if len(scores) > 0 {
+		if err := h.withDayEnergy(ctx, user, day, day, now, scores); err != nil {
+			httpx.Fail(w, r, err)
+			return
+		}
 		out.Score = scores[0]
-		load, err := h.st.DayLoadOf(ctx, userOf(r).ID, day)
+		load, err := h.st.DayLoadOf(ctx, user.ID, day)
 		if err != nil {
 			httpx.Fail(w, r, err)
 			return
 		}
 		out.Strain = scoring.DayStrainFrom(load)
 		if out.Strain != nil {
-			sessions, err := h.st.SessionSummaries(ctx, userOf(r).ID, d, d.AddDate(0, 0, 1), model.SessionCompleted, true)
+			sessions, err := h.st.SessionSummaries(ctx, user.ID, d, d.AddDate(0, 0, 1), model.SessionCompleted, true)
 			if err != nil {
 				httpx.Fail(w, r, err)
 				return
@@ -165,7 +180,7 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 		if s, ok := scoring.NightSummary(nights[0]); ok {
 			// The night as scoring took it: one source, morning naps split off.
 			from, to := scoring.DaySleepWindow(d)
-			segs, err := h.st.SleepEndingBetween(ctx, userOf(r).ID, from, to)
+			segs, err := h.st.SleepEndingBetween(ctx, user.ID, from, to)
 			if err != nil {
 				httpx.Fail(w, r, err)
 				return
@@ -174,9 +189,8 @@ func (h *handler) day(w http.ResponseWriter, r *http.Request) {
 			out.Sleep = &model.SleepDetail{SleepSummary: s, Need: scoring.NeedOf(out.Score), Segments: scoring.Hypnogram(night)}
 		}
 	}
-	today := time.Now().In(loc).Format(dayLayout)
 	states := []model.DailyScore{out.Score}
-	if err := h.withScoringStates(ctx, userOf(r).ID, today, states); err != nil {
+	if err := h.withScoringStates(ctx, user.ID, now, states); err != nil {
 		httpx.Fail(w, r, err)
 		return
 	}

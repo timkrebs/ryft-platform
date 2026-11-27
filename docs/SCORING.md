@@ -18,7 +18,7 @@ scoring never sums or mixes sources that overlap; it picks one.
 
 | Data | Unit of decision | Winner | Code |
 | --- | --- | --- | --- |
-| `heart_rate`, `steps`, `active_energy` | each sample type, each clock hour | the source with the most samples in that hour; tie: the name that sorts first | `DedupSources` |
+| `heart_rate`, `steps`, `active_energy`, `basal_energy` | each sample type, each clock hour | the source with the most samples in that hour; tie: the name that sorts first | `DedupSources` |
 | sleep segments | one night (the night window of a day) | the source with the most asleep minutes (deep + core + REM + asleep), then the most minutes overall, then the name | `DedupSleepSources` |
 | workouts, **same source** | copies of one recording: same `source`, same `activity`, \|Δstart\| ≤ 120 s **and** \|Δend\| ≤ 120 s **and** an overlap ≥ 50 % of the shorter one, connected components | the copy uploaded last (`created_at`), tie: the higher `id`; ingest **deletes** the others | `workoutdup.SameWorkout`, `FoldClusters` |
 | workouts, **different sources** | recordings of one activity: different `source`, same `activity` (or either is `other`), overlap ≥ 80 % of the shorter one | a specific activity before `other`, then ≥ 2 heart-rate samples **from its own source** inside its window, then the longer one, then the lower `id`; scoring **hides** the others (`duplicate_of`) | `workoutdup.CrossSourceDuplicates` |
@@ -157,7 +157,40 @@ missing instead of leaving the user with empty scores.
 and rounded to whole numbers (`DayTotal`). A sample counts on the day it starts, so a
 step sample from 23:55 to 00:05 belongs to the earlier day. `NULL` when no samples of
 that type arrived. They feed `DailyScore`, `DayDetail.strain` and the trend metrics
-`steps` and `active_kcal`, and nothing else; they do not change strain.
+`steps` and `active_kcal`. Active energy also feeds `DailyScore.energy`.
+
+## Net energy
+
+The API assembles `DailyScore.energy` on read. The stored `daily_scores.resting_kcal`
+is the local day's `basal_energy` total, using the same `DayTotal` source
+de-duplication, start-day assignment and rounding as `active_kcal`; a total outside
+0–20 000 kcal (`MaxRestingKcal`) is stored as missing (a broken source). A measured
+total takes precedence over a resting estimate. The diary contributes the known
+energy subtotal when it is enabled and the day has a logged meal. Net energy is
+intake minus the sum of active and resting energy, when all three are known.
+
+For a resting estimate, Henry's 2005 Oxford weight-only equations give MJ per
+day, with weight `W` in kg and age equal to the score day's year minus birth year.
+
+| Age | Male | Female |
+| --- | --- | --- |
+| 18–29 | `0.0669 × W + 2.28` | `0.0546 × W + 2.33` |
+| 30–59 | `0.0592 × W + 2.48` | `0.0407 × W + 2.90` |
+| 60 and older | `0.0563 × W + 2.15` | `0.0424 × W + 2.38` |
+
+For unspecified, missing or unknown sex, take the mean of the two equations
+for the age band. The estimate requires age 18 or older, a birth year and a
+positive weight. Multiply by `239.006` kcal/MJ. For today, multiply by the
+elapsed fraction between the two local midnights, accounting for DST. Past
+days use the full estimate. Round the resulting estimate and the diary subtotal
+to whole kcal, with halves rounded away from zero.
+
+Confidence is `null` when any of the three totals is missing. With all three,
+count the unmet conditions among measured resting energy, at least two meals
+and a finished day. Zero unmet conditions gives `high`, one gives `medium` and
+two or more gives `low`. Drop confidence one step, to a minimum of `low`, if any
+logged item lacks kcal. A day with logged items and no energy total has an
+incomplete subtotal of zero; a day whose meals have no items is complete at zero.
 
 ## Strength (Train, M3b)
 

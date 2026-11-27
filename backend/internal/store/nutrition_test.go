@@ -306,6 +306,16 @@ func TestNutritionMealLifecycleAndGoals(t *testing.T) {
 		days[1].Nutrients["fat"].KnownItems != 1 || days[1].Nutrients["fat"].KnownSubtotal != 0 {
 		t.Fatalf("expected partial day and explicit zero: %+v %v", days, err)
 	}
+	// The energy read (DailyScore.energy) agrees with the diary's totals, lists
+	// only days with a meal, and never another account's meals.
+	energy, err := st.NutritionEnergyTotals(ctx, a, "2025-01-01", "2026-12-31")
+	if err != nil || len(energy) != 1 || energy[0].LocalDate != days[1].LocalDate || energy[0].Meals != days[1].Meals ||
+		energy[0].Items != days[1].Items || energy[0].Nutrients["energy_kcal"] != days[1].Nutrients["energy_kcal"] {
+		t.Fatalf("energy totals %+v differ from the diary %+v: %v", energy, days, err)
+	}
+	if other, err := st.NutritionEnergyTotals(ctx, b, "2025-01-01", "2026-12-31"); err != nil || len(other) != 0 {
+		t.Fatalf("another account's energy totals: %+v %v", other, err)
+	}
 	if _, err := root.Exec(ctx, "UPDATE nutrition.nutrient_values SET amount=70 WHERE food_id=$1 AND code='energy_kcal'", fixtureApple); err != nil {
 		t.Fatal(err)
 	}

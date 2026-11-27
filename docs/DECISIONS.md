@@ -7522,3 +7522,77 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   unchanged.
 - **Cost:** the merge transaction now also deletes `from`; it is bounded by `deleteTimeout` and the route is
   admin-only. Rollback: revert; no migration.
+
+## D306 — The new sync types behind sync.fitness_types: how the guard is wired (C1 PR 3, 2026-11-27)
+
+- **Context:** D304 lets `POST /v1/sync` store `basal_energy`, `heart_rate_recovery` and `body_mass` (for every
+  account) only while `sync.fitness_types` is on **and** the consent is to a policy version that names them. D305
+  (profile, PR 1) is the parallel PR that reads the same flag and the same policy list.
+- **One policy list, shared with PR 1:** `model.NamesProfileBody` over `profileBodyPolicyVersions` (empty), byte for
+  byte as in PR 1, in `model/fitness_types.go`. The bundled privacy update adds its version there, so the profile
+  gate and the sync gate open together. Whichever PR merges second drops its copy of the constant and the function.
+- **Ingest reads the flag through a function, not the table:** `public.sync_fitness_types_rollout(uuid)` (migration
+  0069, `SECURITY DEFINER`) returns the caller's allow-list membership and the percentage, as
+  `healthkit_body_mass_rollout` (0052) does. Ingest gets no grant on `feature_flags`, so it sees no other flag and no
+  allow-list. The lookup runs only when a request carries one of the three types or their cursor.
+- **`body_mass`:** stored when the pilot allows it (unchanged) or the Fitness gate does. Otherwise the three types,
+  and a cursor for their stream, are dropped as `ignored.samples.unknown_type`. The answer is `200` and the rest of
+  the request is unchanged. No new `422`: the new types get no range check, like the other quantities, and scoring
+  (PRs 4 and 5) filters implausible values when it reads them. `was_user_entered` stays dropped for every type but
+  `body_mass`.
+- **The grant is re-checked whenever the gate admits a type:** with `CONSENT_ENFORCE` off or `warn` a sync normally
+  writes without a grant. When the Fitness gate admits a stream, the request runs as under `on`: both write
+  transactions require the exact consent the gate read (`requireGrant`, under the withdrawal lock). A withdrawal
+  between the phases then ends in `403 consent_required`, as it does under `on`. The refusal is counted under the
+  configured mode (`ryft_gate_refusals_total`), so an `off` deployment shows no `on` refusal.
+- **Direct connections never store the three types:** `screenRecord` fails a record that carries one (`parse`),
+  because D304 gates them on sync only. No adapter emits them today.
+- **Order:** screening runs before the gate, as on the pilot path. A gated sample outside the window is counted
+  `outside_window`, not `unknown_type`: either way it is not stored.
+- **`GET /v1/config` reports the whole gate:** `flags["sync.fitness_types"]` is `true` only when the flag is on **and**
+  the active consent names the types. API.md defines the flag as true "when the server stores" the types "for this
+  account", and the app moves its HealthKit anchors on it. A tester allow-listed before consenting to the new policy
+  therefore sees `false` and loses no samples. API.md is unchanged.
+- **Kinds:** `basal_energy` → `energy`, `heart_rate_recovery` → `hr`, `body_mass` none (D304). A source that sends only
+  recovery samples therefore counts as a heart-rate source for the "no heart rate" insight; one that records recovery
+  records heart rate too. `samples_7d` is not
+  served on main yet (a known drift), so its new keys wait for it.
+- **Erasure and merge:** both are type-agnostic on `samples` (`DELETE FROM samples WHERE user_id`, the merge's move). A `deleted` entry still removes a stored sample
+  after the flag is turned off (tested).
+- **Rollback:** revert. Migration 0069 only adds a flag row and a function, and nothing is stored while the policy
+  list is empty.
+
+## D310 — Net energy on read: a stored resting total, Henry by age band, no model bump (C1 PR 4, 2026-11-27)
+
+- **Context:** implementation PR 4 of D304: `DailyScore.energy` on `GET /v1/days` and `GET /v1/days/{day}`.
+  D307 and D308 are left for other C1 PRs (PR 6 took D309); migration `0070_daily_resting_kcal.sql`.
+- **The resting total is stored, the rest is read:** scoring writes `daily_scores.resting_kcal`, the day's
+  `basal_energy` total with `DayTotal`'s one-source-per-hour rule, as for `active_kcal`, so the two parts of the
+  burn are counted the same way. A day total outside 0–20 000 kcal (`MaxRestingKcal`) is stored as missing: one
+  broken sample must neither move `net_kcal` nor stop the day from scoring (ingest bounds only `body_mass`'s value;
+  a per-sample bound for `basal_energy` is a follow-up for PR 3). Intake comes from the diary at request time (one
+  `NutritionEnergyTotals` read for the whole range: its own query, one pass grouped by date over the energy key
+  only, so a long range stays cheap; only when `nutrition.enabled` or `nutrition.diary_enabled` is on for the
+  account), so a logged meal moves `net_kcal` at once. **A failed diary read degrades** to unknown intake with a
+  fixed warn line: the day routes never touched the nutrition schema before and must not fail on it.
+  `resting_kcal` joins `dataColumns` and the history inputs by presence, like `active_kcal`, so a day with only
+  resting energy counts as having data.
+- **A stored day after local today** (the user travelled west) is `partial_day: true` with nothing elapsed.
+- **No model bump:** no stored number of an existing day changes (the goldens only gain `resting_kcal: null`), the
+  column fills only from `basal_energy` samples, which cannot be stored while the D304 guard holds, and a sync of
+  them rescores the days they touch. `ModelVersion` stays `2026.11.1`, so no account is rescored on deploy.
+- **The estimate:** Henry (2005), the weight-only Oxford equations in three adult bands (18–29, 30–59, 60+), MJ/day
+  × 239.006, age = the day's year − `birth_year`. `sex` `unspecified`, `null` or unknown: the mean of the two
+  equations. No estimate without a weight or a birth year, or under 18 (adult equations). **Today is pro-rated** by the
+  elapsed share of the local day (DST-safe), so it is a total so far like `active_kcal`, and `net_kcal` of today is
+  not biased to a deficit in the morning. The coefficients are pinned in `scoring/energy_test.go` and `SCORING.md`;
+  check them against the paper before the estimate is first served.
+- **Weight and sex wait for PR 1 (#266):** they are not in this branch, so `restingInputs` passes only
+  `birth_year`, and `resting_source: "estimated"` cannot occur yet. Neither can `healthkit` while the flag is off.
+  Today every scored day therefore has `resting` in `missing` and `net_kcal: null`; the app shows that state. Wiring
+  the profile weight is a few lines once #266 is on main, and it stays behind the same consent (D306 for PR 1).
+- **`missing` is in lexicographic order** (`active`, `intake`, `resting`): the contract says "sorted", which in the
+  API means lexicographic (as `kinds`); API.md now says so.
+- **Confidence:** the three conditions of the contract, counted; the incomplete-intake drop also applies when a day
+  has items but none carries kcal (`intake_kcal: 0`, a lower bound). A day with meals but no items is complete.
+- **Rollback:** revert. The migration only adds a nullable column, so it can stay.

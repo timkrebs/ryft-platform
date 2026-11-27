@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/timkrebs/ryft/internal/auth"
+	"github.com/timkrebs/ryft/internal/config"
 	"github.com/timkrebs/ryft/internal/model"
 	"github.com/timkrebs/ryft/internal/store"
 )
@@ -38,12 +40,12 @@ func TestRemoteConfig(t *testing.T) {
 	want := map[string]bool{"train.enabled": true, "sleep.planner": true, "today.redesign": false,
 		"coach.enabled": false, "push.enabled": false, "physiology.card": false, "train.import": false,
 		"analytics.enabled": false, model.FlagNutrition: false, model.FlagNutritionDiary: false, "connect.garmin": false,
-		model.FlagRecoveryCheckin: false}
+		model.FlagRecoveryCheckin: false, model.FlagSyncFitnessTypes: false}
 	if c.TTLSec != 21600 || len(c.Flags) != len(want) {
 		t.Fatalf("config %+v", c)
 	}
 	for k, v := range want {
-		if c.Flags[k] != v {
+		if on, ok := c.Flags[k]; !ok || on != v {
 			t.Errorf("seeded %s = %v, want %v", k, c.Flags[k], v)
 		}
 	}
@@ -81,4 +83,61 @@ func TestRemoteConfig(t *testing.T) {
 	if _, still := get(ua).Flags["check.new_flag"]; rec.Code != 204 || still {
 		t.Fatalf("delete: %d", rec.Code)
 	}
+}
+
+func TestRemoteConfigFitnessTypes(t *testing.T) {
+	st := store.New(testPool(t))
+	ctx := context.Background()
+	user := uuid.New()
+	if _, err := st.EnsureUser(ctx, store.Identity{ID: user}); err != nil {
+		t.Fatal(err)
+	}
+	const namedPolicy = "test-named-policy"
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := &handler{st: st, log: log, beta: defaultBeta(),
+		namesFitness: func(version string) bool { return version == namedPolicy }}
+	const apiKey = "fitness-config-test-0123456789"
+	srv := newMux(h, muxOptions{log: log, verifier: auth.NewAPIKey(apiKey, user),
+		ready: func(context.Context) error { return nil }, tick: http.NotFoundHandler(),
+		gate: config.ModeOff, authMode: config.AuthAPIKey})
+	check := func(state string, want bool) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/v1/config", nil)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		var c model.RemoteConfig
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &c) != nil {
+			t.Fatalf("%s: GET /v1/config: %d %s", state, rec.Code, rec.Body)
+		}
+		if on, ok := c.Flags[model.FlagSyncFitnessTypes]; !ok || on != want {
+			t.Errorf("%s: fitness flag = %v (present %v), want %v", state, on, ok, want)
+		}
+	}
+	flag := model.FeatureFlag{Key: model.FlagSyncFitnessTypes, Enabled: true, AllowUserIDs: []uuid.UUID{user}}
+	if _, _, err := st.PutFlag(ctx, flag); err != nil {
+		t.Fatal(err)
+	}
+	check("no consent", false)
+	if err := st.GrantConsent(ctx, user, "test-old-policy", nil); err != nil {
+		t.Fatal(err)
+	}
+	check("older consent", false)
+	if err := st.GrantConsent(ctx, user, namedPolicy, nil); err != nil {
+		t.Fatal(err)
+	}
+	check("named consent", true)
+	flag.Enabled = false
+	if _, _, err := st.PutFlag(ctx, flag); err != nil {
+		t.Fatal(err)
+	}
+	check("flag switched off", false)
+	flag.Enabled = true
+	if _, _, err := st.PutFlag(ctx, flag); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RevokeConsent(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	check("revoked consent", false)
 }

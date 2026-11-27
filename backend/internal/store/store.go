@@ -900,7 +900,7 @@ type History struct {
 	Efficiency     *int // the planner (asleep / in bed)
 	// HasData: one of dataColumns is set: an overnight HRV, a resting HR or a
 	// respiratory rate, a strain (heart-rate minutes or a logged session), a
-	// night's sleep, steps or active energy. A range or a rescore also stores
+	// night's sleep, steps, active energy or resting (basal) energy (D310). A range or a rescore also stores
 	// days before an account's first data, with none of it; they do not count
 	// as history for calibrating_reason. Neither does a day with only an SpO2,
 	// a nap, time in bed or a workout without heart rate: rare, and it errs
@@ -912,7 +912,7 @@ type History struct {
 // history input (historyInputs, by value or by presence), so a day gaining or
 // losing data re-scores the days after it; TestHistoryInputsCoverHistory
 // checks that.
-var dataColumns = []string{"hrv_ms", "rhr", "resp_rate", "strain", "sleep_actual_min", "steps", "active_kcal"}
+var dataColumns = []string{"hrv_ms", "rhr", "resp_rate", "strain", "sleep_actual_min", "steps", "active_kcal", "resting_kcal"}
 
 var hasData = "num_nonnulls(" + strings.Join(dataColumns, ", ") + ") > 0"
 
@@ -994,7 +994,7 @@ type ScoreWrite struct {
 // (HasData needs no more: the steps a day gains with every sync change no
 // later day). Constants only; the comparison below is built from them once.
 var historyInputs = []string{"hrv_ms", "rhr", "resp_rate", "strain", "sleep_need_min", "sleep_actual_min",
-	"sleep_start", "sleep_end", "nap_min", "steps IS NULL", "active_kcal IS NULL"}
+	"sleep_start", "sleep_end", "nap_min", "steps IS NULL", "active_kcal IS NULL", "resting_kcal IS NULL"}
 
 var (
 	historyColumns   = strings.Join(inputColumns(historyInputs), ", ")
@@ -1022,6 +1022,10 @@ func inputColumns(inputs []string) []string {
 func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row ScoreRow) (ScoreWrite, error) {
 	var w ScoreWrite
 	d, n, l := row.DailyScore, row.Sleep, row.Load
+	// A pgx integer encoding error can include the argument's value.
+	if d.RestingKcal != nil && (*d.RestingKcal < math.MinInt32 || *d.RestingKcal > math.MaxInt32) {
+		return w, errors.New("resting energy total exceeds integer range")
+	}
 	details, err := json.Marshal(d.Details)
 	if err != nil {
 		return w, err
@@ -1046,9 +1050,9 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 zone_minutes, trimp, hr_min, hrv_baseline_ms, rhr_baseline, baseline_days, steps, active_kcal,
 		 muscular_trimp, strength_min, volume_kg, nap_min, sleep_quality, sleep_consistency,
 		 sleep_need_base_min, sleep_need_strain_min, sleep_need_debt_min, sleep_need_nap_min, model_version,
-		 baseline_hrv_days, baseline_rhr_days, calibrating_reason, computed_at)
+		 baseline_hrv_days, baseline_rhr_days, calibrating_reason, resting_kcal, computed_at)
 		VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
-		 $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,now())
+		 $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,now())
 		ON CONFLICT (user_id, day) DO UPDATE SET
 		 readiness=EXCLUDED.readiness, state=EXCLUDED.state, recovery=EXCLUDED.recovery,
 		 strain=EXCLUDED.strain, sleep_performance=EXCLUDED.sleep_performance,
@@ -1066,7 +1070,8 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		 sleep_need_base_min=EXCLUDED.sleep_need_base_min, sleep_need_strain_min=EXCLUDED.sleep_need_strain_min,
 		 sleep_need_debt_min=EXCLUDED.sleep_need_debt_min, sleep_need_nap_min=EXCLUDED.sleep_need_nap_min,
 		 model_version=EXCLUDED.model_version, baseline_hrv_days=EXCLUDED.baseline_hrv_days,
-		 baseline_rhr_days=EXCLUDED.baseline_rhr_days, calibrating_reason=EXCLUDED.calibrating_reason, computed_at=now()
+		 baseline_rhr_days=EXCLUDED.baseline_rhr_days, calibrating_reason=EXCLUDED.calibrating_reason,
+		 resting_kcal=EXCLUDED.resting_kcal, computed_at=now()
 		RETURNING (SELECT recovery FROM old) IS NULL AND recovery IS NOT NULL,
 		 NOT EXISTS (SELECT 1 FROM old o WHERE (`+oldHistoryInputs+`) IS NOT DISTINCT FROM (`+newHistoryInputs+`))`,
 		userID, d.Day, d.Recovery, d.Strain, d.SleepPerformance, d.SleepNeedMin, d.SleepActualMin, d.SleepDebtMin,
@@ -1075,7 +1080,7 @@ func (s *Store) UpsertDailyScore(ctx context.Context, userID uuid.UUID, row Scor
 		zones, l.TRIMP, l.HRMin, d.HRVBaselineMS, d.RHRBaseline, d.BaselineDays, d.Steps, d.ActiveKcal,
 		l.MuscularTRIMP, d.StrengthMin, d.VolumeKG, d.NapMin, d.SleepQuality, d.SleepConsistency,
 		d.SleepNeedBaseMin, d.SleepNeedStrainMin, d.SleepNeedDebtMin, d.SleepNeedNapMin, d.ModelVersion,
-		d.BaselineHRVDays, d.BaselineRHRDays, d.CalibratingReason).Scan(&w.FirstRecovery, &w.InputsChanged)
+		d.BaselineHRVDays, d.BaselineRHRDays, d.CalibratingReason, d.RestingKcal).Scan(&w.FirstRecovery, &w.InputsChanged)
 	return w, err
 }
 
@@ -1169,7 +1174,7 @@ func (s *Store) SleepNights(ctx context.Context, userID uuid.UUID, from, to stri
 // reason no longer agree (an older image wrote it after a rollback) reads as
 // "unknown" until it is scored again (knownCalibration).
 func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to string) ([]model.DailyScore, error) {
-	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), readiness, state, recovery, strain, steps, active_kcal,
+	rows, err := s.pool.Query(ctx, `SELECT to_char(day,'YYYY-MM-DD'), readiness, state, recovery, strain, steps, active_kcal, resting_kcal,
 		strength_min, volume_kg, sleep_performance, sleep_need_min,
 		sleep_need_base_min, sleep_need_strain_min, sleep_need_debt_min, sleep_need_nap_min, nap_min, sleep_quality, sleep_consistency,
 		sleep_actual_min, sleep_debt_min, hrv_ms, rhr, resp_rate, spo2, hrv_baseline_ms, rhr_baseline, baseline_days,
@@ -1181,7 +1186,7 @@ func (s *Store) DailyScores(ctx context.Context, userID uuid.UUID, from, to stri
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.DailyScore, error) {
 		var d model.DailyScore
 		var details []byte
-		err := r.Scan(&d.Day, &d.Readiness, &d.State, &d.Recovery, &d.Strain, &d.Steps, &d.ActiveKcal, &d.StrengthMin, &d.VolumeKG,
+		err := r.Scan(&d.Day, &d.Readiness, &d.State, &d.Recovery, &d.Strain, &d.Steps, &d.ActiveKcal, &d.RestingKcal, &d.StrengthMin, &d.VolumeKG,
 			&d.SleepPerformance, &d.SleepNeedMin,
 			&d.SleepNeedBaseMin, &d.SleepNeedStrainMin, &d.SleepNeedDebtMin, &d.SleepNeedNapMin, &d.NapMin, &d.SleepQuality, &d.SleepConsistency,
 			&d.SleepActualMin,
