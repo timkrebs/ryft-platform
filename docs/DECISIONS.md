@@ -7468,6 +7468,18 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   not listed in `User.sources`, because the `kinds` enum stays closed. The text,
   `PRIVACY_POLICY_VERSION`, the consent list and App Privacy change together in one bundled privacy update,
   with sex, weight and goal. That update is not part of this PR.
+- **The four open questions, answered (head-architect, 2026-11-27, on the user's rule "take the best sound
+  option, don't block"):** (1) The goal names stand as they are (`health`, `endurance`, `strength`,
+  `body_composition`, `performance`, `null`). `health` and `performance` get no Nutrition default: the user
+  picks the Nutrition training goal separately, as today. (2) The newest weigh-in wins, manual or HealthKit, as
+  in Apple Health. A manual entry is a new weigh-in with `weight_source: manual`, with no separate override flag.
+  (3) The band is 0.8–1.3 × the 28-day weekly average (the usual acute:chronic range), and `state` shows only
+  with ≥ 21 of 28 days of data. It is a training guide, not a medical or injury-risk claim, and API.md says so.
+  (4) The privacy carrier is **neither #228 nor #252**. #252 merges first, as it is. Resting energy, heart-rate
+  recovery and body weight from Apple Health, and sex, weight and goal, go into the **next** privacy version, a
+  bundled update made when PR 3 (the sync types) is ready. Until then `sync.fitness_types` stays off and the
+  guard holds: the server stores none of the three sample types and refuses `sex` and `weight_kg` (`403
+  consent_required`). `goal` is not consent-gated in this contract; the policy text names it in that update.
 - **Old builds:** they ignore every new field. Every new field is optional to decode, because a server before
   the implementation PRs omits it. The examples are `http` blocks until the model types exist.
 - **Implementation order:** (1) profile fields, (2) training load, (3) the sync types with the gate, (4) net
