@@ -9,6 +9,7 @@ import sys
 import zipfile
 from collections import Counter
 from contextlib import ExitStack
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -20,7 +21,7 @@ from tqdm import tqdm
 from download import CLIENT_HEADERS, extract_usda, file_sha256, resolve_off, resolve_usda, stage_usda
 from extract import connection, off_rows, usda_rows
 from import_pg import connect, load_batch
-from transform import STAPLES, Reject, bls_food, off_food, usda_food
+from transform import STAPLES, ImportNotes, Reject, bls_food, off_food, usda_food
 
 PIPELINE_VERSION = "py-etl4"
 USDA_KINDS = ("foundation_food", "sr_legacy_food")
@@ -51,7 +52,8 @@ def arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def process(rows, normalize_row, version: str, conn, label: str) -> dict:
+def process(rows, normalize_row, version: str, conn, label: str, summary=None) -> dict:
+    """`summary`, when given, returns extra counters for the report. It reads what normalize_row noted."""
     outcomes: Counter = Counter()
     categories: Counter = Counter()
     rejects: Counter = Counter()
@@ -77,7 +79,8 @@ def process(rows, normalize_row, version: str, conn, label: str) -> dict:
     for name in ("processed", "accepted", "rejected", "inserted", "updated", "unchanged", "conflict", "duplicates"):
         outcomes.setdefault(name, 0)
     return {"release": label, "version": version, "counts": dict(outcomes),
-            "categories": dict(categories), "reject_reasons": dict(rejects), "warnings": dict(warnings)}
+            "categories": dict(categories), "reject_reasons": dict(rejects), "warnings": dict(warnings),
+            **(summary() if summary else {})}
 
 
 def run(args: argparse.Namespace) -> None:
@@ -113,7 +116,8 @@ def run(args: argparse.Namespace) -> None:
                 version = f"{PIPELINE_VERSION}:staples{STAPLES['version']}:{tag}:{digest}"
                 with connection(directory, args.memory_mb) as db:
                     rows = usda_rows(db, files, limit, args.batch_size, data_type=kind)
-                    result = process(rows, usda_food, version, conn, kind)
+                    notes = ImportNotes()
+                    result = process(rows, partial(usda_food, notes=notes), version, conn, kind, notes.summary)
                 print(json.dumps({"mode": "write" if args.write else "dry-run", "sha256": digest,
                                   "has_category_table": "food_category.csv" in files,
                                   **result_metadata, **result}, sort_keys=True), flush=True)

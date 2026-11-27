@@ -121,7 +121,8 @@ def staging_row(food: Food, ordinal: int) -> tuple:
     portions = []
     for portion in food.portions:
         data = asdict(portion)
-        legacy_label = data.pop("legacy_label") or portion.label
+        # The legacy text stays in the payload: the merge compares it with the Go importer's manual rows.
+        legacy_label = data["legacy_label"] or portion.label
         legacy = {"label": legacy_label, "unit": portion.unit, "weight_g": portion.weight_g, "volume_ml": portion.volume_ml}
         legacy_id = uuid.uuid5(namespace, "portion:" + json.dumps(legacy, sort_keys=True))
         key = portion.source_portion_id or portion.portion_key

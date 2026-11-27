@@ -171,7 +171,14 @@ Merge the Nutrition backend and infrastructure through the normal review and CI 
    gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,sr-legacy,--limit,10000 --wait
    ```
 
-   Each summary line must show `"mode": "dry-run"` with accepted rows. The SR Legacy line must have `accepted` close to 7,793, and the version must start with `py-etl4:staples1:sr-legacy:`. Then run the pinned bounded write (`--source all --write --limit <row_limit>`) and check completion and aggregates.
+   Each summary line must show `"mode": "dry-run"` with accepted rows. The SR Legacy line must have `accepted` close to 7,793, and the version must start with `py-etl4:staples2:sr-legacy:` (staples version 2 since D288). The USDA lines also carry `portions` and `staples` (D288). Before writing, check that `portions.raw_marker` is 0 (or that every remaining marker is understood), and that `staples.description_mismatch` and `staples.unmatched` are empty. `staple_portions` lists the source grams each curated staple portion takes. Then run the pinned bounded write (`--source all --write --limit <row_limit>`) and check completion and aggregates.
+
+   After a staples-version change (D288) every USDA food changes its checksum once. The first write reports them as `updated`, and an identical rerun reports `unchanged`. A `conflict` count near the accepted count means the image still carries the old staples version. Portion IDs don't change, and saved meals keep their snapshots. USDA portions that the Go importer wrote (`origin='manual'`) keep their raw labels, because RLS keeps the ETL off them. Count them read-only in the Supabase SQL editor:
+
+   ```sql
+   SELECT count(*) FROM nutrition.portions p JOIN nutrition.food_sources s ON s.id=p.source_id
+   WHERE s.provider='usda' AND p.origin='manual' AND (p.label ILIKE '%undetermined%' OR p.label LIKE '%"%');
+   ```
 
    ```bash
    gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --wait

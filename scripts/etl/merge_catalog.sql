@@ -72,7 +72,7 @@ SELECT d.food_id, d.source_id, coalesce(prior.id, p.id) AS id,
     p.label,p.labels,p.unit,p.weight_g,p.volume_ml,p.source_portion_id,p.portion_key,
     p.short_label_en,p.short_label_de,p.is_default,p.sort_order
 FROM etl_delta d CROSS JOIN LATERAL jsonb_to_recordset(d.portions)
-    p(id uuid,legacy_id uuid,label text,labels jsonb,unit text,weight_g numeric,volume_ml numeric,
+    p(id uuid,legacy_id uuid,label text,legacy_label text,labels jsonb,unit text,weight_g numeric,volume_ml numeric,
       source_portion_id text,portion_key text,short_label_en text,short_label_de text,is_default boolean,sort_order integer)
 LEFT JOIN LATERAL (
     SELECT k.id FROM nutrition.portions k
@@ -90,7 +90,8 @@ LEFT JOIN LATERAL (
 ) prior ON true
 WHERE prior.id IS NOT NULL OR NOT EXISTS (SELECT FROM nutrition.portions known
     WHERE known.source_id=d.source_id AND known.food_id=d.food_id AND known.origin='manual'
-      AND known.label=p.label AND known.unit=p.unit AND known.quantity=1 AND NOT known.estimated
+      -- The Go importer wrote the raw text (amount measure modifier), which is the legacy label here.
+      AND known.label IN (p.label, p.legacy_label) AND known.unit=p.unit AND known.quantity=1 AND NOT known.estimated
       AND known.weight_g IS NOT DISTINCT FROM p.weight_g AND known.volume_ml IS NOT DISTINCT FROM p.volume_ml);
 
 DELETE FROM nutrition.portions p USING etl_delta d
@@ -111,6 +112,12 @@ WHERE e.is_default AND (
 UPDATE nutrition.portions p SET is_default=false
 WHERE p.origin='python_etl' AND p.is_default
   AND p.food_id IN (SELECT food_id FROM etl_portions WHERE is_default);
+-- The same holds for nutrition_portions_semantic_key: a curated key that moves to another surviving
+-- row (a staple match edited, a release renaming a row) is released first; the upsert sets it again.
+UPDATE nutrition.portions p SET portion_key=NULL
+WHERE p.origin='python_etl' AND p.portion_key IS NOT NULL
+  AND EXISTS (SELECT FROM etl_portions e WHERE e.food_id=p.food_id AND e.source_id=p.source_id
+      AND e.portion_key=p.portion_key AND e.id<>p.id);
 
 INSERT INTO nutrition.portions (id,food_id,source_id,label,labels,quantity,unit,weight_g,volume_ml,origin,
     source_portion_id,portion_key,short_label_en,short_label_de,is_default,sort_order)
