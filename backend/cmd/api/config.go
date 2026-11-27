@@ -24,7 +24,15 @@ func (h *handler) remoteConfig(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, r, err)
 		return
 	}
-	out := flags.Evaluate(all, userOf(r).ID)
+	user := userOf(r)
+	out := flags.Evaluate(all, user.ID)
+	if out[model.FlagSyncFitnessTypes] {
+		names := h.namesFitness
+		if names == nil {
+			names = model.NamesProfileBody
+		}
+		out[model.FlagSyncFitnessTypes] = user.Consent != nil && names(user.Consent.PolicyVersion)
+	}
 	for k, on := range out {
 		metrics.FlagEvaluations.WithLabelValues(k, onOff(on)).Inc()
 	}

@@ -7522,3 +7522,60 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   unchanged.
 - **Cost:** the merge transaction now also deletes `from`; it is bounded by `deleteTimeout` and the route is
   admin-only. Rollback: revert; no migration.
+
+## D307 — The new sync types behind sync.fitness_types: how the guard is wired (C1 PR 3, 2026-11-27)
+
+- **Context:** D304 lets `POST /v1/sync` store `basal_energy`, `heart_rate_recovery` and `body_mass` (for every
+  account) only while `sync.fitness_types` is on **and** the consent is to a policy version that names them. D305
+  (profile, PR 1) is the parallel PR that reads the same flag and the same policy list.
+- **One policy list, shared with PR 1:** `model.NamesProfileBody` over `profileBodyPolicyVersions` (empty), byte for
+  byte as in PR 1, in `model/fitness_types.go`. The bundled privacy update adds its version there, so the profile
+  gate and the sync gate open together. Whichever PR merges second drops its copy of the constant and the function.
+- **Ingest reads the flag through a function, not the table:** `public.sync_fitness_types_rollout(uuid)` (migration
+  0069, `SECURITY DEFINER`) returns the caller's allow-list membership and the percentage, as
+  `healthkit_body_mass_rollout` (0052) does. Ingest gets no grant on `feature_flags`, so it sees no other flag and no
+  allow-list. The lookup runs only when a request carries one of the three types or their cursor.
+- **`body_mass`:** stored when the pilot allows it (unchanged) or the Fitness gate does. Otherwise the three types,
+  and a cursor for their stream, are dropped as `ignored.samples.unknown_type`. The answer is `200` and the rest of
+  the request is unchanged. No new `422`. `basal_energy` and `heart_rate_recovery` get a per-sample bound that drops
+  and counts, never refuses (D312). `was_user_entered` stays dropped for every type but `body_mass`.
+- **The grant is re-checked whenever the gate admits a type:** with `CONSENT_ENFORCE` off or `warn` a sync normally
+  writes without a grant. When the Fitness gate admits a stream, the request runs as under `on`: both write
+  transactions require the exact consent the gate read (`requireGrant`, under the withdrawal lock). A withdrawal
+  between the phases then ends in `403 consent_required`, as it does under `on`. The refusal is counted under the
+  configured mode (`ryft_gate_refusals_total`), so an `off` deployment shows no `on` refusal.
+- **Direct connections never store the three types:** `screenRecord` fails a record that carries one (`parse`),
+  because D304 gates them on sync only. No adapter emits them today.
+- **Order:** screening runs before the gate, as on the pilot path. A gated sample outside the window is counted
+  `outside_window`, not `unknown_type`: either way it is not stored.
+- **`GET /v1/config` reports the whole gate:** `flags["sync.fitness_types"]` is `true` only when the flag is on **and**
+  the active consent names the types. API.md defines the flag as true "when the server stores" the types "for this
+  account", and the app moves its HealthKit anchors on it. A tester allow-listed before consenting to the new policy
+  therefore sees `false` and loses no samples. API.md is unchanged.
+- **Kinds:** `basal_energy` → `energy`, `heart_rate_recovery` → `hr`, `body_mass` none (D304). A source that sends only
+  recovery samples therefore counts as a heart-rate source for the "no heart rate" insight; one that records recovery
+  records heart rate too. `samples_7d` is not
+  served on main yet (a known drift), so its new keys wait for it.
+- **Erasure and merge:** both are type-agnostic on `samples` (`DELETE FROM samples WHERE user_id`, the merge's move). A `deleted` entry still removes a stored sample
+  after the flag is turned off (tested).
+- **Rollback:** revert. Migration 0069 only adds a flag row and a function, and nothing is stored while the policy
+  list is empty.
+
+## D312 — A per-sample bound for basal_energy and heart_rate_recovery: dropped and counted, not refused (C1 PR 3, 2026-11-27)
+
+PR 4 (#270) sums `basal_energy` into the day's resting energy and PR 5 (#271) averages `heart_rate_recovery` into
+`hrr_bpm`, so one garbage sample would move a served number. Ingest now bounds both per sample (`implausible` in
+`cmd/ingest/fitness_types.go`, applied in `screen`):
+- **Bounds:** `basal_energy` 0–5 000 kcal (no single sample holds more than a day's resting energy, and 5 000 kcal is
+  above any adult's day); `heart_rate_recovery` 0–120 bpm (a one-minute drop above that is a sensor or unit error).
+  Both ends are inclusive. No rate bound per minute of span: HealthKit slices vary in length and point samples exist.
+- **Dropped, not refused:** an out-of-range sample is not stored and is counted `ignored.samples.unknown_type`, as a
+  user-entered sample of these types is. A `422` would refuse the whole page, and the app does not retry a `422`, so
+  one bad slice would stall the stream (the same reasoning as the NUL strip). `body_mass` keeps `validate`'s `422`
+  outside 25–350 kg: that is the pilot's rule, unchanged here.
+- **Order:** screening runs before the gate, so a bounded sample counts `unknown_type` for a gated account too: it
+  is not stored either way, and the response is `200`.
+- **Contract:** the counter is reused rather than a new `IgnoredCounts` field added: the D304 types are not served
+  yet, and `unknown_type` already counts the samples of these types the server does not store (the gate, user-entered
+  ones). API.md's `unknown_type` row, the D304 sync paragraph and a changelog row say so; no shape changes.
+- **Rollback:** revert; no migration, nothing stored changes.
