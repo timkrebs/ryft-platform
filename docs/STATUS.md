@@ -1,5 +1,36 @@
 # RYFT platform — status
 
+## Legal pages for today's RYFT and the partner programs (2026-11-26, D290; revised 2026-11-27)
+
+Privacy 2026-11-26 and terms 2026-11-26 (new versions; the old ones stay), the support page and the Impressum,
+rewritten for GCP, Firebase Hosting and Supabase, Apple or Google sign-in, the dark food diary, the usage analytics,
+the report form and the planned Garmin and Suunto connections. Revised on 2026-11-27 to today's RYFT: App Attest in
+`warn`, the no-watch morning check-in, BLS 4.0 (credited on `/licenses`) and a section of its own for the usage
+analytics (privacy §7; later sections renumbered). No `TODO(user)` renders on the site (2026-11-27), and no personal
+details: the Impressum names RYFT and the support email, with a postal address for service on request by email
+(incomplete under § 5 DDG until a business or service address exists, Linear RFT-156 A1); privacy and terms name "the
+provider named in the legal notice"; the open points are tracked in `web/docs/LEGAL_CHECKLIST.md` (U1-U15). It
+supersedes the C2 draft (#228). Sources: `docs/work/2026-11-26-legal-partners/facts.md` and `…/revision-2026-11-27.md`;
+partner requirements: `…/partners.md`.
+
+**Published under the user's rule of 2026-11-27:** legal questions don't block work. The most conservative sound text
+goes out now, the open points stay in LEGAL_CHECKLIST, and a lawyer reviews it later (Linear RFT-155). **Merging bumps
+`PRIVACY_POLICY_VERSION` to 2026-11-26, so every user is asked to consent again** before the next upload. The
+merge puts 2026-11-26 into force: CI, `deploy.yml` (no migration), api and ingest roll with the new version, and the
+`site` job ships the pages and checks that `/privacy` shows 2026-11-26. `CONNECT_MIN_POLICY_VERSION` moves to
+2026-11-26 with it (U14, decided; no connection is live). Privacy and terms say "in force from 2026-11-27" (the
+planned merge day); the version id stays 2026-11-26 (no guard ties the two). App Attest is described as "being introduced", so the text holds under `off` until #263 (`warn`).
+Rule until the version that describes N2R and coaching: no tester on `recovery.checkin`'s allow-list who is also in
+the N2R or coaching pilot (a check-in feeds the N2R bedtime and the coaching readiness, D300; review R3). Before
+`recovery.checkin` goes on, the app's consent checkbox should name what you enter, not only Apple Health (R12, app).
+After the merge (read-only):
+
+```bash
+for s in api ingest; do gcloud run services describe "$s" --region=europe-west1 --project=ryftlab-prod --format=json \
+  | jq -r '.spec.template.spec.containers[0].env[] | select(.name == "PRIVACY_POLICY_VERSION") | .value'; done
+make smoke-prod
+```
+
 ## C1: goal, training load, net energy and the Fitness tiles, the contract, docs only (2026-11-27, D304)
 
 Done (branch `docs/fitness-contract`): `docs/API.md` gains `User.goal`, `sex`, `weight_kg`, `weight_source`, `weight_measured_at` (and `UserPatch`), with the goal ↔ `GoalProfile.goal` table. `DailyScore` gains `training_load` (cardio and muscular: 7 d against 28 d, the band, `state`, coverage; computed on read), `energy` (intake, active, resting, net, `missing`, `confidence`), `vo2max`, `vo2max_delta_7d`, `hrr_bpm` and `active_min`. `DayDetail` gains `muscles`. `POST /v1/sync` gains `basal_energy`, `heart_rate_recovery`, and `body_mass` for everyone. The server stores the new types only while the flag `sync.fitness_types` is on and the consent is to a policy version that names them. A `PATCH` of `sex`/`weight_kg` needs that consent too. The Swift mirror and a changelog entry are in; the examples are `http` blocks. The plan and the implementation order are in `docs/work/2026-11-27-fitness-contract/plan.md`. Merging deploys nothing new.

@@ -6841,6 +6841,140 @@ When smoke is enabled, check the dedicated session after the tip check and befor
 
 The API before D285 deletes and reinserts every meal item on PATCH from its typed snapshot, so a rollback or a mixed-version rollout across a release that adds item columns or source fields erases them. This step copies each retained item row as stored (`to_jsonb` and `jsonb_populate_record`: every column, the sources JSON unchanged), only moves its position, and writes no new snapshot fields. It adds the two portion label columns empty (0053, constraints `NOT VALID`, validated by 0054). The catalog selection release (D284) writes the labels and ships only after this build is live; its rollback target is this build, never an earlier one.
 
+## D290 — Privacy policy 2026-11-26 and terms 2026-11-26: today's RYFT, the planned connections, no personal details (2026-11-26; supersedes the C2 draft of #228; published now under the user's rule of 2026-11-27: open points stay `TODO(user)`, the legal review comes later, RFT-155)
+
+**Not legal advice:** the texts state facts with their sources (`docs/work/2026-11-26-legal-partners/facts.md`);
+the bases they propose and every legal reading stay with the user and their reviewer.
+
+- **Context:** the policy in force, 2026-10-26, describes the AWS era (AWS, Grafana Cloud, Google Workspace mail,
+  Vault, the site's own access log). C2 (#228, `docs/work/2026-11-20-privacy-c2/`) rewrote it for GCP but was never
+  published and still describes email and password sign-in. Since then: the user turned email sign-in off
+  (2026-11-26; sign-in is Apple or Google), nutrition landed dark (D265-D285), the Garmin and Suunto connections'
+  foundation landed dark (D257-D260), and the Garmin and Suunto partner programs need a public policy, terms and
+  contact (`…/partners.md`).
+- **Decision:**
+  1. **A new version, `2026-11-26`**, in one PR: `web/content/legal/en/privacy/2026-11-26.mdx`, appended to
+     `privacy-versions.json`, `PRIVACY_POLICY_VERSION=2026-11-26` in `deploy/run/config.env` and
+     `docker-compose.yml`. It is `status: published`, `effective: '2026-11-26'`: `scripts/check_policy_in_force.sh`
+     refuses a pull request that moves the version to a page that is not exactly published, `check-policy-version.mjs
+     --strict` needs the newest page to equal the version and the list's last entry, and `web/tests/legal.test.ts`
+     needs a date in `effective` for a published page. A draft would turn CI red; a published page with
+     `TODO(user)` passes every guard (no guard reads markers in published pages; LEGAL_CHECKLIST P7). Since
+     2026-11-27 the PR is not held back for the markers (see "Amended 2026-11-27"), and the user sets `effective`
+     to the merge date if it is later.
+  2. **Consequence: the merge puts it into force.** `deploy.yml` rolls api and ingest (the two services that read
+     `PRIVACY_POLICY_VERSION`, `deploy/run/api.yaml:55`, `ingest.yaml:45`), the `site` job deploys the page and its
+     live check expects `/privacy` to show 2026-11-26, and **every user is asked to consent again** before the next
+     upload (D78).
+  3. **The old versions stay as published:** 2026-10-20 and 2026-10-26 keep their pages and words. **Amended
+     2026-11-27 (the user's rule: no personal details online):** privacy 2026-10-20 §1, privacy 2026-10-26 §1 and
+     terms 2026-10-20 §1 lose the operator's name and home address, replaced by "[Provider details removed on
+     2026-11-27; the provider is named in the current legal notice.]"; every other word stays. The original text
+     stays in git history (the files at `origin/main` before this PR) as the record of what users consented to; no
+     guard pins the archived pages' content, so none changes.
+  4. **Against 2026-10-26** (and as C2 had it): Google Cloud in Belgium, Firebase Hosting, Microsoft 365 through
+     GoDaddy instead of AWS, Grafana Cloud and Google Workspace; App Attest, PostHog, the full feedback
+     diagnostics, Google's firewall logs; no site access log and no browser storage; the controller, the
+     authority and the transfer bases as `TODO(user)`.
+  5. **Against C2:** sign-in is Apple, with Google as a `TODO(user)` until the app offers it (the user turned
+     email sign-in off on 2026-11-26; C2's sign-up and password-reset emails and `no-reply@` are gone; older email
+     accounts keep their address and password hash at Supabase until deleted, with a marker for what happens to
+     them; the Google details carry markers in privacy, terms and support, because neither the app at ea52758 nor
+     the platform has a Google sign-in yet, and the unversioned support page must not state it as fact); the analytics events, identifier and menu path
+     come from the app (two C2 markers resolved); the food diary (stored data, not live, catalog sources; CGM, N2R
+     and coaching deferred to a later version); a new §4 on the Garmin and Suunto connections; the export's real
+     contents; feedback's path; C2's "flag allow-lists keep the id" removed (D249); a sentence that unavailable
+     parts process nothing until they arrive. Sections renumbered (§4 connections; §5-§12 follow).
+  6. **The connection commitments** (privacy §4, §7, terms §7, support): only at the user's request, after the
+     app shows what is read; sleep and overnight HRV only; tokens encrypted for the api; deliveries emptied once
+     processed, failed ones ≤ 14 days (7 pending, then purged 7 days after failing, `store/inbox.go:355,366`),
+     the arrival record (kind, record id, checksum, times) 30 days; disconnecting in the app, a revocation at the
+     provider and deleting the account each delete what the connection delivered and end RYFT's access at the
+     provider, retried up to 30 days keeping the sealed tokens, the account id and the provider's user id; an
+     in-app disconnect deletes the row at once, a provider-side end keeps it listed 90 days; further data from a
+     provider needs a new version first. **Gap, open for the backend before phase 2:** the consent gate sets a
+     provider's deregistration notice aside like any other item while consent is withdrawn
+     (`store/inbox.go:139-140`, `cmd/ingest/connect.go:305-308`), so the revocation sentence carries a
+     `TODO(user)` until `KindDeregistration` is exempt. Everything is described as not yet available (no real adapter on main,
+     `CONNECT_PROVIDERS=` empty).
+  7. **No personal details:** the Impressum (edited in place, a single page), terms 2026-11-26 §1 and privacy
+     2026-11-26 §1 carry `TODO(user)` markers that name what § 5 DDG, § 18(2) MStV, Art. 13(1)(a) GDPR and the
+     partner applications ask for, and why it is open (LEGAL_CHECKLIST section 0). Contact everywhere:
+     `support@ryftlab.de`.
+  8. **Terms 2026-11-26** (new file; `/terms/2026-10-20` stays): the provider as `TODO(user)`, minimum age 16
+     (the platform's `MinAge`, not 13), Apple or Google sign-in, the food diary and its catalog attribution, the
+     planned connections and other services (new §7, §8); §9-§12 unchanged in words.
+  9. **`CONNECT_MIN_POLICY_VERSION` moves to `2026-11-26`** (decided 2026-11-27 under the user's rule, LEGAL_CHECKLIST
+     U14). The runbook moves it when a policy change touches health-data processing, which this one does (D259); no
+     connection is live, so it changes nothing today. It equals `PRIVACY_POLICY_VERSION`, which `check_cloudrun.py`
+     allows (not after it).
+- **Rejected:** a draft page (CI refuses it, and the version would sit in force with a draft); editing 2026-10-26
+  in place (it is the record of consents given); describing CGM, N2R and coaching now (not in the app, and their
+  data model may still move); naming the BLS (excluded on main pending review,
+  `docs/architecture/nutrition/06-data-source-licensing.md:10`; superseded by the import of D296, see the
+  amendment); a trademark notice for Garmin (none mandated was
+  found; the site names Garmin only as a source). Amended by the lead: BLS 4.0 is named as "once German staples
+  are added", with draft #248's attribution (`scripts/etl/transform.py:95` there, CC BY 4.0), because the brief
+  asks for it and #248 carries it.
+- **Open:** the 24 `TODO(user)` in the four files (LEGAL_CHECKLIST U1-U15; 28 before the amendment below), Google
+  sign-in in the app, the legal review (RFT-155), the partner requirements still missing (partners.md).
+
+**Amended 2026-11-27** (the user's rule of that day: legal questions don't block work; the most conservative sound
+text is published now, open points stay `TODO(user)` or a PR note, a lawyer reviews it later, Linear RFT-155). The
+PR is no longer a draft held for the answers. The version stays `2026-11-26`: it was never in force anywhere, so the
+id is re-used, and `PRIVACY_POLICY_VERSION`, `privacy-versions.json`, `config.env` and `docker-compose.yml` do not
+change. Merging still bumps `PRIVACY_POLICY_VERSION` from 2026-10-26, so every user is asked to consent again. The
+privacy text now matches today's RYFT (sources: `docs/work/2026-11-26-legal-partners/revision-2026-11-27.md`):
+- **App Attest goes to `warn` (#263, after this merge).** §2 no longer lists the device check as not yet available.
+  §3 says RYFT is introducing it: at first a request without a valid check is only recorded and still answered,
+  later it is refused (`on`). That holds under `off` (until #263), `warn` and `on`; §10 says the check "helps
+  protect" the servers "as it is introduced". The recorded line names the reason, the app's build number, the
+  device header's presence, the method and route group, and the request id that links it to the request's log
+  entry (`backend/internal/gate/appattest.go`; no account, key or token). The `TODO(user)` for the § 25 TDDDG basis
+  stays in §5.
+- **The no-watch morning check-in** (code live, flag off; D291-D295, D299): the text of
+  `docs/work/2026-11-26-no-watch-recovery/implementation.md` → Privacy, verbatim, in §2, §3 (a new bullet, and what
+  RYFT computes), §5 (the health-data basis names the check-in, Art. 9(2)(a)), §9 (morning check-ins by request)
+  and §12 (an estimate is not a measurement); §3 also names the stored components, the drop flag and reason, the
+  evening's journal confounders and the model version (migration 0064). Not in it: what waits for the version that
+  describes N2R and coaching, so until then no tester on `recovery.checkin` who is in the N2R or coaching pilot.
+- **BLS 4.0 (CC BY 4.0, imported, D296).** §6 names the Bundeslebensmittelschlüssel (BLS) 4.0 of the Max
+  Rubner-Institut as an imported source (no more "once German staples are added", also in terms and support). The
+  licences page has a new "Data sources" group with the citation, the licence link and the DOI link.
+- **Usage analytics (PostHog), a section of its own.** New §7 "Usage analytics (only if you say yes)" after §6,
+  from `app/docs/ANALYTICS.md`, with the sync event covering the Home screen's sync button too. Sections 7-12
+  became 8-13 and every "Section N" reference was updated. The transfer basis is the EU Standard Contractual
+  Clauses (Art. 46(2)(c) GDPR, module 2 of the 2021/914 clauses) in PostHog's DPA; PostHog Inc.'s certification
+  under the EU-U.S. Data Privacy Framework could not be confirmed, so the DPF is not named. IP discarded and no
+  location derived, no screen recordings, retention 12 months, the DPA accepted. §3 and §5 point to §7; §6 and §8
+  carry the settled facts. Deleting an account does not reach the events at PostHog: their random id is not linked
+  to the account and the app does not show it (Art. 11 GDPR; the app's text said "if you give us the ID", which a
+  user cannot do). Error events name their type or error code.
+- **Re-consent:** the version bump stays, the conservative path. The check-in adds Art. 9 data under the existing
+  explicit consent (same purpose: computing scores), so no new consent purpose is needed, but the consent must
+  name it, and the check-in writes require consent to the policy in force (D300). App Attest (Art. 6(1)(f)) and
+  the analytics section (its own opt-in) are information duties and would not need it on their own.
+- **`TODO(user)` closed: 4** (PostHog's GeoIP and session recording, its retention, its transfer basis, and what
+  deleting an account does to its events). 24 remain in the four files (privacy 18, terms 2, Impressum 3, support
+  1), plus 3 in `messages/en.json`. The markers that need the user's details (controller, Impressum, Microsoft and
+  GoDaddy, Supabase, DPO, authority) are unchanged.
+
+**Amended 2026-11-27, before the merge** (head architect, on the same rule):
+- **U14 decided:** `CONNECT_MIN_POLICY_VERSION=2026-11-26` (item 9).
+- **Effective 2026-11-27** on privacy and terms (the planned merge day); the version id stays `2026-11-26`, which
+  consents reference. No guard ties the two: `legal.test.ts` only wants a date, `check-policy-version.mjs` and the
+  live check read the version.
+- **No `TODO(user)` renders on the site** (supersedes "open points stay `TODO(user)`" for page text). **The
+  Impressum carries no personal details** (item 7 stands; a brief that kept the live page was corrected the same day):
+  the service name RYFT, `support@ryftlab.de`, and "A postal address for service of documents is available on request
+  by email." in place of the address; no name, address or phone. **The Impressum is incomplete under § 5 DDG until a
+  business or service address exists (Linear RFT-156 A1).** Privacy §1 and terms §1 say "the provider named in the
+  legal notice". The transfer sentences keep the facts the markers carried; Art. 77 names the member state where the
+  user lives or works; every other marker is dropped without a replacement sentence (nothing invented). `/support`
+  loses the response-time line, `/licenses` names the provider in the legal notice as rights holder, the styleguide's
+  demo loses its literal marker. `beta.missingEmail` stays: `deploy.yml` refuses a build without `SUPPORT_EMAIL`, so it
+  never renders in production. The open points stay in LEGAL_CHECKLIST U1-U15 and RFT-155.
+
 ## D286 — The production smoke signs in as a Google service account, mapped to the smoke account only (2026-11-26)
 
 Supabase's email provider is off for good (the user's decision, 2026-11-26), so the smoke account cannot get a Supabase session and every deploy stopped in its auth preflight (run 45777989628). api and ingest now also accept a Google-signed ID token of the service account `ryft-smoke` (RS256 from Google's JWKS, `aud` exactly `ryft-smoke`, `email` and `sub` the account's, `email_verified`, `exp`) and treat it as `SMOKE_USER_ID` and nothing else: no email, provider, operator role or second factor. The route is chosen from the unverified `iss` (Google's or not), and each verifier checks the whole token, so a forged `iss` can only fail. All four settings or none. `/readyz` stays the Supabase verifier's. `ryft-smoke` holds no role; `roles/iam.serviceAccountOpenIdTokenCreator` on it goes to ryft-deployer and to the operators in `smoke_token_creators`. The smoke mints its token through `generateIdToken` and checks the claims before any call. There is no secret: Google rotates the keys, and revoking means removing a binding or disabling the account. A leaked token is good for at most an hour, and only as the smoke account. Its worst case is writing synthetic data into that account through the smoke's own routes (it can neither give nor withdraw consent); it cannot delete the account (see the allowlist below). The smoke principal never creates a users row: a missing or deleted account is a 401 (`smoke_unknown_user`).

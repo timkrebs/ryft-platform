@@ -1,290 +1,135 @@
-# Legal checklist — before the legal pages are published
+# Legal checklist: the legal pages as RYFT runs today
 
-**Not legal advice.** This list says where each open point is, what it needs, and, where the
-answer is a fact about the RYFT system, that fact and where it was checked. Legal conclusions
-(bases, whether a DPO is required, which authority, liability, law) are yours and your
-reviewer's. The drafts change only with your answers, in both languages at once: those of
-2026-10-21 are in ryft-web PR #10 (section 0a); everything else is open.
+**Not legal advice.** This list says where each open point is, what it needs and, where the answer is a fact
+about the RYFT system, that fact and where it was checked. Legal conclusions (bases, roles, whether a DPO is
+required, which authority, liability, law, what a partner agreement means) are yours and your reviewer's. The
+texts change only with your answers.
 
-As of 2026-10-21; checked against `ryft-platform` `003a1a9`, `ryft-app` `1eb5192` and the
-web image built from this repository.
+As of 2026-11-26; checked against platform `main` `4bca49d` and the app at `ea52758`. The source of every
+sentence in the new texts is `docs/work/2026-11-26-legal-partners/facts.md`; the partner programs are in
+`…/partners.md`. The previous version of this list (2026-10-21, the AWS era) is in git history.
 
-**Since 2026-11-19 (platform D246, web D25)** the cluster on AWS, Vault, its monitoring and
-RabbitMQ, and the web image are gone: the services run on Cloud Run (platform D223) and the site
-on Firebase Hosting (web D19, platform D233). The facts below stay as checked on 2026-10-21;
-where they cite those parts, the source is `ryft-platform` `003a1a9` (git history), not this
-tree. S3, S4, S5 (logs, dead letters), S6 and the recipients in section 3 describe that setup:
-**they need checking against the current one before publishing.**
+Files (English only, web D18): `content/legal/en/privacy/{2026-10-20,2026-10-26,2026-11-26}.mdx`,
+`…/terms/{2026-10-20,2026-11-26}.mdx`, `…/support.mdx`, `…/impressum.mdx`. The German privacy notice for the app
+beta is a separate item with counsel and not part of this list.
 
-Files: `content/legal/{en,de}/privacy/2026-10-20.mdx`, `…/terms/2026-10-20.mdx`,
-`…/support.mdx`, `…/impressum.mdx`. Line numbers are the same in English and German unless
-noted. 45 `TODO(user)` in all: privacy 11 + 11, terms 5 + 5, support 2 + 2, Impressum 4
-(English) + 5 (German).
+**Revised 2026-11-27.** The user's rule since then: legal questions don't block work. The most conservative sound
+text is published now, open points stay `TODO(user)` (or a PR note), and a lawyer reviews it later (Linear RFT-155).
+The revision brings the privacy text to today's RYFT (App Attest in `warn`, the no-watch morning check-in, BLS 4.0,
+usage analytics; D290, "Amended 2026-11-27"). Sources: `docs/work/2026-11-26-legal-partners/revision-2026-11-27.md`.
+
+**No `TODO(user)` renders on the site (decided 2026-11-27).** The 27 markers (24 in the content files: privacy
+2026-11-26: 18, terms 2026-11-26: 2, Impressum: 3, support: 1; 3 in `messages/en.json`) were all page text except
+`beta.missingEmail`, which shows only in a build without `SUPPORT_EMAIL` (`deploy.yml` refuses that build). They are
+now tracked here (U1-U15) instead of on the pages: the Impressum names RYFT and the support email, with a postal
+address for service on request by email, and no personal details; privacy §1 and terms §1 name "the provider named in the legal notice"; the transfer sentences keep
+the facts the markers carried (Google's DPF certification and SCCs, Supabase's SCCs); Art. 77 names the member state
+where you live or work; the rest of the markers were dropped with no replacement sentence (nothing invented). `/support`
+no longer shows a response time (U12), and `/licenses` names "the provider named in the legal notice" as the rights
+holder. The older pages have none.
 
 ---
 
 ## 0. Your personal details stay off the internet (decided 2026-10-21)
 
-You don't want your name, home address, personal email or phone publicly available. So
-**none of them goes into the texts, this repository, its variables or commits**, and the
-markers that ask for them stay open: U1, U5, U6, U7, U12 below, and the Impressum.
+You don't want your name, home address, personal email or phone publicly available. So none of them goes into
+the new texts, this repository's new files, variables or commits, and the spots that need them are
+`TODO(user)`: the Impressum (provider, second contact, § 18(2) MStV), terms 2026-11-26 §1 and privacy 2026-11-26
+§1.
 
-They conflict with what the drafts are built to say. The privacy policy names the
-controller's identity and contact (Art. 13(1)(a) GDPR); the German Impressum asks for a name
-and an address that can be served (§ 5 DDG); terms §1 names the provider. Whether and how
-those apply to a free, invite-only beta, and what satisfies them, is for your legal
-reviewer. The usual ways to meet them without your private details, for that review:
+- **What the spots need** (for your reviewer): the controller's identity and contact (Art. 13(1)(a) GDPR); a
+  name and an address that can be served (§ 5(1) no. 1 DDG); a second fast way of contact besides email
+  (§ 5(1) no. 2 DDG); the person responsible for the content (§ 18(2) MStV); the applicant's company details,
+  which both partner programs ask for (partners.md G1, G4, S1, S2: Suunto speaks of companies and
+  organisations only).
+- **The usual ways** to meet them without private details: a business or service address that accepts legal
+  mail; a company (e.g. a UG) as provider, controller and partner applicant; for the second contact, whatever
+  the reviewer accepts in place of a private phone. The site has no forms by design.
+- **Already published, now removed:** privacy 2026-10-20 and 2026-10-26 §1 and terms 2026-10-20 §1 carried your
+  name and home address, and the Impressum on `main` carries them and your phone. This PR replaces them on the three
+  archived pages with "[Provider details removed on 2026-11-27; the provider is named in the current legal
+  notice.]" (wording otherwise unchanged; the original stays in git history as the record of consents, D290 item 3). The Impressum is a single page: this PR removes them
+  from it, and offers a postal address for service on request by email. It is incomplete under § 5 DDG until a
+  business or service address exists (Linear RFT-156 A1; U1, U5, U6). Git keeps the history either way.
+- **App Store, later:** Apple asks EU sellers to declare trader status under the Digital Services Act; for
+  traders the store shows an address, phone and email. TestFlight doesn't ask.
 
-| Spot | Instead of your private details |
-| --- | --- |
-| Every published email (support, privacy, Impressum, `SUPPORT_EMAIL`) | An address on `ryftapp.de` (e.g. `support@`, `privacy@`) that forwards to your inbox. This needs mail for the domain (MX records in its DNS zone and a forwarding or mail service). That service then receives users' emails, so it goes into privacy §5 like the others. |
-| Postal address (Impressum, privacy §1, terms §1) | A business or service address that accepts legal mail for you. Whether a given one counts as *ladungsfähig* is the reviewer's call. |
-| Name | A company (e.g. a UG) as provider and controller, with its own registered address. A bigger step. |
-| Phone (Impressum's "second fast way") | Whatever the reviewer accepts in its place. The site has no forms by design. |
+## 1. The setup the texts describe (facts, with sources)
 
-Facts that bear on it:
-
-- **Already public:** your full name, as the author of every commit in the public
-  `ryft-app` and `ryft-platform` repositories and as your GitHub profile name. Your GitHub
-  account name is in the app's bundle ID `dev.timkrebs.ryft`, so in the AASA on `ryftapp.de`
-  today (the platform's ConfigMap serves it), in the image names and in both public
-  repositories. A bundle ID can't change for a published app. TestFlight also shows testers
-  the developer name of your Apple account. What can still stay private: the address, the
-  personal email, the phone.
-- **Git keeps what is committed.** An address pushed once stays in the history, even after
-  it is edited out, so it goes in only once you have decided.
-- **App Store, later:** Apple asks EU sellers to declare whether they are a trader under the
-  Digital Services Act; for traders, the App Store page shows an address, phone and email.
-  TestFlight doesn't ask.
-- Until then the pages stay drafts (banner, `noindex`).
-
-## 0a. Answered on 2026-10-21
-
-| Point | Your answer | Where it goes |
+| # | Fact | Source |
 | --- | --- | --- |
-| Contact email (U1's email, U5, U6's email, U12) | `support@ryftapp.de`, forwarding to your inbox | PR #10; `SUPPORT_EMAIL` is set. The mail service is still to choose and set up (`docs/HANDOFF.md` → 1); the text names it in a new marker |
-| U2 | No data protection officer | PR #10 |
-| S1 | Supabase in Frankfurt, its DPA accepted | PR #10; the basis for access from outside the EU stays open |
-| S3 | AWS's DPA accepted | PR #10 |
-| S4 | RYFT's logs excluded from Grafana Cloud | PR #10 (metrics only). True once you have excluded `ryft-.*` in Fleet Management (`docs/HANDOFF.md` → 1) |
-| S5 | Supabase Pro, point-in-time recovery off | PR #10 (backups 7 days; dead letters corrected to 14 days) |
-| S6 | Access log without IP, user agent, referrer and query string | PR #9 (nginx), PR #10 (the text, plus a marker for its basis) |
-| S7 | The Apple Health opt-in sentence now | PR #10 |
-| S8 | Minimum age 13 | PR #10 (privacy §9, terms §4) |
-| — | The beta is invite-only, no public TestFlight link | `TESTFLIGHT_URL` stays unset |
+| F1 | The services run on Google Cloud in europe-west1 (Cloud Run, Pub/Sub, Scheduler, Secret Manager, Logging, Monitoring, Cloud Trace API on, DNS), behind a global load balancer with Cloud Armor | `infra/gcp/variables.tf:15`, `project.tf:8-33`, `gates.auto.tfvars:16`; D216, D217, D242 |
+| F2 | The site is a static export on Firebase Hosting (project `ryftlab-site`): no cookies, no analytics, no access log of RYFT's | D233; web D19, D20 |
+| F3 | Supabase in Frankfurt holds the database and the sign-in | `deploy/run/config.env:76`; `docs/SUPABASE.md:11`; D49 |
+| F4 | AWS, Vault, RabbitMQ and Grafana Cloud are gone | D246, D3, D236 |
+| F5 | Sign-in is Sign in with Apple or Google. **Your setting of 2026-11-26** (email auth off); the app at ea52758 still has the email screens and no Google sign-in, the platform has no Google path | facts.md, rows 1-2 |
+| F6 | Mail for `support@ryftlab.de` is Microsoft 365, subscribed through GoDaddy; no sign-in emails are sent any more | D214, D239; your setting |
+| F7 | The food diary exists on the platform and is dark (`nutrition.diary_enabled` and `nutrition.enabled` at 0 %); the app has no nutrition screen. CGM, N2R and coaching are dark too and left to a later version | D265-D280; migrations 0043-0052; facts.md |
+| F8 | The food catalog is USDA FoodData Central (Foundation, SR Legacy), Open Food Facts and, since 2026-11-27, the BLS 4.0 of the Max Rubner-Institut (CC BY 4.0, imported; twins of curated staples left out). The attribution is on `/licenses` (Data sources); privacy §6, terms and support name it | D296; `scripts/etl/transform.py`; `docs/architecture/nutrition/06-data-source-licensing.md` |
+| F9 | Usage analytics: PostHog EU Cloud (eu.i.posthog.com), opt-in, a random installation id, Profile → Privacy → Share usage analytics; the events, IP discarded and no location derived, the EU Standard Contractual Clauses in PostHog's DPA, 12 months. Privacy §7 is the app's text (`app/docs/ANALYTICS.md`) | D231; app `docs/ANALYTICS.md`; the user's answers of 2026-11-27 |
+| F10 | Report a problem: Profile → About → Report a problem; diagnostics on by default, no health values | app ea52758 `Ryft/Features/Profile/ReportProblemView.swift:313, 325-346` |
+| F11 | Export: account, days, workouts, sessions, manual entries; no journal, nutrition or connections | app ea52758 `Ryft/Features/Profile/DataExport.swift:14-33` |
+| F12 | Deletion: everything, the Supabase user, the Apple grant, the connections at the providers (30 days of retries) | `backend/internal/store/store.go:163-192`; `docs/API.md:940-965`; D249, D257 |
+| F13 | Garmin and Suunto connections: a foundation against a fake provider only; off in production | `backend/internal/connect/doc.go:18-19`; `deploy/run/config.env:52, 56`; `docs/API.md:997` |
+| F14 | Minimum age 16 (terms 2026-10-20 said 13) | `backend/internal/scoring/maxhr.go:9`; app ea52758 `OnboardingSteps.swift:311` |
+| F15 | App Attest goes to `warn`: a request without a valid check is logged (`reason`, `app_build`, route group, request identifier; no account, key or token) and still answered; `on` refuses it. Privacy §3 says both | `docs/OPERATIONS.md` §17.4; D245, D247 |
+| F16 | The no-watch morning check-in is in the code behind a flag that is off; the app does not offer it yet. Privacy §2, §3, §5, §9, §12 carry the text of the implementation's privacy section; the parts that need the version describing N2R and coaching are not in it | D291-D295, D299; `docs/work/2026-11-26-no-watch-recovery/implementation.md` → Privacy |
 
-**Still open:** the name and postal address (U1, the Impressum, terms §1; section 0), the
-supervisory authority (U4), the review of the legal bases (U3, now also the website's), the
-basis for Supabase access from outside the EU, the mail service (name, where, DPA), the
-Impressum's § 18(2) MStV person and phone replacement (U6–U7; U8 is answered),
-terms §8–§10 (U9–U11), the feedback route on the support page (S9), whether the old Ireland
-project is deleted (S1), an SMTP provider for Supabase's emails (S2), whether sent `outbox`
-rows are deleted (S5), and the privacy version (section 4).
-
-## 1. Only you can answer
+## 2. Only you can answer (numbered; the marker in brackets)
 
 | # | Where | What is needed |
 | --- | --- | --- |
-| U1 | privacy §1 (l. 13); terms §1 (l. 12); Impressum "Provider"/"Angaben gemäß § 5 DDG" (en l. 14, de l. 12) | Controller and provider: full name (or company), postal address that can be served (*ladungsfähige Anschrift*), email address. The same person in all three. |
-| U2 | privacy §1 (l. 13) | **Answered (2026-10-21): none.** The text will say none is designated. Whether one is required (Art. 37 GDPR, § 38 BDSG) is your reviewer's to confirm. |
-| U3 | privacy §4 (l. 38) | The legal review of the bases listed in §4. The draft names them as the system works; it does not settle them. |
-| U4 | privacy §7 (l. 59) | The competent supervisory authority (it follows from where the controller is established, usually your federal state's data protection authority). |
-| U5 | privacy §7 (l. 59) | The email address for privacy requests. |
-| U6 | Impressum "Contact" (en l. 18, de l. 16) | Email, and a second fast way to reach you (e.g. phone). |
-| U7 | Impressum § 18(2) MStV (en l. 22, de l. 20) | Name and address of the person responsible for the content. |
-| U8 | Impressum (en l. 22–28) | **Answered, and ported (2026-11-05, web D18).** Your answers were published in the German Impressum; with the German pages gone they are in the English one, translated without a change of meaning: no VAT identification number ("None."), and the § 36 VSBG statement that RYFT is neither obliged nor willing to take part in proceedings before a consumer arbitration board. |
-| U9 | terms §8 (l. 40) | How the beta ends, and how long before that testers are told. |
-| U10 | terms §9 (l. 44) | The liability clause, reviewed for German law. The draft's note stays true: liability for intent, gross negligence and injury to life, body or health cannot be excluded. |
-| U11 | terms §10 (l. 48) | Governing law and place of jurisdiction. |
-| U12 | support (l. 10, first marker) | The support address: one that isn't personal (section 0). The same value goes into the repository variable `SUPPORT_EMAIL` (`docs/HANDOFF.md` → 1), which the support page and the beta page's "Ask for an invite" use. The beta is invite-only, with no public TestFlight link (2026-10-21), so that mail link is how people ask. |
+| U1 | Impressum "Provider", terms §1, privacy §1 | Provider and controller: name (or company) and an address for service, the same in all three (section 0) |
+| U2 | privacy §1 | Whether a data protection officer is required (Art. 37 GDPR, § 38 BDSG); the text says none is designated |
+| U3 | privacy §5, §7 | The review of every legal basis listed (the text proposes them), including the consent for usage analytics (Art. 6(1)(a) GDPR, § 25(1) TDDDG) |
+| U4 | privacy §9 | The competent supervisory authority (follows from U1) |
+| U5 | Impressum "Contact" | A second fast way of contact that is not your phone |
+| U6 | Impressum § 18(2) MStV | The person responsible for the content |
+| U7 | privacy §3, §6 (two markers) | **Google sign-in:** set it up in Supabase and ship it in the app before this version goes into force; then confirm what Google shares and Google's role. Until then the text promises a sign-in that doesn't exist, and email accounts made before 2026-11-26 can't sign in (support says nothing about them: your call) |
+| U8 | privacy §4 | Garmin's and Suunto's role (source on the user's instruction, not processors, as the text says) once the agreements are read |
+| U9 | privacy §5 | The basis for the App Attest key on the iPhone (§ 25 TDDDG) |
+| U10 | privacy §6 (Google Cloud, Firebase, Supabase, Microsoft) | The transfer bases and terms, as the reviewer words them; the DPAs accepted in each console. PostHog is answered (2026-11-27): the DPA is accepted and the basis is the EU Standard Contractual Clauses (Art. 46(2)(c) GDPR; module 2 of the 2021/914 clauses). PostHog Inc.'s certification under the EU-U.S. Data Privacy Framework could not be confirmed, so the text does not name it. The reviewer may still reword it |
+| U11 | privacy §6, §8 | Console facts: Cloud Trace storage and retention; Supabase log retention and its auth records; the Microsoft tenant's data location; GoDaddy's access to the mailboxes; how long support emails are kept. PostHog's are answered (2026-11-27): the IP address is discarded and no location is derived, session recording is not used (no screen recordings), retention is 12 months, and deleting an account does not reach the events because their random id is not linked to it (Art. 11 GDPR) |
+| U12 | `messages/en.json` `legal.contact.responseTodo` (not this PR's file) | The response time shown on `/support` |
+| U13 | terms 2026-11-26 | That the changed terms are announced in the app before they apply (terms §12 says so; the app has no such notice at ea52758) |
+| U14 | `deploy/run/config.env` `CONNECT_MIN_POLICY_VERSION` | **Decided 2026-11-27:** the consent cutoff moves to 2026-11-26 in this PR (D259; `docs/OPERATIONS.md` → Moving the consent cutoff: it moves when a change touches health-data processing, which this one does; D290 item 9). No connection is live, so it has no effect today |
+| U15 | the legal review as a whole | The questions of `docs/work/2026-11-20-privacy-c2/anwalt.md` (PR #228) that still apply, plus: describing features that are not yet available in a policy put into force (privacy §2); English only for Art. 9 consent |
 
-## 2. Facts about the system, and the decisions they need
+## 3. Facts the texts depend on that need a fix elsewhere (not legal questions)
 
-### S1 — Supabase: where the database is (privacy §5, l. 42)
+| # | What | Where |
+| --- | --- | --- |
+| P1 | The support page's step list says "Under Data, tap Export my data"; the app has no Data group, the button is "Export data" below the groups | `web/messages/en.json` `legal.steps.export` (PR A's area); app ea52758 `ProfileView.swift:502-506`, `DataExport.swift:6` |
+| P2 | The screenshot's alt text names "Change password", which no longer applies | `web/messages/en.json` `legal.steps.alt` |
+| P3 | The app still offers email sign-up, login and password reset | app ea52758 `Ryft/Auth/AuthService.swift:93-113`; an app change |
+| P4 | `docs/SUPABASE.md` still describes email accounts as a sign-in method | platform docs |
+| P5 | The deletion test counts no nutrition or coaching table (deletion relies on FK cascades) | `backend/internal/store/delete_test.go:74-91` |
+| P6 | The in-app export leaves out journal, nutrition and connections (the text says "on request") | app ea52758 `DataExport.swift`; `GET /v1/me/nutrition-export` exists, unused |
+| P7 | No guard refuses a `TODO(user)` in a published page: this PR's pages pass every check with 24 markers. A check that fails CI on `TODO(user)` in a `status: published` page would block this merge, against the rule of 2026-11-27 (open points stay `TODO(user)`) | `web/tests/legal.test.ts:104-107` (only drafts); proposal, not done here |
+| P8 | The "Garmin [device model]" attribution in the app's screens and export, once connections ship | partners.md G9 |
 
-The draft says Frankfurt (`eu-central-1`). **That is right for the current project.** The
-first project was created in `eu-west-1` (Ireland); the platform recreated it in Frankfurt
-before the beta (D49).
+## 4. The version (D290)
 
-- `plattform/docs/STATUS.md:522`: "Supabase in Frankfurt: done; the new database was
-  migrated by the deploy."
-- `plattform/docs/DECISIONS.md` D49, `plattform/docs/SUPABASE.md` → "Moving the project to
-  Frankfurt".
-- The pooler host the services use (`plattform/deploy/run/config.env`, `SUPABASE_POOLER_HOST`;
-  on 2026-10-21 the Vault Terraform's variables at `003a1a9` held the same host):
-  `aws-1-eu-central-1.pooler.supabase.com`. A Supabase pooler serves only its own region.
-- The file's comment shows the same pattern (`aws-<n>-eu-central-1…`).
+`2026-11-26` is the new privacy version: page, `privacy-versions.json`, `PRIVACY_POLICY_VERSION` in
+`deploy/run/config.env` and `docker-compose.yml`, in one PR. It is `status: published` (with a date in `effective`), because `scripts/check_policy_in_force.sh` (CI's manifests job, against the base) refuses a PR
+that moves the version to a page that is not published. **The merge puts it into force:** api and ingest roll
+with the new version, the site job ships the page and checks that `/privacy` shows it, and every user is asked to
+consent again before the next upload. The version stays `2026-11-26` after the revision of 2026-11-27: it was never
+in force anywhere, so the id is re-used. `effective` is `2026-11-27` (the planned merge day) on privacy and terms;
+no guard ties it to the version id (`legal.test.ts` only wants a date; the live check reads the "Version" line). 2026-10-20 and
+2026-10-26 keep their pages and words. Terms move to 2026-11-26 the same way (no guard; 2026-10-20 stays at
+`/terms/2026-10-20`).
 
-Needs you: **confirm the region in the Supabase dashboard** (Project Settings → General), and
-whether the old Ireland project is deleted. D49's runbook step 6 (pause it, delete it after
-a week) is not recorded as done. If it still exists and holds any real person's data, it is a
-second location: delete it, or the text has to name it.
+## 5. Before the merge, and after
 
-Still open in the same marker: the **DPA with Supabase** and the basis for any access from
-outside the EU (accept it in the Supabase dashboard; `plattform/docs/STATUS.md` → Beta step 2
-lists it as open).
+Since 2026-11-27 (the user's rule): the pages are published as they are, and the open points below do not block the
+merge. The `TODO(user)` markers stay in the text until the user answers; a lawyer reviews the published texts later
+(Linear RFT-155).
 
-### S2 — Supabase: who sends the sign-in emails (privacy §5)
+1. `npm run check:policy`, `npm run brand`, `npm test`, the build, the e2e tests, all green in CI.
+2. `CONNECT_MIN_POLICY_VERSION` is decided (U14: 2026-11-26); the merge asks every user to consent again.
+3. Mark the PR ready and merge; the merge deploys (D290 lists the order).
 
-Supabase sends confirmation and reset emails. `plattform/docs/SUPABASE.md:30-33` says to enter
-an SMTP provider before inviting people, because the built-in mailer sends only a few an hour.
-**If you configured one**, it receives email addresses and must be named in §5 (who, where,
-DPA). Needs you: which, if any (Supabase → Authentication → Emails → SMTP Settings).
-
-### S3 — AWS (privacy §5, l. 43)
-
-Verified: the cluster (`ryft-prod-euc1`), its load balancer, the KMS key and the CloudWatch
-log group are in `eu-central-1` (the AWS Terraform at `003a1a9`, its log group's file). The
-DNS zone is Amazon Route 53, a global service with no region; it holds DNS records, no
-personal data of users. The draft lists "DNS" under Frankfurt; your reviewer may want it
-worded "… load balancer, in Frankfurt; DNS through Amazon Route 53".
-
-Needs you: the **DPA with AWS** (AWS Artifact → Agreements).
-
-### S4 — Grafana Cloud: do logs leave the cluster? (privacy §5, l. 45; §6, l. 53)
-
-- **Metrics:** yes, always. The collector (the cluster's monitoring values at `003a1a9`)
-  sends cluster and service metrics to a Grafana Cloud stack in **eu-west-2 (London)**
-  (`prometheus-prod-65-prod-eu-west-2.grafana.net`, l. 80). The services' metrics are
-  counters and route labels, no user data (`plattform/docs/OBSERVABILITY.md` → Collection).
-- **Logs:** the platform says **yes, by your choice**: "Left as they are, by choice: RYFT's
-  pod logs also reach Grafana Cloud (not excluded)" (`plattform/docs/STATUS.md:536-537`). The
-  collector can read every container's log file; which logs it ships is set in Grafana
-  Cloud's Fleet Management, not in the repository, so the repository cannot prove either
-  way. Those logs carry user IDs and daily scores (health data, `OPERATIONS.md` → Data
-  protection) and, for the website, visitors' IP addresses (S6).
-- **The UK:** the European Commission renewed the UK adequacy decision under the GDPR on
-  19 December 2025; it runs until 27 December 2031 ([Hunton](https://www.hunton.com/privacy-and-cybersecurity-law-blog/european-commission-renews-uk-data-adequacy-decisions),
-  [Freeths](https://www.freeths.co.uk/insights-events/legal-articles/2026/european-commission-renews-uk-adequacy-decisions-until-27-december-2031/)).
-- **Retention:** the stack's plan. The free tier keeps logs 14 days (`OPERATIONS.md` → Data
-  protection); check under Billing.
-
-Needs you, one of:
-
-- **Exclude** namespaces `ryft-.*` from pod-log collection in Fleet Management, then check
-  that `{namespace=~"ryft-.*"}` in Explore returns nothing (what D51 originally intended).
-  §5 then says "service metrics without personal data" only, and the §6 marker goes.
-- **Keep** the logs there: the DPA with Grafana Labs, the transfer basis (the adequacy
-  decision above), and the retention for §6.
-
-### S5 — Backups and retention (privacy §6, l. 52–54)
-
-- **Backups (l. 52):** "Supabase Pro: done (2026-10-20): daily backups, kept 7 days; PITR
-  optional" (`plattform/docs/STATUS.md:456`; `OPERATIONS.md` → Backups). The draft's
-  "kept for 7 days" matches. Needs you: confirm in the dashboard (Database → Backups) that
-  the plan is Pro and **point-in-time recovery is off**. With PITR the retention is the
-  add-on's, and the sentence changes.
-- **Logs (l. 53):** 14 days in CloudWatch (the AWS Terraform at `003a1a9`,
-  `retention_in_days = 14`), plus Grafana Cloud's retention if logs go there (S4). Pod stdout
-  also stays on the node until the pod goes.
-- **Correction (l. 54):** the draft says events that could not be processed stay "up to
-  30 days". Since the move to RabbitMQ (D102) dead letters are kept **14 days**: the `dlq`
-  policy's `message-ttl: 1209600000` (ms) in the RabbitMQ topology at `003a1a9`,
-  and `OPERATIONS.md:344` ("`dlq.scoring`, `dlq.notify`, 14 days"). The text needs 14, in both
-  languages. Also: events waiting for the broker are rows of `outbox` in the database
-  (D101) until they are sent; whether sent rows are deleted is not documented, so ask the
-  platform session before publishing.
-
-### S6 — Visitors of ryftapp.de are not covered (privacy, new text)
-
-The privacy policy describes the app. The website itself logs every request (on 2026-10-21):
-nginx's `main` format in the web image (`log_format main` in the image's own `nginx.conf`; this
-repository's server config turned the access log off only for `/healthz`) writes the time, the
-request line **with its query string**, status, bytes, referrer, user agent and
-`X-Forwarded-For`, which is the visitor's IP address (Traefik forwards it; the load balancer
-preserves client IPs, the AWS Terraform at `003a1a9`). Fluent Bit ships every `ryft-*`
-namespace's container logs, `ryft-web` included, to CloudWatch for 14 days (the same
-Terraform), and to Grafana Cloud if S4 is "keep". Traefik's own access log is not enabled
-(also there). No cookies, no analytics, no third-party requests (this repository's rules,
-tested in `e2e/behaviour.spec.ts`).
-
-Since web D19 (2026-11-16) Firebase Hosting serves the site, and since web D25 there is no
-image: the site keeps no access log of its own, and Google's edge sees the visitor's IP (web
-D19, difference 9). The paragraph on the website is still your decision.
-
-Needs you, one of:
-
-- **Recommended:** this repository logs without IP address, user agent, referrer and query
-  string (time, method, path, status, bytes, duration). A small `fix:` PR here. The policy
-  then needs one sentence that the IP address is used to deliver the page and for the
-  per-IP rate limit, and is not stored.
-- Keep the logs as they are; the policy gets a section on the website (what, why, 14 days,
-  where), with its basis from your reviewer.
-
-### S7 — Saving workouts to Apple Health (privacy §2 and §3)
-
-The app is adding an opt-in "Save workouts to Apple Health"
-(`app/CLAUDE_FOLLOWUP_BETA_FEEDBACK_1.md` §3): after a completed strength session it writes an
-`HKWorkout` (traditional strength training: start, end, energy if known; no heart rate) to
-Apple Health, only if the user turned it on. Not in `ryft-app` `main` yet. §2 says RYFT
-"reads data from Apple Health", which stays true until it ships.
-
-Needs you, one of: a sentence now, worded as opt-in (the app session confirms the wording,
-`docs/HANDOFF.md` → 3), or a `TODO(user)` naming it until the feature ships.
-
-### S8 — Minimum age (privacy §9, l. 67; terms §4, l. 24)
-
-- The app and the platform accept birth years up to 13 years ago: `MinAge = 13` in
-  `plattform/backend/internal/scoring/maxhr.go:9`, `latestBirthYear` `− 13` in
-  `app/Ryft/Features/Onboarding/HealthPermissionView.swift:413`.
-- Birth year is **optional** (it estimates maximum heart rate), so it is not an age check.
-- The processing of health data rests on consent (§4). Art. 8 GDPR sets 16 as the age for a
-  child's own consent to such services unless a member state lowers it; the draft's marker
-  says Germany's is 16.
-
-**Decided (2026-10-21): 13**, as the app and the platform accept today, in privacy §9 and
-terms §4 (PR #10). The Art. 8 point above stays with your reviewer. No change is requested
-from the app or the platform.
-
-### S9 — Support page (support l. 10, second marker; l. 26)
-
-- **The menu path for feedback:** the app has **no feedback screen** yet. `POST /v1/feedback`
-  exists on the platform and in the app's `APIClient`, but nothing calls it. `app/docs/TESTFLIGHT.md:85`
-  names "Profile → Report a problem", which doesn't exist (`docs/HANDOFF.md` → 3). What works
-  today is TestFlight's own: take a screenshot, tap Share Beta Feedback
-  (`app/docs/TESTFLIGHT_NOTES.md:22`); that feedback goes to Apple's App Store Connect, under
-  Apple's terms (privacy §5 already names TestFlight). Needs you: TestFlight's route for
-  now, or wait for the screen.
-- Optional precision, l. 26: "Both are in the app's settings". They are Profile → Account →
-  Delete account and Profile → Privacy → Withdraw consent (`ProfileView.swift:89`, `:313`).
-
-## 3. Who receives personal data (privacy §5)
-
-| Recipient | What for | Where | Personal data | Source |
-| --- | --- | --- | --- | --- |
-| **Supabase** | Database (Postgres) and sign-in | Frankfurt, `eu-central-1` (S1) | Everything in §3 | S1 |
-| **Amazon Web Services** | The cluster that runs RYFT, its load balancer, logs (CloudWatch), keys (KMS) | Frankfurt, `eu-central-1`; DNS Route 53 (global, no user data) | Requests in transit, logs (user IDs, daily scores; website visitors' IPs, S6) | S3, S5, S6 |
-| **Apple** | Sign in with Apple; Apple Push Notification service (push token and the notification text, which can carry scores, e.g. "Recovery 82 %"); TestFlight | Apple's | Sign-in identity, push token and texts, TestFlight feedback | privacy §5; `plattform/docs/OPERATIONS.md` → Push |
-| **Grafana Labs** | Monitoring (Grafana Cloud) | London, `eu-west-2` | Metrics: none. Logs: as in S4 | S4 |
-| **Your SMTP provider**, if any | Sign-in emails | ? | Email addresses | S2 |
-
-Not recipients of users' personal data:
-
-- **GitHub**: code and container images only.
-- **HashiCorp** (HCP Vault, HCP Terraform): service credentials and Terraform state, no user
-  data.
-- **Let's Encrypt**: certificates for the domain.
-- **Fontshare**: the fonts are fetched at build time; visitors never contact it.
-
-## 4. The version
-
-The privacy `version` is `2026-10-20`, equal to the platform's `PRIVACY_POLICY_VERSION`
-(`npm run check:policy` on 2026-10-21). Users of the beta consented to that
-version while it was a draft. Filling in the controller and the open points, and the
-corrections above (14 days; the website; Apple Health; the age), change what they agreed
-to. **Whether that needs a new version is your decision.** If yes, the text is published as
-`content/legal/{en,de}/privacy/<new date>.mdx` (the old one stays at `/privacy/2026-10-20`),
-and `PRIVACY_POLICY_VERSION` changes to the same date in `plattform/deploy/run/config.env` and
-`docker-compose.yml`, in the same PR (the merge puts it into force: `deploy.yml` deploys the
-services and the site), so everyone is asked to consent again before the next upload.
-
-## 5. Publishing (when every point above is answered)
-
-1. Your answers into both languages; every `TODO(user)` resolved; `portedFrom:` removed from
-   each edited file (the word-for-word test against the platform's drafts then stops for it).
-2. `status: published` and `effective: 'YYYY-MM-DD'` in all eight files together. The draft
-   banner and `noindex` go, the sitemap lists the pages, and `/privacy/2026-10-20` stays
-   reachable.
-3. `npm run check:policy`, `npm run brand`, `npm test`, build, e2e; PR
-   `legal: publish privacy, terms, support and Impressum`; merge on green; the merge deploys
-   the site (`deploy.yml`'s `site` job).
+Open after the merge, none of it blocking: U1-U15 (every `TODO(user)` resolved in the content files and U12 in
+`messages/en.json`), the legal review (RFT-155), and Google sign-in live in the app (U7), or the text changed to
+say what is live.

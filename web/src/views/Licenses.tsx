@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { PageShell } from '@/components/chrome';
-import { Container, Label, Todo } from '@/components/ui';
+import { Container, Label } from '@/components/ui';
 import { format, messages, type Locale } from '@/lib/i18n';
 import { pageMetadata } from '@/lib/metadata';
 import { BUILD_YEAR } from '@/lib/site';
@@ -32,13 +32,28 @@ export function LicensesPage({ locale }: { locale: Locale }) {
           <h1>{t.title}</h1>
           <p className={styles.copyright}>
             {format(before, { year: BUILD_YEAR })}
-            <Todo>{t.holderTodo}</Todo>
+            {t.holder}
             {after}
           </p>
           <p className={styles.intro}>{t.intro}</p>
         </header>
         <Group id="app" title={t.app} intro={t.appIntro} items={data.app} locale={locale} />
         <Group id="web" title={t.web} intro={t.webIntro} items={data.web} locale={locale} />
+        <section aria-labelledby="data-title" className={styles.group}>
+          <h2 id="data-title">{t.data}</h2>
+          <p className={styles.intro}>{t.dataIntro}</p>
+          <ul className={styles.credits}>
+            <li>
+              <p>
+                {t.blsCitation} {t.doi} <a href={t.blsDoiUrl}>{t.blsDoi}</a>
+              </p>
+              <p>{t.blsChanges}</p>
+              <p>
+                {t.blsLicence} <a href={t.ccBy4Url}>{t.ccBy4Url.replace(/^https?:\/\//, '')}</a>
+              </p>
+            </li>
+          </ul>
+        </section>
       </Container>
     </PageShell>
   );
