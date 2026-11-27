@@ -21,8 +21,8 @@ usage analytics; D290, "Amended 2026-11-27"). Sources: `docs/work/2026-11-26-leg
 **No `TODO(user)` renders on the site (decided 2026-11-27).** The 27 markers (24 in the content files: privacy
 2026-11-26: 18, terms 2026-11-26: 2, Impressum: 3, support: 1; 3 in `messages/en.json`) were all page text except
 `beta.missingEmail`, which shows only in a build without `SUPPORT_EMAIL` (`deploy.yml` refuses that build). They are
-now tracked here (U1-U15) instead of on the pages: the Impressum is back to the page live on `main` (its provider
-fields unchanged); privacy §1 and terms §1 name "the provider named in the legal notice"; the transfer sentences keep
+now tracked here (U1-U15) instead of on the pages: the Impressum names RYFT and the support email, with a postal
+address for service on request by email, and no personal details; privacy §1 and terms §1 name "the provider named in the legal notice"; the transfer sentences keep
 the facts the markers carried (Google's DPF certification and SCCs, Supabase's SCCs); Art. 77 names the member state
 where you live or work; the rest of the markers were dropped with no replacement sentence (nothing invented). `/support`
 no longer shows a response time (U12), and `/licenses` names "the provider named in the legal notice" as the rights
@@ -47,9 +47,9 @@ the new texts, this repository's new files, variables or commits, and the spots 
   the reviewer accepts in place of a private phone. The site has no forms by design.
 - **Already published, and kept:** privacy 2026-10-26 §1 and terms 2026-10-20 §1 carry your name and home
   address, and the Impressum on `main` carries them and your phone. The two versioned pages stay as they are:
-  they are the record of what people consented to (D290). The Impressum is a single page: since 2026-11-27 this PR
-  leaves it exactly as live (an Impressum without a provider is not sound under § 5 DDG); replacing the details there
-  waits for U1/U5/U6. Git keeps the history either way.
+  they are the record of what people consented to (D290). The Impressum is a single page: this PR removes them
+  from it, and offers a postal address for service on request by email. It is incomplete under § 5 DDG until a
+  business or service address exists (Linear RFT-156 A1; U1, U5, U6). Git keeps the history either way.
 - **App Store, later:** Apple asks EU sellers to declare trader status under the Digital Services Act; for
   traders the store shows an address, phone and email. TestFlight doesn't ask.
 

@@ -6,9 +6,10 @@ Privacy 2026-11-26 and terms 2026-11-26 (new versions; the old ones stay), the s
 rewritten for GCP, Firebase Hosting and Supabase, Apple or Google sign-in, the dark food diary, the usage analytics,
 the report form and the planned Garmin and Suunto connections. Revised on 2026-11-27 to today's RYFT: App Attest in
 `warn`, the no-watch morning check-in, BLS 4.0 (credited on `/licenses`) and a section of its own for the usage
-analytics (privacy §7; later sections renumbered). No `TODO(user)` renders on the site (2026-11-27): the Impressum
-stays exactly as live on `main`, privacy and terms name "the provider named in the legal notice", and the open points
-are tracked in `web/docs/LEGAL_CHECKLIST.md` (U1-U15) instead of on the pages. It
+analytics (privacy §7; later sections renumbered). No `TODO(user)` renders on the site (2026-11-27), and no personal
+details: the Impressum names RYFT and the support email, with a postal address for service on request by email
+(incomplete under § 5 DDG until a business or service address exists, Linear RFT-156 A1); privacy and terms name "the
+provider named in the legal notice"; the open points are tracked in `web/docs/LEGAL_CHECKLIST.md` (U1-U15). It
 supersedes the C2 draft (#228). Sources: `docs/work/2026-11-26-legal-partners/facts.md` and `…/revision-2026-11-27.md`;
 partner requirements: `…/partners.md`.
 

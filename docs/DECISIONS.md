@@ -6961,9 +6961,11 @@ privacy text now matches today's RYFT (sources: `docs/work/2026-11-26-legal-part
 - **Effective 2026-11-27** on privacy and terms (the planned merge day); the version id stays `2026-11-26`, which
   consents reference. No guard ties the two: `legal.test.ts` only wants a date, `check-policy-version.mjs` and the
   live check read the version.
-- **No `TODO(user)` renders on the site** (supersedes "open points stay `TODO(user)`" for page text; item 7's
-  Impressum edit is withdrawn). The Impressum stays exactly as live on `main` (an Impressum without a provider is not
-  sound under § 5 DDG; the details on it were already public). Privacy §1 and terms §1 say "the provider named in the
+- **No `TODO(user)` renders on the site** (supersedes "open points stay `TODO(user)`" for page text). **The
+  Impressum carries no personal details** (item 7 stands; a brief that kept the live page was corrected the same day):
+  the service name RYFT, `support@ryftlab.de`, and "A postal address for service of documents is available on request
+  by email." in place of the address; no name, address or phone. **The Impressum is incomplete under § 5 DDG until a
+  business or service address exists (Linear RFT-156 A1).** Privacy §1 and terms §1 say "the provider named in the
   legal notice". The transfer sentences keep the facts the markers carried; Art. 77 names the member state where the
   user lives or works; every other marker is dropped without a replacement sentence (nothing invented). `/support`
   loses the response-time line, `/licenses` names the provider in the legal notice as rights holder, the styleguide's
