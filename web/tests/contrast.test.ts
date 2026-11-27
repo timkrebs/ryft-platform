@@ -51,20 +51,28 @@ const text: [Color, Color][] = [
   ['text-secondary', 'surface-raised'],
   ['text-tertiary', 'background'],
   ['text-tertiary', 'surface'],
-  ['accent', 'background'],
-  ['accent', 'surface'],
+  // Recovery's teal is text only where a recovery value is (the readiness delta); the ink on a
+  // signal fill is the app's OnSignal.
+  ['recovery', 'background'],
+  ['recovery', 'surface'],
   ['warning', 'background'],
   ['warning', 'surface'],
   ['alert', 'background'],
   ['alert', 'surface'],
-  ['on-accent', 'accent'],
+  ['on-signal', 'signal'],
 ];
 
+// Marks and graphics: the legend's colours on a card, Volt on both grounds (it is never text, ADR 0016
+// 2.2: a review check, not a test), and the ring and arc strokes of the gauge.
 const marks: [Color, Color][] = [
-  ['accent', 'surface'],
+  ['recovery', 'surface'],
   ['metric-strain', 'surface'],
   ['metric-sleep', 'surface'],
+  ['metric-strain', 'background'],
+  ['metric-sleep', 'background'],
   ['accent-secondary', 'surface'],
+  ['signal', 'background'],
+  ['signal', 'surface'],
 ];
 
 describe('the palette', () => {

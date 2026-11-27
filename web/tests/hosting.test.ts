@@ -129,7 +129,7 @@ describe('firebase.json (scripts/lib/hosting.mjs)', () => {
       { regex: '^/de/(?P<p>[A-Za-z0-9][A-Za-z0-9/._-]*)$', destination: '/:p', type: 301 },
     ]);
     expect(hosting.rewrites).toEqual([
-      { regex: '^/(day|sleep|insights|train|auth|invite)(/.*)?$', destination: '/open.html' },
+      { regex: '^/(day|sleep|insights|journal|train|auth|invite)(/.*)?$', destination: '/open.html' },
     ]);
   });
 

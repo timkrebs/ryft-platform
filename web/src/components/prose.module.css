@@ -1,3 +1,5 @@
+/* Long text (science, legal): Regular 16 in ink, titles Light, links ink with the underline. The words of
+   a legal text are never touched here; only how they are set. */
 .prose {
   max-width: 46rem;
   font-size: var(--type-body);
@@ -10,8 +12,6 @@
 
 .prose h2 {
   margin-top: calc(var(--section-spacing) * 2.5);
-  padding-top: var(--section-spacing);
-  border-top: var(--hairline) solid var(--separator);
   font-size: var(--type-title);
   scroll-margin-top: 5rem;
 }
@@ -45,10 +45,6 @@
   color: var(--text-tertiary);
 }
 
-.prose a {
-  color: var(--accent);
-}
-
 .prose strong {
   font-weight: 500;
 }
@@ -60,9 +56,10 @@
   background: var(--surface);
 }
 
+/* A table is a grouped card: surface, radius 22, a hairline between rows, the head a label. */
 .tableWrap {
   overflow-x: auto;
-  border-radius: var(--tile-radius);
+  border-radius: var(--neutral-tile-radius);
   background: var(--surface);
 }
 
@@ -75,7 +72,7 @@
 
 .tableWrap th,
 .tableWrap td {
-  padding: 10px 14px;
+  padding: 10px var(--card-padding);
   text-align: left;
   vertical-align: top;
 }
@@ -93,10 +90,10 @@
   border-top: var(--hairline) solid var(--separator);
 }
 
+/* A formula sits on a surface card; the rule at its side was teal, which is recovery's colour only. */
 .formula {
-  padding: 14px 18px;
-  border-left: 2px solid var(--accent);
-  border-radius: 0 var(--tile-radius) var(--tile-radius) 0;
+  padding: 14px var(--card-padding);
+  border-radius: var(--neutral-tile-radius);
   background: var(--surface);
   overflow-x: auto;
 }

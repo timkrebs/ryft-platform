@@ -14,10 +14,8 @@
 .body {
   padding: 2.6cqw;
   border-radius: 15cqw;
-  background: var(--graphite);
-  box-shadow:
-    0 0 0 var(--hairline) var(--surface-raised),
-    0 30px 60px -30px color-mix(in srgb, var(--graphite) 60%, transparent);
+  background: var(--background);
+  box-shadow: 0 0 0 var(--hairline) var(--surface-raised);
 }
 
 .screen {

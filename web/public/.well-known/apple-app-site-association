@@ -15,6 +15,10 @@
             "comment": "a night, /sleep/plan"
           },
           {
+            "/": "/journal/*",
+            "comment": "the morning journal on a day (the journal reminder's tap)"
+          },
+          {
             "/": "/insights/*",
             "comment": "a card, /insights/behaviors"
           },

@@ -1,14 +1,28 @@
-import { Gauge, MetricIcon, TrendChart } from '@/components/charts';
 import { PageShell } from '@/components/chrome';
+import { Check, MoonGlyph, PulseGlyph } from '@/components/icons';
+import { InsightCard } from '@/components/insight';
+import { DotRow, GlowLabel, GlowTile, OrbitGauge, Ruler, Sparkline } from '@/components/instruments';
 import { Mark } from '@/components/Mark';
-import { DeviceFrame, Screenshot } from '@/components/Screenshot';
-import { ButtonLink, Container, Label, SampleNote, Section } from '@/components/ui';
-import { format, intlLocale, localePath, messages, type Locale } from '@/lib/i18n';
+import { DeviceFrame } from '@/components/Screenshot';
+import {
+  ButtonLink,
+  Card,
+  Container,
+  Group,
+  GroupRow,
+  IconDisc,
+  Label,
+  SampleNote,
+  Section,
+} from '@/components/ui';
+import { localePath, messages, type Locale } from '@/lib/i18n';
 import styles from './Home.module.css';
 
-// Sample numbers for the hero, the same ones the app's previews and brand board use.
-const SAMPLE = { readiness: 84, recovery: 0.82, strain: 12.4, week: [71, 76, 68, 79, 74, 81, 84] };
+// Sample numbers for the hero: the ones the app's previews and Today board use.
+const SAMPLE = { readiness: 84, recovery: 82, sleep: 94, strain: 12.4, hrv: [14, 6, 12, 5, 10, 3, 8] };
 const SCORE_IDS = ['readiness', 'recovery', 'strain', 'sleep'] as const;
+// The three steps' glyphs: the watch's pulse, RYFT's orbit mark, the night.
+const STEP_GLYPHS = [<PulseGlyph key="pulse" />, <Mark key="mark" size={18} />, <MoonGlyph key="moon" />];
 
 export function HomePage({ locale }: { locale: Locale }) {
   const t = messages(locale).home;
@@ -20,15 +34,12 @@ export function HomePage({ locale }: { locale: Locale }) {
         <Section id="how" label={t.how.label} title={t.how.title} intro={<p>{t.how.intro}</p>}>
           <ol className={styles.steps}>
             {t.how.steps.map((step, i) => (
-              <li key={step.title} className={styles.step}>
-                <span className={styles.stepIcon} aria-hidden="true">
-                  <StepGlyph index={i} />
-                </span>
-                <span className={styles.stepNumber} aria-hidden="true">
-                  {String(i + 1).padStart(2, '0')}
-                </span>
-                <h3>{step.title}</h3>
-                <p>{step.body}</p>
+              <li key={step.title}>
+                <Card as="div" className={styles.step}>
+                  <IconDisc>{STEP_GLYPHS[i]}</IconDisc>
+                  <h3>{step.title}</h3>
+                  <p>{step.body}</p>
+                </Card>
               </li>
             ))}
           </ol>
@@ -40,34 +51,16 @@ export function HomePage({ locale }: { locale: Locale }) {
               <ScoreCard key={id} locale={locale} id={id} />
             ))}
           </div>
-          <div className={styles.phones}>
-            <figure className={styles.phone}>
-              <DeviceFrame>
-                <Screenshot id="sleep" alt={t.scores.shots.sleep} sizes="(min-width: 48rem) 300px, 45vw" />
-              </DeviceFrame>
-            </figure>
-            <figure className={styles.phone}>
-              <DeviceFrame>
-                <Screenshot id="strain" alt={t.scores.shots.strain} sizes="(min-width: 48rem) 300px, 45vw" />
-              </DeviceFrame>
-            </figure>
-            <p className={styles.disclaimer}>
-              <Mark size={18} />
-              <span>{t.scores.disclaimer}</span>
-            </p>
-          </div>
+          <p className={styles.disclaimer}>
+            <Mark size={18} />
+            <span>{t.scores.disclaimer}</span>
+          </p>
         </Section>
 
         <Section id="features" label={t.features.label} title={t.features.title}>
           <div className={styles.features}>
             <article className={styles.feature}>
-              <div className={styles.panel}>
-                <Screenshot
-                  id="train-session"
-                  alt={t.features.train.alt}
-                  sizes="(min-width: 64rem) 340px, (min-width: 40rem) 45vw, 90vw"
-                />
-              </div>
+              <TrainSample locale={locale} />
               <h3>{t.features.train.title}</h3>
               <p>{t.features.train.body}</p>
             </article>
@@ -77,13 +70,7 @@ export function HomePage({ locale }: { locale: Locale }) {
               <p>{t.features.journal.body}</p>
             </article>
             <article className={styles.feature}>
-              <div className={styles.panel}>
-                <Screenshot
-                  id="insights-cards"
-                  alt={t.features.insights.alt}
-                  sizes="(min-width: 64rem) 340px, (min-width: 40rem) 45vw, 90vw"
-                />
-              </div>
+              <InsightsSample locale={locale} />
               <h3>{t.features.insights.title}</h3>
               <p>{t.features.insights.body}</p>
             </article>
@@ -91,25 +78,24 @@ export function HomePage({ locale }: { locale: Locale }) {
         </Section>
 
         <Section id="principles" label={t.principles.label} title={t.principles.title}>
-          <ol className={styles.principles}>
-            {t.principles.items.map((p, i) => (
-              <li key={p.title}>
-                <span className={styles.principleNumber} aria-hidden="true">
-                  {String(i + 1).padStart(2, '0')}
-                </span>
+          <Group as="ol" className={styles.principles}>
+            {t.principles.items.map((p) => (
+              <GroupRow key={p.title}>
                 <h3>{p.title}</h3>
                 <p>{p.body}</p>
-              </li>
+              </GroupRow>
             ))}
-          </ol>
+          </Group>
         </Section>
 
         <Section id="privacy" label={t.privacy.label} title={t.privacy.title}>
           <ul className={styles.facts}>
             {t.privacy.items.map((f) => (
               <li key={f.title}>
-                <h3>{f.title}</h3>
-                <p>{f.body}</p>
+                <Card className={styles.fact}>
+                  <h3>{f.title}</h3>
+                  <p>{f.body}</p>
+                </Card>
               </li>
             ))}
           </ul>
@@ -121,7 +107,7 @@ export function HomePage({ locale }: { locale: Locale }) {
         </Section>
 
         <Section id="faq" label={t.faq.label} title={t.faq.title}>
-          <div className={styles.faq}>
+          <Group as="div" className={styles.faq}>
             {t.faq.items.map((item) => (
               <details key={item.q} className={styles.question}>
                 <summary>
@@ -130,7 +116,7 @@ export function HomePage({ locale }: { locale: Locale }) {
                 <p>{item.a}</p>
               </details>
             ))}
-          </div>
+          </Group>
         </Section>
 
         <section className={styles.cta} aria-labelledby="cta-title">
@@ -144,17 +130,15 @@ export function HomePage({ locale }: { locale: Locale }) {
   );
 }
 
+/** The hero: the title and the two ways in, and Today drawn the way the app draws it (sample data). */
 function Hero({ locale }: { locale: Locale }) {
   const t = messages(locale);
   const h = t.home.hero;
   const today = t.home.today;
-  const number = new Intl.NumberFormat(intlLocale(locale), { maximumFractionDigits: 1 });
-  const percent = new Intl.NumberFormat(intlLocale(locale), { style: 'percent' });
-  const ticks = today.weekdays.split(',');
   return (
     <Container className={styles.hero}>
       <div className={styles.heroText}>
-        <Label tone="accent">{h.eyebrow}</Label>
+        <Label>{h.eyebrow}</Label>
         <h1>{h.title}</h1>
         <p className={styles.lead}>{h.lead}</p>
         <div className={styles.actions}>
@@ -172,40 +156,75 @@ function Hero({ locale }: { locale: Locale }) {
       <figure className={styles.today}>
         <DeviceFrame className={styles.todayFrame}>
           <div className={styles.todayScreen}>
-            <p className={styles.greeting}>{today.greeting}</p>
-            <p className={styles.state}>{today.state}</p>
-            <Gauge value={SAMPLE.readiness} label={today.readiness} />
-            <ul className={styles.tiles}>
-              <li>
-                <span className={styles.tileLabel}>{today.sleep}</span>
-                <span className={styles.tileValue}>{today.sleepValue}</span>
-                <MetricIcon kind="sleep" />
-              </li>
-              <li>
-                <span className={styles.tileLabel}>{today.recovery}</span>
-                <span className={styles.tileValue}>{percent.format(SAMPLE.recovery)}</span>
-                <MetricIcon kind="recovery" />
-              </li>
-              <li>
-                <span className={styles.tileLabel}>{today.strain}</span>
-                <span className={styles.tileValue}>{number.format(SAMPLE.strain)}</span>
-                <MetricIcon kind="strain" />
-              </li>
-            </ul>
-            <div className={styles.trendCard}>
-              <p className={styles.trendHeader}>
-                <span>{today.trendTitle}</span>
-                <span>{today.trendWindow}</span>
-              </p>
-              <TrendChart
-                values={SAMPLE.week}
-                ticks={ticks}
-                label={format(today.chartLabel, {
-                  values: SAMPLE.week.slice(0, -1).join(', '),
-                  today: SAMPLE.week[SAMPLE.week.length - 1],
-                })}
-              />
+            <div className={styles.todayHead}>
+              <p className={styles.greeting}>{today.greeting}</p>
+              <p className={styles.state}>{today.state}</p>
             </div>
+            <OrbitGauge
+              readiness={SAMPLE.readiness}
+              recovery={SAMPLE.recovery}
+              sleep={SAMPLE.sleep}
+              strain={SAMPLE.strain}
+              label={`${today.readiness}: ${SAMPLE.readiness}`}
+            />
+            <p className={styles.band}>
+              <span>{today.readinessBand}</span>
+              <span className={styles.delta}>
+                <svg viewBox="0 0 10 9" width="10" height="9" aria-hidden="true" focusable="false">
+                  <path d="M5 0 10 9H0Z" />
+                </svg>
+                {today.delta}
+              </span>
+            </p>
+            <Ruler
+              min={0}
+              max={100}
+              value={SAMPLE.readiness}
+              zone={[67, 100]}
+              ticks={61}
+              labels={today.scale}
+            />
+            <div className={styles.tiles}>
+              <GlowTile metric="recovery">
+                <div className={styles.tileHead}>
+                  <GlowLabel>{today.recovery}</GlowLabel>
+                  <Sparkline values={SAMPLE.hrv} />
+                </div>
+                <p className={styles.tileValue}>
+                  <span className={styles.number}>{SAMPLE.recovery}</span>
+                  <span className={styles.unit}>%</span>
+                  <span className={styles.tileBand}>{today.recoveryBand}</span>
+                </p>
+              </GlowTile>
+              <GlowTile metric="sleep">
+                <div className={styles.tileHead}>
+                  <GlowLabel>{today.sleep}</GlowLabel>
+                  <DotRow marks={['full', 'missed', 'noData', 'full', 'missed', 'full', 'today']} />
+                </div>
+                <p className={styles.tileValue}>
+                  <span className={styles.number}>{today.sleepValue}</span>
+                  <span className={styles.unit}>{today.sleepUnit}</span>
+                </p>
+              </GlowTile>
+            </div>
+            <GlowTile metric="strain">
+              <div className={styles.strainRow}>
+                <GlowLabel>{today.strain}</GlowLabel>
+                <p className={styles.tileValue}>
+                  <span className={styles.number}>{SAMPLE.strain}</span>
+                  <span className={styles.unit}>{today.strainNote}</span>
+                </p>
+              </div>
+              <Ruler
+                min={0}
+                max={21}
+                value={SAMPLE.strain}
+                zone={[10, 14]}
+                ticks={43}
+                tint="strain"
+                compact
+              />
+            </GlowTile>
           </div>
         </DeviceFrame>
         <figcaption>
@@ -220,7 +239,14 @@ function ScoreCard({ locale, id }: { locale: Locale; id: (typeof SCORE_IDS)[numb
   const t = messages(locale).home.scores;
   const s = t.items[id];
   const weighted = id === 'recovery' || id === 'readiness';
-  const tones = s.bands.length === 4 ? ['ramp1', 'ramp2', 'ramp3', 'ramp4'] : ['good', 'mid', 'low'];
+  // The legend: readiness and recovery bands are recovery's teal, amber and coral; sleep and strain
+  // are their own colour at rising strength (brief §1, "Die Ringe sind die Legende").
+  const tones =
+    id === 'strain'
+      ? ['strain1', 'strain2', 'strain3', 'strain4']
+      : id === 'sleep'
+        ? ['sleep1', 'sleep2', 'sleep3']
+        : ['good', 'mid', 'low'];
   return (
     <article className={styles.score} aria-labelledby={`score-${id}`}>
       <header className={styles.scoreHeader}>
@@ -277,13 +303,74 @@ function ScoreCard({ locale, id }: { locale: Locale; id: (typeof SCORE_IDS)[numb
   );
 }
 
+/** Train: the rest timer and a set list, as the app draws them (sample data). */
+function TrainSample({ locale }: { locale: Locale }) {
+  const t = messages(locale);
+  const s = t.home.features.train.sample;
+  const sets = [
+    { n: 1, kg: 80, reps: 5, done: true },
+    { n: 2, kg: 80, reps: 5, done: true },
+    { n: 3, kg: 80, reps: 5, done: false },
+  ];
+  return (
+    <figure className={styles.panel}>
+      <Card className={styles.rest}>
+        <Label>{s.rest}</Label>
+        <p className={styles.restTime}>{s.time}</p>
+        <p className={styles.caption}>{s.next}</p>
+        <p className={styles.restActions} aria-hidden="true">
+          <span className={styles.chip}>{s.back}</span>
+          <span className={styles.chip}>{s.forward}</span>
+          <span className={styles.skip}>{s.skip}</span>
+        </p>
+      </Card>
+      <Card className={styles.sets}>
+        <div className={styles.exercise}>
+          <p className={styles.exerciseName}>{s.exercise}</p>
+          <p className={styles.caption}>{s.plan}</p>
+        </div>
+        <table className={styles.setTable}>
+          <thead>
+            <tr>
+              <th scope="col">{s.set}</th>
+              <th scope="col">{s.kg}</th>
+              <th scope="col">{s.reps}</th>
+              <td />
+            </tr>
+          </thead>
+          <tbody>
+            {sets.map((row) => (
+              <tr key={row.n}>
+                <th scope="row">{row.n}</th>
+                <td>{row.kg}</td>
+                <td>{row.reps}</td>
+                <td>
+                  <span className={row.done ? styles.checkDone : styles.checkOpen} aria-hidden="true">
+                    <Check size={14} />
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+      <figcaption>
+        <SampleNote>{t.a11y.sampleData}</SampleNote>
+      </figcaption>
+    </figure>
+  );
+}
+
 function JournalSample({ locale }: { locale: Locale }) {
   const t = messages(locale);
   const j = t.home.features.journal;
   return (
-    <figure className={`${styles.panel} ${styles.journal}`}>
-      <div className={styles.journalCard}>
-        <Label tone="warning">{j.card}</Label>
+    <figure className={styles.panel}>
+      <Card className={styles.journalCard}>
+        <p className={styles.journalWord}>
+          <span className={styles.journalDot} aria-hidden="true" />
+          {j.card}
+        </p>
         <p className={styles.journalBehavior}>{j.behavior}</p>
         <p className={styles.journalEffect}>{j.effect}</p>
         {/* −16 … +4 points across 200 px: zero at 160, the interval −12.1 … −4.6, the mean −8.4. */}
@@ -311,7 +398,7 @@ function JournalSample({ locale }: { locale: Locale }) {
         </svg>
         <p className={styles.journalMeta}>{j.interval}</p>
         <p className={styles.journalMeta}>{j.days}</p>
-      </div>
+      </Card>
       <figcaption>
         <SampleNote>{t.a11y.sampleData}</SampleNote>
       </figcaption>
@@ -319,32 +406,26 @@ function JournalSample({ locale }: { locale: Locale }) {
   );
 }
 
-function StepGlyph({ index }: { index: number }) {
-  if (index === 1) return <Mark size={28} />;
-  if (index === 0) {
-    return (
-      <svg viewBox="0 0 28 28" width="28" height="28" focusable="false">
-        <path
-          d="M2 15h6l2.5-6 4 12 3-9 2 3H26"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    );
-  }
+/** Insights: the cards as the app draws them, the first of them the recovery glow (sample data). */
+function InsightsSample({ locale }: { locale: Locale }) {
+  const t = messages(locale);
+  const cards = t.home.features.insights.cards;
+  const severities = ['warn', 'notice', 'info'] as const;
   return (
-    <svg viewBox="0 0 28 28" width="28" height="28" focusable="false">
-      <circle cx="14" cy="14" r="11" fill="none" stroke="currentColor" strokeOpacity="0.3" strokeWidth="2" />
-      <path
-        d="M14 3a11 11 0 1 1-10.4 7.4"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-    </svg>
+    <figure className={styles.panel}>
+      {cards.map((c, i) => (
+        <InsightCard
+          key={c.title}
+          severity={severities[i]}
+          word={c.word}
+          title={c.title}
+          body={c.body}
+          glow={i === cards.length - 1}
+        />
+      ))}
+      <figcaption>
+        <SampleNote>{t.a11y.sampleData}</SampleNote>
+      </figcaption>
+    </figure>
   );
 }

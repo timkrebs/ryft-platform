@@ -3,14 +3,13 @@
   outline: none;
 }
 
-/* Header: thin, sticky, the background slightly translucent over content. */
+/* The header is the app's: flat on the background, no glass (brief §1, "Keine schwebende Glas-Leiste"),
+   a hairline under it like the tab bar's rule. It stays at the top while the page scrolls. */
 .header {
   position: sticky;
   top: 0;
   z-index: 10;
-  background: color-mix(in srgb, var(--background) 96%, transparent);
-  backdrop-filter: saturate(140%) blur(12px);
-  -webkit-backdrop-filter: saturate(140%) blur(12px);
+  background: var(--background);
   border-bottom: var(--hairline) solid var(--separator);
 }
 
@@ -20,14 +19,14 @@
   grid-template-areas: 'home nav';
   align-items: center;
   gap: 8px 24px;
-  min-height: 60px;
+  min-height: 64px;
 }
 
 .home {
   grid-area: home;
   display: inline-flex;
   align-items: center;
-  min-height: 44px;
+  min-height: var(--min-hit-target);
   text-decoration: none;
   color: var(--text-primary);
 }
@@ -39,18 +38,26 @@
 .nav ul {
   display: flex;
   justify-content: flex-end;
-  gap: 4px 20px;
+  gap: 4px 12px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+/* The dot tab (RyftTabBar): a 6 px dot over the label; the current page's dot is Volt, the one
+   mark here the brief allows ("der aktive Tab-Punkt"). */
 .nav a {
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
-  min-height: 44px;
+  justify-content: center;
+  gap: 4px;
+  min-width: var(--min-hit-target);
+  min-height: var(--min-hit-target);
+  padding: 4px 10px;
   color: var(--text-secondary);
   font-size: var(--type-callout);
+  line-height: 1.2;
   text-decoration: none;
   transition: color var(--motion-quick) ease-out;
 }
@@ -58,6 +65,17 @@
 .nav a:hover,
 .nav a[aria-current='page'] {
   color: var(--text-primary);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-accessory);
+}
+
+.nav a[aria-current='page'] .dot {
+  background: var(--signal);
 }
 
 @media (max-width: 40rem) {
@@ -71,7 +89,7 @@
   }
 
   .nav ul {
-    justify-content: flex-start;
+    justify-content: space-between;
   }
 }
 
@@ -84,14 +102,13 @@
   color: var(--text-secondary);
 }
 
-/* Three columns as before the theme switch went (web D20): its column stays empty. */
 .footerGrid {
   display: grid;
-  grid-template-columns: 1.4fr 1fr 1fr;
+  grid-template-columns: 1.4fr 1fr;
   grid-template-areas:
-    'brand nav .'
-    'meta meta meta';
-  gap: calc(var(--section-spacing) * 1.5) var(--section-spacing);
+    'brand nav'
+    'meta meta';
+  gap: calc(var(--section-spacing) * 1.5) calc(var(--section-spacing) * 2);
 }
 
 @media (max-width: 48rem) {
@@ -114,27 +131,7 @@
 
 .footerNav {
   grid-area: nav;
-}
-
-.footerNav ul {
-  display: grid;
-  gap: 2px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.footerNav a {
-  display: inline-flex;
-  align-items: center;
-  min-height: 36px;
-  color: var(--text-secondary);
-  text-decoration: none;
-}
-
-.footerNav a:hover,
-.footerNav a[aria-current='page'] {
-  color: var(--text-primary);
+  max-width: 24rem;
 }
 
 .footerMeta {

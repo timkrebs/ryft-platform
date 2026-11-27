@@ -721,3 +721,66 @@ Hosting serves `out/` with the generated `firebase.json`. It goes in the same PR
 
 Would change if the site ever needs a server of its own again. Then it starts from Hosting's rules
 in `scripts/lib/hosting.mjs`; the image is in the history before PR D3.
+
+## D26 — The site in Nocturne; the pin moves with it (2026-11-26; amends D1, D9, D20, D22)
+
+**What Nocturne means for the site.** D20 took the app's Nocturne tokens and left the design alone. This
+takes the design: the app's components, drawn in static HTML, CSS and SVG, on every page. **No web spec
+existed** (D20 said "no design change beyond what they carry"; no branch or document described one), so
+`docs/NOCTURNE.md` is derived from the app at the pin: ADR 0016, the Nocturne brief and design documents
+(`design.md`, `design-pr6-{a,b,c}`, `accent-map.md`), `Ryft/Design/*.swift` and the shots. Each of its
+rules names the app file it comes from and what it becomes here, or why it doesn't apply. The spec is the
+site's, not the app's: where the app's reason is a phone (a pinned tab bar, 11 pt labels) the site does
+the web's thing and says so.
+
+**The pin moves, in this PR (overrides `web/CLAUDE.md`'s "move the pin in its own PR").** `web/.app-ref`
+goes from `7358f0c` to `ea52758e4eb26dd8b52ba9e6867d7a66d94cd145` (app main at #142, so it has PR 4 to 6 of
+the Nocturne work and the gate that deleted the legacy names). The brief for this work allows it: the
+design can't be taken from one commit and the tokens from another, and a separate token PR would leave the
+site on tokens whose components (`card-radius`, `accent`) the app has since removed.
+- **What the pin changes.** The legacy colour sets are gone (`accent`, `teal`, `on-accent`, `graphite`,
+  `mist`, `slate`, `sage`, the four `stage-*`): 25 sets become 16, with `recovery` and `accent-color` new.
+  `Theme.Metrics` has no `cardRadius`, `tileRadius` or `cardPadding`: the tokens now carry `neutral-tile-radius`
+  22, `glow-tile-radius` 24, `hero-tile-radius` 28, `circle-button` 40, `min-hit-target` 44, `pill-height` 52,
+  `item-spacing` 12, `control-outline` 1.5, `list-row-height` 46 and `card-padding` 16 (from
+  `CardSpec.padding`). The glow tile's ellipse and stops are new tokens (`--glow-*`, from `GlowTileSpec`).
+  `scripts/tokens.mjs` reads `Card.swift` and `GlowTile.swift` too and fails when any of that moves.
+  Running `make web-tokens` twice gives no diff.
+- **The icon did not move.** The app's `AppIcon-Light.png` is the file `config/app-icon.json` records
+  (SHA-256 `dffc372e…`), so `tests/app-icon.test.ts` stays green and the touch and manifest icons need no
+  regeneration. The OG card's script now takes `background`, `text-primary` and `text-secondary` (the
+  tagline line was teal); **the OG PNG itself was not regenerated** (see "Left out").
+- **The app's `/journal/<date>` link.** The pin's `AppRoute` has a `journal` case (the journal reminder's
+  tap). `tests/aasa.test.ts` compares the AASA with it and failed, so the AASA, `APP_LINKS` (the `open.html`
+  fallback and its no-store rule) and the tests and live probes that list the app links have `/journal/*`.
+  That is a change to what the deployed AASA claims: the merge ships it.
+
+**What was left out, and why.**
+- **The screenshots on the pages.** `public/screenshots/`, `components/Screenshot.tsx` and
+  `scripts/screenshots.mjs` stay, unused except for `DeviceFrame`. The captures are of the app before PR 4,
+  and the script can't make new ones from the pin (the app dropped the light captures and the Train
+  session). The home page and Support draw their figures instead (Today, rest timer and sets, the journal
+  card, the insight cards): that is also what keeps the pages at no images, and the LCP budget unchanged.
+  The strings those figures need are in `messages/en.json` (`home.today`, `home.features.train.sample`,
+  `home.features.insights.cards`); the legal texts and every other UI string are as they were. Support's
+  screenshot of the Account card is gone with the capture; its steps stay as text.
+- **The OG card's PNG and the screenshot pipeline.** `npm run og` and `npm run screenshots` were refused in
+  the session that made this PR, so `public/og/en.png` is the one D22 made. It needs `npm run og` with the
+  app at the pin (the script is updated for the token names).
+- **What doesn't apply to a website**: see `docs/NOCTURNE.md` §4 ("Left out"). In short: forms and every
+  form control, circle buttons, the launch sequence and entrance animation (they need a script), a pinned
+  tab bar, Dynamic Type tiers.
+- **Admin.** Its CSS maps the removed names to `recovery`, `background`, `text-primary` and the neutral
+  radius; its radii are 22 where they were 16 and 18. Nothing else about it changed.
+
+**How it is held.** `tests/nocturne.test.ts` reads the app's Swift at the pin: every opacity in
+`src/styles/nocturne.css`, the halo and flat border, the ruler's tick opacity and the dot numeral's glyph
+table, row for row, and the lit dots per digit. `tests/contrast.test.ts` has the new pairs (recovery, Volt,
+`on-signal` on `signal`). `e2e/visual.spec.ts` takes every page under a dark and a light setting at both
+widths as JPEGs (`RYFT_SHOTS_DIR` or `test-results/`), with the operator's name, address and phone masked
+(Playwright's `mask`, so the pixels never exist) and fails when a heading or table cell holds one the mask
+would miss. `e2e/behaviour.spec.ts` no longer reads a screenshot's `currentSrc`.
+
+Would change if the app's design moves again (the pin and `NOCTURNE.md` move together, in one PR) or if the
+user wants the app's own captures back on the pages (then `screenshots.mjs` is rewritten for the app's
+dark-only set, and the drawn figures stay or go).

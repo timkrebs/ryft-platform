@@ -446,6 +446,7 @@ export async function run({ base, www, policyVersion, appleCdn, emulator = false
     '/day/2026-10-19',
     '/sleep/plan',
     '/insights/behaviors',
+    '/journal/2026-10-19',
     '/train/sessions/3f6c1a52-8a9e-4c1b-9d0e-2b7a4f1e9c33',
     '/train/history',
     '/invite/RYFT7Q2K',

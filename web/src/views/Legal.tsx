@@ -1,7 +1,6 @@
 import { PageShell } from '@/components/chrome';
 import { Prose, mdxComponents } from '@/components/prose';
-import { Screenshot } from '@/components/Screenshot';
-import { ButtonLink, Container, Label, Todo } from '@/components/ui';
+import { ButtonLink, Card, Container, Label, Todo } from '@/components/ui';
 import { format, intlLocale, localePath, messages, type Locale } from '@/lib/i18n';
 import { isDraft, isVersioned, loadLegal, versionsOf, type LegalDoc } from '@/lib/legal';
 import { pageMetadata } from '@/lib/metadata';
@@ -111,19 +110,16 @@ function SupportExtras({ locale }: { locale: Locale }) {
         <h2 id="steps-title">{t.steps.title}</h2>
         <div className={styles.stepsGrid}>
           {[t.steps.export, t.steps.delete].map((block) => (
-            <div key={block.title} className={styles.stepBlock}>
+            <Card key={block.title} className={styles.stepBlock}>
               <Label as="h3">{block.title}</Label>
               <ol>
                 {block.items.map((item) => (
                   <li key={item}>{item}</li>
                 ))}
               </ol>
-            </div>
+            </Card>
           ))}
         </div>
-        <figure className={styles.shot}>
-          <Screenshot id="profile-account" alt={t.steps.alt} sizes="(min-width: 46rem) 640px, 92vw" />
-        </figure>
       </section>
       <section className={styles.extra} aria-labelledby="contact-title">
         <h2 id="contact-title">{t.contact.title}</h2>

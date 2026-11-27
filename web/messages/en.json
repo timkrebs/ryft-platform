@@ -53,14 +53,17 @@
       "greeting": "Good morning,",
       "state": "Your health is in balance.",
       "readiness": "Overall readiness",
+      "readinessBand": "Readiness · High",
+      "delta": "+11 vs 7 d",
+      "scale": ["0", "low", "moderate", "high", "100"],
       "sleep": "Sleep",
       "recovery": "Recovery",
+      "recoveryBand": "High",
       "strain": "Strain",
-      "sleepValue": "7h 48m",
-      "trendTitle": "Readiness",
-      "trendWindow": "7 d",
-      "chartLabel": "Readiness over the last 7 days, sample data: {values}. Today {today}.",
-      "weekdays": "M,T,W,T,F,S,S",
+      "strainNote": "of 21 · moderate",
+      "strainScale": ["0", "target 10–14", "21"],
+      "sleepValue": "7:48",
+      "sleepUnit": "h",
       "sample": "Sample data, drawn the way the app's Today screen shows it."
     },
     "how": {
@@ -168,7 +171,20 @@
       "train": {
         "title": "Train",
         "body": "Plans, sessions and sets, with a rest timer, last time's numbers and your personal records. Every logged session adds its muscular load to the day's strain.",
-        "alt": "A strength session in RYFT: a rest timer at 1:35 before the next set, then bench press, 4 sets of 5 at 80 kilograms, two sets done."
+        "alt": "A strength session in RYFT: a rest timer at 1:35 before the next set, then bench press, 4 sets of 5 at 80 kilograms, two sets done.",
+        "sample": {
+          "rest": "Rest",
+          "time": "1:35",
+          "next": "Next: Bench press · set 3 of 4",
+          "back": "−15 s",
+          "forward": "+15 s",
+          "skip": "Skip",
+          "exercise": "Bench press",
+          "plan": "4 × 5 @ 80 kg",
+          "set": "Set",
+          "kg": "kg",
+          "reps": "reps"
+        }
       },
       "journal": {
         "title": "Journal",
@@ -182,7 +198,24 @@
       "insights": {
         "title": "Insights",
         "body": "Plain-language cards when something changes, such as HRV above your baseline or a bedtime drifting later. Trends over 7, 30 and 90 days, always against your own range.",
-        "alt": "RYFT's Insights screen: three cards titled HRV above your baseline, Bedtime drifting later, and Strain outpacing recovery, above the trends."
+        "alt": "RYFT's Insights screen: three cards titled HRV above your baseline, Bedtime drifting later, and Strain outpacing recovery, above the trends.",
+        "cards": [
+          {
+            "word": "Attention",
+            "title": "Strain outpacing recovery",
+            "body": "Strain has been above 15 on four of the last seven days while recovery stayed under 60 %. Plan a lighter day."
+          },
+          {
+            "word": "Notice",
+            "title": "Bedtime drifting later",
+            "body": "Your bedtime has drifted later over the last 7 nights. Going to bed within the same half hour helps recovery."
+          },
+          {
+            "word": "Insight",
+            "title": "HRV above your baseline",
+            "body": "Last night's HRV is your highest in a month."
+          }
+        ]
       }
     },
     "principles": {

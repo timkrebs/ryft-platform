@@ -1,6 +1,6 @@
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 14rem) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
   grid-template-areas:
     'header header'
     'toc article';
@@ -31,69 +31,37 @@
   color: var(--text-secondary);
 }
 
+/* "On this page" is a grouped list: a title, a card of rows with a hairline between them. */
 .toc {
   grid-area: toc;
   align-self: start;
   position: sticky;
   top: 84px;
   display: grid;
-  gap: 10px;
-  padding-top: var(--section-spacing);
-  border-top: var(--hairline) solid var(--separator);
+  gap: 8px;
 }
 
 @media (max-width: 56rem) {
   .toc {
     position: static;
+    margin-bottom: var(--section-spacing);
   }
-}
-
-.toc ol {
-  display: grid;
-  gap: 2px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  counter-reset: toc;
-}
-
-.toc a {
-  display: flex;
-  gap: 10px;
-  min-height: 32px;
-  align-items: center;
-  color: var(--text-secondary);
-  font-size: var(--type-callout);
-  text-decoration: none;
-  counter-increment: toc;
-}
-
-.toc a::before {
-  content: counter(toc, decimal-leading-zero);
-  font-size: var(--type-caption);
-  color: var(--text-tertiary);
-}
-
-.toc a:hover {
-  color: var(--text-primary);
 }
 
 .article {
   grid-area: article;
-  padding-top: var(--section-spacing);
-  border-top: var(--hairline) solid var(--separator);
 }
 
 .article > div > h2:first-of-type {
-  margin-top: calc(var(--section-spacing) * 1.5);
+  margin-top: 0;
 }
 
 .wellness {
   max-width: 46rem;
   margin-top: calc(var(--section-spacing) * 2);
-  padding: 14px 16px;
+  padding: 14px var(--card-padding);
   border: var(--hairline) solid var(--separator);
-  border-radius: var(--tile-radius);
+  border-radius: var(--neutral-tile-radius);
   font-size: var(--type-callout);
   color: var(--text-secondary);
 }

@@ -1,0 +1,73 @@
+.card {
+  display: grid;
+  gap: 8px;
+  padding: 16px 18px;
+}
+
+.plain {
+  border-radius: var(--glow-tile-radius);
+  background: var(--surface);
+}
+
+.word {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--type-label);
+  color: var(--text-secondary);
+}
+
+/* On the glow tile the severity word is full ink, as the app's InsightTile (secondary is ~4.1:1 there). */
+.glowWord {
+  color: var(--text-primary);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.dot-warn {
+  background: var(--alert);
+}
+
+.dot-notice {
+  background: var(--warning);
+}
+
+/* An insight is a hollow ring; on the glow tile it is the Volt hint dot (brief §1). */
+.dot-info {
+  border: var(--hairline) solid var(--text-secondary);
+}
+
+.dot-hint {
+  background: var(--signal);
+}
+
+.title {
+  font-size: var(--type-headline);
+  font-weight: var(--type-headline-weight);
+  line-height: 1.3;
+}
+
+.body {
+  margin: 0;
+  font-size: var(--type-callout);
+  color: var(--text-secondary);
+}
+
+/* The tile's title is Light and its body full ink: the core is dark, ink 78 % would be thin there. */
+.glowTitle {
+  font-size: var(--type-headline);
+  font-weight: var(--type-title-weight);
+  line-height: 1.3;
+}
+
+.glowBody {
+  margin: 0;
+  font-size: var(--type-callout);
+  color: var(--text-primary);
+}

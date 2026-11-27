@@ -1,0 +1,34 @@
+/* The Nocturne component numbers the tokens don't carry (web/docs/NOCTURNE.md). Every colour here is a
+   token at an opacity the app's component fixes: nothing is a colour of its own. tests/nocturne.test.ts
+   reads each number from the app's Swift at the pin (the comment names the file and the constant). */
+
+:root {
+  /* CircleButton.borderOpacity, IconDisc.ringOpacity: a 1 pt ring in ink at 16 %. */
+  --ink-ring: color-mix(in srgb, var(--text-primary) 16%, transparent);
+  /* PillButton.outlineOpacity: the secondary pill's 1 pt outline. */
+  --ink-outline: color-mix(in srgb, var(--text-primary) 20%, transparent);
+  /* InlineLink.underlineOpacity: a link's underline. */
+  --ink-underline: color-mix(in srgb, var(--text-primary) 50%, transparent);
+  /* CircleButtonLook / PillButton.secondaryPressedFillOpacity: a pressed control. */
+  --ink-pressed: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  /* GroupedListSpec.accessoryOpacity: the chevron and the arrow out, decoration at about 3:1. */
+  --ink-accessory: color-mix(in srgb, var(--text-primary) 35%, transparent);
+  /* DotNumeral.offOpacity: the unlit cells of the dot grid. */
+  --ink-dot-off: color-mix(in srgb, var(--text-primary) 10%, transparent);
+  /* RulerScale: a tick outside the zone (22 %), TickRow.unlitOpacity (12 %). */
+  --ink-tick-off: color-mix(in srgb, var(--text-primary) 22%, transparent);
+  --ink-tick-unlit: color-mix(in srgb, var(--text-primary) 12%, transparent);
+  /* OrbitGauge v3: the outer tick ring (16 %), the middle ring (7 %), the inner unlit ticks (13 %). */
+  --ink-gauge-outer: color-mix(in srgb, var(--text-primary) 16%, transparent);
+  --ink-gauge-middle: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  --ink-gauge-inner: color-mix(in srgb, var(--text-primary) 13%, transparent);
+  /* DotRow: a missed night is a ring in ink at 50 %, no data a dot at 35 %. */
+  --ink-dot-missed: color-mix(in srgb, var(--text-primary) 50%, transparent);
+  --ink-dot-nodata: color-mix(in srgb, var(--text-primary) 35%, transparent);
+  /* GlowTileSpec.labelOpacity: a label in a glow tile, 78 % ink. */
+  --glow-label: color-mix(in srgb, var(--text-primary) 78%, transparent);
+  /* GlowTileSpec.flatBorder: Reduce Transparency draws the tile flat with this border. */
+  --glow-flat-border: 2px;
+  /* The orbit gauge's halo (r 15 at 16 %). */
+  --halo-opacity: 0.16;
+}

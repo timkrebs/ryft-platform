@@ -82,6 +82,7 @@ test.describe('routes the app depends on', () => {
     '/sleep/plan',
     '/insights/behaviors',
     '/insights/hrv',
+    '/journal/2026-10-19',
     '/train/sessions/3f6c1a52-8a9e-4c1b-9d0e-2b7a4f1e9c33',
     '/train/session/3f6c1a52-8a9e-4c1b-9d0e-2b7a4f1e9c33',
     '/train/exercises/3f6c1a52-8a9e-4c1b-9d0e-2b7a4f1e9c33',

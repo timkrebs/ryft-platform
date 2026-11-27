@@ -87,9 +87,12 @@ p {
   text-wrap: pretty;
 }
 
+/* Links are ink, underlined at 50 % (InlineLink.swift): ink alone would be 2.5:1 against the body's
+   secondary text, so the underline is what tells a link (WCAG 1.4.1). */
 a {
   color: inherit;
-  text-decoration-color: var(--text-tertiary);
+  text-decoration-line: underline;
+  text-decoration-color: var(--ink-underline);
   text-decoration-thickness: var(--hairline);
   text-underline-offset: 0.2em;
 }
@@ -122,14 +125,15 @@ hr {
   margin: 0;
 }
 
+/* The inverse fill: ink with the background's ink on it (the app's selected state, ADR 0016). */
 ::selection {
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--text-primary);
+  color: var(--background);
 }
 
-/* Focus: Teal, always visible for keyboard users. */
+/* Focus: a 2 px ink outline, always visible for keyboard users (teal is recovery's colour only). */
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--text-primary);
   outline-offset: 3px;
   border-radius: 4px;
 }
@@ -155,11 +159,12 @@ hr {
   left: var(--screen-padding);
   top: -100px;
   z-index: 100;
-  padding: 10px 16px;
+  padding: 14px 22px;
   border-radius: 999px;
-  background: var(--accent);
-  color: var(--on-accent);
-  font-weight: var(--type-headline-weight);
+  background: var(--text-primary);
+  color: var(--background);
+  font-size: var(--type-button);
+  font-weight: var(--type-button-weight);
   text-decoration: none;
 }
 

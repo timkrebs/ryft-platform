@@ -5,8 +5,22 @@
   gap: 24px;
 }
 
-.accent {
-  color: var(--accent);
+.disc {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.stack {
+  display: grid;
+  align-content: start;
+  gap: var(--item-spacing);
+}
+
+.rulers {
+  display: grid;
+  gap: 20px;
+  max-width: 32rem;
 }
 
 .swatches {
@@ -25,7 +39,7 @@
   column-gap: 12px;
   align-items: center;
   padding: 10px;
-  border-radius: var(--tile-radius);
+  border-radius: var(--neutral-tile-radius);
   background: var(--surface);
 }
 

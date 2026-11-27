@@ -28,7 +28,7 @@ export function LicensesPage({ locale }: { locale: Locale }) {
     <PageShell locale={locale} path="/licenses">
       <Container narrow className={styles.page}>
         <header className={styles.header}>
-          <Label tone="accent">{t.label}</Label>
+          <Label>{t.label}</Label>
           <h1>{t.title}</h1>
           <p className={styles.copyright}>
             {format(before, { year: BUILD_YEAR })}

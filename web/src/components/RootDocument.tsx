@@ -3,6 +3,7 @@ import tokens from '@/styles/tokens.json';
 import { satoshi } from '@/lib/fonts';
 import type { Locale } from '@/lib/i18n';
 import '@/styles/tokens.css';
+import '@/styles/nocturne.css';
 import '@/styles/globals.css';
 
 /**

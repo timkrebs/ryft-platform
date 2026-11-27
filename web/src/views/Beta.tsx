@@ -1,5 +1,5 @@
 import { PageShell } from '@/components/chrome';
-import { ButtonLink, Container, Label, Section, Todo } from '@/components/ui';
+import { ButtonLink, Card, Container, Label, Section, Todo } from '@/components/ui';
 import { localePath, messages, type Locale } from '@/lib/i18n';
 import { pageMetadata } from '@/lib/metadata';
 import { SUPPORT_EMAIL, TESTFLIGHT_URL } from '@/lib/site';
@@ -25,7 +25,7 @@ export function BetaPage({ locale }: { locale: Locale }) {
     <PageShell locale={locale} path="/beta">
       <Container>
         <header className={styles.header}>
-          <Label tone="accent">{t.label}</Label>
+          <Label>{t.label}</Label>
           <h1>{t.heading}</h1>
           <p className={styles.lead}>{t.lead}</p>
           <div className={styles.actions}>
@@ -55,11 +55,13 @@ export function BetaPage({ locale }: { locale: Locale }) {
           <ol className={styles.steps}>
             {t.steps.items.map((step, i) => (
               <li key={step.title}>
-                <span className={styles.number} aria-hidden="true">
-                  {String(i + 1).padStart(2, '0')}
-                </span>
-                <h3>{step.title}</h3>
-                <p>{step.body}</p>
+                <Card className={styles.step}>
+                  <span className={styles.number} aria-hidden="true">
+                    {String(i + 1).padStart(2, '0')}
+                  </span>
+                  <h3>{step.title}</h3>
+                  <p>{step.body}</p>
+                </Card>
               </li>
             ))}
           </ol>
