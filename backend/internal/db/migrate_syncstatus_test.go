@@ -10,7 +10,7 @@ import (
 	"github.com/timkrebs/ryft/internal/testsupport"
 )
 
-// 0067 (D297, D300): the sync status. Applied over a database at 0061 that holds queue rows and an inbox row, on
+// 0067 (D297, D301): the sync status. Applied over a database at 0061 that holds queue rows and an inbox row, on
 // both shapes: the old queue rows read as before (closed_reason NULL); closed_reason takes NULL or 'no_consent'
 // and nothing else, also when scoring writes it through RLS; the api reads an inbox row's received_at and still
 // not its payload; the api's probe "the earliest pending delivery of an account and provider" is answered by

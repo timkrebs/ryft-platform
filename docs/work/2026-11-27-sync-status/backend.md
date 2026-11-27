@@ -1,4 +1,4 @@
-# The sync status: the backend PR (D297, D300)
+# The sync status: the backend PR (D297, D301)
 
 Branch `feat/sync-status`, worktree `.worktrees/sync-status-backend`, from `main` at #258. The outline is
 `implementation.md`; this file fixes what the outline left open and the interfaces the tickets share.

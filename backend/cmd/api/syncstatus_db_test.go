@@ -18,7 +18,7 @@ import (
 	"github.com/timkrebs/ryft/internal/store"
 )
 
-// GET /v1/me/sync through the api's own mux on a migrated database: the sync button's fields (D297, D300). The
+// GET /v1/me/sync through the api's own mux on a migrated database: the sync button's fields (D297, D301). The
 // window rules alone are in syncstatus_freshness_test.go. Every time that matters (queued_at, received_at) is set
 // in SQL, so no case depends on how long the test takes; the route's own 10 s cache is dropped for the account
 // before each call (the cache stays 10 s).
@@ -798,7 +798,7 @@ func TestSyncStatusFreshnessInvariant(t *testing.T) {
 	}
 }
 
-// Withdrawn consent (D300, the user's answer 2): the queued days of an account that scoring will not score stay in
+// Withdrawn consent (D301, the user's answer 2): the queued days of an account that scoring will not score stay in
 // pending_days until scoring closes them; once it has, they hold nothing, and healthkit says why.
 func TestSyncStatusWithdrawnConsent(t *testing.T) {
 	rg := newSyncRig(t) // consent on
