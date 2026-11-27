@@ -7404,3 +7404,72 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
 - **Not changed:** `MarkScored`'s `queued_at <= started` (F1 stays a follow-up), `POST /v1/sync`, the events,
   the Cloud Run templates. Rollback: revert the api and scoring commits; the migration stays (a column, an
   index and two grants nothing old reads or writes).
+
+## D304 — The contract for goal, training load, net energy and the Fitness tiles (2026-11-27)
+
+- **Context:** the user approved a new app structure on 2026-11-27 (a Fitness tab in place of Strain, Nutrition
+  as tab 4, a goal step in onboarding, Profile as a sheet). Head-architect's brief C1 asks for the contract
+  first: `docs/API.md` only, additive, implementation in later PRs. The design and the inventory of what
+  exists are in `docs/work/2026-11-27-fitness-contract/plan.md`. D302 is taken by `fix/merge-race` (#262), and
+  D303 is left for the revision of #252.
+- **Goal on `User`, separate from `GoalProfile.goal`:** `User.goal` is the app-wide goal (`health`,
+  `endurance`, `strength`, `body_composition`, `performance`, or `null` for "decide later"). The pilot's
+  `GoalProfile.goal` (`HYPERTROPHY`, `MARATHON`, `CYCLING_RACE`, `FAT_LOSS_RECOMP`) is a nutrition plan goal
+  that needs height, race date and the rest. Merging them would force every user into the pilot's profile, or
+  give the pilot's plan a goal it can't compute targets for. Neither one writes the other. A table in API.md
+  maps one to the other, and the app pre-fills Nutrition's picker from it. `health` and `performance` have no
+  Nutrition default, because no deficit or surplus follows from them. `endurance` pre-selects by the dominant
+  activity of 28 days. The value is **open** in responses, so a sixth goal needs no `/v2`. `PATCH` accepts
+  only the five values or `null`.
+- **Sex and weight on `User`:** no RYFT Age contract exists, and `N2RProfile` is pilot-only, so they go on the
+  profile. `sex` uses N2R's vocabulary (`female`, `male`, `unspecified`), plus `null` for never asked, and is
+  closed. `weight_kg` is one weigh-in. **The newest weigh-in wins**, whether manual (`PATCH`, recorded at the
+  request time) or HealthKit `body_mass` (at the sample's `start`). There is no manual pin like
+  `max_hr_manual`, because a pinned weight goes stale. `weight_kg: null` clears the manual value and falls back
+  to the newest HealthKit reading, and a deleted `body_mass` sample hands over to the next newest weigh-in.
+  `sex` feeds RYFT Age and the resting estimate. `N2RProfile` keeps its own sex and body mass, and the pilot
+  path does not change. Today's server refuses unknown body fields (`400`), so the app sends the new fields
+  only once `GET /v1/me` carries the key `goal`. A `PATCH` with `sex` or `weight_kg` needs consent to the policy
+  version that names them, else `403 consent_required`. `goal` is not gated.
+- **Training load on `DailyScore`, computed on read:** the Fitness tab already reads `GET /v1/days/{day}` and
+  `GET /v1/days?from&to`. A new route would add a request and its own pending state. Computed on read from
+  stored day values (`strain.trimp`, `muscular_trimp`, session ratings), a late sync of an old day moves the
+  next 28 days at once. Storing the value would need a cascade of rescores, and no stored number moves this
+  way. **Cardio** is the heart-rate TRIMP plus the TRIMP of rated workouts without usable heart rate (fewer
+  than 2 heart-rate samples in the window and no `avg_hr`, scoring's rule), so a user without a watch has a
+  load. The rating counts on `strain.trimp`'s scale (its constants and its 0.25 reserve floor), not on
+  `energy.RatedWorkout`'s scale (sex constants, no floor), because summing the two scales would mix units.
+  The implementation PR pins the conversion in SCORING.md. Day strain still ignores the rating (D293 stands). **Muscular** is the
+  existing session load (`muscular_trimp`). Per-set RPE is too sparse to build on. The windows are 7 days
+  acute and 28 days chronic in weekly units, named `chronic_28d_weekly` like `energy.Load`. Today counts so
+  far. The optimal band is 0.8–1.3 × chronic (Gabbett
+  2016), a RYFT display heuristic. `state` shows from 21 of 28 days with data. It is not the coaching load:
+  `CoachingBriefing.training_load` stays the pilot's workout-based number with power and TSS, and the doc says
+  so next to both.
+- **Net energy on `DailyScore`:** intake is the day's logged meals, behind the diary flag. Active energy is
+  `active_kcal`. Resting energy is HealthKit `basal_energy` when synced, else a weight-only estimate (Henry
+  2005: needs `weight_kg` and `birth_year`, no height, which `User` does not have). `net_kcal` is `null` when
+  any part is missing. `missing` and `confidence` say why: confidence drops a step when a logged item has no
+  known kcal (`complete_for_logged_items: false`). `partial_day` marks today. A missing part is never counted
+  as 0.
+- **Tiles:** VO₂ max is synced but read nowhere, so it gets day fields with a 7-day delta
+  (`null` without a reading in those 7 days, so that it is never a false 0). Heart-rate recovery
+  is a new HealthKit type and a day mean. Active time is derived (workouts ∪ minutes ≥ 50 % HRR), so it needs
+  no new HealthKit type and no privacy change. The zones and active energy exist. Muscle freshness goes on
+  `DayDetail` (all 18 muscles of the closed vocabulary), because it describes one moment. It is a decay model
+  over completed sets, and the scoring PR pins it as a RYFT heuristic.
+- **New HealthKit types are gated by the policy version:** the policy of 2026-10-26 lists neither basal
+  energy, nor heart-rate recovery, nor body mass from Apple Health. From the implementation PR on, the server
+  stores them only while the flag `sync.fitness_types` is on for the account **and** its consent is to a
+  policy version that names them. Otherwise they count as `unknown_type`, and a cursor for such a stream is
+  skipped. A `200` moves the app's HealthKit anchor, so samples ignored that way are lost. That is why the app
+  sends the types only while `GET /v1/config` → `flags["sync.fitness_types"]` is `true`: the flag is the app's
+  signal and the kill switch, so no ordering is left to an operator. A source that sends only `body_mass` is
+  not listed in `User.sources`, because the `kinds` enum stays closed. The text,
+  `PRIVACY_POLICY_VERSION`, the consent list and App Privacy change together in one bundled privacy update,
+  with sex, weight and goal. That update is not part of this PR.
+- **Old builds:** they ignore every new field. Every new field is optional to decode, because a server before
+  the implementation PRs omits it. The examples are `http` blocks until the model types exist.
+- **Implementation order:** (1) profile fields, (2) training load, (3) the sync types with the gate, (4) net
+  energy, (5) VO₂ max, HRR and active time, (6) muscle freshness. About 9–10 days. 2 and 6 can run beside 1.
+  Rollback: this PR is docs only.
