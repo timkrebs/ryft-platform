@@ -72,8 +72,7 @@ var grants = map[string]map[string][]string{
 		// 0060: the operator writes smoke_account (scripts/sql/bind_smoke_account.sql); ingest only reads it.
 		"smoke_account": {"SELECT"},
 		// 0063 (D293): the same-source fold, run by ingest's sync, moves a dropped duplicate's rating to the
-		// survivor or drops it; UPDATE of workout_id and updated_at only (below). recovery_checkins: none.
-		"workout_ratings": {"SELECT", "DELETE"},
+		// survivor: column grants only (below), no table-level privilege, no DELETE. recovery_checkins: none.
 	},
 	"ryft_scoring": {
 		"users": {"SELECT"}, "devices": {"SELECT"}, "samples": {"SELECT"}, "sleep_segments": {"SELECT"},
@@ -153,7 +152,9 @@ func TestServiceRoleGrants(t *testing.T) {
 	}
 	// scoring may write only the load columns of a workout, and of a session.
 	for col, want := range map[string]bool{"strain": true, "trimp": true, "zone_minutes": true, "muscular_load": true,
-		"session_id": true, "model_version": true, "start_at": false, "avg_hr": false, "activity": false} {
+		"session_id": true, "model_version": true, "avg_hr": false, "activity": false, "source": false, "user_id": false,
+		// 0063: a session's own workout follows an edit of the session's times in place (so its rating stays)
+		"start_at": true, "end_at": true} {
 		var has bool
 		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_scoring', 'public.workouts', $1, 'UPDATE')`, col).Scan(&has); err != nil {
 			t.Fatal(err)
@@ -326,11 +327,14 @@ func TestServiceRoleGrants(t *testing.T) {
 			t.Errorf("%s %s %s.%s: %v, want %v", c.role, c.priv, c.table, c.col, has, c.want)
 		}
 	}
-	// 0063: ingest's fold may repoint a rating (workout_id, updated_at), never write or create a value.
+	// 0063: ingest's fold may read the key columns and updated_at and repoint a rating (workout_id, updated_at); it
+	// never reads or writes a value, creates one or deletes one (a dropped copy's rating goes with its workout).
 	for _, c := range []struct {
 		role, col, priv string
 		want            bool
 	}{
+		{"ryft_ingest", "user_id", "SELECT", true}, {"ryft_ingest", "workout_id", "SELECT", true}, {"ryft_ingest", "updated_at", "SELECT", true},
+		{"ryft_ingest", "session_rpe", "SELECT", false}, {"ryft_ingest", "created_at", "SELECT", false},
 		{"ryft_ingest", "workout_id", "UPDATE", true}, {"ryft_ingest", "updated_at", "UPDATE", true},
 		{"ryft_ingest", "session_rpe", "UPDATE", false}, {"ryft_ingest", "user_id", "UPDATE", false},
 		{"ryft_ingest", "session_rpe", "INSERT", false}, {"ryft_ingest", "workout_id", "INSERT", false},

@@ -77,7 +77,7 @@ func testMigrateWorkoutDuplicates(t *testing.T, supabase bool) {
 	// Scoring's other columns stay as they were (0009, 0011).
 	for _, q := range []string{
 		`UPDATE workouts SET source = 'x' WHERE user_id = $1`,
-		`UPDATE workouts SET start_at = now() WHERE user_id = $1`,
+		`UPDATE workouts SET avg_hr = 1 WHERE user_id = $1`, // start_at and end_at: since 0063, for a session's own workout
 		`UPDATE workouts SET activity = 'swim' WHERE user_id = $1`,
 		`UPDATE workouts SET user_id = user_id WHERE user_id = $1`,
 	} {

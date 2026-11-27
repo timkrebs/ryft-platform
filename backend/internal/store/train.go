@@ -917,10 +917,13 @@ func (s *Store) EnsureSessionWorkout(ctx context.Context, userID, workoutID, ses
 				AND (muscular_load, session_id) IS DISTINCT FROM ($3::float8, $4::uuid)`, userID, workoutID, load, sessionID)
 			return err
 		case err == nil:
-			// Times changed: scoring may not move a workout, only replace its own.
-			if _, err := tx.Exec(ctx, `DELETE FROM workouts WHERE user_id=$1 AND id=$2 AND source=$3`, userID, workoutID, model.SessionSource); err != nil {
-				return err
-			}
+			// Times changed: the session's own workout follows them in place (0063's UPDATE (start_at, end_at),
+			// only for source ryft-session), so its rating stays; a delete and insert would cascade it away.
+			// The load columns start over as a new row's do: the day's pass scores the workout again.
+			_, err = tx.Exec(ctx, `UPDATE workouts SET start_at=$3, end_at=$4, muscular_load=$5, session_id=$6,
+				strain=NULL, trimp=NULL, zone_minutes=NULL, model_version=NULL
+				WHERE user_id=$1 AND id=$2 AND source=$7`, userID, workoutID, start, end, load, sessionID, model.SessionSource)
+			return err
 		case !errors.Is(err, pgx.ErrNoRows):
 			return err
 		}
@@ -934,38 +937,52 @@ func (s *Store) EnsureSessionWorkout(ctx context.Context, userID, workoutID, ses
 // workout keeps a session's load only if the session is completed and, when it
 // is one of daySessions, the workout is the one chosen for it (chosen maps
 // session → workout). Workouts scoring created for such sessions go.
-func (s *Store) ReleaseSessionWorkouts(ctx context.Context, userID uuid.UUID, daySessions []uuid.UUID, chosen map[uuid.UUID]uuid.UUID) error {
+//
+// previous maps a session to the workout it was attached to before this pass (Session.WorkoutID as read at its
+// start; nil or missing: none). A session's rating belongs to the session: where the session moved to another
+// workout, from a HealthKit workout to another, or back to its own, the rating moves with it (D293). The move and
+// the releases run in one transaction.
+func (s *Store) ReleaseSessionWorkouts(ctx context.Context, userID uuid.UUID, daySessions []uuid.UUID, chosen, previous map[uuid.UUID]uuid.UUID) error {
 	keep := make([]uuid.UUID, 0, len(chosen))
 	var from, to []uuid.UUID
+	var prio []int32
 	for session, w := range chosen {
 		keep = append(keep, w)
-		if own := train.SessionWorkoutID(userID, session); own != w {
-			from, to = append(from, own), append(to, w)
+		// The workout it had (preferred) and the one scoring makes for it: a rating on either follows the session.
+		for rank, old := range []uuid.UUID{previous[session], train.SessionWorkoutID(userID, session)} {
+			if old != uuid.Nil && old != w {
+				from, to, prio = append(from, old), append(to, w), append(prio, int32(rank))
+			}
 		}
 	}
-	// A session now attached to a HealthKit workout takes the rating of the workout scoring made for it before the
-	// delete below drops that one (the delete cascades to a rating, D293). Scoring may repoint a rating by its key
-	// columns, never read its value (0063). The target keeps its own rating when it has one.
-	if len(from) > 0 {
-		if _, err := s.pool.Exec(ctx, `UPDATE workout_ratings r SET workout_id = t.to_id, updated_at = now()
-			FROM unnest($2::uuid[], $3::uuid[]) AS t(from_id, to_id)
-			WHERE r.user_id = $1 AND r.workout_id = t.from_id
-			AND EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = $1 AND w.id = t.to_id)
-			AND NOT EXISTS (SELECT 1 FROM workout_ratings k WHERE k.user_id = $1 AND k.workout_id = t.to_id)`,
-			userID, from, to); err != nil {
-			return err
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		// Scoring may repoint a rating by its key columns, never read its value (0063). The target keeps its own
+		// rating when it has one; of two ratings that would move to one target the previous workout's wins.
+		if len(from) > 0 {
+			if _, err := tx.Exec(ctx, `WITH moves AS (
+					SELECT DISTINCT ON (t.to_id) t.from_id, t.to_id
+					FROM unnest($2::uuid[], $3::uuid[], $4::int[]) AS t(from_id, to_id, prio)
+					JOIN workout_ratings r ON r.user_id = $1 AND r.workout_id = t.from_id
+					WHERE EXISTS (SELECT 1 FROM workouts w WHERE w.user_id = $1 AND w.id = t.to_id)
+					AND NOT EXISTS (SELECT 1 FROM workout_ratings k WHERE k.user_id = $1 AND k.workout_id = t.to_id)
+					ORDER BY t.to_id, t.prio
+				)
+				UPDATE workout_ratings r SET workout_id = moves.to_id, updated_at = now()
+				FROM moves WHERE r.user_id = $1 AND r.workout_id = moves.from_id`, userID, from, to, prio); err != nil {
+				return err
+			}
 		}
-	}
-	stale := `session_id IS NOT NULL AND (
+		stale := `session_id IS NOT NULL AND (
 		NOT EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = workouts.user_id AND s.id = workouts.session_id AND s.status = 'completed')
 		OR (session_id = ANY($2) AND NOT (id = ANY($3))))`
-	if _, err := s.pool.Exec(ctx, `UPDATE workouts SET muscular_load=NULL, session_id=NULL
-		WHERE user_id=$1 AND source <> '`+model.SessionSource+`' AND `+stale, userID, daySessions, keep); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE workouts SET muscular_load=NULL, session_id=NULL
+			WHERE user_id=$1 AND source <> '`+model.SessionSource+`' AND `+stale, userID, daySessions, keep); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `DELETE FROM workouts WHERE user_id=$1 AND source = '`+model.SessionSource+`'
+			AND (session_id IS NULL OR `+stale+`)`, userID, daySessions, keep)
 		return err
-	}
-	_, err := s.pool.Exec(ctx, `DELETE FROM workouts WHERE user_id=$1 AND source = '`+model.SessionSource+`'
-		AND (session_id IS NULL OR `+stale+`)`, userID, daySessions, keep)
-	return err
+	})
 }
 
 // ---- plans ----------------------------------------------------------------------------

@@ -16,13 +16,15 @@
 --
 -- Written and read by the api on its request path (the coaching load is computed in the api's store). ingest
 -- gets the one thing the fold needs: the same-source fold runs in ingest's sync (store.foldTx, and the
--- fold-workouts command), so it must move a dropped duplicate's rating to the survivor, or drop it when the
--- survivor has its own: it may read a rating, change which workout it points at (and when) and delete it, never
--- write a value or create one. scoring gets the same move without the delete and without the value: it replaces
--- or releases a Train session's own workout (store.ReleaseSessionWorkouts), and the rating of a workout it is
--- about to delete moves to the workout the session is attached to instead (SELECT of the two key columns, UPDATE
--- of workout_id and updated_at; it never reads a rating's value). Day strain does not use the rating (D293).
--- notify gets nothing. The account's deletion and merge and the export read it from the store; ON DELETE CASCADE
+-- fold-workouts command), so it must move a dropped duplicate's rating to the survivor before it deletes the
+-- duplicate (the delete cascades, as the owner, to a rating the survivor already has): it may read the key columns
+-- and updated_at (the latest rating wins) and change which workout a rating points at (and when), never read or
+-- write a value, create one or delete one. scoring gets the same without updated_at: it re-attaches a Train
+-- session to another workout, or back to its own (store.ReleaseSessionWorkouts), and the rating moves with the
+-- session (SELECT of the two key columns, UPDATE of workout_id and updated_at; it never reads a rating's value).
+-- A completed session's own workout (source 'ryft-session') whose times were edited is updated in place
+-- (store.EnsureSessionWorkout, the column grant UPDATE (start_at, end_at) on workouts below), not deleted and
+-- inserted again, so its rating stays. Day strain does not use the rating (D293). notify gets nothing. The account's deletion and merge and the export read it from the store; ON DELETE CASCADE
 -- on user_id is the safety net for the users row.
 --
 -- Additive: a new table, nothing renamed or dropped. Rollback = re-pin the old images; the table stays and nothing
@@ -47,12 +49,17 @@ CREATE TABLE IF NOT EXISTS workout_ratings (
 
 -- api: the app's read and write side, the account's deletion and the merge.
 GRANT SELECT, INSERT, UPDATE, DELETE ON workout_ratings TO ryft_api;
--- ingest: the fold's move (UPDATE workout_id) or drop (DELETE) of a rating, and nothing else.
-GRANT SELECT, DELETE ON workout_ratings TO ryft_ingest;
+-- ingest: the fold's move of a rating to the surviving copy (which of two ratings is the latest: updated_at), never
+-- its value and never a delete (a dropped copy's rating goes with its workout through the foreign key).
+GRANT SELECT (user_id, workout_id, updated_at) ON workout_ratings TO ryft_ingest;
 GRANT UPDATE (workout_id, updated_at) ON workout_ratings TO ryft_ingest;
--- scoring: the re-attach's move of a rating off a workout it is about to delete, by key columns only.
+-- scoring: the re-attach's move of a rating with its session, by key columns only.
 GRANT SELECT (user_id, workout_id) ON workout_ratings TO ryft_scoring;
 GRANT UPDATE (workout_id, updated_at) ON workout_ratings TO ryft_scoring;
+-- scoring: a completed session's own workout follows an edit of the session's times in place, so its rating stays.
+-- The statement is restricted to source 'ryft-session' (store.EnsureSessionWorkout); the grant is per column, not per
+-- row, as for the load columns above. scoring still cannot change a workout's source, activity or owner.
+GRANT UPDATE (start_at, end_at) ON workouts TO ryft_scoring;
 
 DROP POLICY IF EXISTS workout_ratings_services ON workout_ratings;
 CREATE POLICY workout_ratings_services ON workout_ratings TO ryft_api, ryft_ingest, ryft_scoring USING (true) WITH CHECK (true);

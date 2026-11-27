@@ -5307,7 +5307,9 @@ scripts/seed_demo.py`.
   moves them (a check-in for a day the kept account has stays with the old one; a rating follows its workout).
   The export reads `GET /v1/recovery/checkins`; the workout export carries the rating. Backups keep them as long
   as any backup of the database (7 days on Pro). No other service reads a check-in; ingest and scoring may only
-  repoint a rating, never write a value (0063; scoring reads its key columns only). Logs: the routes log their pattern (`/v1/recovery/checkins/{date}`),
+  repoint a rating, never read or write its value or delete one (0063: ingest reads the key columns and
+  `updated_at`, scoring the key columns only; scoring also updates `start_at`/`end_at` of a session's own workout,
+  so an edit of the session keeps its rating). Logs: the routes log their pattern (`/v1/recovery/checkins/{date}`),
   never the date, a rating, a time or a score. Turning `recovery.checkin` off deletes nothing (Feature flags).
 - **Where and how long:** Cloud Logging's bucket `ryft-logs` in `europe-west1`, **14 days**
   (`infra/gcp/logging.tf`); `_Default` is off, so what no sink takes is stored nowhere. From

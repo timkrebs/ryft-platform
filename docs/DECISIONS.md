@@ -7138,10 +7138,13 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
      `scoreCheckin`. One transaction holds the upsert and the rescoring of the later check-ins within 14 days
      (`lockCheckin`, advisory class 7419010). The store's tests use a stand-in scorer; the real numbers (29, 93, 77,
      the z blend, 62 with regularity) are pinned through the api.
-  2. **`wearableNight` is `recovery IS NOT NULL AND (sleep_has_stages OR hrv_ms IS NOT NULL)`** on the day's
-     `daily_scores`: `sleep_has_stages` is what core, deep and rem set, `hrv_ms` is the stored sleep-window HRV. A
-     night of the unspecified `asleep` stage alone (older Garmin firmware) counts only through an HRV: it cannot be
-     told from an `in_bed` night in `daily_scores`, and asking such a user once more is the safe side.
+  2. **`wearableNightSQL` is the contract's rule:** the day's `daily_scores.recovery` is not null, and the night has
+     asleep stages or an overnight HRV. The stages are `sleep_segments` of stage `asleep`, `core`, `deep` or `rem`
+     ending in scoring's night window of the day (local 20:00 before to 13:00, `scoring.NightWindow`); an `inbed`-only
+     night has none. `daily_scores.sleep_has_stages` (core, deep or rem when it was scored) and `hrv_ms` (the stored
+     sleep-window HRV) answer first, so the `sleep_segments` lookup (index `sleep_user_end`) runs only for a day that has
+     a recovery and neither, such as the older Garmin firmware that writes `asleep` alone. The one rule is a SQL
+     fragment used by the range read, the status, the readiness states and the regularity's nights.
   3. **Confounders are those of the save.** They are computed from the live D − 1 N2R (with the check-in's bedtime) and
      the journal of the day before when the check-in is saved or rescored, and stored; the briefing reads the stored
      ones. A meal logged afterwards moves D − 1's N2R at once but the check-in's confounders at the next rescore (a
@@ -7152,6 +7155,8 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
      load, the N2R bedtime and `n2r_bedtime_applied` ignore check-ins and ratings; `Workout.session_rpe` and the check-in
      reads still show what is stored (the owner's access, as for the DELETEs). `GET /v1/workouts` and the day read
      `RatedWorkoutsBetween`; scoring reads `VisibleWorkoutsBetween`, which has no rating (its role cannot read the value).
+     A check-in's bedtime goes into N2R only: not into the nutrition diary's meal-timing score, and not into a stored
+     N2R night (`refreshN2RNight` reads its history with the flag off), which would outlive the kill switch.
   6. **Required fields:** `tz_offset_sec` and `soreness` are pointers in `RecoveryCheckinPut` and `session_rpe` in
      `WorkoutRPEPut`, so a missing one is a `422` and not a silent 0 or false. A malformed `{id}` is `400` as in
      `GET /v1/workouts/{id}`.
@@ -7160,11 +7165,19 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   8. **Migration 0063 is corrected before it ships:** the foreign key to `workouts(id)` cannot exist (the key of
      `workouts` has been `(user_id, id)` since 0007), so it is `(user_id, workout_id) REFERENCES workouts (user_id, id)
      ON DELETE CASCADE ON UPDATE CASCADE`. That also keeps a rating its workout's owner's in the database, and the
-     merge's `UPDATE workouts SET user_id` carries the rating with it. `ryft_scoring` gets the key columns to read
-     and `workout_id, updated_at` to update: `ReleaseSessionWorkouts` moves the rating of a Train session's own
-     workout to the HealthKit workout the session is now attached to before it deletes the former.
-- **Known gap, accepted:** when a completed session's times are edited, scoring replaces its own workout (delete,
-  then insert under the same id, `EnsureSessionWorkout`) and the cascade removes that workout's rating. Scoring may
-  not read or write a value, so it cannot carry it over; the user rates again. Rare, and visible in the app.
+     merge's `UPDATE workouts SET user_id` carries the rating with it. The grants end up as follows. `ryft_ingest`
+     (the fold): `SELECT (user_id, workout_id, updated_at)` and `UPDATE (workout_id, updated_at)`, no `DELETE` (a dropped
+     copy's rating goes with its workout through the foreign key, as the owner), never the value. `ryft_scoring`:
+     `SELECT (user_id, workout_id)` and `UPDATE (workout_id, updated_at)` on `workout_ratings`, and
+     `UPDATE (start_at, end_at)` on `workouts` (per column, not per row: the statement is limited to source
+     `ryft-session`). `ryft_api` has the table.
+  9. **A rating follows its session.** A Train session's own workout whose times are edited is **updated in place**
+     (`EnsureSessionWorkout`; its load columns start over and the day's pass scores it again, as for a new row),
+     where it used to be deleted and inserted under the same id, so the cascade no longer drops the rating. When
+     scoring attaches a session to another workout, `ReleaseSessionWorkouts` moves the rating **from the workout the
+     session had before this pass** (`sessions.workout_id` as read at its start, passed in as `previous`) and from its
+     own workout, to the one chosen: own to HealthKit, HealthKit to HealthKit, HealthKit back to own. A target that has
+     a rating keeps it, and of two ratings for one target the previous workout's wins. The move and the releases run
+     in one transaction.
 - **Rejected:** a `scoring` grant to insert ratings (a service that derives numbers writing a user's input); keeping
   the confounders live in the briefing (the N2R history read would run per check-in on every briefing).

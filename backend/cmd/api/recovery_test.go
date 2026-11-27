@@ -625,9 +625,10 @@ func TestSessionRPERoutes(t *testing.T) {
 	}
 	rr.call(a, http.MethodDelete, path+"/rpe", nil, 204, nil)
 	rr.call(a, http.MethodDelete, path+"/rpe", nil, 204, nil)
-	rr.call(a, http.MethodGet, path, nil, 200, &after)
-	if after.SessionRPE != nil || after.SessionRPELoad != nil {
-		t.Fatalf("deleted: %+v", after.Workout)
+	var gone model.WorkoutDetail // a fresh value: decoding into `after` would keep the fields the answer omits
+	rr.call(a, http.MethodGet, path, nil, 200, &gone)
+	if gone.SessionRPE != nil || gone.SessionRPELoad != nil {
+		t.Fatalf("deleted: %+v", gone.Workout)
 	}
 }
 

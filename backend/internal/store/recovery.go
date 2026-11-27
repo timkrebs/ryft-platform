@@ -24,7 +24,7 @@ import (
 //
 // The pure check-in score lives in internal/scoring, which imports this package, so the store cannot call it: it
 // gathers what the score depends on (CheckinFacts) and takes the function as a CheckinScorer, which the api
-// injects. That keeps one transaction around a write and the rescoring of the later check-ins (D292).
+// injects. That keeps one transaction around a write and the rescoring of the later check-ins (D292, D297).
 
 const (
 	// checkinHistoryDays is how far back a check-in's score looks (the personal blend: 14 days), and how far
@@ -70,20 +70,17 @@ func (s *Store) RecoveryEnabled(ctx context.Context, user uuid.UUID) (bool, erro
 
 // ---- the wearable night (D291) --------------------------------------------------------------
 
-// wearableNightSQL is the one rule, on a daily_scores row aliased d: the night ending on the day has asleep stages
-// (sleep_has_stages, which core, deep and rem set; an in_bed-only night does not) or an overnight HRV (hrv_ms is
-// the sleep-window value scoring stores), and DailyScore.recovery is not null. A resting heart rate alone does not
-// make one: a watch worn by day writes it every day.
-const wearableNightSQL = `d.recovery IS NOT NULL AND (d.sleep_has_stages OR d.hrv_ms IS NOT NULL)`
-
-// wearableNight says whether the day (YYYY-MM-DD) has a wearable night. The tiers, needs_checkin, superseded and the
-// readiness path all use this rule (D291).
-func wearableNight(ctx context.Context, q querier, user uuid.UUID, day string) (bool, error) {
-	var ok bool
-	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM daily_scores d WHERE d.user_id=$1 AND d.day=$2::date AND `+
-		wearableNightSQL+`)`, user, day).Scan(&ok)
-	return ok, err
-}
+// wearableNightSQL is the one rule, on a daily_scores row aliased d (the tiers, needs_checkin, superseded, the
+// regularity's nights and the readiness path all use it, D291): DailyScore.recovery is not null, and the night
+// ending on the day has asleep stages (a segment of stage asleep, core, deep or rem ending in scoring's night window,
+// the day's local 20:00 before to 13:00, scoring.NightWindow; an inbed-only night, the iPhone's, has none) or an
+// overnight HRV (hrv_ms, the sleep-window value scoring stores). A resting heart rate alone does not make one: a
+// watch worn by day writes it every day. sleep_has_stages (core, deep or rem seen when it was scored) and hrv_ms
+// answer first, so the sleep_segments lookup (index sleep_user_end) runs only for a day with a recovery and neither.
+const wearableNightSQL = `d.recovery IS NOT NULL AND (d.sleep_has_stages OR d.hrv_ms IS NOT NULL OR EXISTS (
+	SELECT 1 FROM sleep_segments g WHERE g.user_id = d.user_id AND g.stage IN ('asleep', 'core', 'deep', 'rem')
+	AND g.end_at >= (d.day::timestamp AT TIME ZONE (SELECT u.tz FROM users u WHERE u.id = d.user_id)) - interval '4 hours'
+	AND g.end_at < (d.day::timestamp AT TIME ZONE (SELECT u.tz FROM users u WHERE u.id = d.user_id)) + interval '13 hours'))`
 
 // ---- what a check-in's score depends on ------------------------------------------------------
 

@@ -1,5 +1,13 @@
 # RYFT platform — status
 
+## No-watch recovery: the implementation, dark (2026-11-27, D291–D297, PR #260)
+
+Done: the contract of #255 is served behind `recovery.checkin` (enabled, 0 %, empty allow-list). The morning check-in (`PUT`/`GET`/`DELETE /v1/recovery/checkins/{date}`, the range route), `GET /v1/recovery/status`, the session RPE (`PUT`/`DELETE /v1/workouts/{id}/rpe`, `Workout.session_rpe`, `session_rpe_load`), `CoachingBriefing.recovery` and readiness from a check-in where the HRV path is `UNKNOWN` (`LOW_RECOVERY_UNEXPLAINED`, `ACUTE_LIFESTYLE_SUPPRESSION` with the journal confounders, the protective plan for `journal_sick`), `readiness_display` on every briefing (not behind the flag), `N2RScore.bedtime_source` with the check-in bedtime as N2R's live fallback, and rated workouts without HR or power in the coaching load only (Banister TRIMP with `r = RPE/10`). One wearable-night rule decides the tiers, `needs_checkin`, `superseded` and the readiness path. The flag is a kill switch. Migrations **0062** `recovery_checkins`, **0063** `workout_ratings` (composite FK to `workouts`, D297), **0064** the flag seed; `0061` stays reserved for the BLS import. Scoring model **2026.11.1** (`affects: []`): the golden files change in `model_version` only; no stored daily number, day strain or `WorkoutDetail.trimp` moves. Reviews: `docs/work/2026-11-26-no-watch-recovery/review-impl.md`.
+
+On merge: `deploy.yml`'s migrate job runs 0062–0064; api, ingest and scoring roll (the model version, the fold's rating move). Nothing changes for any account: the flag is at 0 %.
+
+Open: the privacy text (#252 or the next version, the sentences in `implementation.md` → Privacy) before any tester goes on the allow-list; then one tester (OPERATIONS → Feature flags → `recovery.checkin`). The app builds the check-in screen, the RPE prompt and `readiness_display` copy.
+
 ## No-watch recovery: the contract, docs only (2026-11-26, D291–D295)
 
 Done: `docs/API.md` → Recovery without a watch: the morning check-in (`PUT`/`GET`/`DELETE /v1/recovery/checkins/{date}`, the range), `GET /v1/recovery/status`, session RPE (`PUT`/`DELETE /v1/workouts/{id}/rpe`, `Workout.session_rpe`, `session_rpe_load`), `CoachingBriefing.recovery`, `N2RScore.bedtime_source`, the readiness value `LOW_RECOVERY_UNEXPLAINED`, and the flag `recovery.checkin`. The Swift mirror and a changelog row are in. No Go, no migration, no behaviour change: every new route answers `404` until the implementation PR. The examples are `http` blocks until the model types exist. D290 was taken by #252, so this work uses D291–D295.

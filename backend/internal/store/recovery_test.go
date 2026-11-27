@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -207,6 +208,28 @@ func TestRecoveryStatusFollowsTheWearableNight(t *testing.T) {
 	if s := status(at("10:00")); s.Source != model.RecoverySourceNone || !s.NeedsCheckin {
 		t.Fatalf("a night without stages or HRV: %+v", s)
 	}
+	// The stages come from sleep_segments, whatever scoring flagged: an inbed segment in the night window is not a
+	// wearable night, an asleep one is (older Garmin firmware has no core, deep or rem), and one ending at 13:00 or
+	// later is outside the window.
+	segment := func(stage, end string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `INSERT INTO sleep_segments (user_id, start_at, end_at, stage, source) VALUES ($1, $2::timestamptz - interval '7 hours', $2, $3, 'Watch')`,
+			u, utc(end), stage); err != nil {
+			t.Fatal(err)
+		}
+	}
+	segment("inbed", "2026-11-26T06:00:00Z")
+	segment("asleep", "2026-11-26T13:30:00Z")
+	if s := status(at("10:00")); s.Source != model.RecoverySourceNone || !s.NeedsCheckin {
+		t.Fatalf("an inbed segment, and an asleep one past the night window: %+v", s)
+	}
+	segment("asleep", "2026-11-26T05:30:00Z")
+	if s := status(at("10:00")); s.Source != model.RecoverySourceWearable || s.NeedsCheckin {
+		t.Fatalf("asleep stages in the night window with a recovery: %+v", s)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM sleep_segments WHERE user_id=$1`, u); err != nil {
+		t.Fatal(err)
+	}
 	// A day watch: resting heart rate gives a recovery, there is no night. The check-in is the day's estimate, medium
 	// with the day before's heart rate in 8 hours, low with 7, and is not superseded.
 	seedHeartRate(t, pool, u, utc("2026-11-25T08:00:00Z"), 7)
@@ -316,8 +339,11 @@ func TestNutritionBedtimePrecedence(t *testing.T) {
 		var at map[string]*time.Time
 		var src map[string]string
 		err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-			var err error
-			at, src, err = nutritionBedtimes(ctx, tx, u, "2026-11-24", "2026-11-24")
+			on, err := recoveryOn(ctx, tx, u) // N2R's read: with the flag
+			if err != nil {
+				return err
+			}
+			at, src, err = nutritionBedtimesWith(ctx, tx, u, "2026-11-24", "2026-11-24", on)
 			return err
 		})
 		if err != nil {
@@ -337,6 +363,16 @@ func TestNutritionBedtimePrecedence(t *testing.T) {
 	at, src := bedtimes()
 	if got := at["2026-11-24"]; got == nil || !got.Equal(rep.Bedtime) || src["2026-11-24"] != model.N2RBedtimeCheckin {
 		t.Fatalf("a check-in's bedtime: %v %v", at, src)
+	}
+	// The meal-timing score of the nutrition diary (scoreNutritionDays) reads measured sleep only: N2R alone takes it.
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		diary, _, err := nutritionBedtimesWith(ctx, tx, u, "2026-11-24", "2026-11-24", false)
+		if len(diary) != 0 {
+			t.Errorf("the diary's bedtimes hold a check-in's: %v", diary)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 	// A measured sleep start beats it.
 	if _, err := pool.Exec(ctx, `INSERT INTO daily_scores (user_id, day, sleep_start, sleep_actual_min) VALUES ($1, '2026-11-25', $2, 400)`,
@@ -503,37 +539,109 @@ func TestFoldMovesTheRatingToTheSurvivor(t *testing.T) {
 	}
 }
 
-// A Train session's own workout is replaced by a HealthKit one that matches it: the rating moves along, through
-// the key-column grants scoring has.
+// A rating belongs to the session's workout, wherever scoring attaches the session: from its own workout to a
+// HealthKit one, from one HealthKit workout to another, and back to its own. The move runs as ryft_scoring (key
+// columns only); the target keeps a rating of its own.
 func TestReleaseSessionWorkoutsMovesTheRating(t *testing.T) {
 	st, pool := testStore(t)
 	ctx := context.Background()
 	scoring := New(dupRolePool(t, pool, "ryft_scoring"))
 	at := utc("2026-11-25T17:00:00Z")
-	for _, targetRated := range []bool{false, true} {
+	for _, c := range []struct {
+		name     string
+		previous string // the workout the session was attached to: own, hk1 or "" (none)
+		chosen   string // own or hk2
+		rated    map[string]float64
+		want     map[string]float64
+	}{
+		{"its own workout to a HealthKit one", "own", "hk2", map[string]float64{"own": 8}, map[string]float64{"hk2": 8}},
+		{"its own workout to a HealthKit one that is rated", "own", "hk2", map[string]float64{"own": 8, "hk2": 5}, map[string]float64{"hk2": 5}},
+		{"one HealthKit workout to another", "hk1", "hk2", map[string]float64{"hk1": 8}, map[string]float64{"hk2": 8}},
+		{"one HealthKit workout to another that is rated", "hk1", "hk2", map[string]float64{"hk1": 8, "hk2": 5}, map[string]float64{"hk1": 8, "hk2": 5}},
+		{"a HealthKit workout back to its own", "hk1", "own", map[string]float64{"hk1": 8}, map[string]float64{"own": 8}},
+		// the workout it had wins over the session's own, which goes with its rating
+		{"a rating on the workout it had and on its own", "hk1", "hk2", map[string]float64{"hk1": 8, "own": 4}, map[string]float64{"hk2": 8}},
+	} {
 		u := applyUser(t, st)
 		session := uuid.New()
-		own := train.SessionWorkoutID(u, session)
-		if _, err := pool.Exec(ctx, `INSERT INTO workouts (id, user_id, activity, start_at, end_at, source) VALUES ($1, $2, 'strength', $3, $3::timestamptz + interval '1 h', $4)`,
-			own, u, at, model.SessionSource); err != nil {
+		ids := map[string]uuid.UUID{"own": train.SessionWorkoutID(u, session),
+			"hk1": seedWorkout(t, pool, u, seedW{source: "Watch", start: at}), "hk2": seedWorkout(t, pool, u, seedW{source: "Garmin", start: at})}
+		// The session is completed and has its own workout (as EnsureSessionWorkout leaves it).
+		if _, err := pool.Exec(ctx, `INSERT INTO workouts (id, user_id, activity, start_at, end_at, source, session_id) VALUES ($1, $2, 'strength', $3, $3::timestamptz + interval '1 h', $4, $5)`,
+			ids["own"], u, at, model.SessionSource, session); err != nil {
 			t.Fatal(err)
 		}
-		hk := seedWorkout(t, pool, u, seedW{source: "Watch", start: at})
-		rate(t, pool, u, own, 8)
-		want := 8.0
-		if targetRated {
-			rate(t, pool, u, hk, 5)
-			want = 5
+		var previous *uuid.UUID
+		if id, ok := ids[c.previous]; ok {
+			previous = &id
 		}
-		if err := scoring.ReleaseSessionWorkouts(ctx, u, []uuid.UUID{session}, map[uuid.UUID]uuid.UUID{session: hk}); err != nil {
+		if _, err := pool.Exec(ctx, `INSERT INTO sessions (user_id, id, started_at, ended_at, status, workout_id) VALUES ($1, $2, $3, $3::timestamptz + interval '1 h', 'completed', $4)`,
+			u, session, at, previous); err != nil {
 			t.Fatal(err)
 		}
-		if n := countRows(t, pool, `SELECT count(*) FROM workouts WHERE user_id=$1 AND id=$2`, u, own); n != 0 {
-			t.Fatalf("the session's own workout is still there")
+		for name, rpe := range c.rated {
+			rate(t, pool, u, ids[name], rpe)
 		}
-		if got := ratings(t, pool, u); len(got) != 1 || got[hk] != want {
-			t.Fatalf("target rated %v: ratings %v, want %v on the HealthKit workout", targetRated, got, want)
+		prev := map[uuid.UUID]uuid.UUID{}
+		if previous != nil {
+			prev[session] = *previous
 		}
+		if err := scoring.ReleaseSessionWorkouts(ctx, u, []uuid.UUID{session}, map[uuid.UUID]uuid.UUID{session: ids[c.chosen]}, prev); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		got := ratings(t, pool, u)
+		want := map[uuid.UUID]float64{}
+		for name, rpe := range c.want {
+			want[ids[name]] = rpe
+		}
+		if !maps.Equal(got, want) {
+			t.Errorf("%s: ratings %v, want %v", c.name, got, want)
+		}
+		owns := countRows(t, pool, `SELECT count(*) FROM workouts WHERE user_id=$1 AND id=$2`, u, ids["own"])
+		if keeps := c.chosen == "own"; keeps && owns != 1 || !keeps && owns != 0 {
+			t.Errorf("%s: the session's own workout: %d rows", c.name, owns)
+		}
+	}
+}
+
+// A completed session whose times are edited keeps its workout (and with it the rating): scoring updates it in place
+// instead of deleting it and inserting it again.
+func TestSessionWorkoutTimeEditKeepsTheRating(t *testing.T) {
+	st, pool := testStore(t)
+	ctx := context.Background()
+	scoring := New(dupRolePool(t, pool, "ryft_scoring"))
+	u := applyUser(t, st)
+	session := uuid.New()
+	own := train.SessionWorkoutID(u, session)
+	at := utc("2026-11-25T17:00:00Z")
+	if err := scoring.EnsureSessionWorkout(ctx, u, own, session, at, at.Add(time.Hour), 42); err != nil {
+		t.Fatal(err)
+	}
+	rate(t, pool, u, own, 7)
+	if _, err := pool.Exec(ctx, `UPDATE workouts SET strain=9, trimp=80, model_version='x' WHERE user_id=$1 AND id=$2`, u, own); err != nil {
+		t.Fatal(err)
+	}
+	// The same times again change nothing; new times and load follow in place.
+	if err := scoring.EnsureSessionWorkout(ctx, u, own, session, at, at.Add(time.Hour), 42); err != nil {
+		t.Fatal(err)
+	}
+	if err := scoring.EnsureSessionWorkout(ctx, u, own, session, at.Add(10*time.Minute), at.Add(50*time.Minute), 30); err != nil {
+		t.Fatal(err)
+	}
+	var start, end time.Time
+	var load float64
+	var strain *float64
+	if err := pool.QueryRow(ctx, `SELECT start_at, end_at, muscular_load, strain FROM workouts WHERE user_id=$1 AND id=$2`, u, own).Scan(&start, &end, &load, &strain); err != nil {
+		t.Fatal(err)
+	}
+	if !start.Equal(at.Add(10*time.Minute)) || !end.Equal(at.Add(50*time.Minute)) || load != 30 || strain != nil {
+		t.Fatalf("the edited session workout: %v %v load %v strain %v (the day's pass scores it again)", start, end, load, strain)
+	}
+	if got := ratings(t, pool, u); got[own] != 7 || len(got) != 1 {
+		t.Fatalf("a time edit lost the rating: %v", got)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM workouts WHERE user_id=$1`, u); n != 1 {
+		t.Fatalf("workouts: %d", n)
 	}
 }
 
@@ -571,5 +679,52 @@ func TestRecoveryRowsFollowAMerge(t *testing.T) {
 	list, err := st.Checkins(ctx, to, time.UTC, "2026-11-01", "2026-11-30")
 	if err != nil || len(list) != 2 || !slices.Equal([]string{list[0].Date, list[1].Date}, []string{"2026-11-24", "2026-11-25"}) {
 		t.Fatalf("the check-ins of the kept account: %+v %v", list, err)
+	}
+}
+
+// A stored N2R night (its breakdown, the caffeine tuning from it) is computed with the profile's expected bedtime,
+// never a check-in's, even with the flag on: it would outlive the kill switch (D293).
+func TestStoredN2RNightIgnoresACheckinBedtime(t *testing.T) {
+	st, root, a, _ := nutritionTestStore(t)
+	ctx := context.Background()
+	const policy = "2026-10-01"
+	now := time.Date(2026, 10, 19, 21, 0, 0, 0, time.UTC)
+	if _, err := root.Exec(ctx, `UPDATE users SET tz='UTC' WHERE id=$1`, a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.Exec(ctx, `ALTER TABLE daily_scores ADD COLUMN IF NOT EXISTS hrv_metric text`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PutN2RProfile(ctx, a, model.N2RProfile{BodyMassKG: 70, ExpectedBedtime: "23:00"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.GrantConsent(ctx, a, policy, nil); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i <= 7; i++ { // a week of HRV and no measured sleep, so no measured bedtime beats a check-in's
+		hrv, rhr := 44+float64(i), 50.0
+		if i == 0 {
+			hrv, rhr = 30, 53
+		}
+		if _, err := root.Exec(ctx, `INSERT INTO daily_scores(user_id,day,hrv_ms,hrv_metric,rhr) VALUES($1,$2::date,$3,'rmssd',$4)`,
+			a, now.AddDate(0, 0, -i).Format(time.DateOnly), hrv, rhr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recoveryFlag(t, st, a)
+	rep := CheckinReport{Bedtime: utc("2026-10-18T21:30:00Z"), WakeTime: utc("2026-10-19T05:30:00Z"), Quality: 6, Freshness: 6}
+	if _, err := st.PutCheckin(ctx, a, "2026-10-19", rep, now, fakeScorer); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.refreshN2RNight(ctx, dueNight{UserID: a, Date: "2026-10-19"}, now, policy); err != nil {
+		t.Fatal(err)
+	}
+	var bedtime time.Time
+	if err := root.QueryRow(ctx, `SELECT (n2r_score_breakdown->>'bedtime')::timestamptz FROM nutrition.daily_biometric_baselines
+		WHERE user_id=$1 AND wake_date='2026-10-19'`, a).Scan(&bedtime); err != nil {
+		t.Fatal(err)
+	}
+	if want := utc("2026-10-18T23:00:00Z"); !bedtime.Equal(want) {
+		t.Fatalf("the stored night used bedtime %v, want the expected %v (the check-in's was %v)", bedtime, want, rep.Bedtime)
 	}
 }

@@ -44,9 +44,14 @@ func (e *Engine) strength(ctx context.Context, userID uuid.UUID, dayStart, dayEn
 	}
 	taken := map[uuid.UUID]bool{}
 	chosen := map[uuid.UUID]uuid.UUID{}
+	// What each session was attached to before this pass: its rating follows it to the workout it gets now.
+	previous := map[uuid.UUID]uuid.UUID{}
 	ids := make([]uuid.UUID, 0, len(sessions))
 	for _, s := range sessions {
 		ids = append(ids, s.ID)
+		if s.WorkoutID != nil {
+			previous[s.ID] = *s.WorkoutID
+		}
 		load, err := e.loadOf(ctx, userID, s, exercises)
 		if err != nil {
 			return out, err
@@ -71,7 +76,7 @@ func (e *Engine) strength(ctx context.Context, userID uuid.UUID, dayStart, dayEn
 		out.Minutes += int(math.Round(end.Sub(s.StartedAt).Minutes()))
 		out.Sessions++
 	}
-	if err := e.st.ReleaseSessionWorkouts(ctx, userID, ids, chosen); err != nil {
+	if err := e.st.ReleaseSessionWorkouts(ctx, userID, ids, chosen, previous); err != nil {
 		return out, err
 	}
 	out.Week, err = e.strengthWeek(ctx, userID, dayStart.AddDate(0, 0, -6), dayEnd)
