@@ -1,6 +1,9 @@
 package model
 
 import (
+	"encoding/json"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -43,6 +46,38 @@ type User struct {
 	Sources []UserSource `json:"sources"`
 	// GET /v1/me only: another account on the X-RYFT-Device-ID device (D91).
 	AccountHint *AccountHint `json:"account_hint"`
+
+	Goal             *string    `json:"goal"`
+	Sex              *string    `json:"sex"`
+	WeightKG         *float64   `json:"weight_kg"`
+	WeightSource     *string    `json:"weight_source"`
+	WeightMeasuredAt *time.Time `json:"weight_measured_at"`
+	// The stored manual reading is one input to the weight resolved by the API.
+	WeightManualKG *float64   `json:"-"`
+	WeightManualAt *time.Time `json:"-"`
+}
+
+// Where User.weight_kg comes from; closed in v1.
+const (
+	WeightSourceManual    = "manual"
+	WeightSourceHealthKit = "healthkit"
+)
+
+// FlagSyncFitnessTypes controls access to the additional Fitness sample types.
+const FlagSyncFitnessTypes = "sync.fitness_types"
+
+// Space-separated policy versions whose text names goal, sex, weight and the new
+// HealthKit types. Add a version here alongside its published policy text.
+const profileBodyPolicyVersions = ""
+
+// NamesProfileBody reports whether the policy version covers the profile body data.
+func NamesProfileBody(version string) bool {
+	for named := range strings.FieldsSeq(profileBodyPolicyVersions) {
+		if version == named {
+			return true
+		}
+	}
+	return false
 }
 
 // Where User.max_hr comes from; closed in v1.
@@ -80,5 +115,29 @@ type UserPatch struct {
 	BirthYear    *int  `json:"birth_year,omitempty"`
 	SleepBaseMin *int  `json:"sleep_base_min,omitempty"` // sets the source to manual
 	// false: back to the learned estimate (or the default); true: keep as manual.
-	SleepBaseManual *bool `json:"sleep_base_manual,omitempty"`
+	SleepBaseManual *bool                         `json:"sleep_base_manual,omitempty"`
+	Goal            optionalProfileValue[string]  `json:"goal,omitzero"`
+	Sex             optionalProfileValue[string]  `json:"sex,omitzero"`
+	WeightKG        optionalProfileValue[float64] `json:"weight_kg,omitzero"`
 }
+
+// ChangesProfileBody reports whether the patch needs consent, including clears.
+func (p UserPatch) ChangesProfileBody() bool { return p.Sex.Set || p.WeightKG.Set }
+
+// optionalProfileValue distinguishes an absent property from an explicit null.
+type optionalProfileValue[T string | float64] struct {
+	Set   bool
+	Value *T
+}
+
+func (o *optionalProfileValue[T]) UnmarshalJSON(b []byte) error {
+	o.Set = true
+	if err := json.Unmarshal(b, &o.Value); err != nil {
+		return errors.New("invalid profile field value")
+	}
+	return nil
+}
+
+func (o optionalProfileValue[T]) IsZero() bool { return !o.Set }
+
+func (o optionalProfileValue[T]) MarshalJSON() ([]byte, error) { return json.Marshal(o.Value) }

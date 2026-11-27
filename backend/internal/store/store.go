@@ -54,7 +54,7 @@ const userColumns = `id, name, email, provider, tz, max_hr, sleep_base_min, slee
 	   AND c.revoked_at IS NULL ORDER BY c.granted_at DESC LIMIT 1),
 	(SELECT c.granted_at FROM consents c WHERE c.user_id = users.id AND c.kind = 'health_processing'
 	   AND c.revoked_at IS NULL ORDER BY c.granted_at DESC LIMIT 1),
-	birth_year, max_hr_source`
+	birth_year, max_hr_source, goal, sex, weight_manual_kg::double precision, weight_manual_at`
 
 func scanUser(row pgx.Row, extra ...any) (model.User, error) {
 	var u model.User
@@ -63,7 +63,8 @@ func scanUser(row pgx.Row, extra ...any) (model.User, error) {
 	var consentAt *time.Time
 	err := row.Scan(append([]any{&u.ID, &u.Name, &u.Email, &u.Provider, &u.TZ, &u.MaxHR, &u.SleepBaseMin,
 		&u.SleepBaseSource, &u.SleepBaseLearnedMin, &u.SleepBaseLearnedAt, &cats, &from, &to,
-		&u.BetaAccess, &consent, &consentAt, &u.BirthYear, &u.MaxHRSource}, extra...)...)
+		&u.BetaAccess, &consent, &consentAt, &u.BirthYear, &u.MaxHRSource,
+		&u.Goal, &u.Sex, &u.WeightManualKG, &u.WeightManualAt}, extra...)...)
 	u.Notifications = prefsOf(cats, from, to)
 	if consent != nil && consentAt != nil {
 		u.Consent = &model.Consent{PolicyVersion: *consent, GrantedAt: consentAt.UTC()}
@@ -333,6 +334,11 @@ const (
 // (scoring.EstimatedMaxHR; nil without a birth year): a birth year replaces
 // max_hr unless it is manual (D81).
 func (s *Store) UpdateUser(ctx context.Context, id uuid.UUID, p model.UserPatch, maxHREstimate *int) (model.User, error) {
+	return s.UpdateUserAt(ctx, id, p, maxHREstimate, time.Now(), model.NamesProfileBody)
+}
+
+// UpdateUserAt puts a manual weigh-in at the request time and checks the policy for body changes.
+func (s *Store) UpdateUserAt(ctx context.Context, id uuid.UUID, p model.UserPatch, maxHREstimate *int, requestTime time.Time, namesProfileBody func(string) bool) (model.User, error) {
 	if p.TZ != nil {
 		if _, err := time.LoadLocation(*p.TZ); err != nil {
 			return model.User{}, fmt.Errorf("invalid tz: %w", err)
@@ -343,7 +349,13 @@ func (s *Store) UpdateUser(ctx context.Context, id uuid.UUID, p model.UserPatch,
 		t := true
 		manual = &t
 	}
-	u, err := scanUser(s.pool.QueryRow(ctx, `UPDATE users SET
+	var measuredAt *time.Time
+	if p.WeightKG.Value != nil {
+		at := requestTime.UTC().Truncate(time.Second)
+		measuredAt = &at
+	}
+	update := func(q querier) (model.User, error) {
+		u, err := scanUser(q.QueryRow(ctx, `UPDATE users SET
 		tz = COALESCE($2, tz),
 		birth_year = COALESCE($8::int, birth_year),
 		max_hr = CASE
@@ -369,12 +381,31 @@ func (s *Store) UpdateUser(ctx context.Context, id uuid.UUID, p model.UserPatch,
 		  WHEN COALESCE($5, sleep_base_manual) THEN 'manual'
 		  WHEN $5 = false AND sleep_base_learned_min IS NOT NULL THEN 'learned'
 		  WHEN $5 = false THEN 'default'
-		  ELSE sleep_base_source END
+		  ELSE sleep_base_source END,
+		goal = CASE WHEN $11::boolean THEN $12::text ELSE goal END,
+		sex = CASE WHEN $13::boolean THEN $14::text ELSE sex END,
+		weight_manual_kg = CASE WHEN $15::boolean THEN $16::double precision::numeric ELSE weight_manual_kg END,
+		weight_manual_at = CASE WHEN $15::boolean THEN $17::timestamptz ELSE weight_manual_at END
 		WHERE id=$1 RETURNING `+userColumns, id, p.TZ, p.MaxHR, p.SleepBaseMin, manual, defaultSleepBase,
-		p.MaxHRManual, p.BirthYear, maxHREstimate, defaultMaxHR))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return u, ErrNotFound
+			p.MaxHRManual, p.BirthYear, maxHREstimate, defaultMaxHR,
+			p.Goal.Set, p.Goal.Value, p.Sex.Set, p.Sex.Value, p.WeightKG.Set, p.WeightKG.Value, measuredAt))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return u, ErrNotFound
+		}
+		return u, err
 	}
+	if !p.ChangesProfileBody() {
+		return update(s.pool)
+	}
+	var u model.User
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		if err := requireProfileConsent(ctx, tx, id, namesProfileBody); err != nil {
+			return err
+		}
+		var err error
+		u, err = update(tx)
+		return err
+	})
 	return u, err
 }
 

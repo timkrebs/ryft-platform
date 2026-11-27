@@ -7522,3 +7522,37 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   unchanged.
 - **Cost:** the merge transaction now also deletes `from`; it is bounded by `deleteTimeout` and the route is
   admin-only. Rollback: revert; no migration.
+
+## D305 — Goal, sex and weight on the profile (implementation PR 1 of D304, 2026-11-27)
+
+- **Context:** the first implementation step of the D304 contract: `GET`/`PATCH /v1/me` serve `goal`, `sex`,
+  `weight_kg`, `weight_source` and `weight_measured_at`. Migration `0068_profile_goal_body.sql`. The guard of D304
+  holds: no policy names sex and weight yet, so they cannot be set, and no HealthKit weight is shown.
+- **One manual weigh-in on `users`, HealthKit read from `samples` on read:** `weight_manual_kg` (numeric(4,1)) and
+  `weight_manual_at` hold the latest `PATCH`; the HealthKit side is the newest `samples` row with `type = 'body_mass'`,
+  `origin = 'healthkit'` and `start_at <= now()`, never copied. A deleted sample is a deleted row, so "the next newest
+  takes over" needs no bookkeeping, and nothing goes stale when a sample arrives late. A future-dated sample (a wrong
+  clock) is ignored until its time, so it cannot pin the weight. Direct-connection samples are not a HealthKit weigh-in.
+- **Ties:** equal times go to the manual entry (the user's explicit act); among HealthKit rows with the same start,
+  the larger row id (the later write). `weight_measured_at` of a manual entry is the request time in whole UTC
+  seconds. `weight_kg` is rounded to one decimal half away from zero (`scoring.RoundWeightKG`), before storage and on read.
+- **Which policy versions name the data: a code constant, empty** (`model.NamesProfileBody`). That a version names
+  sex, weight and the new HealthKit types is a fact of its text, so the privacy PR that ships the text adds its version
+  here and is reviewed together with it; an env var could name a version whose text does not, and there is nothing
+  to misconfigure in `deploy/run`. Ingest (PR 3) uses the same helper.
+- **The gate is independent of `CONSENT_ENFORCE`:** `CONSENT_ENFORCE` rolls out the beta's consent screen. This guard
+  keeps data the current policy does not name from being stored at all, so `warn` and `off` do not relax it. The
+  handler checks the request's user, and the store checks again under `lockApply` (the lock consent changes take, D300)
+  in the transaction that writes, so a withdrawal in between refuses the whole patch. A body without `sex` and
+  `weight_kg` takes neither check; `goal` is a preference and not gated (the next privacy version names it anyway).
+- **The HealthKit weight also needs `sync.fitness_types`:** pilot accounts already store `body_mass` under the
+  Nutrition pilot's consent. Showing it as the profile weight (RYFT Age, resting energy) is a new purpose, so the read
+  waits for the same flag and policy that will gate the sync types. The flag is not seeded here (PR 3 seeds it); a
+  missing row is off.
+- **Merge and deletion:** the merge keeps the destination's goal, sex and manual weigh-in (as for `birth_year`); the
+  source's values go with its `users` row, and its HealthKit samples move with the other samples. Deletion erases the
+  `users` row and the samples, so nothing is added to `eraseUser`.
+- **The goal→Nutrition table** is `scoring.NutritionGoalFor` with `scoring.DominantIsCycling`, pinned by tests; no
+  route calls it yet (the app pre-fills from the same table). Cycling is every variant `wearables.Sport` maps to
+  `cycling`, plus Nutrition's `ride`; a tie for the most minutes is not cycling.
+- **Rollback:** revert the code. The migration only adds nullable columns, so it can stay.
