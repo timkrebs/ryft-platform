@@ -187,7 +187,7 @@ func TestServiceRoleGrants(t *testing.T) {
 			}
 		}
 	}
-	// 0065 (D298): scoring also writes why it closed a row without scoring it.
+	// 0067 (D298): scoring also writes why it closed a row without scoring it.
 	for col, want := range map[string]bool{"scored_at": true, "closed_reason": true, "queued_at": false, "day": false, "user_id": false} {
 		var has bool
 		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_scoring', 'public.score_queue', $1, 'UPDATE')`, col).Scan(&has); err != nil {
@@ -321,7 +321,7 @@ func TestServiceRoleGrants(t *testing.T) {
 			t.Errorf("%s %s %s.%s: %v, want %v", c.role, c.priv, c.table, c.col, has, c.want)
 		}
 	}
-	// 0065 (D297, D298): the api reads when an inbox row arrived and still never a payload or a record id, and
+	// 0067 (D297, D298): the api reads when an inbox row arrived and still never a payload or a record id, and
 	// still writes nothing of the inbox; scoring writes the queue's closed_reason (and nothing of the key); the
 	// api only reads it (it has no UPDATE of the column), ingest's table-wide UPDATE is unchanged and notify
 	// sees neither table.

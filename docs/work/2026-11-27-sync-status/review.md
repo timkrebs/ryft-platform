@@ -32,7 +32,7 @@ Sound: polling vs the 10 s cache across instances; open/closed enums; the Swift 
 # The backend PR (`feat/sync-status`, D298)
 
 ## Hand-backs (2026-11-27)
-- **database-engineer:** `0065_sync_status.sql` (+ `lock_timeout 5s`), `roles_test.go`, `migrate_syncstatus_test.go`
+- **database-engineer:** `0067_sync_status.sql` (renamed from 0065 for #260; + `lock_timeout 5s`), `roles_test.go`, `migrate_syncstatus_test.go`
   (CHECK, NULL default, api reads `received_at` not `payload`/`record_id`, scoring writes `closed_reason`
   through RLS, EXPLAIN uses `provider_inbox_user_pending` with `enable_seqscan = off`, rerun). vet green;
   **every Postgres test skipped locally** (no `RYFT_TEST_POSTGRES_URL`): CI is the first real run. The index is not
@@ -63,3 +63,13 @@ Sound: polling vs the 10 s cache across instances; open/closed enums; the Swift 
 Sound: freshness boundaries, since null ⇔ current, gates per mode, listing, needs_reauth+delivery = pending, stale
 `closed_reason` never read, no close under `warn`/`off`, idempotent close, migration (grants, index, RLS,
 lock_timeout), fixtures vs 0042/0046 constraints, API.md shape unchanged from #258.
+
+## CI on d05e609 (run 45969142241), fixed by platform-lead
+- lint: revive `exported` on `SyncSourceHealthKit`, `SyncReasonNeedsReauth`: the comments now start with the name.
+- `TestSyncStatusDoesNotTrackN2RAndCoaching`: the `wearable_inbox` insert got `$1` without naming it; the loop
+  passes only the parameters a statement names.
+- `TestMigrateSyncStatus`: with 3 pending rows the planner rightly took `provider_inbox_state_received`; the
+  fixture now holds a backlog of another account's older pending deliveries, which that index would filter.
+- smoke: `check_api.py` pinned the old key set of `GET /v1/me/sync`; it now expects `sources`, `freshness`,
+  `scores_pending_since` and checks their values (current, null, one `healthkit` source, ok).
+- Migration renamed 0065 → 0067 (#260 holds 0064–0066).

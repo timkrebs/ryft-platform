@@ -10,7 +10,7 @@ import (
 	"github.com/timkrebs/ryft/internal/testsupport"
 )
 
-// 0065 (D297, D298): the sync status. Applied over a database at 0061 that holds queue rows and an inbox row, on
+// 0067 (D297, D298): the sync status. Applied over a database at 0061 that holds queue rows and an inbox row, on
 // both shapes: the old queue rows read as before (closed_reason NULL); closed_reason takes NULL or 'no_consent'
 // and nothing else, also when scoring writes it through RLS; the api reads an inbox row's received_at and still
 // not its payload; the api's probe "the earliest pending delivery of an account and provider" is answered by
@@ -38,7 +38,7 @@ func testMigrateSyncStatus(t *testing.T, supabase bool) {
 		   ('` + user + `', '2026-11-26', now(), NULL), ('` + user + `', '2026-11-25', now(), now())`,
 	} {
 		if _, err := pool.Exec(ctx, q); err != nil {
-			t.Fatalf("before 0065: %v", err)
+			t.Fatalf("before 0067: %v", err)
 		}
 	}
 
@@ -48,14 +48,14 @@ func testMigrateSyncStatus(t *testing.T, supabase bool) {
 
 	// The rows from before read as they did: not closed for any reason.
 	if n := scalar[int](t, pool, `SELECT count(*) FROM score_queue WHERE closed_reason IS NULL`); n != 2 {
-		t.Errorf("the queue rows from before 0065 must have closed_reason NULL, %d of 2 do", n)
+		t.Errorf("the queue rows from before 0067 must have closed_reason NULL, %d of 2 do", n)
 	}
-	body, err := migrations.ReadFile("migrations/0065_sync_status.sql")
+	body, err := migrations.ReadFile("migrations/0067_sync_status.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(body), "\nSET LOCAL lock_timeout = '5s';\n") {
-		t.Error("0065 sets its lock_timeout (D116)")
+		t.Error("0067 sets its lock_timeout (D116)")
 	}
 
 	// The CHECK: NULL and 'no_consent' only, as the owner and as scoring.
@@ -78,10 +78,17 @@ func testMigrateSyncStatus(t *testing.T, supabase bool) {
 		 VALUES ('garmin', 'sleep', 'pending-1', '` + user + `', '{"secret": 1}', decode(repeat('ab', 32), 'hex'), 'pending', now() - interval '3 minutes'),
 		        ('garmin', 'sleep', 'pending-2', '` + user + `', '{"secret": 2}', decode(repeat('ab', 32), 'hex'), 'pending', now() - interval '1 minute'),
 		        ('garmin', 'sleep', 'pending-3', '` + other + `', '{"secret": 3}', decode(repeat('ab', 32), 'hex'), 'pending', now() - interval '9 minutes')`,
-		// A realistic spread for the plan below: most rows processed, over both accounts.
+		// The spread for the plan below: the account's older deliveries processed, and a backlog of other
+		// accounts' pending ones, all older than the account's. A walk of provider_inbox_state_received (state,
+		// received_at) would filter that whole backlog before it reached the account's first row; the partial
+		// index descends straight to (user_id, provider).
 		`INSERT INTO provider_inbox (provider, kind, record_id, user_id, payload, payload_sha256, state, received_at, processed_at)
-		 SELECT 'garmin', 'sleep', 'done-' || g, CASE WHEN g % 2 = 0 THEN '` + user + `' ELSE '` + other + `' END::uuid, NULL,
+		 SELECT 'garmin', 'sleep', 'done-' || g, '` + user + `', NULL,
 		        decode(repeat('cd', 32), 'hex'), 'processed', now() - g * interval '1 minute', now() - g * interval '1 minute'
+		 FROM generate_series(10, 2000) g`,
+		`INSERT INTO provider_inbox (provider, kind, record_id, user_id, payload, payload_sha256, state, received_at)
+		 SELECT 'garmin', 'sleep', 'backlog-' || g, '` + other + `', '{"secret": 4}',
+		        decode(repeat('ef', 32), 'hex'), 'pending', now() - g * interval '1 minute'
 		 FROM generate_series(10, 5000) g`,
 	} {
 		if _, err := pool.Exec(ctx, q); err != nil {
@@ -141,10 +148,11 @@ func testMigrateSyncStatus(t *testing.T, supabase bool) {
 	}
 
 	// The plan. The probe is "the earliest pending delivery of an account and provider": the partial index
-	// answers it with one descent. A table of 5000 rows is small enough that the planner may still prefer a
-	// sequential scan, so enable_seqscan is off for this session: the test asks whether the index CAN answer the
-	// query (the partial predicate is implied by state = 'pending', the key order serves min), not what the
-	// planner costs at this size. Literals, not parameters: a generic plan could not use the partial index.
+	// answers it with one descent. A table of 7000 rows is small enough that the planner may still prefer a
+	// sequential scan, so enable_seqscan is off for this session. With only a handful of pending rows the planner
+	// rightly takes provider_inbox_state_received (it reaches them as cheaply), which is why the fixture holds a
+	// backlog of another account's pending deliveries. Literals, not parameters: a generic plan could not use the
+	// partial index.
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +189,7 @@ func testMigrateSyncStatus(t *testing.T, supabase bool) {
 
 	// Idempotent: the file again changes nothing (one index, one constraint, the same grants).
 	if _, err := pool.Exec(ctx, string(body)); err != nil {
-		t.Fatalf("0065 a second time: %v", err)
+		t.Fatalf("0067 a second time: %v", err)
 	}
 	if n := scalar[int](t, pool, `SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'provider_inbox_user_pending'`); n != 1 {
 		t.Errorf("want one provider_inbox_user_pending after a rerun, got %d", n)

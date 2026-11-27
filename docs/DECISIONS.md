@@ -7231,7 +7231,7 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   calls it made that the outline left open. The user's answers of 2026-11-27: the N2R baseline, the briefing and
   the pilot's partner deliveries stay untracked, withdrawn consent makes scoring close the queue rows, offline is
   the app's concern.
-- **`score_queue.closed_reason` (migration 0065):** `NULL` or `'no_consent'`, a closed set (a new reason is a new
+- **`score_queue.closed_reason` (migration 0067):** `NULL` or `'no_consent'`, a closed set (a new reason is a new
   migration). It means something only together with `scored_at`: scoring sets both when it closes a row without
   scoring it (`Store.CloseQueue`), and `MarkScored` sets it back to `NULL` when a day is really scored. A row
   queued again (`scored_at = NULL`) may keep a stale value; every reader asks `scored_at IS NULL` first, so a
@@ -7261,7 +7261,7 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
 - **Why not a retention of the old rows instead:** the day window of D297 already stops such a row holding the
   button after two days. Closing it also removes it from `pending_days` (which the app's fallback for an older
   server reads), and it records why the row never got a score.
-- **Migration number:** 0065. Main ends at 0061; #259 holds 0062 and 0063, #260 holds 0062 to 0064.
+- **Migration number:** 0067. Main ends at 0063 (#259); #260 holds 0064 to 0066 and merges first.
 - **Cost of the route, uncached:** 5 queries, up from 4: the user row with its last device and today's score;
   the kinds; the queue (`pendingQueue`, the same primary-key range as before, with `queued_at` as one more
   column, and `PendingDays` reads it too); the connections (`SyncConnections`: the `connections` primary key,

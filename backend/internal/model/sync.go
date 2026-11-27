@@ -270,7 +270,8 @@ type TodayState struct {
 	ModelVersion string     `json:"model_version"`
 }
 
-// The sources of SyncStatus.sources: HealthKit, or a provider id of Connections (an open set, D297).
+// SyncSourceHealthKit is the HealthKit source of SyncStatus.sources; the others are provider ids of Connections
+// (an open set, D297).
 const SyncSourceHealthKit = "healthkit"
 
 // SyncSource.status; closed.
@@ -286,7 +287,8 @@ const (
 	FreshnessScoresPending = "scores_pending"
 )
 
-// SyncSource.reason of a provider; open. A gate's reason is its code (CodeConsentRequired, CodeInviteRequired).
+// SyncReasonNeedsReauth is a provider's SyncSource.reason; the set is open. A gate's reason is its code
+// (CodeConsentRequired, CodeInviteRequired).
 const SyncReasonNeedsReauth = "needs_reauth"
 
 // SyncSource is one way data reaches RYFT, in SyncStatus.sources (D297).

@@ -13,7 +13,7 @@ import (
 	"github.com/timkrebs/ryft/internal/model"
 )
 
-// The store's side of the sync status (0065, D297, D298): CloseQueue, MarkScored's closed_reason, ExpectedScoreSec
+// The store's side of the sync status (0067, D297, D298): CloseQueue, MarkScored's closed_reason, ExpectedScoreSec
 // without closed rows, and SyncConnections. Opt-in like the rest of the package (RYFT_TEST_POSTGRES_URL).
 
 type queueRow struct {

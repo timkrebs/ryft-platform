@@ -701,7 +701,11 @@ func TestSyncStatusDoesNotTrackN2RAndCoaching(t *testing.T) {
 		`INSERT INTO nutrition.wearable_links (provider, provider_user, user_id) VALUES ('garmin', 'fixture-pilot', $1)`,
 		`INSERT INTO nutrition.wearable_inbox (provider, provider_user, digest, body) VALUES ('garmin', 'fixture-pilot', '\x01', '{"n":1}'::jsonb)`,
 	} {
-		args := []any{u}
+		// Only the parameters the statement names: the inbox row has none (it is keyed by provider_user).
+		var args []any
+		if strings.Contains(q, "$1") {
+			args = append(args, u)
+		}
 		if strings.Contains(q, "$2") {
 			args = append(args, today)
 		}

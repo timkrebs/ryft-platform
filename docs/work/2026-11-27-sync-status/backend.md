@@ -8,8 +8,8 @@ Branch `feat/sync-status`, worktree `.worktrees/sync-status-backend`, from `main
 2. Withdrawn consent: scoring **closes** the queue rows of accounts without current consent, with a reason.
 3. Offline is the app's concern.
 
-## Migration `0065_sync_status.sql` (database-engineer)
-Main ends at 0061; #259 holds 0062/0063, #260 holds 0062–0064, so this PR takes 0065.
+## Migration `0067_sync_status.sql` (database-engineer)
+Main ends at 0063 (#259); #260 holds 0064–0066 and merges first, so this PR takes 0067 (renamed from 0065).
 - `GRANT SELECT (received_at) ON provider_inbox TO ryft_api;` (the api still cannot read `payload`, `record_id`)
 - `CREATE INDEX IF NOT EXISTS provider_inbox_user_pending ON provider_inbox (user_id, provider, received_at) WHERE state = 'pending';`
 - `ALTER TABLE score_queue ADD COLUMN IF NOT EXISTS closed_reason text CONSTRAINT score_queue_closed_reason_check CHECK (closed_reason IN ('no_consent'));`
