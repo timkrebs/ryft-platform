@@ -23,9 +23,10 @@
 -- session to another workout, or back to its own (store.ReleaseSessionWorkouts), and the rating moves with the
 -- session (SELECT of the two key columns, UPDATE of workout_id and updated_at; it never reads a rating's value).
 -- A completed session's own workout (source 'ryft-session') whose times were edited is updated in place
--- (store.EnsureSessionWorkout, the column grant UPDATE (start_at, end_at) on workouts below), not deleted and
--- inserted again, so its rating stays. Day strain does not use the rating (D293). notify gets nothing. The account's deletion and merge and the export read it from the store; ON DELETE CASCADE
--- on user_id is the safety net for the users row.
+-- (store.EnsureSessionWorkout, through the function scoring_follow_session_times below, which takes no times), not
+-- deleted and inserted again, so its rating stays. Day strain does not use the rating (D293). notify gets nothing.
+-- The account's deletion and merge and the export read it from the store; ON DELETE CASCADE on user_id is the
+-- safety net for the users row.
 --
 -- Additive: a new table, nothing renamed or dropped. Rollback = re-pin the old images; the table stays and nothing
 -- old reads it. The migrator runs the file in one transaction, so the foreign keys' locks on users and workouts
@@ -57,23 +58,32 @@ GRANT UPDATE (workout_id, updated_at) ON workout_ratings TO ryft_ingest;
 GRANT SELECT (user_id, workout_id) ON workout_ratings TO ryft_scoring;
 GRANT UPDATE (workout_id, updated_at) ON workout_ratings TO ryft_scoring;
 -- scoring: a completed session's own workout follows an edit of the session's times in place, so its rating stays.
--- The grant is per column, not per row, and 0011's restrictive row policies cover DELETE and INSERT only (an UPDATE
--- policy would also bind the load columns scoring writes on every workout), so a trigger limits the times to the
--- workouts scoring owns (source 'ryft-session'), on plain Postgres and on Supabase alike. It fires only for a
--- statement that sets start_at or end_at on another source's row, and refuses only ryft_scoring (ingest's upsert
--- moves HealthKit workouts). scoring still cannot change a workout's source, activity or owner.
-GRANT UPDATE (start_at, end_at) ON workouts TO ryft_scoring;
-
-CREATE OR REPLACE FUNCTION workouts_scoring_moves_own_only() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
-BEGIN
-    IF current_user = 'ryft_scoring' THEN
-        RAISE EXCEPTION 'ryft_scoring may move only the workouts it owns (source ryft-session)' USING ERRCODE = '42501';
-    END IF;
-    RETURN NEW;
-END $$;
+-- Scoring gets no column grant on start_at/end_at (a column grant is per column, not per row: it would let scoring
+-- rewrite any workout's times, and the session's own workouts of every account). It gets one function instead, which
+-- takes no times: it sets the workout of source 'ryft-session' to the times of the owner's completed session the
+-- workout belongs to (same user_id, workouts.session_id), the end as scoring reads it (ended_at, else the last
+-- completed set, else the start: scoring.SessionEnd), and reports whether it found such a session. SECURITY DEFINER
+-- (it writes with the owner's rights), a fixed search_path and schema-qualified names; EXECUTE for ryft_scoring only.
+-- The two statements below remove what an earlier draft of this file created (a column grant and a trigger).
+REVOKE UPDATE (start_at, end_at) ON workouts FROM ryft_scoring;
 DROP TRIGGER IF EXISTS workouts_scoring_moves_own_only ON workouts;
-CREATE TRIGGER workouts_scoring_moves_own_only BEFORE UPDATE OF start_at, end_at ON workouts
-    FOR EACH ROW WHEN (OLD.source <> 'ryft-session') EXECUTE FUNCTION workouts_scoring_moves_own_only();
+DROP FUNCTION IF EXISTS workouts_scoring_moves_own_only();
+
+CREATE OR REPLACE FUNCTION public.scoring_follow_session_times(p_user uuid, p_workout uuid) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+BEGIN
+    UPDATE public.workouts w SET start_at = s.started_at,
+        end_at = COALESCE(s.ended_at, GREATEST(s.started_at, (
+            SELECT max(st.completed_at) FROM public.session_sets st
+            JOIN public.session_exercises e ON e.user_id = st.user_id AND e.id = st.session_exercise_id
+            WHERE e.user_id = s.user_id AND e.session_id = s.id)))
+    FROM public.sessions s
+    WHERE w.user_id = p_user AND w.id = p_workout AND w.source = 'ryft-session' AND w.session_id IS NOT NULL
+      AND s.user_id = w.user_id AND s.id = w.session_id AND s.status = 'completed';
+    RETURN FOUND;
+END $$;
+REVOKE ALL ON FUNCTION public.scoring_follow_session_times(uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.scoring_follow_session_times(uuid, uuid) TO ryft_scoring;
 
 DROP POLICY IF EXISTS workout_ratings_services ON workout_ratings;
 CREATE POLICY workout_ratings_services ON workout_ratings TO ryft_api, ryft_ingest, ryft_scoring USING (true) WITH CHECK (true);
@@ -87,4 +97,6 @@ BEGIN
     END IF;
     ALTER TABLE workout_ratings ENABLE ROW LEVEL SECURITY;
     REVOKE ALL ON workout_ratings FROM anon, authenticated, service_role;
+    -- Supabase's default privileges give these roles EXECUTE on every new function in public: not on this one.
+    REVOKE ALL ON FUNCTION public.scoring_follow_session_times(uuid, uuid) FROM anon, authenticated, service_role;
 END $$;

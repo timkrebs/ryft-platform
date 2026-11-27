@@ -272,10 +272,16 @@ func addDays(date string, n int) string {
 
 // PutCheckin saves the check-in of one wake day (an idempotent upsert: the same report twice changes nothing,
 // created_at stays, updated_at moves only when the report does) and rescores it and the later check-ins within
-// 14 days, all in one transaction (D292). The handler has validated the report and the date.
-func (s *Store) PutCheckin(ctx context.Context, user uuid.UUID, date string, rep CheckinReport, now time.Time, score CheckinScorer) (model.RecoveryCheckin, error) {
+// 14 days, all in one transaction (D292). The handler has validated the report and the date. grant is the consent
+// that admitted the request: it is checked again inside the transaction under the consent lock (lockGrant), so a
+// withdrawal that committed after the admission leaves nothing stored (ErrHealthKitConsentChanged); nil only when
+// consent is not enforced.
+func (s *Store) PutCheckin(ctx context.Context, user uuid.UUID, grant *model.Consent, date string, rep CheckinReport, now time.Time, score CheckinScorer) (model.RecoveryCheckin, error) {
 	var out model.RecoveryCheckin
 	err := s.nutritionTx(ctx, user, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := lockGrant(ctx, tx, user, grant); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, lockCheckin, user); err != nil {
 			return err
 		}
@@ -757,9 +763,13 @@ func withRating(w *model.Workout, rpe *float64) {
 
 // PutWorkoutRating stores (or replaces) the user's rating of one of their workouts and returns the workout.
 // ErrNotFound when it is not the user's (or gone), ErrHiddenDuplicate for a hidden duplicate. The composite foreign
-// key keeps the rating the workout's owner's.
-func (s *Store) PutWorkoutRating(ctx context.Context, user, id uuid.UUID, rpe float64) (model.Workout, error) {
+// key keeps the rating the workout's owner's. grant is the admitting consent, checked again in the transaction as
+// PutCheckin does (ErrHealthKitConsentChanged).
+func (s *Store) PutWorkoutRating(ctx context.Context, user uuid.UUID, grant *model.Consent, id uuid.UUID, rpe float64) (model.Workout, error) {
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := lockGrant(ctx, tx, user, grant); err != nil {
+			return err
+		}
 		var hidden bool
 		err := tx.QueryRow(ctx, `SELECT w.duplicate_of IS NOT NULL AND w.source <> $3 AND EXISTS (SELECT 1 FROM workouts p
 			WHERE p.user_id = w.user_id AND p.id = w.duplicate_of AND p.duplicate_of IS NULL)

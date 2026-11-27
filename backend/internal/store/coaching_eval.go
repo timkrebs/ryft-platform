@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"time"
 
@@ -65,7 +66,10 @@ func (s *Store) captureCoachingDay(ctx context.Context, user uuid.UUID, key stri
 		}
 		day := parseN2RDay(key, n2r.Location)
 		yesterday := day.AddDate(0, 0, -1).Format(time.DateOnly)
-		h, err := readN2RHistory(ctx, tx, user, *n2r, yesterday, key, now)
+		// The projection, the evaluation and the calibration come from the day as if recovery.checkin were off, so
+		// they do not outlive the kill switch (D295). With the flag on, the plan the user is shown (a check-in's
+		// readiness can move it) is saved too, and the recovery-off one beside it when they differ (frozenPlan).
+		h, err := readN2RHistoryWith(ctx, tx, user, *n2r, yesterday, key, now, false)
 		if err != nil {
 			return err
 		}
@@ -73,12 +77,27 @@ func (s *Store) captureCoachingDay(ctx context.Context, user uuid.UUID, key stri
 		if !ok {
 			return nil
 		}
+		saved := frozenPlan{CoachingPlan: state.Plan}
+		on, err := recoveryOn(ctx, tx, user)
+		if err != nil {
+			return err
+		}
+		if on {
+			live, err := readN2RHistoryWith(ctx, tx, user, *n2r, yesterday, key, now, true)
+			if err != nil {
+				return err
+			}
+			if shown, ok := live.Coaching.plans[key]; ok && !reflect.DeepEqual(shown.Plan, state.Plan) {
+				off := state.Plan
+				saved = frozenPlan{CoachingPlan: shown.Plan, RecoveryOff: &off}
+			}
+		}
 		projection := score.N2R(h.input(key, false))
 		b, err := json.Marshal(projection)
 		if err != nil {
 			return err
 		}
-		data, err := json.Marshal(state.Plan)
+		data, err := json.Marshal(saved)
 		if err != nil {
 			return err
 		}

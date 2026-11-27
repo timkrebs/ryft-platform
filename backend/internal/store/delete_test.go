@@ -122,7 +122,7 @@ func seedUser(t *testing.T, st *Store, pool *pgxpool.Pool, id uuid.UUID) {
 		t.Fatal(err)
 	}
 	// Recovery without a watch (0064, 0065): a check-in, and the session rating of that workout.
-	if _, err := st.PutCheckin(ctx, id, now.Format(time.DateOnly), CheckinReport{Bedtime: now.Add(-8 * time.Hour), WakeTime: now, Quality: 6, Freshness: 6},
+	if _, err := st.PutCheckin(ctx, id, nil, now.Format(time.DateOnly), CheckinReport{Bedtime: now.Add(-8 * time.Hour), WakeTime: now, Quality: 6, Freshness: 6},
 		now, fakeScorer); err != nil {
 		t.Fatal(err)
 	}

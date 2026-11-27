@@ -78,14 +78,38 @@ func (h *handler) recoveryFlag(fn http.HandlerFunc) http.HandlerFunc {
 // recoveryConsent is the consent gate of the two writes: they store health data. CONSENT_ENFORCE=warn acts as on.
 func (h *handler) recoveryConsent(fn http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		consent := h.beta
-		if consent.Consent == config.ModeWarn {
-			consent.Consent = config.ModeOn
-		}
-		if gate.Consent(w, r, consent, userOf(r), "api") {
+		if gate.Consent(w, r, h.recoveryBeta(), userOf(r), "api") {
 			fn(w, r)
 		}
 	}
+}
+
+// recoveryBeta is the gate configuration of the two writes: warn acts as on.
+func (h *handler) recoveryBeta() config.Beta {
+	b := h.beta
+	if b.Consent == config.ModeWarn {
+		b.Consent = config.ModeOn
+	}
+	return b
+}
+
+// recoveryGrant is the consent that admitted the caller, for the store to check again in its write transaction
+// (D300); nil when consent is not enforced.
+func (h *handler) recoveryGrant(r *http.Request) *model.Consent {
+	if h.recoveryBeta().Consent != config.ModeOn {
+		return nil
+	}
+	return userOf(r).Consent
+}
+
+// recoveryConsentChanged answers consent_required, as the gate does, when err says the grant that admitted the write
+// was withdrawn or replaced before it committed (nothing was stored).
+func (h *handler) recoveryConsentChanged(w http.ResponseWriter, r *http.Request, err error) bool {
+	if !errors.Is(err, store.ErrHealthKitConsentChanged) {
+		return false
+	}
+	gate.Consent(w, r, h.recoveryBeta(), model.User{}, "api")
+	return true
 }
 
 // recoveryFail answers 500 without the store's error in the log: a Postgres error can quote a stored value.
@@ -183,10 +207,13 @@ func (h *handler) putCheckin(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusUnprocessableEntity, msg)
 		return
 	}
-	out, err := h.st.PutCheckin(r.Context(), userOf(r).ID, date, store.CheckinReport{
+	out, err := h.st.PutCheckin(r.Context(), userOf(r).ID, h.recoveryGrant(r), date, store.CheckinReport{
 		Bedtime: in.Bedtime.UTC(), WakeTime: in.WakeTime.UTC(), TZOffsetSec: *in.TZOffsetSec,
 		Quality: in.PerceivedSleepQuality, Freshness: in.PerceivedFreshness, Soreness: *in.Soreness,
 	}, now, scoreCheckin)
+	if h.recoveryConsentChanged(w, r, err) {
+		return
+	}
 	if err != nil {
 		recoveryFail(w, r, err)
 		return
@@ -285,8 +312,9 @@ func (h *handler) putWorkoutRPE(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusUnprocessableEntity, "session_rpe must be 1 to 10 in steps of 0.5")
 		return
 	}
-	out, err := h.st.PutWorkoutRating(r.Context(), userOf(r).ID, id, *in.SessionRPE)
+	out, err := h.st.PutWorkoutRating(r.Context(), userOf(r).ID, h.recoveryGrant(r), id, *in.SessionRPE)
 	switch {
+	case h.recoveryConsentChanged(w, r, err):
 	case errors.Is(err, store.ErrNotFound):
 		httpx.WriteError(w, http.StatusNotFound, "workout not found")
 	case errors.Is(err, store.ErrHiddenDuplicate):

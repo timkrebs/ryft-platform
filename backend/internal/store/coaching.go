@@ -286,6 +286,18 @@ type frozenCoachDay struct {
 	state            coachingPlanDay
 	tdee, projection float64
 	score            *model.N2RScore
+	// recoveryOff is the day's plan without the check-in's readiness, saved beside the plan shown when a check-in
+	// moved it (frozenPlan); nil when it did not or the flag was off at capture.
+	recoveryOff *model.CoachingPlan
+}
+
+// frozenPlan is daily_energy_states.plan: the plan the user was shown and, when the flag recovery.checkin was on
+// and a check-in's readiness changed it, the plan without that readiness (recovery_off). A reader with the flag off
+// (the stored night always) restores recovery_off, so a check-in does not outlive the kill switch through a saved
+// plan (D295).
+type frozenPlan struct {
+	model.CoachingPlan
+	RecoveryOff *model.CoachingPlan `json:"recovery_off,omitempty"`
 }
 
 func readFrozenCoachDays(ctx context.Context, tx pgx.Tx, user uuid.UUID, start, end string, asOf time.Time) (map[string]frozenCoachDay, error) {
@@ -303,9 +315,11 @@ func readFrozenCoachDays(ctx context.Context, tx pgx.Tx, user uuid.UUID, start, 
 		if err := rows.Scan(&day, &x.tdee, &x.projection, &plan, &x.state.Source, &x.state.Sport, &prediction, &x.goal, &x.version); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal(plan, &x.state.Plan); err != nil {
+		var saved frozenPlan
+		if err := json.Unmarshal(plan, &saved); err != nil {
 			return nil, err
 		}
+		x.state.Plan, x.recoveryOff = saved.CoachingPlan, saved.RecoveryOff
 		if prediction != nil {
 			if err := json.Unmarshal(prediction, &x.score); err != nil {
 				return nil, err
@@ -517,6 +531,9 @@ func loadCoaching(ctx context.Context, tx pgx.Tx, user uuid.UUID, p n2rProfile, 
 			Physiology: phys, Adaptive: adapt, Recovery: recovery, Feedback: f, Source: source, Sport: sport}
 		if saved, ok := frozen[key]; ok && key != asOf.In(p.Location).Format(time.DateOnly) {
 			state.Plan = saved.state.Plan
+			if !withRecovery && saved.recoveryOff != nil {
+				state.Plan = *saved.recoveryOff
+			}
 		}
 		out.plans[key] = state
 	}

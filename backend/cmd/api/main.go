@@ -313,7 +313,7 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	// app token, the beta gate, then the routes. DELETE /v1/me above and /v1/admin/* below are not
 	// wrapped: they never need an app token.
 	attest := appAttestGate(o.attest, log)
-	mux.Handle("/v1/", redactNutritionPath(auth.Middleware(authOpts, attest(betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))))
+	mux.Handle("/v1/", redactPrivatePath(auth.Middleware(authOpts, attest(betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))))
 	// The training import gets 50 s instead of readTimeout, like a sync (D129).
 	mux.Handle("POST /v1/train/import", importRoute(authOpts, o.gate, attest, h.trainImport))
 	// The operator's routes: ADMIN_API_KEY, or an allow-listed operator's Supabase token (only with

@@ -298,7 +298,10 @@ func TestSessionWorkoutsAndAccountDeletion(t *testing.T) {
 	if err := st.EnsureSessionWorkout(ctx, a, wid, s.ID, t0, t0.Add(time.Hour), 42); err != nil {
 		t.Fatal(err)
 	}
-	// New times replace the workout.
+	// New times replace the workout: the session's, which 0065's function reads (it takes none).
+	if _, err := pool.Exec(ctx, `UPDATE sessions SET ended_at=$3 WHERE user_id=$1 AND id=$2`, a, s.ID, t0.Add(50*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.EnsureSessionWorkout(ctx, a, wid, s.ID, t0, t0.Add(50*time.Minute), 40); err != nil {
 		t.Fatal(err)
 	}

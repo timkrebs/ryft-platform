@@ -62,7 +62,7 @@ func TestCheckinIsAnIdempotentUpsertAndRescoresTheLaterOnes(t *testing.T) {
 	now := utc("2026-11-26T10:00:00Z")
 	put := func(day string, quality int) model.RecoveryCheckin {
 		t.Helper()
-		out, err := st.PutCheckin(ctx, u, day, report(day, quality), now, fakeScorer)
+		out, err := st.PutCheckin(ctx, u, nil, day, report(day, quality), now, fakeScorer)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -189,7 +189,7 @@ func TestRecoveryStatusFollowsTheWearableNight(t *testing.T) {
 	}
 	put := func() model.RecoveryCheckin {
 		t.Helper()
-		out, err := st.PutCheckin(ctx, u, day, report(day, 7), at("10:00"), fakeScorer)
+		out, err := st.PutCheckin(ctx, u, nil, day, report(day, 7), at("10:00"), fakeScorer)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -310,7 +310,7 @@ func TestRecoveryStatusSuggestsTimes(t *testing.T) {
 	// Two check-ins are not enough, three are: bed 22:30, 23:30 and 00:40 (the night after), wake 06:00, 06:30, 07:00.
 	put := func(day, bed, wake string) {
 		t.Helper()
-		_, err := st.PutCheckin(ctx, u, day, CheckinReport{Bedtime: utc(bed), WakeTime: utc(wake), Quality: 7, Freshness: 6}, now, fakeScorer)
+		_, err := st.PutCheckin(ctx, u, nil, day, CheckinReport{Bedtime: utc(bed), WakeTime: utc(wake), Quality: 7, Freshness: 6}, now, fakeScorer)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -353,7 +353,7 @@ func TestNutritionBedtimePrecedence(t *testing.T) {
 	}
 	// A check-in for the morning of the 25th: bed 22:00 on the 24th.
 	rep := CheckinReport{Bedtime: utc("2026-11-24T22:00:00Z"), WakeTime: utc("2026-11-25T06:00:00Z"), Quality: 6, Freshness: 6}
-	if _, err := st.PutCheckin(ctx, u, "2026-11-25", rep, now, fakeScorer); err != nil {
+	if _, err := st.PutCheckin(ctx, u, nil, "2026-11-25", rep, now, fakeScorer); err != nil {
 		t.Fatal(err)
 	}
 	if at, _ := bedtimes(); len(at) != 0 {
@@ -429,12 +429,12 @@ func TestWorkoutRatingLifeAndOwnership(t *testing.T) {
 	own := seedWorkout(t, pool, u, seedW{source: "Watch", start: at})
 	theirs := seedWorkout(t, pool, other, seedW{source: "Watch", start: at})
 
-	w, err := st.PutWorkoutRating(ctx, u, own, 8)
+	w, err := st.PutWorkoutRating(ctx, u, nil, own, 8)
 	if err != nil || w.SessionRPE == nil || *w.SessionRPE != 8 || w.SessionRPELoad == nil || *w.SessionRPELoad != 480 || w.ID != own {
 		t.Fatalf("rate: %+v %v", w, err)
 	}
 	// It replaces; the list reads show it; another account's workout is not found, for a write and a delete.
-	if w, err = st.PutWorkoutRating(ctx, u, own, 6.5); err != nil || *w.SessionRPE != 6.5 || *w.SessionRPELoad != 390 {
+	if w, err = st.PutWorkoutRating(ctx, u, nil, own, 6.5); err != nil || *w.SessionRPE != 6.5 || *w.SessionRPELoad != 390 {
 		t.Fatalf("replace: %+v %v", w, err)
 	}
 	list, err := st.ListWorkoutsBetween(ctx, u, at.Add(-time.Hour), at.Add(time.Hour), false)
@@ -450,10 +450,10 @@ func TestWorkoutRatingLifeAndOwnership(t *testing.T) {
 	if row, err := st.Workout(ctx, u, own); err != nil || row.SessionRPE == nil || *row.SessionRPE != 6.5 {
 		t.Fatalf("the workout: %+v %v", row, err)
 	}
-	if _, err := st.PutWorkoutRating(ctx, u, theirs, 5); !errors.Is(err, ErrNotFound) {
+	if _, err := st.PutWorkoutRating(ctx, u, nil, theirs, 5); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("rating another account's workout: %v", err)
 	}
-	if _, err := st.PutWorkoutRating(ctx, u, uuid.New(), 5); !errors.Is(err, ErrNotFound) {
+	if _, err := st.PutWorkoutRating(ctx, u, nil, uuid.New(), 5); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("rating an unknown workout: %v", err)
 	}
 	if err := st.DeleteWorkoutRating(ctx, u, theirs); !errors.Is(err, ErrNotFound) {
@@ -468,7 +468,7 @@ func TestWorkoutRatingLifeAndOwnership(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE workouts SET duplicate_of=$2 WHERE user_id=$1 AND id=$3`, u, own, dup); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.PutWorkoutRating(ctx, u, dup, 5); !errors.Is(err, ErrHiddenDuplicate) {
+	if _, err := st.PutWorkoutRating(ctx, u, nil, dup, 5); !errors.Is(err, ErrHiddenDuplicate) {
 		t.Fatalf("a hidden duplicate: %v", err)
 	}
 
@@ -644,6 +644,10 @@ func TestSessionWorkoutTimeEditKeepsTheRating(t *testing.T) {
 	session := uuid.New()
 	own := train.SessionWorkoutID(u, session)
 	at := utc("2026-11-25T17:00:00Z")
+	if _, err := pool.Exec(ctx, `INSERT INTO sessions (user_id, id, started_at, ended_at, status) VALUES ($1, $2, $3, $3::timestamptz + interval '1 h', 'completed')`,
+		u, session, at); err != nil { // the times come from the session (0065's function takes none)
+		t.Fatal(err)
+	}
 	if err := scoring.EnsureSessionWorkout(ctx, u, own, session, at, at.Add(time.Hour), 42); err != nil {
 		t.Fatal(err)
 	}
@@ -653,6 +657,10 @@ func TestSessionWorkoutTimeEditKeepsTheRating(t *testing.T) {
 	}
 	// The same times again change nothing; new times and load follow in place.
 	if err := scoring.EnsureSessionWorkout(ctx, u, own, session, at, at.Add(time.Hour), 42); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE sessions SET started_at=$3, ended_at=$4 WHERE user_id=$1 AND id=$2`,
+		u, session, at.Add(10*time.Minute), at.Add(50*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if err := scoring.EnsureSessionWorkout(ctx, u, own, session, at.Add(10*time.Minute), at.Add(50*time.Minute), 30); err != nil {
@@ -688,7 +696,7 @@ func TestRecoveryRowsFollowAMerge(t *testing.T) {
 		user uuid.UUID
 		day  string
 	}{{from, "2026-11-24"}, {from, "2026-11-25"}, {to, "2026-11-25"}} {
-		if _, err := st.PutCheckin(ctx, c.user, c.day, report(c.day, 6), now, fakeScorer); err != nil {
+		if _, err := st.PutCheckin(ctx, c.user, nil, c.day, report(c.day, 6), now, fakeScorer); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -745,7 +753,7 @@ func TestStoredN2RNightIgnoresACheckinBedtime(t *testing.T) {
 	// (db.registerTypes adds it on the services' pools), so PutFlag's allow-list would not encode here.
 	recoveryFlag(t, New(root), a)
 	rep := CheckinReport{Bedtime: utc("2026-10-18T21:30:00Z"), WakeTime: utc("2026-10-19T05:30:00Z"), Quality: 6, Freshness: 6}
-	if _, err := st.PutCheckin(ctx, a, "2026-10-19", rep, now, fakeScorer); err != nil {
+	if _, err := st.PutCheckin(ctx, a, nil, "2026-10-19", rep, now, fakeScorer); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.refreshN2RNight(ctx, dueNight{UserID: a, Date: "2026-10-19"}, now, policy); err != nil {

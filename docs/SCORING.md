@@ -749,6 +749,12 @@ Confounders (`periodization.CheckinConfounders`): the D − 1 N2R tags `alcohol_
 check-in never yields `AUTONOMIC_FATIGUE`; `CoachingBriefing.readiness_display` (`periodization.ReadinessDisplay`)
 shows that HRV state as `LOW_RECOVERY_UNEXPLAINED`.
 
+**Saved plans and the kill switch** (D295): the coaching tick saves a day's plan (`daily_energy_states.plan`) as
+the user was shown it and, when a check-in's readiness changed it, the plan without that readiness beside it
+(`recovery_off`). A reader with `recovery.checkin` off, and the stored night always, restores `recovery_off`, so
+a past day's N2R equals that of an account that never had the flag. The saved N2R projection, the evaluation row
+and the calibration are computed as if the flag were off.
+
 ### Session RPE
 
 A workout the user rates 1–10 (halves; `PUT /v1/workouts/{id}/rpe`) has Foster's **session load**
@@ -768,7 +774,10 @@ constants (0.13 at RPE 3, 0.32 at 8), so one factor overstates easy sessions up 
 | RPE 8 (480 AU) | **151** | 143 | 157 |
 | RPE 3 (180 AU) | 23 | | |
 
-Heart rate or power, when present, wins and the rating only shows. **Day strain does not use the rating**
+Heart rate or power, when present, wins and the rating only shows. When the coaching load's reconciliation
+(`wearables.Reconcile`) keeps another copy of a rated session (a partner recording ranks above the app's copy), the
+kept copy takes the rating if it has none, so the rating counts once whichever copy wins; that copy's own heart
+rate or power still wins over it. **Day strain does not use the rating**
 (decided 2026-11-27, D293): `DailyScore.strain`, its sleep-need top-up and `WorkoutDetail.trimp` stay heart-rate
 and muscular-load based, so no stored daily number moves. Net energy is not moved by the rating either.
 

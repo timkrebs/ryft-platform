@@ -33,23 +33,47 @@ func (s *Store) healthKitTx(ctx context.Context, user uuid.UUID, grant *model.Co
 		if _, err := tx.Exec(ctx, lockApply, user); err != nil {
 			return err
 		}
-		if grant != nil {
-			var current model.Consent
-			err := tx.QueryRow(ctx, `SELECT policy_version, granted_at FROM public.consents
-				WHERE user_id=$1 AND kind='health_processing' AND revoked_at IS NULL
-				ORDER BY granted_at DESC LIMIT 1`, user).Scan(&current.PolicyVersion, &current.GrantedAt)
-			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrHealthKitConsentChanged
-			}
-			if err != nil {
-				return err
-			}
-			if current.PolicyVersion != grant.PolicyVersion || !current.GrantedAt.Equal(grant.GrantedAt) {
-				return ErrHealthKitConsentChanged
-			}
+		if err := requireGrant(ctx, tx, user, grant); err != nil {
+			return err
 		}
 		return fn(tx)
 	})
+}
+
+// lockGrant is what a write of health data outside healthKitTx does first: with a grant, take lockApply (the lock
+// RevokeConsent takes) and check the grant under it. A nil grant takes no lock: consent is not enforced.
+func lockGrant(ctx context.Context, tx pgx.Tx, user uuid.UUID, grant *model.Consent) error {
+	if grant == nil {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, lockApply, user); err != nil {
+		return err
+	}
+	return requireGrant(ctx, tx, user, grant)
+}
+
+// requireGrant checks, inside tx, that grant is still the user's current health-processing consent, as
+// ErrHealthKitConsentChanged when it was revoked or replaced. A nil grant is reserved for explicit unenforced modes.
+// The caller holds lockApply, the lock RevokeConsent takes, so a withdrawal either committed before the check
+// (the write is refused) or waits for the write's transaction. The recovery writes use it too (D300).
+func requireGrant(ctx context.Context, tx pgx.Tx, user uuid.UUID, grant *model.Consent) error {
+	if grant == nil {
+		return nil
+	}
+	var current model.Consent
+	err := tx.QueryRow(ctx, `SELECT policy_version, granted_at FROM public.consents
+		WHERE user_id=$1 AND kind='health_processing' AND revoked_at IS NULL
+		ORDER BY granted_at DESC LIMIT 1`, user).Scan(&current.PolicyVersion, &current.GrantedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrHealthKitConsentChanged
+	}
+	if err != nil {
+		return err
+	}
+	if current.PolicyVersion != grant.PolicyVersion || !current.GrantedAt.Equal(grant.GrantedAt) {
+		return ErrHealthKitConsentChanged
+	}
+	return nil
 }
 
 // WriteHealthKitRecords stores the request's device and records under the same

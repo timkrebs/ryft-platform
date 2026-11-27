@@ -58,7 +58,7 @@ func TestMergeUsers(t *testing.T) {
 		user uuid.UUID
 		day  string
 	}{{from, "2026-11-24"}, {from, "2026-11-25"}, {to, "2026-11-25"}} {
-		if _, err := st.PutCheckin(ctx, c.user, c.day, report(c.day, 6), now, fakeScorer); err != nil {
+		if _, err := st.PutCheckin(ctx, c.user, nil, c.day, report(c.day, 6), now, fakeScorer); err != nil {
 			t.Fatal(err)
 		}
 	}
