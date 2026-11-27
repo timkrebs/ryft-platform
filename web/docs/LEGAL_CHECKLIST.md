@@ -22,7 +22,8 @@ usage analytics; D290, "Amended 2026-11-27"). Sources: `docs/work/2026-11-26-leg
 support: 1; after the review of #252: Google sign-in in terms and support, the older email accounts and the
 deregistration-under-withdrawn-consent gap in privacy; the revision of 2026-11-27 closed four in privacy: PostHog's
 GeoIP and session recording, its retention, its transfer basis, and what deleting an account does to its events),
-plus 1 in `messages/en.json` (`legal.contact.responseTodo`, the response time on `/support`): **25 in all.** The
+plus 3 in `messages/en.json` (`legal.contact.responseTodo`, the response time on `/support`; `licenses.holderTodo`,
+the rights holder on `/licenses`; `beta.missingEmail`): **27 in all.** The
 older pages have none.
 
 ---
@@ -60,7 +61,7 @@ the new texts, this repository's new files, variables or commits, and the spots 
 | F5 | Sign-in is Sign in with Apple or Google. **Your setting of 2026-11-26** (email auth off); the app at ea52758 still has the email screens and no Google sign-in, the platform has no Google path | facts.md, rows 1-2 |
 | F6 | Mail for `support@ryftlab.de` is Microsoft 365, subscribed through GoDaddy; no sign-in emails are sent any more | D214, D239; your setting |
 | F7 | The food diary exists on the platform and is dark (`nutrition.diary_enabled` and `nutrition.enabled` at 0 %); the app has no nutrition screen. CGM, N2R and coaching are dark too and left to a later version | D265-D280; migrations 0043-0052; facts.md |
-| F8 | The food catalog is USDA FoodData Central (Foundation, SR Legacy), Open Food Facts and, since 2026-11-27, the BLS 4.0 of the Max Rubner-Institut (CC BY 4.0, imported in full). The attribution is on `/licenses` (Data sources); privacy §6, terms and support name it | D296; `scripts/etl/transform.py`; `docs/architecture/nutrition/06-data-source-licensing.md` |
+| F8 | The food catalog is USDA FoodData Central (Foundation, SR Legacy), Open Food Facts and, since 2026-11-27, the BLS 4.0 of the Max Rubner-Institut (CC BY 4.0, imported; twins of curated staples left out). The attribution is on `/licenses` (Data sources); privacy §6, terms and support name it | D296; `scripts/etl/transform.py`; `docs/architecture/nutrition/06-data-source-licensing.md` |
 | F9 | Usage analytics: PostHog EU Cloud (eu.i.posthog.com), opt-in, a random installation id, Profile → Privacy → Share usage analytics; the events, IP discarded and no location derived, the EU Standard Contractual Clauses in PostHog's DPA, 12 months. Privacy §7 is the app's text (`app/docs/ANALYTICS.md`) | D231; app `docs/ANALYTICS.md`; the user's answers of 2026-11-27 |
 | F10 | Report a problem: Profile → About → Report a problem; diagnostics on by default, no health values | app ea52758 `Ryft/Features/Profile/ReportProblemView.swift:313, 325-346` |
 | F11 | Export: account, days, workouts, sessions, manual entries; no journal, nutrition or connections | app ea52758 `Ryft/Features/Profile/DataExport.swift:14-33` |

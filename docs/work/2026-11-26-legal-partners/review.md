@@ -1,3 +1,22 @@
+# Review — PR #252, the 2026-11-27 revision (commit 6158cf9; code-reviewer and security-privacy-reviewer, one pass each)
+
+| # | Sev | Where | Finding | Fix | State |
+|---|---|---|---|---|---|
+| R1 | blocker (code) / should (privacy) | privacy:17, :28, :114 | Device check described as running; production is `APP_ATTEST=off` until #263 (17.3), which needs this text in force first | "RYFT is introducing a device check…"; §10 "helps protect, as it is introduced"; it stays off §2's list (true in every state) | fixed |
+| R2 | should | privacy:28 | warn line also logs `mode`, `route_group`, `method`, `app_device`, `request_id` (`backend/internal/gate/appattest.go:109-118`); the request id links to the per-request log with the account id | name them | fixed |
+| R3 | should | privacy:25 | check-in row also stores `components` (incl. yesterday's N2R), `acute_drop`, `drop_reason`, `confounders`, `model_version` (0064); with the flag on, a check-in feeds the N2R bedtime and coaching readiness (API.md, D300), which this version doesn't describe | name the stored fields; ops rule: no check-in tester in the N2R/coaching pilot until the version that describes it (STATUS, D290, PR) | fixed (text) / rule recorded |
+| R4 | should | privacy:93 | "if you give us the ID": the app never shows it | "the app does not show the ID, so we cannot find your events" (app lead to mirror in ANALYTICS.md) | fixed |
+| R5 | should | LEGAL_CHECKLIST:25, D290, STATUS | 3 markers in en.json, not 1 → 27 in all | recount | fixed |
+| R6 | should | privacy:4 | `effective: '2026-11-26'` is before any merge | user sets it to the merge date in the merge commit's PR, or accepts the version date (PR note) | open (user) |
+| R7 | nit | privacy:82 | error events also carry the server's error code (`AnalyticsEvent.swift:33`) | "by its type or error code" | fixed |
+| R8 | nit | Licenses.tsx:48 | "DOI:" hard-coded | `licenses.doi` in en.json | fixed |
+| R9 | nit | LEGAL_CHECKLIST:63 | "imported in full" vs foods left out | "imported" | fixed |
+| R10 | nit | partners.md, facts.md | cite the pre-renumbering sections | note in revision-2026-11-27.md | fixed |
+| R11 | nit | privacy:75 vs :50 | "§ 25(1) TDDDG" vs "Section 25(1)"; "objection" under consent | kept verbatim (the app's text) | won't fix |
+| R12 | note (app) | app `OnboardingSteps.swift:294-325` | consent checkbox says "health data from Apple Health"; check-ins are typed in; "Export… everything" vs on-request | iOS lead, before `recovery.checkin` goes on | open (app) |
+
+Re-consent (privacy reviewer): the version bump is the right, conservative choice; new Art. 9 categories under explicit consent, and the check-in writes require consent to the policy in force (D300).
+
 # Review — PR #252 (code-reviewer, one pass, 2026-11-26)
 
 | # | Sev | Where | Finding | Fix | State |

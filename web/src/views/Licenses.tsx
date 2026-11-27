@@ -45,7 +45,7 @@ export function LicensesPage({ locale }: { locale: Locale }) {
           <ul className={styles.credits}>
             <li>
               <p>
-                {t.blsCitation} DOI: <a href={t.blsDoiUrl}>{t.blsDoi}</a>
+                {t.blsCitation} {t.doi} <a href={t.blsDoiUrl}>{t.blsDoi}</a>
               </p>
               <p>{t.blsChanges}</p>
               <p>

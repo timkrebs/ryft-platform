@@ -6921,14 +6921,19 @@ PR is no longer a draft held for the answers. The version stays `2026-11-26`: it
 id is re-used, and `PRIVACY_POLICY_VERSION`, `privacy-versions.json`, `config.env` and `docker-compose.yml` do not
 change. Merging still bumps `PRIVACY_POLICY_VERSION` from 2026-10-26, so every user is asked to consent again. The
 privacy text now matches today's RYFT (sources: `docs/work/2026-11-26-legal-partners/revision-2026-11-27.md`):
-- **App Attest goes to `warn`.** §2 no longer lists the device check as not yet available. §3 says the check runs;
-  while it is being introduced a request without a valid check is only recorded and still answered, later it is
-  refused (`on`). The recorded line adds the reason and the app's build number (`docs/OPERATIONS.md` §17.4: no
-  account, key or token). The `TODO(user)` for the § 25 TDDDG basis stays in §5.
+- **App Attest goes to `warn` (#263, after this merge).** §2 no longer lists the device check as not yet available.
+  §3 says RYFT is introducing it: at first a request without a valid check is only recorded and still answered,
+  later it is refused (`on`). That holds under `off` (until #263), `warn` and `on`; §10 says the check "helps
+  protect" the servers "as it is introduced". The recorded line names the reason, the app's build number, the
+  device header's presence, the method and route group, and the request id that links it to the request's log
+  entry (`backend/internal/gate/appattest.go`; no account, key or token). The `TODO(user)` for the § 25 TDDDG basis
+  stays in §5.
 - **The no-watch morning check-in** (code live, flag off; D291-D295, D299): the text of
   `docs/work/2026-11-26-no-watch-recovery/implementation.md` → Privacy, verbatim, in §2, §3 (a new bullet, and what
   RYFT computes), §5 (the health-data basis names the check-in, Art. 9(2)(a)), §9 (morning check-ins by request)
-  and §12 (an estimate is not a measurement). Not in it: what waits for the version that describes N2R and coaching.
+  and §12 (an estimate is not a measurement); §3 also names the stored components, the drop flag and reason, the
+  evening's journal confounders and the model version (migration 0064). Not in it: what waits for the version that
+  describes N2R and coaching, so until then no tester on `recovery.checkin` who is in the N2R or coaching pilot.
 - **BLS 4.0 (CC BY 4.0, imported, D296).** §6 names the Bundeslebensmittelschlüssel (BLS) 4.0 of the Max
   Rubner-Institut as an imported source (no more "once German staples are added", also in terms and support). The
   licences page has a new "Data sources" group with the citation, the licence link and the DOI link.
@@ -6939,10 +6944,15 @@ privacy text now matches today's RYFT (sources: `docs/work/2026-11-26-legal-part
   under the EU-U.S. Data Privacy Framework could not be confirmed, so the DPF is not named. IP discarded and no
   location derived, no screen recordings, retention 12 months, the DPA accepted. §3 and §5 point to §7; §6 and §8
   carry the settled facts. Deleting an account does not reach the events at PostHog: their random id is not linked
-  to the account (Art. 11 GDPR).
+  to the account and the app does not show it (Art. 11 GDPR; the app's text said "if you give us the ID", which a
+  user cannot do). Error events name their type or error code.
+- **Re-consent:** the version bump stays, the conservative path. The check-in adds Art. 9 data under the existing
+  explicit consent (same purpose: computing scores), so no new consent purpose is needed, but the consent must
+  name it, and the check-in writes require consent to the policy in force (D300). App Attest (Art. 6(1)(f)) and
+  the analytics section (its own opt-in) are information duties and would not need it on their own.
 - **`TODO(user)` closed: 4** (PostHog's GeoIP and session recording, its retention, its transfer basis, and what
   deleting an account does to its events). 24 remain in the four files (privacy 18, terms 2, Impressum 3, support
-  1), plus 1 in `messages/en.json`. The markers that need the user's details (controller, Impressum, Microsoft and
+  1), plus 3 in `messages/en.json`. The markers that need the user's details (controller, Impressum, Microsoft and
   GoDaddy, Supabase, DPO, authority) are unchanged.
 
 ## D286 — The production smoke signs in as a Google service account, mapped to the smoke account only (2026-11-26)
