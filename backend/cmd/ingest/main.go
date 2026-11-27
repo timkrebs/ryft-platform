@@ -400,7 +400,8 @@ const (
 // sample types and sleep stages (an app reading a new HealthKit type keeps
 // syncing instead of failing with 422), records whose source is the reserved
 // ryft-direct-<provider> of a direct connection (D257: a sync can neither mimic one
-// nor overwrite its rows; counted unknown_type), and records outside the window.
+// nor overwrite its rows; counted unknown_type), Fitness samples outside their
+// plausibility bound (D312; counted unknown_type), and records outside the window.
 func screen(req *model.SyncRequest, now time.Time) model.SyncIgnored {
 	var ig model.SyncIgnored
 	outside := func(start, end time.Time) bool {
@@ -413,7 +414,7 @@ func screen(req *model.SyncRequest, now time.Time) model.SyncIgnored {
 			ig.Samples.UnknownType++
 		case outside(s.Start, s.End):
 			ig.Samples.OutsideWindow++
-		case s.WasUserEntered && s.Type != model.SampleBodyMass:
+		case s.WasUserEntered && s.Type != model.SampleBodyMass, implausible(s):
 			ig.Samples.UnknownType++
 		default:
 			samples = append(samples, s)

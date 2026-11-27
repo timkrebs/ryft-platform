@@ -113,6 +113,27 @@ func TestScreen(t *testing.T) {
 		req.Samples[4].Type != model.SampleBodyMass || !req.Samples[4].WasUserEntered {
 		t.Fatal("valid fitness samples and user-entered body mass should pass screening")
 	}
+	// D312: the Fitness types' per-sample bounds drop and count, both ends inclusive; validate refuses none of them.
+	bounded := model.SyncRequest{DeviceID: uuid.New(), Samples: []model.Sample{
+		{Type: model.SampleBasalEnergy, Start: now, End: now, Value: 0},
+		{Type: model.SampleBasalEnergy, Start: now, End: now, Value: 5000},
+		{Type: model.SampleBasalEnergy, Start: now, End: now, Value: 5000.1},
+		{Type: model.SampleBasalEnergy, Start: now, End: now, Value: -0.1},
+		{Type: model.SampleHeartRateRecovery, Start: now, End: now, Value: 120},
+		{Type: model.SampleHeartRateRecovery, Start: now, End: now, Value: 120.5},
+		{Type: model.SampleHeartRateRecovery, Start: now, End: now, Value: -1},
+		{Type: model.SampleActiveEnergy, Start: now, End: now, Value: 9000}}}
+	if err := validate(&bounded); err != nil {
+		t.Fatalf("an implausible Fitness sample must not be refused: %v", err)
+	}
+	if ig := screen(&bounded, now); ig.Samples != (model.IgnoredCounts{UnknownType: 4}) || len(bounded.Samples) != 4 {
+		t.Fatalf("bounds: ignored %+v, kept %d", ig.Samples, len(bounded.Samples))
+	}
+	for i, want := range []float64{0, 5000, 120, 9000} {
+		if bounded.Samples[i].Value != want {
+			t.Errorf("kept[%d] = %v, want %v", i, bounded.Samples[i].Value, want)
+		}
+	}
 	// An unknown type no longer fails the sync (it is ignored instead).
 	if err := validate(&model.SyncRequest{DeviceID: uuid.New(), Samples: []model.Sample{{Type: "x", Start: now, End: now}}}); err != nil {
 		t.Fatalf("validate: %v", err)

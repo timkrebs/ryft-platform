@@ -7537,9 +7537,8 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   allow-list. The lookup runs only when a request carries one of the three types or their cursor.
 - **`body_mass`:** stored when the pilot allows it (unchanged) or the Fitness gate does. Otherwise the three types,
   and a cursor for their stream, are dropped as `ignored.samples.unknown_type`. The answer is `200` and the rest of
-  the request is unchanged. No new `422`: the new types get no range check, like the other quantities, and scoring
-  (PRs 4 and 5) filters implausible values when it reads them. `was_user_entered` stays dropped for every type but
-  `body_mass`.
+  the request is unchanged. No new `422`. `basal_energy` and `heart_rate_recovery` get a per-sample bound that drops
+  and counts, never refuses (D312). `was_user_entered` stays dropped for every type but `body_mass`.
 - **The grant is re-checked whenever the gate admits a type:** with `CONSENT_ENFORCE` off or `warn` a sync normally
   writes without a grant. When the Fitness gate admits a stream, the request runs as under `on`: both write
   transactions require the exact consent the gate read (`requireGrant`, under the withdrawal lock). A withdrawal
@@ -7561,3 +7560,22 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   after the flag is turned off (tested).
 - **Rollback:** revert. Migration 0069 only adds a flag row and a function, and nothing is stored while the policy
   list is empty.
+
+## D312 — A per-sample bound for basal_energy and heart_rate_recovery: dropped and counted, not refused (C1 PR 3, 2026-11-27)
+
+PR 4 (#270) sums `basal_energy` into the day's resting energy and PR 5 (#271) averages `heart_rate_recovery` into
+`hrr_bpm`, so one garbage sample would move a served number. Ingest now bounds both per sample (`implausible` in
+`cmd/ingest/fitness_types.go`, applied in `screen`):
+- **Bounds:** `basal_energy` 0–5 000 kcal (no single sample holds more than a day's resting energy, and 5 000 kcal is
+  above any adult's day); `heart_rate_recovery` 0–120 bpm (a one-minute drop above that is a sensor or unit error).
+  Both ends are inclusive. No rate bound per minute of span: HealthKit slices vary in length and point samples exist.
+- **Dropped, not refused:** an out-of-range sample is not stored and is counted `ignored.samples.unknown_type`, as a
+  user-entered sample of these types is. A `422` would refuse the whole page, and the app does not retry a `422`, so
+  one bad slice would stall the stream (the same reasoning as the NUL strip). `body_mass` keeps `validate`'s `422`
+  outside 25–350 kg: that is the pilot's rule, unchanged here.
+- **Order:** screening runs before the gate, so a bounded sample counts `unknown_type` for a gated account too: it
+  is not stored either way, and the response is `200`.
+- **Contract:** the counter is reused rather than a new `IgnoredCounts` field added: the D304 types are not served
+  yet, and `unknown_type` already counts the samples of these types the server does not store (the gate, user-entered
+  ones). API.md's `unknown_type` row, the D304 sync paragraph and a changelog row say so; no shape changes.
+- **Rollback:** revert; no migration, nothing stored changes.
