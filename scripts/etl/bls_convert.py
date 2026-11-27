@@ -5,8 +5,8 @@ Standard library only (zipfile and ElementTree), so it runs anywhere and is not 
 streamed row by row, so peak memory does not grow with the number of rows or columns.
 
 Assumed layout (documented by the publisher, checked here, never guessed): one header row in which every component
-column starts with its EuroFIR-style code ("ENERCJ ... [kJ/100g]"); column 1 holds the BLS code (one capital letter and
-six digits), column 2 the German and column 3 the English name; each component has a value column followed by a data
+column starts with its EuroFIR-style code ("ENERCJ ... [kJ/100g]"); column 1 holds the BLS code (seven characters, see
+BLS_CODE), column 2 the German and column 3 the English name; each component has a value column followed by a data
 origin and a reference column. Anything that does not fit stops the run with a message and writes nothing.
 """
 
@@ -29,7 +29,7 @@ from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-CONVERTER_VERSION = 1
+CONVERTER_VERSION = 2
 CSV_NAME = "bls_4_0.csv"
 MANIFEST_NAME = "bls_4_0.manifest.json"
 DEFAULT_OUT_DIR = Path(__file__).with_name("data")
@@ -42,8 +42,12 @@ MEMBER_COUNT_LIMIT = 2_000
 HEADER_SEARCH_ROWS = 100
 ERROR_CELLS = 120  # header cells quoted in an error message
 
-BLS_CODE = re.compile(r"[A-Z][0-9]{6}")
-HEADER_CODE = re.compile(r"[A-Z][A-Z0-9]*(?![A-Za-z0-9_])")
+# A BLS 4.0 code: the main-group letter, a digit, two digits or capital letters, three digits ("M111300", "M5B1600",
+# "U57B100"; the workbook of 2025 has 765 codes with a letter in position 3 and 7 with one in position 4). The same
+# pattern is transform.BLS_ID and the nutrition_bls_attribution constraint (migration 0062).
+BLS_CODE = re.compile(r"[A-Z][0-9][0-9A-Z]{2}[0-9]{3}")
+# The leading code of a header cell. Fatty acids carry a colon inside ("F20:5CN3"); a colon after the code is not part.
+HEADER_CODE = re.compile(r"[A-Z][A-Z0-9]*(?::[A-Z0-9]+)*(?![A-Za-z0-9_])")
 # A header cell that belongs to a component's data origin or reference, not to its value.
 SIDE_COLUMN = re.compile(r"datenherkunft|herkunft|referenz|reference|origin|quelle|source", re.IGNORECASE)
 NUMBER = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
@@ -62,6 +66,12 @@ UNIT_NAMES = {"kcal": "kcal", "kj": "kJ", "mg": "mg", "µg": "ug", "μg": "ug", 
 MASS_G = {"g": Decimal(1), "mg": Decimal("0.001"), "ug": Decimal("0.000001")}
 QUANTUM = Decimal("0.000000001")  # nine decimals, like the catalog's own rounding
 MAX_VALUE = Decimal(100_000_000)
+# The value markers of BLS 4.0, exactly as the workbook writes them (D296). Each one's data-origin cell says what it
+# means: "TR" comes with "Spuren" (traces), the limit markers with "Analyse", "Literatur", "Nährstoffdatenbank" or
+# "Labelangabe" (below the limit of detection or quantification). Both are stored as 0, as for a measured trace. "-"
+# comes with the origin "-" (no data) and stays unknown. Any other text is unparsed, and fails a required component.
+BELOW_LIMIT = frozenset({"TR", "<LOD", "<LOQ", "<LOD or <LOQ"})
+NO_VALUE = frozenset({"-"})
 
 # Our nutrient code and its registry unit, in the order of the CSV columns. The set equals transform.BLS_NUTRIENT_CODES
 # (a test pins that). BLS CHO is the available carbohydrate and therefore `carbohydrates`, never `carbohydrates_total`.
@@ -79,7 +89,8 @@ BLS_COMPONENTS = {
     "energy_kcal": ("ENERCC",), "energy_kj": ("ENERCJ",), "protein": ("PROT625",), "fat": ("FAT",),
     "carbohydrates": ("CHO", "CHOAVL"), "fiber": ("FIBT", "FIBTG"), "total_sugar": ("SUGAR",),
     "saturated_fat": ("FASAT",), "monounsaturated_fat": ("FAMS",), "polyunsaturated_fat": ("FAPU",),
-    "trans_fat": ("FATRN",), "epa": ("F20D5N3",), "dha": ("F22D6N3",), "sodium": ("NA",), "potassium": ("K",),
+    "trans_fat": ("FATRN",), "epa": ("F20:5CN3", "F20D5N3"), "dha": ("F22:6CN3", "F22D6N3"), "sodium": ("NA",),
+    "potassium": ("K",),
     "calcium": ("CA",), "magnesium": ("MG",), "iron": ("FE",), "zinc": ("ZN",), "phosphorus": ("P",),
     "selenium": ("SE",), "vitamin_a": ("VITA",), "vitamin_c": ("VITC",), "vitamin_d": ("VITD",),
     "vitamin_e": ("VITE",), "vitamin_k": ("VITK",), "vitamin_b1": ("THIA",), "vitamin_b2": ("RIBF",),
@@ -415,6 +426,7 @@ def convert(source: Path, sheet: str | None = None, units: dict[str, str] | None
             skipped: Counter = Counter()
             counts: Counter = Counter()
             unparsed: Counter = Counter()
+            markers: dict[str, Counter] = {ours: Counter() for ours in plan}
             samples: dict[str, list[str]] = {ours: [] for ours in plan}
             thousands: list[tuple[str, str]] = []
             comma_text = False
@@ -436,6 +448,14 @@ def convert(source: Path, sheet: str | None = None, units: dict[str, str] | None
                     raw = cells.get(entry[1]) if entry else None
                     if raw is None:
                         values.append("")
+                        continue
+                    if isinstance(raw, TextCell) and (marker := raw.strip()) in BELOW_LIMIT | NO_VALUE:
+                        markers[ours][marker] += 1
+                        if marker in BELOW_LIMIT:
+                            counts[ours] += 1
+                            values.append("0")
+                        else:
+                            values.append("")
                         continue
                     if isinstance(raw, TextCell):
                         text = raw.strip()
@@ -485,8 +505,10 @@ def convert(source: Path, sheet: str | None = None, units: dict[str, str] | None
         "components": {
             ours: {"bls_code": code, "header": text, "column": column_letters(column), "unit": unit,
                    "unit_source": where, "factor": format(factor.normalize(), "f"), "non_null": counts[ours],
+                   "markers": dict(sorted(markers[ours].items())),
                    "unparsed": unparsed[ours], "unparsed_samples": samples[ours]}
             for ours, (code, column, text, unit, where, factor) in plan.items()},
+        "markers": {"below_limit_as_zero": sorted(BELOW_LIMIT), "no_value": sorted(NO_VALUE)},
         "not_found": [ours for ours in REGISTRY_UNITS if ours not in plan],
     }
     write_outputs(out_dir, csv_text, json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n")

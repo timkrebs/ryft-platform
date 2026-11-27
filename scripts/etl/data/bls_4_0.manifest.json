@@ -1,0 +1,553 @@
+{
+  "components": {
+    "alcohol": {
+      "bls_code": "ALC",
+      "column": "Y",
+      "factor": "1",
+      "header": "ALC Alkohol (Ethanol) [g/100g]",
+      "markers": {
+        "-": 65,
+        "<LOD": 106,
+        "<LOQ": 5
+      },
+      "non_null": 7075,
+      "unit": "g",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "calcium": {
+      "bls_code": "CA",
+      "column": "EC",
+      "factor": "1",
+      "header": "CA Calcium [mg/100g]",
+      "markers": {
+        "-": 14,
+        "<LOD or <LOQ": 4,
+        "<LOQ": 1
+      },
+      "non_null": 7126,
+      "unit": "mg",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "carbohydrates": {
+      "bls_code": "CHO",
+      "column": "S",
+      "factor": "1",
+      "header": "CHO Kohlenhydrate, verfügbar [g/100g]",
+      "markers": {},
+      "non_null": 7140,
+      "unit": "g",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "cholesterol": {
+      "bls_code": "CHORL",
+      "column": "MQ",
+      "factor": "1",
+      "header": "CHORL Cholesterin [mg/100g]",
+      "markers": {
+        "-": 25,
+        "<LOD": 22,
+        "<LOD or <LOQ": 2,
+        "<LOQ": 21,
+        "TR": 11
+      },
+      "non_null": 7115,
+      "unit": "mg",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "dha": {
+      "bls_code": "F22:6CN3",
+      "column": "LP",
+      "factor": "1",
+      "header": "F22:6CN3 Fettsäure C22:6 n-3 all-cis (Docosahexaensäure) [g/100g]",
+      "markers": {
+        "-": 586,
+        "<LOD": 17,
+        "<LOD or <LOQ": 3
+      },
+      "non_null": 6554,
+      "unit": "g",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "energy_kcal": {
+      "bls_code": "ENERCC",
+      "column": "G",
+      "factor": "1",
+      "header": "ENERCC Energie (Kilokalorien) [kcal/100g]",
+      "markers": {},
+      "non_null": 7140,
+      "unit": "kcal",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "energy_kj": {
+      "bls_code": "ENERCJ",
+      "column": "D",
+      "factor": "1",
+      "header": "ENERCJ Energie (Kilojoule) [kJ/100g]",
+      "markers": {},
+      "non_null": 7140,
+      "unit": "kJ",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "epa": {
+      "bls_code": "F20:5CN3",
+      "column": "LJ",
+      "factor": "1",
+      "header": "F20:5CN3 Fettsäure C20:5 n-3 all-cis (Eicosapentaensäure) [g/100g]",
+      "markers": {
+        "-": 629,
+        "<LOD": 11,
+        "<LOD or <LOQ": 2
+      },
+      "non_null": 6511,
+      "unit": "g",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "fat": {
+      "bls_code": "FAT",
+      "column": "P",
+      "factor": "1",
+      "header": "FAT Fett [g/100g]",
+      "markers": {
+        "-": 3,
+        "<LOD": 10,
+        "<LOD or <LOQ": 7,
+        "<LOQ": 1,
+        "TR": 7
+      },
+      "non_null": 7137,
+      "unit": "g",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "fiber": {
+      "bls_code": "FIBT",
+      "column": "V",
+      "factor": "1",
+      "header": "FIBT Ballaststoffe, gesamt [g/100g]",
+      "markers": {
+        "-": 14,
+        "<LOD": 25,
+        "<LOD or <LOQ": 1,
+        "TR": 13
+      },
+      "non_null": 7126,
+      "unit": "g",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "folate": {
+      "bls_code": "FOL",
+      "column": "DB",
+      "factor": "1",
+      "header": "FOL Folat-Äquivalent [µg/100g]",
+      "markers": {
+        "-": 4
+      },
+      "non_null": 7136,
+      "unit": "ug",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "iron": {
+      "bls_code": "FE",
+      "column": "EO",
+      "factor": "1",
+      "header": "FE Eisen [mg/100g]",
+      "markers": {
+        "-": 22,
+        "<LOD": 1,
+        "<LOD or <LOQ": 3,
+        "<LOQ": 1
+      },
+      "non_null": 7118,
+      "unit": "mg",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "magnesium": {
+      "bls_code": "MG",
+      "column": "EF",
+      "factor": "1",
+      "header": "MG Magnesium [mg/100g]",
+      "markers": {
+        "-": 18,
+        "<LOD": 4,
+        "<LOD or <LOQ": 4,
+        "<LOQ": 1
+      },
+      "non_null": 7122,
+      "unit": "mg",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "monounsaturated_fat": {
+      "bls_code": "FAMS",
+      "column": "KC",
+      "factor": "1",
+      "header": "FAMS Fettsäure, einfach ungesättigt, gesamt [g/100g]",
+      "markers": {
+        "-": 159
+      },
+      "non_null": 6981,
+      "unit": "g",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "phosphorus": {
+      "bls_code": "P",
+      "column": "EI",
+      "factor": "1",
+      "header": "P Phosphor [mg/100g]",
+      "markers": {
+        "-": 27,
+        "<LOD or <LOQ": 2
+      },
+      "non_null": 7113,
+      "unit": "mg",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "polyunsaturated_fat": {
+      "bls_code": "FAPU",
+      "column": "KX",
+      "factor": "1",
+      "header": "FAPU Fettsäuren, mehrfach ungesättigt, gesamt [g/100g]",
+      "markers": {
+        "-": 38
+      },
+      "non_null": 7102,
+      "unit": "g",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "potassium": {
+      "bls_code": "K",
+      "column": "DZ",
+      "factor": "1",
+      "header": "K Kalium [mg/100g]",
+      "markers": {
+        "-": 16,
+        "<LOD": 2,
+        "<LOD or <LOQ": 1
+      },
+      "non_null": 7124,
+      "unit": "mg",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "protein": {
+      "bls_code": "PROT625",
+      "column": "M",
+      "factor": "1",
+      "header": "PROT625 Protein (Nx6,25) [g/100g]",
+      "markers": {
+        "TR": 23
+      },
+      "non_null": 7140,
+      "unit": "g",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "saturated_fat": {
+      "bls_code": "FASAT",
+      "column": "IM",
+      "factor": "1",
+      "header": "FASAT Fettsäuren, gesättigt, gesamt [g/100g]",
+      "markers": {
+        "-": 23
+      },
+      "non_null": 7117,
+      "unit": "g",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "sodium": {
+      "bls_code": "NA",
+      "column": "DT",
+      "factor": "1",
+      "header": "NA Natrium [mg/100g]",
+      "markers": {
+        "-": 26,
+        "<LOD": 3,
+        "<LOD or <LOQ": 4,
+        "<LOQ": 10
+      },
+      "non_null": 7114,
+      "unit": "mg",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "total_sugar": {
+      "bls_code": "SUGAR",
+      "column": "HL",
+      "factor": "1",
+      "header": "SUGAR Zucker (Mono- und Disaccharide), gesamt [g/100g]",
+      "markers": {},
+      "non_null": 7140,
+      "unit": "g",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "vitamin_a": {
+      "bls_code": "VITA",
+      "column": "AH",
+      "factor": "1",
+      "header": "VITA Vitamin A, Retinol-Äquivalent (RE) [µg/100g]",
+      "markers": {
+        "-": 6
+      },
+      "non_null": 7134,
+      "unit": "ug",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "vitamin_b1": {
+      "bls_code": "THIA",
+      "column": "CG",
+      "factor": "1",
+      "header": "THIA Vitamin B1 (Thiamin) [mg/100g]",
+      "markers": {
+        "-": 31,
+        "<LOD": 11,
+        "<LOD or <LOQ": 10,
+        "TR": 22
+      },
+      "non_null": 7109,
+      "unit": "mg",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "vitamin_b12": {
+      "bls_code": "VITB12",
+      "column": "DK",
+      "factor": "1",
+      "header": "VITB12 Vitamin B12 (Cobalamine) [µg/100g]",
+      "markers": {
+        "-": 95,
+        "<LOD": 49,
+        "<LOQ": 47,
+        "TR": 19
+      },
+      "non_null": 7045,
+      "unit": "ug",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "vitamin_b2": {
+      "bls_code": "RIBF",
+      "column": "CJ",
+      "factor": "1",
+      "header": "RIBF Vitamin B2 (Riboflavin) [mg/100g]",
+      "markers": {
+        "-": 23,
+        "<LOD": 14,
+        "<LOD or <LOQ": 9,
+        "<LOQ": 16,
+        "TR": 22
+      },
+      "non_null": 7117,
+      "unit": "mg",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "vitamin_b3": {
+      "bls_code": "NIA",
+      "column": "CP",
+      "factor": "1",
+      "header": "NIA Niacin [mg/100g]",
+      "markers": {
+        "-": 37,
+        "<LOD": 9,
+        "<LOD or <LOQ": 7,
+        "<LOQ": 2,
+        "TR": 22
+      },
+      "non_null": 7103,
+      "unit": "mg",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "vitamin_b6": {
+      "bls_code": "VITB6",
+      "column": "CV",
+      "factor": "0.001",
+      "header": "VITB6 Vitamin B6 [µg/100g]",
+      "markers": {
+        "-": 49,
+        "<LOD": 23,
+        "<LOD or <LOQ": 4,
+        "<LOQ": 23,
+        "TR": 20
+      },
+      "non_null": 7091,
+      "unit": "ug",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "vitamin_c": {
+      "bls_code": "VITC",
+      "column": "DN",
+      "factor": "1",
+      "header": "VITC Vitamin C [mg/100g]",
+      "markers": {
+        "-": 164,
+        "<LOD": 103,
+        "<LOD or <LOQ": 47,
+        "<LOQ": 24,
+        "TR": 82
+      },
+      "non_null": 6976,
+      "unit": "mg",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "vitamin_d": {
+      "bls_code": "VITD",
+      "column": "AW",
+      "factor": "1",
+      "header": "VITD Vitamin D [µg/100g]",
+      "markers": {
+        "-": 136
+      },
+      "non_null": 7004,
+      "unit": "ug",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "vitamin_e": {
+      "bls_code": "VITE",
+      "column": "BF",
+      "factor": "1",
+      "header": "VITE Vitamin E (Alpha-Tocopherol) [mg/100g]",
+      "markers": {
+        "-": 152,
+        "<LOD": 5,
+        "<LOD or <LOQ": 3,
+        "<LOQ": 6,
+        "TR": 16
+      },
+      "non_null": 6988,
+      "unit": "mg",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "vitamin_k": {
+      "bls_code": "VITK",
+      "column": "BX",
+      "factor": "1",
+      "header": "VITK Vitamin K [µg/100g]",
+      "markers": {
+        "-": 373
+      },
+      "non_null": 6767,
+      "unit": "ug",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "water": {
+      "bls_code": "WATER",
+      "column": "J",
+      "factor": "1",
+      "header": "WATER Wasser [g/100g]",
+      "markers": {
+        "-": 6,
+        "TR": 38
+      },
+      "non_null": 7134,
+      "unit": "g",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    },
+    "zinc": {
+      "bls_code": "ZN",
+      "column": "ER",
+      "factor": "1",
+      "header": "ZN Zink [mg/100g]",
+      "markers": {},
+      "non_null": 7081,
+      "unit": "mg",
+      "unit_source": "header",
+      "unparsed": 0,
+      "unparsed_samples": []
+    }
+  },
+  "converter_version": 2,
+  "csv_sha256": "6c1dc665f0542ed82f785747bff5ef5fe89c195dcd875fdede616d1278045ba9",
+  "markers": {
+    "below_limit_as_zero": [
+      "<LOD",
+      "<LOD or <LOQ",
+      "<LOQ",
+      "TR"
+    ],
+    "no_value": [
+      "-"
+    ]
+  },
+  "not_found": [
+    "trans_fat",
+    "selenium",
+    "caffeine"
+  ],
+  "rows": {
+    "skipped": 0,
+    "skipped_reasons": {},
+    "written": 7140
+  },
+  "source": {
+    "filename": "BLS_4_0_Daten_2025_DE.xlsx",
+    "header_row": 1,
+    "id_headers": [
+      "BLS Code",
+      "Lebensmittelbezeichnung",
+      "Food name"
+    ],
+    "name_columns": [
+      1,
+      2,
+      3
+    ],
+    "sha256": "524bbefe25b691f5cb3de7a9f3e27fa2967aebfeabf217d99414ba7806e78c60",
+    "sheet": "BLS_4_0_Daten_2025_DE"
+  }
+}
