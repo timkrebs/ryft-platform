@@ -204,7 +204,8 @@ func TestServiceRoleGrants(t *testing.T) {
 			}
 		}
 	}
-	for col, want := range map[string]bool{"scored_at": true, "queued_at": false, "day": false, "user_id": false} {
+	// 0067 (D301): scoring also writes why it closed a row without scoring it.
+	for col, want := range map[string]bool{"scored_at": true, "closed_reason": true, "queued_at": false, "day": false, "user_id": false} {
 		var has bool
 		if err := pool.QueryRow(ctx, `SELECT has_column_privilege('ryft_scoring', 'public.score_queue', $1, 'UPDATE')`, col).Scan(&has); err != nil {
 			t.Fatal(err)
@@ -328,6 +329,36 @@ func TestServiceRoleGrants(t *testing.T) {
 		{"ryft_notify", "daily_scores", "hrv_metric", "SELECT", false}, {"ryft_notify", "daily_scores", "coverage", "SELECT", false},
 		{"ryft_notify", "connections", "status", "SELECT", false},
 		{"ryft_ingest", "daily_scores", "hrv_metric", "SELECT", false},
+	} {
+		var has bool
+		if err := pool.QueryRow(ctx, `SELECT has_column_privilege($1, $2, $3, $4)`, c.role, "public."+c.table, c.col, c.priv).Scan(&has); err != nil {
+			t.Fatal(err)
+		}
+		if has != c.want {
+			t.Errorf("%s %s %s.%s: %v, want %v", c.role, c.priv, c.table, c.col, has, c.want)
+		}
+	}
+	// 0067 (D297, D301): the api reads when an inbox row arrived and still never a payload or a record id, and
+	// still writes nothing of the inbox; scoring writes the queue's closed_reason (and nothing of the key); the
+	// api only reads it (it has no UPDATE of the column), ingest's table-wide UPDATE is unchanged and notify
+	// sees neither table.
+	for _, c := range []struct {
+		role, table, col, priv string
+		want                   bool
+	}{
+		{"ryft_api", "provider_inbox", "received_at", "SELECT", true}, {"ryft_api", "provider_inbox", "received_at", "UPDATE", false},
+		{"ryft_api", "provider_inbox", "received_at", "INSERT", false}, {"ryft_api", "provider_inbox", "payload", "SELECT", false},
+		{"ryft_api", "provider_inbox", "record_id", "SELECT", false}, {"ryft_api", "provider_inbox", "payload_sha256", "SELECT", false},
+		{"ryft_api", "provider_inbox", "error", "SELECT", false}, {"ryft_api", "provider_inbox", "processed_at", "SELECT", false},
+		{"ryft_scoring", "provider_inbox", "received_at", "SELECT", false}, {"ryft_notify", "provider_inbox", "received_at", "SELECT", false},
+		{"ryft_ingest", "provider_inbox", "received_at", "SELECT", true}, {"ryft_ingest", "provider_inbox", "received_at", "UPDATE", true},
+		{"ryft_scoring", "score_queue", "closed_reason", "UPDATE", true}, {"ryft_scoring", "score_queue", "closed_reason", "SELECT", true},
+		{"ryft_scoring", "score_queue", "closed_reason", "INSERT", false}, {"ryft_scoring", "score_queue", "scored_at", "UPDATE", true},
+		{"ryft_scoring", "score_queue", "queued_at", "UPDATE", false}, {"ryft_scoring", "score_queue", "user_id", "UPDATE", false},
+		{"ryft_api", "score_queue", "closed_reason", "SELECT", true}, {"ryft_api", "score_queue", "closed_reason", "UPDATE", false},
+		{"ryft_api", "score_queue", "closed_reason", "INSERT", false},
+		{"ryft_ingest", "score_queue", "closed_reason", "SELECT", true}, {"ryft_ingest", "score_queue", "closed_reason", "UPDATE", true},
+		{"ryft_notify", "score_queue", "closed_reason", "SELECT", false}, {"ryft_notify", "score_queue", "closed_reason", "UPDATE", false},
 	} {
 		var has bool
 		if err := pool.QueryRow(ctx, `SELECT has_column_privilege($1, $2, $3, $4)`, c.role, "public."+c.table, c.col, c.priv).Scan(&has); err != nil {

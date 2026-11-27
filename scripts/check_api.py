@@ -436,11 +436,17 @@ for _ in range(30):  # smoke.sh's sync and recompute: scoring finishes the queue
         break
     time.sleep(1)
 check(set(ss) == {"gate", "last_sync_at", "last_sync_device", "latest", "today", "pending_days", "expected_within_sec",
-                  "resync_requested_at"} and ss["pending_days"] == [] and ss["today"]["day"] == TODAY
+                  "resync_requested_at", "sources", "freshness", "scores_pending_since"}
+      and ss["pending_days"] == [] and ss["today"]["day"] == TODAY
       and ss["today"]["state"] in SCORING_STATES and ss["today"]["model_version"] and ss["last_sync_at"]
       and set(ss["latest"]) <= set(KINDS_ALL) and ss["latest"].get("hr") and ss["expected_within_sec"] >= 1,
       f"GET /v1/me/sync: {ss}")
 check(ss["gate"] is None, f"the smoke user consented: {ss['gate']}")
+# D297: everything scored, so the scores are current; HealthKit is the one source, ok, synced when the sync was.
+check(ss["freshness"] == "current" and ss["scores_pending_since"] is None
+      and [s["source"] for s in ss["sources"]] == ["healthkit"] and ss["sources"][0]["status"] == "ok"
+      and ss["sources"][0]["reason"] is None and ss["sources"][0]["last_sync_at"] == ss["last_sync_at"],
+      f"GET /v1/me/sync sources and freshness: {ss['sources']} {ss['freshness']} {ss['scores_pending_since']}")
 rows = get(f"/v1/days?to={TODAY}")
 check(all(d["scoring_state"] in SCORING_STATES for d in rows) and all(d["scoring_state"] == "scored" for d in rows if d["day"] < TODAY),
       f"scoring_state: {[(d['day'], d['scoring_state']) for d in rows[-3:]]}")

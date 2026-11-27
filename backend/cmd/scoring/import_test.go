@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/timkrebs/ryft/internal/db"
 	"github.com/timkrebs/ryft/internal/events"
@@ -61,6 +62,13 @@ func TestAnnounce(t *testing.T) {
 // Integration test, opt-in like internal/db's: RYFT_TEST_POSTGRES_URL.
 func scoringStore(t *testing.T) (*store.Store, *scoring.Engine, uuid.UUID) {
 	t.Helper()
+	st, engine, user, _ := scoringStoreAndPool(t)
+	return st, engine, user
+}
+
+// scoringStoreAndPool is scoringStore with the pool, for tests that read a table directly.
+func scoringStoreAndPool(t *testing.T) (*store.Store, *scoring.Engine, uuid.UUID, *pgxpool.Pool) {
+	t.Helper()
 	admin := os.Getenv("RYFT_TEST_POSTGRES_URL")
 	if admin == "" {
 		t.Skip("set RYFT_TEST_POSTGRES_URL to a throwaway Postgres server")
@@ -108,7 +116,7 @@ func scoringStore(t *testing.T) (*store.Store, *scoring.Engine, uuid.UUID) {
 	if err := st.GrantConsent(ctx, user, "test", nil); err != nil {
 		t.Fatal(err)
 	}
-	return st, scoring.NewEngine(st, quiet), user
+	return st, scoring.NewEngine(st, quiet), user, pool
 }
 
 // An import's event (reason import, two explicit days, no session id) is scored like a
@@ -140,8 +148,9 @@ func TestImportEventIsScoredLikeASync(t *testing.T) {
 		days, ids = append(days, out.Day), append(ids, s.ID)
 	}
 	ev := model.IngestedEvent{UserID: user, Days: days, Reason: model.ReasonImport, RequestID: "rid"}
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	if err := handleEvent(ctx, engine, ev); err != nil {
+	if err := handleEvent(ctx, quiet, engine, st, ev); err != nil {
 		t.Fatal(err)
 	}
 	if pending, err := st.PendingDays(ctx, user); err != nil || len(pending) != 0 {
@@ -177,10 +186,10 @@ func TestImportEventIsScoredLikeASync(t *testing.T) {
 
 	// The same event again, and as a redelivery: nothing changes.
 	before := scored()
-	if err := handleEvent(ctx, engine, ev); err != nil {
+	if err := handleEvent(ctx, quiet, engine, st, ev); err != nil {
 		t.Fatal(err)
 	}
-	if err := handleEvent(events.WithRedelivery(ctx), engine, ev); err != nil {
+	if err := handleEvent(events.WithRedelivery(ctx), quiet, engine, st, ev); err != nil {
 		t.Fatal(err)
 	}
 	after := scored()

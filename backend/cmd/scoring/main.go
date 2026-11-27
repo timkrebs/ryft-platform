@@ -87,10 +87,29 @@ func announce(ev model.IngestedEvent) (*model.SessionScoredEvent, *model.Refresh
 	return session, refresh
 }
 
-func handleEvent(ctx context.Context, engine *scoring.Engine, ev model.IngestedEvent) error {
+// queueCloser is the part of the store that closes a user's queue rows without scoring them (D301).
+type queueCloser interface {
+	CloseQueue(ctx context.Context, userID uuid.UUID, reason string, before time.Time) (int64, error)
+}
+
+// closeNoConsent closes the unscored queue rows of a user scoring does not admit, so the sync status does not
+// keep reporting scores pending for days that will never be scored (D301). before is taken before the account was
+// read: a row queued after it (a re-consent and a sync racing this close) stays pending. Closing again closes
+// nothing. A failure is logged and never returned: there is nothing to retry (D78), and the pass or the next event
+// closes the rows.
+func closeNoConsent(ctx context.Context, log *slog.Logger, queue queueCloser, userID uuid.UUID, before time.Time) {
+	if _, err := queue.CloseQueue(ctx, userID, store.QueueClosedNoConsent, before); err != nil && ctx.Err() == nil {
+		log.ErrorContext(ctx, "close the score queue of an account without consent", "err", err)
+	}
+}
+
+func handleEvent(ctx context.Context, log *slog.Logger, engine *scoring.Engine, queue queueCloser, ev model.IngestedEvent) error {
+	started := time.Now() // before the account is read: only rows queued by now are closed (D301)
 	err := scoreEvent(ctx, engine, ev)
 	if errors.Is(err, scoring.ErrNoConsent) {
-		return nil // withdrawn since the sync: nothing to score, nothing to retry (D78)
+		// Withdrawn since the sync: nothing to score, nothing to retry (D78); the queue rows are closed (D301).
+		closeNoConsent(ctx, log, queue, ev.UserID, started)
+		return nil
 	}
 	return err
 }
@@ -126,6 +145,7 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 	budget := behindPerRun
 	eachUser(ctx, users, func(ctx context.Context, i int, id uuid.UUID) {
 		ctx = logx.WithFields(ctx, &logx.Fields{UserID: id.String()})
+		started := time.Now() // before the account is read: only rows queued by now are closed (D301)
 		user, loc, err := st.GetUser(ctx, id)
 		if err != nil {
 			if ctx.Err() == nil {
@@ -134,7 +154,8 @@ func refreshActive(ctx context.Context, log *slog.Logger, st *store.Store, engin
 			return
 		}
 		if !engine.Admits(user) {
-			return // withdrawn: no scores, no baseline estimate (D78)
+			closeNoConsent(ctx, log, st, id, started) // withdrawn: no scores, no baseline estimate (D78); nothing waits for them (D301)
+			return
 		}
 		now := time.Now().In(loc)
 		today := now.Format("2006-01-02")

@@ -223,13 +223,13 @@ import rules between packages are `backend/internal/arch_test.go`.
 
 | Package | Owns | Depends on | Tested by |
 | --- | --- | --- | --- |
-| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, appattest, apple, auth, behavior, config, connect, connect/fake, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, nutrition, periodization, ratelimit, scoring, sealed, store, train, wearables | 52 files (Postgres) |
+| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, appattest, apple, auth, behavior, config, connect, connect/fake, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, nutrition, periodization, ratelimit, scoring, sealed, store, train, wearables | 54 files (Postgres) |
 | `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | app, auth, config, connect, connect/fake, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 14 files (Postgres) |
 | `cmd/migrate` | migrate applies the migrations as the schema owner, loads the built-in exercises and plans, and sets the service roles' passwords where they changed. | db, httpx, smoke | none |
 | `cmd/notify` | notify wires internal/notify to its push routes and the 15-minute tick. | apns, app, config, eventbus, events, logx, notify, store | 1 file |
 | `cmd/nutrition-import` | Command nutrition-import validates or loads a bounded USDA or Open Food Facts release. | db, nutrition, nutrition/importer, store | none |
 | `cmd/pubsub-topology` | pubsub-topology writes the Pub/Sub topology (internal/events/pubsub) as Terraform's variables and as the emulator's init script. | events/pubsub | 1 file |
-| `cmd/scoring` | scoring scores the pushed ingest events and runs the 15-minute tick that keeps today and yesterday fresh. | app, config, db, eventbus, events, httpx, logx, metrics, model, scoring, store | 3 files (Postgres) |
+| `cmd/scoring` | scoring scores the pushed ingest events and runs the 15-minute tick that keeps today and yesterday fresh. | app, config, db, eventbus, events, httpx, logx, metrics, model, scoring, store | 4 files (Postgres) |
 | `internal/apns` | sends one APNs request per device token with token-based authentication: an ES256 JWT from the team's .p8 key over HTTP/2 (net/http negotiates it). | apple | 1 file |
 | `internal/app` | owns a service's lifecycle: it opens the pool and the transport, serves the push, tick and health routes, pushes the metrics, and stops in reverse. | auth, config, db, eventbus, events, events/outbox, httpx, metrics, ratelimit | 7 files |
 | `internal/appattest` | verifies Apple App Attest attestations and assertions and mints and checks the HMAC app tokens. | none | 6 files |
@@ -240,7 +240,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/config` | owns the services' environment configuration: what each variable means, its default and which combinations are refused. | appattest | 6 files |
 | `internal/connect` | is the provider-agnostic side of direct connections: what a provider's adapter implements, the OAuth helpers and the registry (D257). | model | 3 files |
 | `internal/connect/fake` | is the one provider adapter of phase 1 (D257), a provider with no network, for tests, compose and make smoke. | connect, model | 1 file |
-| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 22 files (Postgres) |
+| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 23 files (Postgres) |
 | `internal/energy` | models exercise expenditure, training load and energy balance. | model, wearables | 2 files |
 | `internal/evaluation` | computes forecast errors and bounded calibration updates. | energy, model | 2 files |
 | `internal/eventbus` | owns building a service's Pub/Sub transport from its configuration: the Bus, the push verifier, the push and tick handlers and the wait sender. | auth, config, events, events/pubsub | 1 file |
@@ -266,7 +266,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/scoring/workoutdup` | owns the two rules that make one activity one workout: the same-source fold and the cross-source duplicate mark. | model | 1 file |
 | `internal/sealed` | encrypts the few secrets the platform stores (Apple refresh tokens, direct connections' tokens and PKCE verifiers) with AES-256-GCM. | none | 1 file |
 | `internal/smoke` | owns the Go end-to-end smoke against a running stack. | model | 1 file |
-| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, connect, energy, evaluation, events, events/outbox, flags, logx, metrics, model, nutrition, nutrition/score, periodization, scoring/workoutdup, train, wearables | 44 files (Postgres) |
+| `internal/store` | owns every SQL statement against the domain tables; the services reach Postgres only through its methods (db owns the schema, outbox its table). | behavior, connect, energy, evaluation, events, events/outbox, flags, logx, metrics, model, nutrition, nutrition/score, periodization, scoring/workoutdup, train, wearables | 45 files (Postgres) |
 | `internal/testsupport` | holds the helpers the Postgres-backed tests of several packages share. | none | via cmd/api, cmd/ingest, db, events/outbox, store |
 | `internal/train` | holds the pure rules of the Train feature that are not scoring. | model | 2 files |
 | `internal/wearables` | normalizes workout facts and resolves overlapping observations. | model | 2 files |
@@ -286,7 +286,7 @@ whose tests import it. `make smoke` and the golden fixtures are not attributed t
 - `devices` — one row per user and app install (`(user_id, id)`), `last_sync_at`, the `app_version` and `os_version` the app last sent.
 - `consents` — every grant and withdrawal of consent to health-data processing, with the policy and app version (D78); `beta_invite_codes` — invite codes with their uses (D79), optionally bound to an email, revoked not deleted, created by an actor (migration 0033, D159); `beta_invite_uses` — which account redeemed which code (deleted with the account; D159); `users.beta_access_at` / `beta_invite_code`.
 - `feedback` — reports from the app with versions, request ids and diagnostics; `resolved_at` is set by the operator (D83). Deleted with the account.
-- `score_queue` — the days a sync queued for scoring, and when scoring finished each (`GET /v1/me/sync` → `pending_days`, the sync-to-score latency; D91). `users.resync_requested_at`: the operator's request for a full re-sync.
+- `score_queue` — the days a sync queued for scoring, and when scoring finished each (`GET /v1/me/sync` → `pending_days`, `freshness`, the sync-to-score latency; D91, D297). `closed_reason` (0067, `no_consent`) marks a row scoring closed without scoring it for an account without consent (D301). `users.resync_requested_at`: the operator's request for a full re-sync.
 - **Training import** (0028, D125-D133): `sessions.origin` (`app` | `import`, closed) and `import_source` (set exactly for imports); `session_sets.assist_kg` (0-200, stored, no score reads it yet); `users.import_lease_until` (one import per user at a time, an expiring lease on the database's clock). `ryft_api` also writes `score_queue` now (it queues an import's days), `ryft_notify` reads `sessions.origin`. Each import item is its own transaction (D131).
 - `admin_audit` — every authorized admin call: route, status, request id, key fingerprint, target user, details (D88). Append-only, no foreign key on the user.
 - `devices.last_sync_summary` (what the last sync carried) and `push_tokens.last_success_at` (the last delivered push) feed the admin user view (D89).
