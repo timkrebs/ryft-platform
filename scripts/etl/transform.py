@@ -30,6 +30,8 @@ DECLARED_SERVING = re.compile(r"\s*([0-9]+(?:[.,][0-9]+)?)\s*(g|ml)\s*", re.IGNO
 DECLARED_SERVING_SUFFIX = re.compile(r"[^()]+\(([^()]+)\)\s*")
 FIBER_EXCEPTION_G = 15
 ATWATER_FRACTION = 0.30
+BLS_FIBER_KCAL_PER_G = 2  # EU 1169/2011 Annex XIV; BLS only (D313)
+BLS_KCAL_ROUNDING = 2  # BLS rounds kcal to whole numbers; BLS only (D313)
 MG_PER_G = 1_000
 SODIUM_MG_PER_G_SALT = 400
 ETHANOL_G_PER_ML = 0.789
@@ -118,7 +120,7 @@ BLS_CSV_PATH = Path(__file__).with_name("data") / "bls_4_0.csv"
 BLS_CURATION_PATH = Path(__file__).with_name("bls_curation.v1.json")
 # Part of the BLS dataset version (bls_input_digest). Bump it when bls_row_food, the forms, the main groups, the alias
 # logic or the categorizer's output for BLS changes: the same CSV then gives `updated`, never `conflict`.
-BLS_TRANSFORM_VERSION = "bls1"
+BLS_TRANSFORM_VERSION = "bls2"  # bls2 (D313): the BLS energy rule in validate()
 BLS_ALIAS_LIMIT = 6
 STAPLE_DRIFT_FRACTION = 0.01
 # The BLS main group (first letter of the code) as a category hint for classify().
@@ -188,6 +190,52 @@ UNITS = (
     Unit("nlea_serving", ("nlea serving", "nlea servings"), ("serving", "servings"), ("Portion", "Portionen"), 88, "nlea"),
     Unit("oz", ("oz", "ounce", "ounces"), ("oz", "oz"), ("oz", "oz"), 90, "mass"),
     Unit("lb", ("lb", "lbs", "pound", "pounds"), ("lb", "lb"), ("lb", "lb"), 92, "mass"),
+    # D313: the SR Legacy count words that were unmapped (3,375 English-only labels). Orders sit in the gaps of the
+    # table above, below 100 where unknown heads start. A German word shared by two heads ("Stück", "Glas") is no
+    # problem: a collision with different grams gets " (<g> g)".
+    Unit("item", ("item", "items"), ("item", "items"), ("Stück", "Stück"), 41),
+    Unit("fruit", ("fruit", "fruits"), ("fruit", "fruits"), ("Frucht", "Früchte"), 43),
+    Unit("wedge", ("wedge", "wedges"), ("wedge", "wedges"), ("Spalte", "Spalten"), 45),
+    Unit("stalk", ("stalk", "stalks"), ("stalk", "stalks"), ("Stange", "Stangen"), 47),
+    Unit("spear", ("spear", "spears"), ("spear", "spears"), ("Stange", "Stangen"), 49),
+    Unit("stick", ("stick", "sticks"), ("stick", "sticks"), ("Stange", "Stangen"), 51),
+    Unit("leaf", ("leaf", "leaves"), ("leaf", "leaves"), ("Blatt", "Blätter"), 53),
+    Unit("clove", ("clove", "cloves"), ("clove", "cloves"), ("Zehe", "Zehen"), 55),
+    Unit("head", ("head", "heads"), ("head", "heads"), ("Kopf", "Köpfe"), 57),
+    Unit("bunch", ("bunch", "bunches"), ("bunch", "bunches"), ("Bund", "Bund"), 59),
+    Unit("sprig", ("sprig", "sprigs"), ("sprig", "sprigs"), ("Zweig", "Zweige"), 61),
+    Unit("pod", ("pod", "pods"), ("pod", "pods"), ("Schote", "Schoten"), 63),
+    Unit("strip", ("strip", "strips"), ("strip", "strips"), ("Streifen", "Streifen"), 65),
+    Unit("ring", ("ring", "rings"), ("ring", "rings"), ("Ring", "Ringe"), 66),
+    Unit("pat", ("pat", "pats"), ("pat", "pats"), ("Stück", "Stück"), 67),
+    Unit("steak", ("steak", "steaks"), ("steak", "steaks"), ("Steak", "Steaks"), 68),
+    Unit("chop", ("chop", "chops"), ("chop", "chops"), ("Kotelett", "Koteletts"), 69),
+    Unit("pinch", ("pinch", "pinches"), ("pinch", "pinches"), ("Prise", "Prisen"), 71),
+    Unit("drumstick", ("drumstick", "drumsticks"), ("drumstick", "drumsticks"), ("Unterkeule", "Unterkeulen"), 73),
+    Unit("thigh", ("thigh", "thighs"), ("thigh", "thighs"), ("Oberkeule", "Oberkeulen"), 74),
+    Unit("wing", ("wing", "wings"), ("wing", "wings"), ("Flügel", "Flügel"), 75),
+    Unit("leg", ("leg", "legs"), ("leg", "legs"), ("Keule", "Keulen"), 76),
+    Unit("roll", ("roll", "rolls"), ("roll", "rolls"), ("Brötchen", "Brötchen"), 77),
+    Unit("bun", ("bun", "buns"), ("bun", "buns"), ("Brötchen", "Brötchen"), 78),
+    Unit("bagel", ("bagel", "bagels"), ("bagel", "bagels"), ("Bagel", "Bagels"), 79),
+    Unit("muffin", ("muffin", "muffins"), ("muffin", "muffins"), ("Muffin", "Muffins"), 81),
+    Unit("cookie", ("cookie", "cookies"), ("cookie", "cookies"), ("Keks", "Kekse"), 82),
+    Unit("cracker", ("cracker", "crackers"), ("cracker", "crackers"), ("Cracker", "Cracker"), 83),
+    Unit("tortilla", ("tortilla", "tortillas"), ("tortilla", "tortillas"), ("Tortilla", "Tortillas"), 84),
+    Unit("loaf", ("loaf", "loaves"), ("loaf", "loaves"), ("Laib", "Laibe"), 86),
+    Unit("sandwich", ("sandwich", "sandwiches"), ("sandwich", "sandwiches"), ("Sandwich", "Sandwiches"), 87),
+    Unit("package", ("package", "packages"), ("package", "packages"), ("Packung", "Packungen"), 89),
+    Unit("cubic_inch", ("cubic inch", "cubic inches"), ("cubic inch", "cubic inches"), ("Kubikzoll", "Kubikzoll"),
+         90, "mass"),  # like oz: the labels read in grams (the word tables are not used), a cubic inch means nothing here
+    Unit("bag", ("bag", "bags"), ("bag", "bags"), ("Beutel", "Beutel"), 91),
+    Unit("jar", ("jar", "jars"), ("jar", "jars"), ("Glas", "Gläser"), 93),
+    Unit("glass", ("glass", "glasses"), ("glass", "glasses"), ("Glas", "Gläser"), 94),
+    Unit("envelope", ("envelope", "envelopes"), ("envelope", "envelopes"), ("Päckchen", "Päckchen"), 95),
+    Unit("tablet", ("tablet", "tablets"), ("tablet", "tablets"), ("Tablette", "Tabletten"), 96),
+    Unit("frank", ("frank", "franks"), ("frank", "franks"), ("Würstchen", "Würstchen"), 97),
+    Unit("frankfurter", ("frankfurter", "frankfurters"), ("frankfurter", "frankfurters"), ("Würstchen", "Würstchen"), 97),
+    Unit("sausage", ("sausage", "sausages"), ("sausage", "sausages"), ("Wurst", "Würste"), 98),
+    Unit("order", ("order", "orders"), ("order", "orders"), ("Portion", "Portionen"), 99),
 )
 # A qualifier after the head ("cup, chopped"). One unmapped part leaves the German label out.
 QUALIFIERS = {
@@ -199,6 +247,10 @@ QUALIFIERS = {
     "skin removed": "ohne Haut", "cooked": "gegart", "raw": "roh", "drained": "abgetropft",
     "crumbled": "zerbröselt", "melted": "geschmolzen", "ground": "gemahlen", "sifted": "gesiebt",
     "florets": "Röschen", "small": "klein", "medium": "mittel", "large": "groß", "whole": "ganz",
+    # D313
+    "peeled": "geschält", "unpeeled": "ungeschält", "pitted": "entsteint", "crushed": "zerstoßen",
+    "fresh": "frisch", "frozen": "tiefgekühlt", "dried": "getrocknet", "canned": "aus der Dose",
+    "toasted": "getoastet", "with bone": "mit Knochen", "with skin": "mit Haut",
 }
 FRACTIONS = ((0.5, "½"), (1 / 3, "⅓"), (0.25, "¼"), (0.75, "¾"), (2 / 3, "⅔"), (0.125, "⅛"))
 FRACTION_TOLERANCE = 0.004
@@ -448,6 +500,13 @@ def clean_portion(text: str | None, amount: str | None, grams: float) -> CleanPo
     return CleanPortion(en, de, short_en, short_de, head.order, key, rest)
 
 
+def head_word(rest: str) -> str:
+    """The first word of a cleaned portion text that no table knows, lower-cased: what the dry run counts so the next
+    mapping pass is data-driven (D313). A text without a leading letter run gives its first token."""
+    word = re.match(r"[^\W\d_][\w'-]*", rest.strip().lower())
+    return word[0] if word else (rest.split() or ["?"])[0].lower()[:40]
+
+
 def with_grams(text: str | None, grams: float | None) -> str | None:
     tagged = f"{text} ({grams:g} g)" if text and grams is not None else text
     return tagged if tagged is not None and len(tagged) <= 200 else text
@@ -486,8 +545,18 @@ def disambiguate(items: list[tuple[Portion, bool]]) -> list[Portion]:
     return portions
 
 
+PORTION_SOURCES = ("match", "half_of", "preset_grams")
+
+
 def keyed_entry(entry: dict) -> bool:
-    return "match" in entry or "half_of" in entry
+    return any(kind in entry for kind in PORTION_SOURCES)
+
+
+def preset_weight(value: object) -> float | None:
+    """A curated weight: a real number (not a bool, not a string), finite and above 0."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return measured_quantity(value)
 
 
 def portion_matches(rule: dict, portion: Portion, clean: CleanPortion) -> bool:
@@ -505,7 +574,9 @@ def usda_measures(rows: list[dict] | None, overrides: dict | None = None,
     The set of portions and their IDs follow the raw rows only. G1 changes how a portion is labelled, a curated
     staple entry wins over it. An entry keyed by a USDA portion ID applies when ID and grams match. An entry with
     "match" applies when exactly one raw row fits, and takes that row's grams and ID. "half_of" derives half of
-    a matched entry. `tally` collects what could not be applied, for the dry run.
+    a matched entry. "preset_grams" is a curated weight that needs no raw row (a typical German cucumber or yogurt
+    pot, D313): no USDA ID, the portion ID comes from its key and grams. `tally` collects what could not be applied,
+    for the dry run.
     """
     overrides = overrides or {}
     numeric = {key: entry for key, entry in overrides.items() if not keyed_entry(entry)}
@@ -557,8 +628,12 @@ def usda_measures(rows: list[dict] | None, overrides: dict | None = None,
                 used_ids.add(source_id)
     unmatched = [entry.get("key", source_id) for source_id, entry in numeric.items() if source_id not in applied]
     bases: dict[str, Portion] = {}
+    # An entry has exactly one source: a raw row ("match"), half of one ("half_of") or a curated weight. Two at once
+    # is a curation mistake: report it and apply none of them.
+    ambiguous = {name for name, entry in keyed.items() if sum(kind in entry for kind in PORTION_SOURCES) > 1}
+    unmatched.extend(name for name in keyed if name in ambiguous)
     for name, entry in keyed.items():
-        if "match" not in entry:
+        if "match" not in entry or name in ambiguous:
             continue
         found = [key for key, (portion, clean) in result.items()
                  if key not in curated and portion_matches(entry["match"], portion, clean)]
@@ -574,7 +649,7 @@ def usda_measures(rows: list[dict] | None, overrides: dict | None = None,
         result[found[0]] = (bases[name], clean)
         curated.add(found[0])
     for name, entry in keyed.items():
-        if "half_of" not in entry:
+        if "half_of" not in entry or name in ambiguous:
             continue
         base = bases.get(entry["half_of"])
         if base is None:
@@ -586,9 +661,24 @@ def usda_measures(rows: list[dict] | None, overrides: dict | None = None,
             short_label_en=shorts["en"], short_label_de=shorts["de"], is_default=entry.get("default", False),
             sort_order=entry["order"]), None)
         curated.add(("curated", name))
+    for name, entry in keyed.items():
+        if "preset_grams" not in entry or name in ambiguous:
+            continue
+        grams = preset_weight(entry["preset_grams"])
+        if grams is None:
+            unmatched.append(name)
+            continue
+        labels, shorts = entry["labels"], entry["short_labels"]
+        result[("curated", name)] = (Portion(
+            labels["en"], "portion", weight_g=grams, portion_key=name, labels=labels,
+            short_label_en=shorts["en"], short_label_de=shorts["de"], is_default=entry.get("default", False),
+            sort_order=entry["order"]), None)
+        curated.add(("curated", name))
     if tally is not None:
         tally["unmatched"] = unmatched
-        tally["unmapped_head"] = sum(1 for key, (_, clean) in result.items() if key not in curated and clean.unmapped)
+        unmapped = [clean.rest for key, (_, clean) in result.items() if key not in curated and clean.unmapped]
+        tally["unmapped_head"] = len(unmapped)
+        tally["unmapped_heads"] = [head_word(rest) for rest in unmapped]
     portions = disambiguate([(portion, key in curated) for key, (portion, _) in result.items()])
     return tuple(sorted(portions, key=lambda portion: portion.sort_order))
 
@@ -604,7 +694,19 @@ def clean(value: str | None, limit: int) -> str:
     return (value or "").replace("\x00", "").strip()[:limit]
 
 
-def validate(name: str, amounts: dict[str, Nutrient], alcohol: bool) -> tuple[str, ...]:
+def bls_energy_matches(amounts: dict[str, Nutrient], atwater: float, energy: float) -> bool:
+    """The BLS energy rule (D313). BLS `CHO` is the available carbohydrate and BLS `ENERCC` counts fibre at 2 kcal/g
+    (Regulation (EU) 1169/2011, Annex XIV), so the fibre belongs in the sum. BLS rounds kcal to whole numbers, so a gap
+    of at most 2 kcal passes whatever its share of a near-zero energy. Only BLS rows use this: USDA's carbohydrate
+    already includes fibre."""
+    fiber = amounts["fiber"].amount if "fiber" in amounts else 0.0
+    gap = abs(atwater + fiber * BLS_FIBER_KCAL_PER_G - energy)
+    return gap <= energy * ATWATER_FRACTION or gap <= BLS_KCAL_ROUNDING
+
+
+def validate(name: str, amounts: dict[str, Nutrient], alcohol: bool, bls: bool = False) -> tuple[str, ...]:
+    """The quality rules. `bls` adds the BLS energy rule as one more way to pass the Atwater check, after the existing
+    exceptions, so no row that was accepted before is decided differently."""
     if len(name) < 2 or len(normalize(name)) < 2:
         raise Reject("invalid_name")
     carb = amounts.get("carbohydrates_total") or amounts.get("carbohydrates")
@@ -621,6 +723,8 @@ def validate(name: str, amounts: dict[str, Nutrient], alcohol: bool) -> tuple[st
             return ("atwater_alcohol_exception",)
         if "fiber" in amounts and amounts["fiber"].amount >= FIBER_EXCEPTION_G:
             return ("atwater_high_fiber_exception",)
+        if bls and bls_energy_matches(amounts, atwater, energy):
+            return ()
         raise Reject("atwater_deviation")
     return ()
 
@@ -722,6 +826,7 @@ def staple_applies(entry: dict, description: str) -> bool:
 
 
 PORTION_STATS = ("total", "relabelled", "localized_de", "unmapped_head", "raw_marker")
+UNMAPPED_HEADS_TOP = 25
 
 
 @dataclass
@@ -729,6 +834,7 @@ class ImportNotes:
     """What the dry run reports about USDA portions and staples. Counting never changes what is written."""
 
     portions: Counter = field(default_factory=Counter)
+    unmapped_heads: Counter = field(default_factory=Counter)
     staples_applied: int = 0
     description_mismatch: list[str] = field(default_factory=list)
     unmatched: dict[str, list[str]] = field(default_factory=dict)
@@ -743,6 +849,7 @@ class ImportNotes:
             self.portions["localized_de"] += bool(portion.labels.get("de"))
             self.portions["raw_marker"] += any(RAW_MARKER.search(text) for text in texts)
         self.portions["unmapped_head"] += tally.get("unmapped_head", 0)
+        self.unmapped_heads.update(tally.get("unmapped_heads", ()))
         self.staples_applied += applied
         if applied:
             self.staple_portions[fdc_id] = {portion.portion_key: portion.weight_g
@@ -751,7 +858,10 @@ class ImportNotes:
             self.unmatched[fdc_id] = tally["unmatched"]
 
     def summary(self) -> dict:
+        # A list, not a dict: the dry-run line is written with sorted keys, which would lose the ranking.
+        top = sorted(self.unmapped_heads.items(), key=lambda item: (-item[1], item[0]))[:UNMAPPED_HEADS_TOP]
         return {"portions": {name: self.portions[name] for name in PORTION_STATS},
+                "unmapped_heads": [{"head": head, "count": count} for head, count in top],
                 "staples": {"applied": self.staples_applied, "description_mismatch": sorted(self.description_mismatch),
                             "unmatched": dict(sorted(self.unmatched.items()))},
                 "staple_portions": dict(sorted(self.staple_portions.items()))}
@@ -834,7 +944,7 @@ def bls_staple(external_id: str, version: str, amounts: dict[str, Nutrient] | No
     alcohol = amounts.get("alcohol")
     return Food("bls", external_id, version, name, "", list(entry["names"].items()), ["DE"], None, None,
                 sorted(amounts.values(), key=lambda n: n.code), classify(name, [], provider="bls"), None,
-                validate(name, amounts, alcohol is not None and alcohol.amount > 0), portions=tuple(portions),
+                validate(name, amounts, alcohol is not None and alcohol.amount > 0, bls=True), portions=tuple(portions),
                 is_canonical_staple=True, canonical_group_key=entry["group"], food_form=entry["form"],
                 subtitles=entry["subtitles"], aliases=staple_aliases(entry), attribution=BLS_ATTRIBUTION,
                 density_g_ml=entry.get("density_g_per_ml"))
@@ -1041,7 +1151,7 @@ def bls_row_food(row: dict, version: str, curation: Curation, notes: BlsNotes | 
                                                  for key in curation.usda_labels.get(name, ())})):
         notes.twin_candidates[code] = {"name_de": name_de, "staples": staples}
     alcohol = amounts.get("alcohol")
-    warnings = validate(name_de, amounts, alcohol is not None and alcohol.amount > 0)
+    warnings = validate(name_de, amounts, alcohol is not None and alcohol.amount > 0, bls=True)
     names = [("de", name_de)]
     if len(normalize(name_en)) >= 2:
         names.append(("en", name_en))

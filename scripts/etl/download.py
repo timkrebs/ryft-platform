@@ -20,6 +20,9 @@ FDC_RELEASES = f"{FDC}/download-datasets/"
 OFF_REPO = "https://huggingface.co/datasets/openfoodfacts/product-database"
 OFF_METADATA = "https://huggingface.co/api/datasets/openfoodfacts/product-database"
 CLIENT_HEADERS = {"User-Agent": "RYFT-Nutrition-ETL/1.0 (https://ryftlab.de)"}
+# Sent with every USDA archive request: a cache between us and USDA must not answer with a stale ZIP (D313).
+NO_CACHE_HEADERS = {"Cache-Control": "no-cache", "Pragma": "no-cache"}
+USDA_ATTEMPTS = 3
 ZIP_LIMIT = 64 * 1024**2
 CSV_LIMIT = 192 * 1024**2
 RELEASE_PATTERN = re.compile(
@@ -90,7 +93,7 @@ def file_sha256(path: Path) -> str:
 def download_usda(client: httpx.Client, release: Release, directory: Path) -> Path:
     archive = directory / "release.zip"
     total = 0
-    with client.stream("GET", release.location) as response:
+    with client.stream("GET", release.location, headers=NO_CACHE_HEADERS) as response:
         response.raise_for_status()
         if int(response.headers.get("Content-Length", 0)) > ZIP_LIMIT:
             raise ValueError("USDA archive exceeds its download limit")
@@ -104,23 +107,28 @@ def download_usda(client: httpx.Client, release: Release, directory: Path) -> Pa
 
 
 def stage_usda(client: httpx.Client, releases: list[Release], directory: Path) -> tuple[Path, dict[str, Path], Release]:
-    """Prefer the latest complete archive, retrying stale content before trying the previous release."""
+    """Stage the newest release, retrying stale content, and never fall back to an older release (D313).
+
+    USDA can replace the bytes at an existing release URL while caches still serve its old ZIP. Every attempt asks for
+    a fresh URL (a new query parameter) with no-cache headers. After USDA_ATTEMPTS attempts that still lack the tables
+    the kind fails: importing an older release under the newest one's name would hide the problem.
+    """
     latest = releases[0]
-    # USDA can replace the bytes at an existing release URL while caches still serve its old ZIP.
-    refresh_url = httpx.URL(latest.location).copy_merge_params({"ryft_retry": uuid4().hex})
-    candidates = [latest, replace(latest, location=str(refresh_url)), *releases[1:2]]
-    for index, release in enumerate(candidates):
-        archive = download_usda(client, release, directory)
+    for attempt in range(1, USDA_ATTEMPTS + 1):
+        fresh = httpx.URL(latest.location).copy_merge_params({"ryft_retry": uuid4().hex})
+        archive = download_usda(client, replace(latest, location=str(fresh)), directory)
         try:
             files = extract_usda(archive, directory)
         except MissingUSDATables as error:
-            if index == len(candidates) - 1:
-                raise MissingUSDATables(f"USDA release {release.version}: {error}") from error
-            action = "retrying with a fresh URL" if index == 0 else f"trying previous release {candidates[-1].version}"
-            print(f"USDA release {release.version}: {error}; {action}", file=sys.stderr, flush=True)
+            if attempt == USDA_ATTEMPTS:
+                raise MissingUSDATables(
+                    f"USDA release {latest.version}: {error}; still incomplete after {attempt} attempts, "
+                    "not falling back to an older release") from error
+            print(f"USDA release {latest.version}: {error}; attempt {attempt} of {USDA_ATTEMPTS}, retrying with a fresh URL",
+                  file=sys.stderr, flush=True)
         else:
-            return archive, files, release
-    raise AssertionError("USDA candidates exhausted")
+            return archive, files, latest
+    raise AssertionError("USDA attempts exhausted")
 
 
 def extract_usda(archive: Path, directory: Path) -> dict[str, Path]:

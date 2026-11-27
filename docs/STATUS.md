@@ -1,5 +1,22 @@
 # RYFT platform — status
 
+## Nutrition ETL follow-ups: BLS rejects, two preset portions, the newest Foundation release, more German labels (2026-11-27, D313)
+
+Done (PR `fix/nutrition-etl-followups`): BLS energy counts fibre at 2 kcal/g with a 2 kcal floor (`bls2`; 94 → 15
+rejects, 7,105 accepted over the committed extract; the 15 are organic acids, polyols and additives without fat, kept
+on purpose; the 20 skips are the twins by design). Salatgurke ½ = 200 g and Naturjoghurt 1 Becher = 150 g as curated
+preset defaults (`preset_grams`, staples 3). USDA never falls back to an older release (three attempts on the newest,
+then the kind fails). ~40 more portion heads and 11 qualifiers, plus `unmapped_heads` in the USDA summary.
+Verified locally: `tests/test_followups.py` (stdlib only, 20 tests, includes the real-CSV counts). `test_etl.py` and
+`test_bls.py` need httpx/duckdb/psycopg and ran first in CI. Reviews: `docs/work/2026-11-27-etl-followups/review.md`.
+
+Open, the user's (needs a new image; commands and expected counts in the PR body):
+1. After the merge: `gh workflow run deploy.yml --ref main -f publish_nutrition_etl=true`; take the digest from the
+   run's **Nutrition ETL image** summary.
+2. Pin it in the local `infra/gcp/terraform.tfvars` (`nutrition_etl.image_digest`), then
+   `terraform -chdir=infra/gcp plan -out=nutrition-etl-followups.tfplan` (only the job's image changes) and apply that file.
+3. Dry runs, then writes: BLS, Foundation, SR Legacy, as in the PR body.
+
 ## C1: goal, training load, net energy and the Fitness tiles, the contract, docs only (2026-11-27, D304)
 
 Done (branch `docs/fitness-contract`): `docs/API.md` gains `User.goal`, `sex`, `weight_kg`, `weight_source`, `weight_measured_at` (and `UserPatch`), with the goal ↔ `GoalProfile.goal` table. `DailyScore` gains `training_load` (cardio and muscular: 7 d against 28 d, the band, `state`, coverage; computed on read), `energy` (intake, active, resting, net, `missing`, `confidence`), `vo2max`, `vo2max_delta_7d`, `hrr_bpm` and `active_min`. `DayDetail` gains `muscles`. `POST /v1/sync` gains `basal_energy`, `heart_rate_recovery`, and `body_mass` for everyone. The server stores the new types only while the flag `sync.fitness_types` is on and the consent is to a policy version that names them. A `PATCH` of `sex`/`weight_kg` needs that consent too. The Swift mirror and a changelog entry are in; the examples are `http` blocks. The plan and the implementation order are in `docs/work/2026-11-27-fitness-contract/plan.md`. Merging deploys nothing new.

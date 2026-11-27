@@ -148,8 +148,10 @@ def run(args: argparse.Namespace) -> None:
             csv_path = bls_csv
             if csv_path is None:
                 # Without the extract (or with --no-bls-csv): the three curated staples under the staples-only version.
-                # Their attribution is the full citation since D296's data commit, so over the earlier staples-only
-                # rows this gives 3 `conflict` (same version, new checksum); over a full import run() refused it above.
+                # The version carries the staples version, so after a staples bump (3 since D313) these rows are a new
+                # dataset version: `updated` where their content changed since the last write (the full citation as
+                # attribution since D296's data commit), else `unchanged`, never `conflict`. Over a full import run()
+                # refused it above.
                 ids = list(STAPLES["bls"])[:limit]
                 batches = ([{"external_id": external_id} for external_id in ids[start:start + args.batch_size]]
                            for start in range(0, len(ids), args.batch_size))

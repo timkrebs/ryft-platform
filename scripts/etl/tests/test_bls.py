@@ -833,16 +833,16 @@ class TransformTests(unittest.TestCase):
                     verify_bls_extract(path)
 
     def test_the_dataset_version_covers_every_input(self):
-        self.assertEqual(transform.BLS_TRANSFORM_VERSION, "bls1")
+        self.assertEqual(transform.BLS_TRANSFORM_VERSION, "bls2")
         with TemporaryDirectory() as workspace:
             path = Path(workspace) / "bls.csv"
             write_csv(path, [csv_row("B100000", "Brot")])
             digest = bls_input_digest(path)
             expected = hashlib.sha256()
-            for part in (path.read_bytes(), BLS_CURATION_PATH.read_bytes(), STAPLES_PATH.read_bytes(), b"bls1"):
+            for part in (path.read_bytes(), BLS_CURATION_PATH.read_bytes(), STAPLES_PATH.read_bytes(), b"bls2"):
                 expected.update(hashlib.sha256(part).digest())
             self.assertEqual(digest, expected.hexdigest())
-            with patch.object(transform, "BLS_TRANSFORM_VERSION", "bls2"):
+            with patch.object(transform, "BLS_TRANSFORM_VERSION", "bls3"):
                 self.assertNotEqual(bls_input_digest(path), digest)
             write_csv(path, [csv_row("B100000", "Brot zwei")])
             self.assertNotEqual(bls_input_digest(path), digest)
@@ -857,7 +857,7 @@ class CliTests(unittest.TestCase):
         [line] = self.run_etl("--no-bls-csv").stdout.splitlines()
         result = json.loads(line)
         self.assertEqual((result["release"], result["mode"], result["version"], result["bls_full"]),
-                         ("bls", "dry-run", "py-etl4:bls_4_0:staples2", False))
+                         ("bls", "dry-run", "py-etl4:bls_4_0:staples3", False))
         self.assertEqual((result["counts"]["accepted"], result["counts"]["rejected"]), (3, 0))
         for name in ("aliases_added", "skipped_twin", "twin_mismatch", "twin_candidates", "staple_nutrient_drift"):
             self.assertNotIn(name, result)
@@ -878,7 +878,7 @@ class CliTests(unittest.TestCase):
             ])
             [line] = self.run_etl("--bls-csv", str(path)).stdout.splitlines()
             result = json.loads(line)
-            self.assertEqual(result["version"], f"py-etl4:bls_4_0:staples2:{bls_input_digest(path)}")
+            self.assertEqual(result["version"], f"py-etl4:bls_4_0:staples3:{bls_input_digest(path)}")
             self.assertEqual(result["stale_twins"], {})  # none of the committed twins is in this CSV
             self.assertEqual((result["release"], result["mode"], result["bls_full"]), ("bls", "dry-run", True))
             self.assertEqual({key: result["counts"][key] for key in ("processed", "accepted", "rejected")},

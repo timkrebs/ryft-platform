@@ -7522,3 +7522,37 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   unchanged.
 - **Cost:** the merge transaction now also deletes `from`; it is bounded by `deleteTimeout` and the route is
   admin-only. Rollback: revert; no migration.
+
+## D313 — Nutrition ETL follow-ups: BLS energy with fibre, two preset portions, the newest USDA release only, more portion heads (2026-11-27; amends D288, D296)
+
+- **BLS energy (`bls2`).** BLS `ENERCC` counts fibre at 2 kcal/g (Regulation (EU) 1169/2011, Annex XIV) and BLS
+  `CHO` is available carbohydrate, so the plain Atwater sum missed fibre-rich vegetables, fruit and mushrooms by
+  more than 30 %. The data is right and the rule was wrong: for BLS rows only, a row that fails the existing paths
+  passes when `|P×4 + CHO×4 + F×9 + fibre×2 − kcal|` is within 30 % of kcal **or** within 2 kcal (BLS rounds kcal;
+  coffee and tea at 0–2 kcal). It runs after the existing paths, so no accepted row changes or loses a warning.
+  USDA (whose total carbohydrate already holds fibre) and OFF are unchanged. Over the committed extract:
+  94 → 15 rejected, 7,026 → 7,105 accepted, 20 skipped twins (by design, D296). Recovered 79: 72 fall inside the 30 % band
+  once fibre counts (52 of them also within 2 kcal), 7 pass only by the 2 kcal floor (fibre included). Left on purpose: 6 organic acids (3 kcal/g, no `OA` column in the
+  extract), 6 polyols and sweeteners (in `CHO` at 2.4 kcal/g, no polyol column), 3 additives without a fat value.
+  Adding `OA` and polyols to the extract would recover 12 more; that is a converter change for later.
+- **Preset portions (`preset_grams`, staples 3; amends D288's "weights always come from the source row").**
+  SR Legacy has no fitting measure for Salatgurke (168409) or Naturjoghurt (171284): US container sizes and a US
+  slicing cucumber. They get curated preset weights with no USDA portion ID, ID from `portion_key` and grams like
+  `half_of`: ½ Salatgurke 200 g (half of a typical 400 g German Salatgurke), 1 Becher Naturjoghurt 150 g (the usual
+  German single cup). Both are the default of their food and sort first (order 1). An entry with more than one
+  source (`match`, `half_of`, `preset_grams`) or a non-numeric, non-finite or non-positive weight is `unmatched`. These are documented typical values, not measurements;
+  they apply only to these two foods, and any further preset needs the same written reason.
+- **The newest USDA release only.** `stage_usda` used to take the previous release after two stale ZIPs (#240),
+  so a write could read 2026-04-30 (469 Foundation rows) after a dry run read 2026-10-29 (498). Importing older
+  data silently is worse than failing: now three attempts on the newest release, each with a fresh query parameter
+  and no-cache headers, then the USDA kind fails naming the release. A later run picks it up. Under `--source all`
+  that failure ends the run (sources before it have written). The merge does not retire sources missing from a
+  release, so Foundation foods whose FDC IDs USDA replaced in 2026-10-29 stay next to their successors; retiring
+  them is a separate, reviewed step.
+- **More portion heads.** About 40 SR Legacy count words (fruit, wedge, stalk, clove, bunch, tortilla, package, …) with
+  plurals and 11 qualifiers join `UNITS`/`QUALIFIERS`. The USDA summary gains `unmapped_heads` (top 25 with counts)
+  so the next extension is data-driven. No local before/after: no USDA sample is committed and the session had no
+  network; the user's dry run reports `portions.localized_de` and `unmapped_head` against the earlier 3,375.
+- **What the write does.** The row checksum excludes the version, so only rows whose content changed are
+  `updated`: BLS 79 `inserted`, the rest `unchanged`; USDA the two preset foods and the relabelled foods
+  `updated`. No migration, no API change; portion IDs of existing portions do not move.
