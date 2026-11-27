@@ -15,7 +15,15 @@ Needs you, in order:
 6. Write: the same with `--args=--source,bls,--full,--write`. Expect ~7,1xx `inserted`, 3 `updated` (the BLS staples' nutrients) and 0 `conflict`. A rerun gives `unchanged`.
 7. Legal: put the D296 attribution sentence on the site's licences/legal page (#252), and ask the app lead to add it to the About/licences screen.
 
-Size: ~250k rows, ~30–45 MB in Supabase. To roll back, re-pin the previous digest. Imported rows stay; retire them by `status` if they must go. 0061 rolls back by re-applying 0059's body.
+Size: ~250k rows, ~30–45 MB in Supabase. To roll back, re-pin the previous digest. Imported rows stay; retire them by `status` if they must go. 0061 rolls back by re-applying 0059's body. **0061 is taken now:** the no-watch recovery implementation (below) starts at 0062.
+
+## No-watch recovery: the contract, docs only (2026-11-26, D291–D295)
+
+Done: `docs/API.md` → Recovery without a watch: the morning check-in (`PUT`/`GET`/`DELETE /v1/recovery/checkins/{date}`, the range), `GET /v1/recovery/status`, session RPE (`PUT`/`DELETE /v1/workouts/{id}/rpe`, `Workout.session_rpe`, `session_rpe_load`), `CoachingBriefing.recovery`, `N2RScore.bedtime_source`, the readiness value `LOW_RECOVERY_UNEXPLAINED`, and the flag `recovery.checkin`. The Swift mirror and a changelog row are in. No Go, no migration, no behaviour change: every new route answers `404` until the implementation PR. The examples are `http` blocks until the model types exist. D290 was taken by #252, so this work uses D291–D295.
+
+Decided 2026-11-27 (the user; folded into API.md, D291–D295 and `implementation.md`): the Today ring shows a check-in's estimate, marked as estimated (from `RecoveryStatus`; `DailyScore.recovery` stays wearable-only); session RPE feeds no day strain; soreness has zero weight; journal `sick`, `travel` and `work_stress` explain a drop (with `sick` the plan stays protective); the neutral name is the new field `CoachingBriefing.readiness_display` (`AUTONOMIC_FATIGUE` → `LOW_RECOVERY_UNEXPLAINED`, `readiness` unchanged); and the conservative defaults: no special case for sleep-only trackers, hand-typed sleep stays counted as measured, Apple's effort score is not read, allow-listed testers only.
+
+Open: the implementation (`docs/work/2026-11-26-no-watch-recovery/implementation.md`: migrations 0061+, tickets, tests) and the privacy text #252 (or the next version) needs before the flag goes on for anyone. One code-reviewer pass (`docs/work/2026-11-26-no-watch-recovery/review.md`): the blocker (one "wearable night" rule) and the should-fix items are fixed in the second commit. Merging this PR deploys nothing new: `deploy.yml` rolls the services unchanged, and the site job has no change.
 
 ## Nutrition portions v2: clean USDA labels and 8 more staples (2026-11-26, D288)
 

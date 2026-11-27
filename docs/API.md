@@ -49,6 +49,8 @@ so are the operator routes' `actor.kind` (`key` or `user`, Admin routes → The 
 | Journal (Today card, morning push) | yesterday's behaviors as toggles, a count or a time; edit 14 days back | `GET`/`PUT /v1/journal/{day}` |
 | Insights — Behaviors | "Alcohol · −14 recovery (n = 12/31)" with its interval; locked ones with the days still needed | `GET /v1/behaviors/impact` |
 | Profile — Journal | choose behaviors, add or remove custom ones | `GET`/`PATCH`/`POST /v1/behaviors`, `DELETE /v1/behaviors/{id}` |
+| Today — morning check-in (no watch at night; D291, not served yet) | whether to ask, the form pre-filled with bed and wake times, the recovery estimate with its source and confidence (it fills the Today ring, marked as estimated, when there is no wearable night); history; delete | `GET /v1/recovery/status` (or `CoachingBriefing.recovery`), `PUT`/`GET`/`DELETE /v1/recovery/checkins/{date}`, `GET /v1/recovery/checkins` |
+| Strain — workout without heart rate: "How hard was it?" | session RPE 1–10 and its load | `PUT`/`DELETE /v1/workouts/{id}/rpe`, `Workout.session_rpe`, `session_rpe_load` |
 | Strain — Train: library, history | exercise search, custom exercises, e1RM chart and PRs, past sessions | `GET`/`POST /v1/exercises`, `PATCH`/`DELETE /v1/exercises/{id}`, `GET /v1/exercises/{id}/history`, `GET /v1/sessions` |
 | Strain — Train: import | plans and workout history from another training app's export; label imported sessions; start the imported plan where the user is | `POST /v1/train/import`, `Session.origin` / `import_source`, `POST /v1/plans/{id}/enroll` (optional position) |
 | (background) | HealthKit upload, and the deletions HealthKit reports | `POST /v1/sync` (`deleted`, `Sample.id`) |
@@ -93,7 +95,7 @@ not on the message. Closed enum:
 | `code` | Status | Do |
 | --- | --- | --- |
 | `invite_required` | `403` | The beta is invite-only and this account has no access yet: show the invite screen, `POST /v1/me/invite`. Every `/v1/*` route answers it except `GET /v1/me`, `GET /v1/me/sync`, `GET /v1/config`, `GET /v1/model`, `POST /v1/me/invite`, `POST`/`DELETE /v1/me/consent`, `POST /v1/feedback`, `DELETE /v1/me`, `DELETE /v1/me/connections/{provider}` (Connections, not served yet), `POST /v1/app-attest/challenge`, `POST /v1/app-attest/keys` and `POST /v1/app-attest/token`. |
-| `consent_required` | `403` | `POST /v1/sync`, `POST /v1/train/import`, `POST /v1/me/connections/{provider}/start` or `/confirm` without a consent to the current privacy policy (`GET /v1/config` → `privacy_policy_version`): show the consent screen, `POST /v1/me/consent`, then send again. Reads keep working. |
+| `consent_required` | `403` | `POST /v1/sync`, `POST /v1/train/import`, `POST /v1/me/connections/{provider}/start` or `/confirm`, and (not served yet) `PUT /v1/recovery/checkins/{date}` or `PUT /v1/workouts/{id}/rpe` without a consent to the current privacy policy (`GET /v1/config` → `privacy_policy_version`): show the consent screen, `POST /v1/me/consent`, then send again. Reads keep working. |
 | `import_in_progress` | `429` | `POST /v1/train/import` while another import of this account is still running (this device's earlier request, or another device): wait `Retry-After` (10) seconds and send the same request again. It is safe: nothing of this request was processed. |
 | `import_not_enabled` | `403` | `POST /v1/train/import` for an account the feature flag `train.import` is off for (`GET /v1/config` → `flags`): hide the import; it is not an error to retry. Nothing of the request was read. |
 | `mfa_required` | `403` | Only on `/v1/admin/*` (the operator's web page and scripts); the app never calls these routes and never receives it. The admin token has no second factor, or its TOTP is older than 12 hours: run a TOTP challenge (Supabase MFA) and send the request again with the new token (Admin routes → Who may call). |
@@ -150,13 +152,13 @@ Connections routes, which it does not call.
 | --- | --- | --- | --- |
 | `400` | — | Malformed JSON (a raw 0x00 byte in the body included), unknown body field (in `POST /v1/train/import` also `origin` and `import_source` on a session), malformed date / UUID in query or path, a path or query holding `%00` or bytes that are not UTF-8 | Fix the request: sent again unchanged it fails the same way. A client bug, not for the user to fix; log `request_id`. Do not retry. |
 | `401` | — | The token is missing, malformed, expired, not signed by the project, or not a signed-in user's token, or the account was deleted (checked before routing, so any `/v1/*` path). `/v1/admin/*` has its own rules (Admin routes → Who may call): there a `401` also means a valid token that is not an operator's. | Refresh the session and send the request again once; a second `401` means sign in again (Authentication). A `503` is never a reason to sign out. |
-| `403` | `invite_required`, `consent_required`, `import_not_enabled`, `app_attest_required`, `mfa_required`, or none | Changing a built-in exercise, plan or behavior; and the `code`s of the table above: `invite_required` (no beta access), `consent_required` (sync, import, or a connection's start or confirm without consent to the current policy), `import_not_enabled` (the import is off for the account), `app_attest_required` (under `APP_ATTEST=on`, no valid app token); on `/v1/admin/*` only: `mfa_required` (no recent second factor), or no `code` for a route that needs the admin key | Without a `code` the target is a built-in: do not retry, drop the edit. With a `code`, act on it as in the `code` table: `invite_required` shows the invite screen, `consent_required` the consent screen and then sends again, `import_not_enabled` hides the import, `app_attest_required` gets a new app token and sends again once, keeping a refused write queued (never "drop the edit"). `mfa_required` is never sent to the app: the operator's page runs the TOTP challenge and sends again. |
-| `404` | `app_attest_key_unknown`, `unknown_provider`, or none | Resource does not exist or is not the user's (`/v1/workouts/{id}`, exercises, plans, sessions), or unknown route or method; `POST /v1/app-attest/token` only: `app_attest_key_unknown` (the `key_id` is not one of the account's keys); `POST /v1/me/connections/{provider}/start` and `/confirm` only: `unknown_provider` (the provider is not served or not enabled for the account) | Branch on the `code` first. `app_attest_key_unknown`: drop the `key_id`, attest a new key, then get a token. `unknown_provider`: hide that provider's Connect entry. Without a `code` the resource is gone or not the user's: do not retry, drop the local reference and refresh the list. An unknown route or method is a `404` too: the app is newer than the server (on `POST /v1/app-attest/challenge`: App Attest is not live, send no app token). |
+| `403` | `invite_required`, `consent_required`, `import_not_enabled`, `app_attest_required`, `mfa_required`, or none | Changing a built-in exercise, plan or behavior; and the `code`s of the table above: `invite_required` (no beta access), `consent_required` (sync, import, a connection's start or confirm, a recovery check-in or a session RPE without consent to the current policy), `import_not_enabled` (the import is off for the account), `app_attest_required` (under `APP_ATTEST=on`, no valid app token); on `/v1/admin/*` only: `mfa_required` (no recent second factor), or no `code` for a route that needs the admin key | Without a `code` the target is a built-in: do not retry, drop the edit. With a `code`, act on it as in the `code` table: `invite_required` shows the invite screen, `consent_required` the consent screen and then sends again, `import_not_enabled` hides the import, `app_attest_required` gets a new app token and sends again once, keeping a refused write queued (never "drop the edit"). `mfa_required` is never sent to the app: the operator's page runs the TOTP challenge and sends again. |
+| `404` | `app_attest_key_unknown`, `unknown_provider`, or none | Resource does not exist or is not the user's (`/v1/workouts/{id}`, exercises, plans, sessions), or unknown route or method; `POST /v1/app-attest/token` only: `app_attest_key_unknown` (the `key_id` is not one of the account's keys); `POST /v1/me/connections/{provider}/start` and `/confirm` only: `unknown_provider` (the provider is not served or not enabled for the account) | Branch on the `code` first. `app_attest_key_unknown`: drop the `key_id`, attest a new key, then get a token. `unknown_provider`: hide that provider's Connect entry. Without a `code` the resource is gone or not the user's: do not retry, drop the local reference and refresh the list. An unknown route or method is a `404` too: the app is newer than the server (on `POST /v1/app-attest/challenge`: App Attest is not live, send no app token). **Exception, the recovery writes and status** (`PUT /v1/recovery/checkins/{date}`, `GET /v1/recovery/status`, `PUT /v1/workouts/{id}/rpe`; not served yet): a `404` without a `code` there means the feature is off or not served: hide it, and never drop the workout or other local data. |
 | `409` | `connection_limit`, `connect_ticket_invalid`, `merge_has_connections`, or none | Connections only: `connection_limit` (the provider's user cap is full) and `connect_ticket_invalid` (a confirm's ticket is unknown or another account's); `/v1/admin/*` only: `merge_has_connections` (the merge's source account holds a connection). Without a `code`: the id is taken by another user's or a built-in exercise, plan or behavior (`POST /v1/exercises`, `POST /v1/behaviors`, `PUT /v1/plans/{id}`; a `PUT /v1/plans/{id}` can also mean that a day's or a plan exercise's id is taken); completing a discarded session. **`PUT /v1/sessions/{id}`**: the server has newer sets — the body is then the server's `Session`, not the error shape. | Branch on the `code` first. `connection_limit`: say the provider is full, no automatic retry. `connect_ticket_invalid`: read `GET /v1/me/connections`, else start again. `merge_has_connections` is never sent to the app. Without a `code`: do not resend unchanged. An id that is taken: create the item again under new UUIDs, for the document and for its children. `PUT /v1/sessions/{id}`: the body is the server's `Session`; merge it with the local copy by set id (the later `updated_at` wins per set) and `PUT` the result. Completing a discarded session: treat it as discarded. |
 | `410` | `connect_expired` | `POST /v1/me/connections/{provider}/confirm` only (Connections): more than 10 minutes after the callback (a repeat of a confirm that worked included); the grant waiting for it is dropped. | Do not resend it. Read `GET /v1/me/connections`: connected, done; not connected, start again. |
 | `413` | — | Request body over the limit (32 MiB for `POST /v1/sync`, 1 MiB for `POST /v1/train/import`, 256 KiB for `PUT /v1/sessions/{id}` and `PUT /v1/plans/{id}`, 64 KiB otherwise). | Do not resend unchanged. `POST /v1/sync`: send smaller pages. Anywhere else the app broke a limit it knows: split or shorten the request. |
 | `415` | — | A coaching relay fixture sends a missing, repeated or unsupported `Content-Type`. | Send one `Content-Type` matching the body. Use JSON for Garmin or JSON or form encoding for Suunto. |
-| `422` | `app_attest_challenge_invalid`, `app_attest_invalid`, or none | Well-formed but invalid: out-of-range value, unknown or missing enum parameter (`range`, `metric`; an enum parameter holding `%00` is `400`: the URL is refused before the parameter is read), `from > to`, recompute range over 400 days, unknown timezone, a string in the body containing NUL (`\u0000`); `POST /v1/train/import`: an unknown `source`, over 5 plans, 50 sessions or 2 500 sets, the same id twice in the request; `POST /v1/app-attest/keys` and `/token` only: `app_attest_challenge_invalid` (the challenge is unknown, used up, expired or another account's), `app_attest_invalid` (the attestation or the assertion fails a check) | Without a `code`: do not resend unchanged: show the problem to the user (a field error) or correct the value. A string with `\u0000`: strip it and send again (Errors → NUL). Not transient. `app_attest_challenge_invalid`: a new challenge, then the same step again, once. `app_attest_invalid`: drop the `key_id` and attest a new key, once. |
+| `422` | `app_attest_challenge_invalid`, `app_attest_invalid`, or none | Well-formed but invalid: out-of-range value, unknown or missing enum parameter (`range`, `metric`; an enum parameter holding `%00` is `400`: the URL is refused before the parameter is read), `from > to`, recompute range over 400 days, unknown timezone, a string in the body containing NUL (`\u0000`); `POST /v1/train/import`: an unknown `source`, over 5 plans, 50 sessions or 2 500 sets, the same id twice in the request; `PUT /v1/recovery/checkins/{date}` and `PUT /v1/workouts/{id}/rpe` (not served yet): a value out of range, a wake day that does not match, older than 14 days or in the future, a hidden duplicate rated; `POST /v1/app-attest/keys` and `/token` only: `app_attest_challenge_invalid` (the challenge is unknown, used up, expired or another account's), `app_attest_invalid` (the attestation or the assertion fails a check) | Without a `code`: do not resend unchanged: show the problem to the user (a field error) or correct the value. A string with `\u0000`: strip it and send again (Errors → NUL). Not transient. `app_attest_challenge_invalid`: a new challenge, then the same step again, once. `app_attest_invalid`: drop the `key_id` and attest a new key, once. |
 | `429` | `import_in_progress`, or none | The per-user rate limit (see **Conventions**), a second `POST /v1/recompute` within a minute, the limits of `POST /v1/feedback` (10 a day) and `POST /v1/me/invite` (5 an hour), or a second import while one runs (`code` `import_in_progress`); `/v1/admin/*` is limited per client address instead of per user (Admin routes). api and ingest also limit each client address (20/s, bursts of 50; counted per instance, an IPv6 address by its /64) before any token is checked, on every route but the health paths; that `429` has the plain-text body `Too Many Requests` (`text/plain; charset=utf-8`, no `request_id` in the body, `X-Request-ID` in the headers as always), so do not require JSON on a `429`. | Wait `Retry-After` seconds, then send the same request again. The per-address `429` sends `Retry-After` too (the delay rounded up, at least 1, usually 1) and `X-Retry-In` (the delay as a Go duration, e.g. `37.5ms`; informative only); a `429` without `Retry-After`: wait 1 s. If the wait is longer than the app will hold (`POST /v1/feedback` after 10 in a day: up to 24 h; `POST /v1/me/invite`: up to about 12 minutes), stop and tell the user. `import_in_progress`: wait `Retry-After` (10 s) and resend unchanged. |
 | `500` | — | Unexpected server error. The message is always `"internal error"`; the details are in the server log under `request_id`. A database call that fails in the middle of a request is a `500`, except where the `503` row says otherwise. | Not the user's fault, maybe transient: retry later with jittered backoff, a few times at most (the first retry may be immediate), and show `request_id` if it persists. |
 | `503` | — | The server cannot answer now, always with `Retry-After` except for `GET /readyz`: the token or the account could not be loaded at the start of the request (Supabase keys or the database unreachable — **not** a sign-in problem; `Retry-After: 5`); the request ran out of time (`"request timed out"`; 5); `POST /v1/sync` could not apply its page (the database, or a concurrent sync of the same account; 5) or `POST /v1/train/import` could not finish (5); the queue is down (`POST /v1/recompute`, or the completion or edit of a session, which is already stored; 30); Apple is unreachable (`POST /v1/me/apple-authorization`; 5); the account lookup for a code bound to an email is unavailable (`POST /v1/me/invite`; 5); on `/v1/admin/*` the signing keys or the database for an admin token (5); the service is still starting (a cold start on Cloud Run, `"temporarily unavailable, send the request again"`; 5). `GET /readyz` and `GET /health/ready` answer `503` without `Retry-After` when a dependency is down. | Wait `Retry-After` seconds and send the same request again (a sync and an import are idempotent; after a `POST /v1/recompute` `503` the retry can get `429` with `Retry-After: 60`, since the minute is already used); keep the session. The `503` of the ready paths is for probes, not the app. |
@@ -721,7 +723,7 @@ The signed-in, allow-listed Nutrition account uses the same v1 auth, App Attest 
 | `GET /v1/users/goal-profile` | 200 `GoalProfile` or JSON null |
 | `PUT /v1/users/goal-profile` | 200 `GoalProfile`; replaces prior settings. Invalid data or insufficient age evidence returns 422 |
 | `PUT /v1/coaching/feedback/{date}` | 200 `CoachingFeedback`; replaces feedback and the planned session for this local date |
-| `GET /v1/coaching/daily-briefing` | 200 `CoachingBriefing` with periodized targets, readiness, training load, N2R and guidance. With no coaching plan the `plan` field is null |
+| `GET /v1/coaching/daily-briefing` | 200 `CoachingBriefing` with periodized targets, readiness, training load, N2R and guidance. With no coaching plan the `plan` field is null. Gains `recovery` (`RecoveryStatus`), a check-in-based `readiness` without overnight HRV, the neutral display name `readiness_display`, and `N2RScore` gains `bedtime_source` (D291–D294, not served yet: [Recovery without a watch](#recovery-without-a-watch--check-ins-and-session-rpe-d291d295-not-served-yet)) |
 | `POST /v1/wearables/healthkit/sync` | Alias on the ingest host for `POST /v1/sync` with the same request, auth and deletions |
 
 `PUT /v1/users/goal-profile`
@@ -796,6 +798,10 @@ A synthetic relay receives 200 after durable acceptance or a no-op for a duplica
 | `POST` | `/v1/app-attest/challenge` | api | `AppAttestChallenge` (`501` until the token key is set; D245, D247; Conventions → App Attest) |
 | `POST` | `/v1/app-attest/keys` | api | `201 AppAttestKey` (body `AppAttestKeyPost`; `501` until the token key is set) |
 | `POST` | `/v1/app-attest/token` | api | `AppAttestToken` (body `AppAttestTokenPost`; `501` until the token key is set) |
+| `GET` | `/v1/recovery/status` | api | `RecoveryStatus` (D291; not served yet) |
+| `GET` | `/v1/recovery/checkins?from&to` | api | `[RecoveryCheckin]` |
+| `GET`, `PUT`, `DELETE` | `/v1/recovery/checkins/{date}` | api | `RecoveryCheckin`, `RecoveryCheckin` (body `RecoveryCheckinPut`), `204` |
+| `PUT`, `DELETE` | `/v1/workouts/{id}/rpe` | api | `Workout` (body `WorkoutRPEPut`), `204` (D293; not served yet) |
 | `GET` | `/v1/me/connections` | api | `ConnectionsResponse` (Connections, D257; not served yet) |
 | `POST` | `/v1/me/connections/{provider}/start` | api | `ConnectStart` (no body) |
 | `GET` | `/v1/connect/{provider}/callback` | api | `302` to `ryft://connect/{provider}?status=…` (no bearer; the provider's sign-in page calls it, not the app) |
@@ -1552,10 +1558,13 @@ user and flag, so raising a rollout only adds users. The operator sets flags
 | `today.redesign`, `coach.enabled`, `push.enabled`, `physiology.card`, `train.import`, `analytics.enabled`, `connect.garmin` | off (enabled, 0 %: on only for allow-listed testers) |
 | `nutrition.enabled` | off (enabled at 0% with the existing protected pilot allow-list) |
 | `nutrition.diary_enabled` | off (disabled at 0% until the diary cohort is authorized) |
+| `recovery.checkin` | off (enabled, 0 %: on only for allow-listed testers, and only after a published privacy version names the check-in; no percentage rollout without a new decision; from the implementation PR, D295, decided 2026-11-27) |
 
 `train.import` is the switch for the training import (`POST /v1/train/import`): the app shows the import only while it is on, and the endpoint checks it too, so an account it is off for gets `403 import_not_enabled` whatever the app does. It shipped dark (enabled, 0 %: testers by the allow-list); since 2026-11-22 it is on for every account (100 %, D250), so `403 import_not_enabled` means the operator has turned it off again.
 
 `analytics.enabled` is the switch for the app's product analytics (`analytics` above). It ships dark the same way: testers by the allow-list, the kill switch by `enabled: false`. No endpoint checks it; the app does.
+
+`recovery.checkin` (D295; from the no-watch recovery implementation PR, not served yet) gates the morning check-in and the session RPE ([Recovery without a watch](#recovery-without-a-watch--check-ins-and-session-rpe-d291d295-not-served-yet)): while it is off, `PUT /v1/recovery/checkins/{date}`, `GET /v1/recovery/status` and `PUT /v1/workouts/{id}/rpe` answer `404` without a `code`, and `CoachingBriefing.recovery` is `null`; the reads of stored check-ins and both `DELETE`s keep working. Turning it off stores nothing new and deletes nothing. The endpoints check it too, so the app shows the check-in and the RPE prompt only while it is on.
 
 `connect.garmin` (Connections, D257; from the platform PR `connect/foundation`) gates the direct connection to the provider `garmin`: `GET /v1/me/connections` → `available` lists the provider and `POST /v1/me/connections/{provider}/start` and `/confirm` accept it only while it is on for the account (`404 unknown_provider` otherwise). A confirm while it is off answers `404 unknown_provider`, and the grant waiting for that confirm is handled as an expired one: dropped, and ended at the provider unless another RYFT account holds that provider account live. It ships dark (enabled, 0 %): testers by the allow-list first. One flag per provider, `connect.<provider>`; `fake` has none (compose only). **The flag on does not mean the provider is served:** in production no provider is served until phase 2, so decide what to show by `available`, not by the flag; the app may use the flag only to skip the `GET /v1/me/connections` call while it is off. Turning it off hides the provider from `available` and refuses new starts; existing connections stay, and `DELETE /v1/me/connections/{provider}` still ends them.
 
@@ -2072,6 +2081,7 @@ were folded are deleted, not hidden, and are not returned.
 | `model_version` | string? | The scoring model of its `strain`, as on `DailyScore`. Omitted until scored. |
 | `duplicate_of` | uuid? | Only with `include_hidden=true`, on a hidden duplicate: the `id` of the primary it is hidden behind. Absent on visible workouts, and always absent without `include_hidden`. |
 | `also_recorded_by` | `[string]?` | The `source` names of other recordings of this same workout that the server hid (a Watch and a Garmin that both recorded one run): "also recorded by Garmin Connect". Distinct, sorted. Omitted when there are none (a client treats missing and `[]` alike). Ignored on input. |
+| `session_rpe`, `session_rpe_load` | number?, int? | Not served yet (D293): the user's session RPE (1–10) and Foster's load (minutes × RPE). Omitted without a rating. Read-only; set with `PUT /v1/workouts/{id}/rpe` ([Recovery without a watch](#recovery-without-a-watch--check-ins-and-session-rpe-d291d295-not-served-yet)). |
 
 **Duplicate workouts.** One activity must appear once. Two rules, both server-side:
 
@@ -2962,6 +2972,308 @@ bootstrap interval; `significant` when the interval excludes 0.
 behavior that did not happen is a no). Show `−14 recovery` as points, not a percentage
 of recovery; the CI as a thin range bar.
 
+### Recovery without a watch — check-ins and session RPE (D291–D295; not served yet)
+
+A user who does not wear a watch at night still gets a recovery estimate: a **morning check-in** (when they
+went to bed and woke up, how well they think they slept, how fresh they feel, whether they are sore) and,
+for a workout without heart rate, a **session RPE** (how hard it felt, 1–10). The server computes the sleep
+duration, a recovery estimate 0–100 and how much data it rests on. Wearable data always wins: a check-in
+is the fallback, never a second opinion (D291).
+
+**When it is served.** Docs only so far (the contract PR): every route here answers `404` without a `code`
+(an unknown route) until the implementation PR. After it, while the flag `recovery.checkin` (`GET /v1/config`)
+is off for the account, the two writes and `GET /v1/recovery/status` answer that `404`; the reads of stored
+check-ins and both `DELETE`s keep working. **On that `404`, hide the check-in and the RPE prompt; never drop
+the workout, the day or any other local data** (it is not the `404` of a resource that is gone). The examples
+are `http` blocks until the server has the model types (`model.RecoveryCheckin`, `RecoveryCheckinPut`,
+`RecoveryStatus`, `WorkoutRPEPut`; D295), as for Connections.
+
+**The wearable night** (D291). One rule decides everything below: the night ending on the day is a
+**wearable night** when it has asleep stages (`asleep`, `core`, `deep`, `rem`; an `in_bed`-only night, such
+as the iPhone's, is not one) or HRV readings in the sleep window, and `DailyScore.recovery` is not `null`. A resting heart rate alone does not make one: a watch worn only by day
+writes resting heart rate every day, and its user is the `medium` tier.
+
+**Tiers** (`RecoveryStatus.confidence`, a **closed** enum):
+
+| Tier | When | `source` | `confidence` |
+| --- | --- | --- | --- |
+| Wearable night | The day has a wearable night. | `wearable` | `high` |
+| Day watch + check-in | No wearable night; a check-in for the day; the day before has wearable heart rate in at least 8 distinct hours. | `checkin` | `medium` |
+| Check-in only | No wearable night; a check-in for the day; less heart rate than that the day before. | `checkin` | `low` |
+| Nothing | Neither. | `none` | `null` |
+
+A sync that later brings a wearable night for a day that has a check-in **supersedes** the check-in: it stays
+stored and readable (`superseded: true`), and the day's status, the briefing and the periodization use the
+wearable. Deleting that wearable data makes the check-in current again. While the flag is off, stored
+check-ins and ratings count nowhere (status, readiness, load, the N2R bedtime): the flag is a kill switch,
+and they stay stored and readable.
+
+**The Today ring** (decided 2026-11-27, D291). On a day without a wearable night, the Today ring shows the
+check-in's estimate: `RecoveryStatus.recovery_score` while `source` is `checkin`, **visibly marked as
+estimated**, with `confidence` (`medium`, `low`) saying how much it rests on. The app takes the label from
+`source` and `confidence`, never from the number. `DailyScore.recovery` and `readiness` keep their meaning: they
+stay wearable-only and `null` on such a day, so trends, baselines, insights and `GET /v1/trends` never contain a
+check-in. With `source` `wearable` the ring shows `DailyScore.recovery` as today; with `none` it stays empty.
+
+**Who is asked** (decided 2026-11-27, D291). The one rule above, with no special case: a night with asleep stages
+from a sleep-only tracker but no recovery (no heart rate, no HRV) is not a wearable night, so its user is asked
+too, and the check-in is scored on the reported times; the measured sleep is not blended in. A night typed into
+Apple Health by hand counts as measured (the sync does not mark it); no sync field is added for it now. Apple's
+workout effort score is not read: `session_rpe` comes only from the user's rating in RYFT.
+
+**Answers common to every route here.** They are api routes under the Conventions: the bearer, the rate
+limits, App Attest, the beta gate (`403 invite_required`), 64 KiB bodies with unknown fields `400`,
+`X-Request-ID`, `401`, `503` with `Retry-After`. The writes (`PUT /v1/recovery/checkins/{date}`,
+`PUT /v1/workouts/{id}/rpe`) store health data and need consent to the policy in force
+(`403 consent_required`; `CONSENT_ENFORCE=warn` acts as `on`, as for Nutrition writes and the import). The
+reads and the two `DELETE`s need no consent and work while the flag is off (the owner's access and erasure,
+as for Nutrition). No new `code`.
+
+#### `PUT /v1/recovery/checkins/{date}` — the morning check-in
+
+`{date}` is the **wake day** (`YYYY-MM-DD`): the night that ends on `{date}` belongs to it, as everywhere
+in this API. One check-in per account and wake day; `PUT` **replaces** it (an idempotent upsert: the same
+body twice gives the same check-in, `created_at` unchanged). Body `RecoveryCheckinPut`, every field required:
+
+```http
+PUT /v1/recovery/checkins/2026-11-26
+Authorization: Bearer <access token>
+Content-Type: application/json
+
+{ "bedtime": "2026-11-25T22:10:00Z", "wake_time": "2026-11-26T05:40:00Z", "tz_offset_sec": 3600,
+  "perceived_sleep_quality": 7, "perceived_freshness": 6, "soreness": false }
+```
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `bedtime` | timestamp | When the user went to bed (as they report it; UTC). |
+| `wake_time` | timestamp | When they woke up (UTC). After `bedtime`, by 60 to 960 minutes (1–16 h). Not more than 5 minutes in the future. |
+| `tz_offset_sec` | int | The UTC offset of the clock the user saw at `wake_time` (as on a HealthKit workout), −50400 to 50400, a multiple of 60 (`TimeZone.current.secondsFromGMT(for: wakeTime)`). `{date}` must be the calendar date of `wake_time + tz_offset_sec`. |
+| `perceived_sleep_quality` | int | 1–10: how well they think they slept (1 very poorly, 10 very well). |
+| `perceived_freshness` | int | 1–10: how fresh they feel now (1 exhausted, 10 fully fresh). |
+| `soreness` | bool | They feel sore. Captured with **zero weight** (decided 2026-11-27, D292): stored, shown, exported and kept for a later calibration; it moves neither the score nor `acute_drop` nor the readiness state, and only adds the reason `soreness_reported`. |
+
+`{date}` must be within the last 14 days (today included, the account's timezone), like the journal. A
+number with a fraction in an `int` field is `400` (it does not decode). `422` for everything else above: a
+value out of range, `wake_time` not after `bedtime`, a duration outside 60–960 minutes, `{date}` that is not
+the wake day, older than 14 days or in the future, a `wake_time` more than 5 minutes in the future. `404`
+while the flag is off.
+`200` with the `RecoveryCheckin`:
+
+```http
+HTTP/2 200
+content-type: application/json
+
+{ "date": "2026-11-26", "bedtime": "2026-11-25T22:10:00Z", "wake_time": "2026-11-26T05:40:00Z", "tz_offset_sec": 3600,
+  "perceived_sleep_quality": 7, "perceived_freshness": 6, "soreness": false,
+  "sleep_duration_min": 450, "recovery_score": 77,
+  "components": { "wellness": 63, "wellness_absolute": 63, "wellness_personal": null, "duration": 100, "regularity": null, "n2r": null },
+  "acute_drop": false, "confounders": [], "confidence": "low", "superseded": false, "n2r_bedtime_applied": false,
+  "model_version": "2026.11.1", "created_at": "2026-11-26T05:52:10Z", "updated_at": "2026-11-26T05:52:10Z" }
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `date`, `bedtime`, `wake_time`, `tz_offset_sec`, `perceived_sleep_quality`, `perceived_freshness`, `soreness` | | As sent. |
+| `sleep_duration_min` | int | `wake_time − bedtime` in whole minutes. Time in bed as the user reports it: nothing is taken off for falling asleep or waking at night. |
+| `recovery_score` | int | 0–100, the hybrid estimate (below). Always present on a stored check-in. |
+| `components` | `RecoveryComponents` | The parts behind it, each 0–100: `wellness` (what enters the score), `wellness_absolute`, `wellness_personal` (int?, `null` until there are 5 check-ins in the 14 days before), `duration`, `regularity` (int?, `null` with fewer than 3 nights to compare), `n2r` (int?, yesterday's Nutrition-to-Recovery score; `null` without one). A `null` part is left out and the weights of the others are scaled up. |
+| `acute_drop` | bool | The check-in is well below the user's usual: the personal `z` (below; it needs 5 check-ins in the 14 days before, its SD floored at 6) is −1.5 or lower, or quality and freshness are both ≤ 4. |
+| `confounders` | `[string]` | With `acute_drop`, what the evening before may explain it (D294): Nutrition-to-Recovery tags `alcohol_above_035gkg`, `caffeine_bed_high`, `late_satfat_meal`; journal behaviors of the day before `journal_alcohol` (`alcohol` or `alcohol_drinks`), `journal_late_caffeine` (`caffeine_after_2pm`, or `last_caffeine` within 8 h of `bedtime`), `journal_late_meal` (`late_meal`), and the journal states of the day before `journal_sick` (`sick`), `journal_travel` (`travel`), `journal_work_stress` (`work_stress`; decided 2026-11-27). An **open** set: ignore a value you don't know. `[]` without `acute_drop` or without one found. |
+| `confidence` | string | `medium` or `low` (the tiers above). |
+| `superseded` | bool | `date` has a wearable night: the day uses it, not this check-in. |
+| `n2r_bedtime_applied` | bool | Yesterday's Nutrition-to-Recovery uses this `bedtime` (the account is enrolled, the flag is on and the night has no measured sleep start; D293). |
+| `model_version` | string | The scoring model that computed it (`GET /v1/model`). A newer model rescores stored check-ins. |
+| `created_at`, `updated_at` | timestamp | First save; last change of the content. |
+
+**The score** (D292; every constant is a versioned RYFT heuristic unless cited, `docs/SCORING.md`):
+
+- `wellness_absolute` = `(0.65 · quality + 0.35 · freshness − 1) / 9 · 100` (1 → 0, 10 → 100). Hooper-style
+  self-report (Hooper & Mackinnon 1995); the weights are RYFT's.
+- `wellness_personal`, from 5 check-ins in the 14 days before `{date}`: `z = (absolute − mean) / max(SD, 6)`,
+  `personal = clamp(50 + 25 · z, 0, 100)`; then `wellness = 0.7 · absolute + 0.3 · personal`. Without it,
+  `wellness = absolute`.
+- `duration`: 100 from the lower edge `L` to `L + 120` minutes (7.5–9.5 h by default); below `L` linear down
+  to 40 at 5 h, 40 below that; above `L + 120` minus 10 per hour, never under 75. `L` is 450 minutes, or
+  `User.sleep_base_min` (clamped to 360–600) while `sleep_base_source` is `learned` or `manual`.
+- `regularity`: the sleep midpoint (local clock, `tz_offset_sec`) against the circular mean of the up to 7
+  nights before (a wearable night or a check-in, the wearable first; at least 3): 100 within 30 minutes, 50
+  from 120 minutes, linear between.
+- `recovery_score` = `0.50 · wellness + 0.30 · duration + 0.10 · regularity + 0.10 · n2r` over the parts
+  present, rounded and clamped to 0–100.
+
+So 5 h with quality and freshness 3 and no history is **29**; 8 h with 9 and 9 is **93**.
+
+A check-in's score depends on the check-ins before it: changing or deleting one rescores the later ones
+within 14 days. `GET /v1/me/sync` → `pending_days` does not list them; the answer of the `PUT` is final for
+its own day.
+
+#### `GET /v1/recovery/checkins?from=&to=` · `GET /v1/recovery/checkins/{date}` · `DELETE /v1/recovery/checkins/{date}`
+
+The range takes the `from`/`to` of `GET /v1/days` (both optional, default the 30 days ending today; `400` on a
+malformed date, `422` when `from > to` or the range is over 400 days) and returns `[RecoveryCheckin]`, oldest
+first, superseded ones included (`[]` when none). It is also what the app's data export reads. One day:
+`200 RecoveryCheckin`, `404` when there is none. `DELETE`: `204`, also when there was none; the day falls
+back to whatever else it has, and yesterday's Nutrition-to-Recovery returns to the expected bedtime. Both
+work while the flag is off.
+
+```http
+GET /v1/recovery/checkins?from=2026-11-25&to=2026-11-26
+
+HTTP/2 200
+content-type: application/json
+
+[ { "date": "2026-11-26", "bedtime": "2026-11-25T22:10:00Z", "wake_time": "2026-11-26T05:40:00Z", "tz_offset_sec": 3600,
+    "perceived_sleep_quality": 7, "perceived_freshness": 6, "soreness": false,
+    "sleep_duration_min": 450, "recovery_score": 77,
+    "components": { "wellness": 63, "wellness_absolute": 63, "wellness_personal": null, "duration": 100, "regularity": null, "n2r": null },
+    "acute_drop": false, "confounders": [], "confidence": "low", "superseded": false, "n2r_bedtime_applied": false,
+    "model_version": "2026.11.1", "created_at": "2026-11-26T05:52:10Z", "updated_at": "2026-11-26T05:52:10Z" } ]
+```
+
+#### `GET /v1/recovery/status` — today's recovery: which source, and whether to ask
+
+`RecoveryStatus` for today (the account's timezone). The same object is `CoachingBriefing.recovery` (below);
+this route serves accounts without the coaching pilot, which have no briefing (D291). `404` while the flag
+is off.
+
+```http
+GET /v1/recovery/status
+
+HTTP/2 200
+content-type: application/json
+
+{ "date": "2026-11-26", "source": "none", "confidence": null, "recovery_score": null, "needs_checkin": true,
+  "checkin": null, "suggested_bedtime": "22:45", "suggested_wake_time": "06:45", "suggestion_basis": "expected_bedtime" }
+```
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `date` | string | Today, `YYYY-MM-DD`, the wake day it describes. |
+| `source` | string | `wearable`, `checkin` or `none` (the tiers above). **Closed.** |
+| `confidence` | string? | `high`, `medium`, `low`; `null` with `none`. **Closed.** |
+| `recovery_score` | int? | `wearable`: `DailyScore.recovery`; `checkin`: `RecoveryCheckin.recovery_score`; `null` with `none`. |
+| `needs_checkin` | bool | Ask for the check-in now: it is 04:00 or later locally, today has **no wearable night** (above), and there is no check-in for today. The sync does not say which sleep was typed into Apple Health by hand, so a typed night with asleep stages on a day with a recovery counts as a wearable night (decided 2026-11-27: kept so, no sync field for now; D291). |
+| `checkin` | `RecoveryCheckin?` | Today's check-in; `null` without one. |
+| `suggested_bedtime`, `suggested_wake_time` | string? | Local `HH:MM` to pre-fill the check-in: the median of the check-ins of the last 7 days (at least 3), else the Nutrition-to-Recovery `expected_bedtime` and 8 hours after it, else `null`. Never a recommendation to the user; the Sleep Planner (`GET /v1/sleep/plan`) stays that. |
+| `suggestion_basis` | string? | `checkins_7d`, `expected_bedtime`, or `null` with no suggestion. **Closed.** |
+
+#### `PUT /v1/workouts/{id}/rpe` · `DELETE /v1/workouts/{id}/rpe` — session RPE
+
+How hard a workout felt, the session RPE of Foster et al. (2001), 1–10. Meant for a workout without heart rate
+(entered by hand in Apple Health, `was_user_entered`, or a Train session without a watch: rate
+`Session.workout_id`). Any of the user's workouts can be rated; the rating counts for load only where heart
+rate or power cannot (D293). The rating is the user's own input in RYFT: the app does not forward Apple's
+workout effort score as `session_rpe` (decided 2026-11-27).
+
+```http
+PUT /v1/workouts/7d1b6c3e-2c1a-4b8e-9d3a-5a0e4f6b8c12/rpe
+Authorization: Bearer <access token>
+Content-Type: application/json
+
+{ "session_rpe": 8 }
+
+HTTP/2 200
+content-type: application/json
+
+{ "id": "7d1b6c3e-2c1a-4b8e-9d3a-5a0e4f6b8c12", "activity": "strength", "start": "2026-11-25T17:00:00Z", "end": "2026-11-25T18:00:00Z",
+  "source": "Tim's iPhone", "session_rpe": 8, "session_rpe_load": 480 }
+```
+
+Body `WorkoutRPEPut`: `session_rpe` (number, 1–10 in steps of 0.5; else `422`). Answers the `Workout` with
+the rating. `404` when the workout is not the user's or the flag is off; `422` on a hidden duplicate
+(`duplicate_of` set): rate the primary. `PUT` replaces the rating; `DELETE` removes it (`204` for any of the
+user's workouts, rated or not; `404` for a workout that is not the user's or no longer exists, which the app
+treats as done; it works while the flag is off). The rating belongs to the workout: a sync of the same
+HealthKit workout keeps it, the same-source fold (Duplicate workouts) and a session re-attached to another
+workout move it along, and a HealthKit deletion of the workout deletes it.
+
+`Workout` gains two read-only fields, on every route that returns workouts (`GET /v1/workouts`,
+`GET /v1/workouts/{id}`, `GET /v1/days/{day}` → `workouts`); `POST /v1/sync` ignores them on upload:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `session_rpe` | number? | The rating. Omitted when there is none. |
+| `session_rpe_load` | int? | Foster's session load in arbitrary units: the duration in whole minutes (rounded) × `session_rpe`, rounded (60 minutes at 8 is 480). Omitted when there is no rating. |
+
+**Load.** The coaching training load (`CoachingBriefing.training_load`: `acute_7d`, `chronic_28d_weekly`, `acwr`,
+`tsb`) counts a rated workout that has no usable heart rate and no power on its TRIMP scale: Banister's TRIMP
+with `session_rpe / 10` in place of the heart-rate-reserve fraction, `minutes × r × a × e^(b·r)` with the
+constants the heart-rate path uses for the user's sex. 60 minutes at 8 (480 AU) is **151** with `sex`
+unspecified, 143 male, 157 female. Heart rate or power, when present, wins and the rating only shows. **Day
+strain does not use the rating** (decided 2026-11-27, D293): `DailyScore.strain`, its sleep-need top-up and
+`WorkoutDetail.trimp` stay based on heart rate and the muscular load of logged sessions; the rating feeds only acute and chronic load,
+ACWR and TSB.
+
+#### `CoachingBriefing.recovery` and `N2RScore.bedtime_source`
+
+`GET /v1/coaching/daily-briefing` gains `recovery`: the `RecoveryStatus` above for today, also when the
+briefing's `local_date` is still yesterday (before the expected bedtime); `null` while `recovery.checkin` is off.
+`readiness` and `training_load` come with a coaching `plan`, as today (without a goal profile, `plan` is `null`,
+`readiness` `UNKNOWN`). Where the HRV path yields `UNKNOWN` (no overnight HRV, or not enough of it for its
+baseline) and the day has a current check-in, `readiness` uses the check-in (D294):
+
+| Check-in | `readiness` | `readiness_reasons` |
+| --- | --- | --- |
+| No `acute_drop` | `OPTIMAL` | `[]` |
+| `acute_drop` with `confounders` | `ACUTE_LIFESTYLE_SUPPRESSION` (as today) | the `confounders`, then `checkin_below_usual` or `checkin_low_quality_and_freshness` |
+| `acute_drop` without | **`LOW_RECOVERY_UNEXPLAINED`** (new) | `checkin_below_usual` or `checkin_low_quality_and_freshness` |
+
+`soreness` adds `soreness_reported` to the reasons and changes nothing else. `journal_sick`, `journal_travel` and
+`journal_work_stress` explain a drop like the other confounders (decided 2026-11-27), so a drop with one of them
+is `ACUTE_LIFESTYLE_SUPPRESSION`, not `LOW_RECOVERY_UNEXPLAINED`; with `journal_sick` the plan stays protective
+(no deficit, the carbohydrate floor), as for an unexplained drop. These three apply to the check-in path only;
+the HRV path's confounders do not change. `LEA_GUARDRAIL_ACTIVE` and the HRV path come first, as
+today. `LOW_RECOVERY_UNEXPLAINED` gets the protective plan of the HRV path's unexplained drop (no deficit, the
+carbohydrate floor). `readiness` gains this one value; **treat a value you don't know as `UNKNOWN`**. Copy for
+it and for `ACUTE_LIFESTYLE_SUPPRESSION` from a check-in says what the user reported ("you rated your sleep and
+freshness lower than usual", "you noted feeling sick"), never a cause in the body ("your nervous system is
+fatigued" is out).
+
+**`readiness_display`, the neutral name** (decided 2026-11-27, D294). `CoachingBriefing` gains `readiness_display`
+(string, always present from the implementation PR on, independent of the flag): the name to show and to key
+copy on. It equals `readiness`, except that **`AUTONOMIC_FATIGUE` is shown as `LOW_RECOVERY_UNEXPLAINED`**: what
+was observed (recovery below the user's usual, no lifestyle explanation), not a cause. `readiness` itself does not
+change: the HRV path still emits `AUTONOMIC_FATIGUE` there, so existing clients keep decoding and branching on it,
+and the plan logic (deficit, carbohydrate floor) still follows `readiness`. The app shows copy from
+`readiness_display` when present and falls back to `readiness` when it is absent (an older server); an unknown
+value reads as `UNKNOWN`. Which path produced it is in `readiness_reasons` and `recovery.source`. No copy, on
+either path, claims a physiological cause.
+
+A fat-loss account with one rated workout (60 minutes at RPE 8, no heart rate) in its history, after a
+short night it rated 3 and 4; yesterday's logging was below the N2R threshold, so `n2r_score` is `null` and
+the check-in has no `n2r` part (an excerpt: `…` stands for fields that do not change):
+
+```http
+HTTP/2 200
+content-type: application/json
+
+{ "local_date": "2026-11-26",
+  "plan": { "energy_target_kcal": 2480, "session_class": "REST", "deficit_suspended": true, … },
+  "readiness": "LOW_RECOVERY_UNEXPLAINED", "readiness_display": "LOW_RECOVERY_UNEXPLAINED",
+  "readiness_reasons": ["checkin_low_quality_and_freshness"],
+  "training_load": { "acute_7d": 151.3, "chronic_28d_weekly": 37.8, "acwr": 4.0, "tsb": -113.5 },
+  "n2r": { "version": "1.0.0", "n2r_score": null, …, "bedtime": "2026-11-26T22:00:00Z", "bedtime_source": "expected", "tags": [] },
+  "yesterday_n2r": { "version": "1.0.0", "n2r_score": null, …, "bedtime": "2026-11-26T00:40:00Z", "bedtime_source": "checkin", "tags": [] },
+  "morning_biometrics": null, "cards": [ … ],
+  "recovery": { "date": "2026-11-26", "source": "checkin", "confidence": "low", "recovery_score": 31, "needs_checkin": false,
+                "checkin": { "date": "2026-11-26", "bedtime": "2026-11-26T00:40:00Z", "wake_time": "2026-11-26T05:40:00Z", "tz_offset_sec": 3600,
+                             "perceived_sleep_quality": 3, "perceived_freshness": 4, "soreness": false,
+                             "sleep_duration_min": 300, "recovery_score": 31,
+                             "components": { "wellness": 26, "wellness_absolute": 26, "wellness_personal": null, "duration": 40, "regularity": null, "n2r": null },
+                             "acute_drop": true, "confounders": [], "confidence": "low", "superseded": false, "n2r_bedtime_applied": true,
+                             "model_version": "2026.11.1", "created_at": "2026-11-26T05:52:10Z", "updated_at": "2026-11-26T05:52:10Z" },
+                "suggested_bedtime": "23:00", "suggested_wake_time": "07:00", "suggestion_basis": "expected_bedtime" } }
+```
+
+`N2RScore` (`n2r`, `yesterday_n2r`, the Nutrition daily summaries) gains `bedtime_source`: `expected` (the
+profile's `expected_bedtime`), `wearable` (the night's measured sleep start) or `checkin` (the check-in of the
+next morning; D293), a **closed** enum. It is absent when `bedtime` is `null` (no expected bedtime and nothing
+measured or reported), and absent before the implementation: read absent as unknown. **Retroactive N2R:** these
+N2R values are computed when they are read, so a check-in saved or deleted changes the day before's N2R at once,
+with the reported bedtime in its alcohol, caffeine and late-meal penalties. `bedtime_source` and the check-in's
+`n2r_bedtime_applied` say which bedtime was used. A wearable night's measured sleep start beats the check-in.
+
 ### Health
 
 Every service answers the same paths, unauthenticated. **On Cloud Run use `/health/live` and
@@ -3475,6 +3787,8 @@ struct Workout: Codable, Identifiable {
     let modelVersion: String?
     let alsoRecordedBy: [String]?     // omitted when none
     let duplicateOf: UUID?            // only with GET /v1/workouts?include_hidden=true, on a hidden duplicate
+    var sessionRpe: Double? = nil     // D293, not served yet: omitted without a rating
+    var sessionRpeLoad: Int? = nil    // minutes × sessionRpe (Foster); omitted without a rating
 }
 
 struct DayDetail: Codable {
@@ -4247,6 +4561,67 @@ struct TrainImportResponse: Codable {
     let scoring: SyncScoring
 }
 
+// Recovery without a watch (D291–D295; not served yet: 404 without a code until then, and while
+// flags["recovery.checkin"] is off).
+enum RecoverySource: String, Codable { case wearable, checkin, none }        // closed
+enum RecoveryConfidence: String, Codable { case high, medium, low }          // closed
+enum SuggestionBasis: String, Codable { case checkins7d = "checkins_7d", expectedBedtime = "expected_bedtime" }   // closed
+
+struct RecoveryCheckinPut: Codable {   // PUT /v1/recovery/checkins/{date}; every field required
+    let bedtime: Date
+    let wakeTime: Date
+    let tzOffsetSec: Int                // TimeZone.current.secondsFromGMT(for: wakeTime)
+    let perceivedSleepQuality: Int      // 1–10
+    let perceivedFreshness: Int         // 1–10
+    let soreness: Bool
+}
+
+struct RecoveryComponents: Codable {   // each 0–100; a nil part is left out of the score
+    let wellness: Int
+    let wellnessAbsolute: Int
+    let wellnessPersonal: Int?
+    let duration: Int
+    let regularity: Int?
+    let n2r: Int?
+}
+
+struct RecoveryCheckin: Codable {
+    let date: String                    // the wake day, YYYY-MM-DD
+    let bedtime: Date
+    let wakeTime: Date
+    let tzOffsetSec: Int
+    let perceivedSleepQuality: Int
+    let perceivedFreshness: Int
+    let soreness: Bool
+    let sleepDurationMin: Int
+    let recoveryScore: Int
+    let components: RecoveryComponents
+    let acuteDrop: Bool
+    let confounders: [String]           // open: ignore values this build doesn't know
+    let confidence: RecoveryConfidence  // .medium or .low
+    let superseded: Bool                // a wearable recovery exists for the day
+    let n2rBedtimeApplied: Bool
+    let modelVersion: String
+    let createdAt: Date
+    let updatedAt: Date
+}
+
+struct RecoveryStatus: Codable {   // GET /v1/recovery/status; CoachingBriefing.recovery
+    let date: String
+    let source: RecoverySource
+    let confidence: RecoveryConfidence?
+    let recoveryScore: Int?
+    let needsCheckin: Bool
+    let checkin: RecoveryCheckin?
+    let suggestedBedtime: String?       // local HH:MM, a pre-fill, not advice
+    let suggestedWakeTime: String?
+    let suggestionBasis: SuggestionBasis?
+}
+
+struct WorkoutRPEPut: Codable {   // PUT /v1/workouts/{id}/rpe
+    let sessionRpe: Double              // 1–10, steps of 0.5
+}
+
 enum APIErrorCode: String, Codable {
     case inviteRequired = "invite_required", consentRequired = "consent_required"
     case importInProgress = "import_in_progress"   // 429 on POST /v1/train/import; wait Retry-After
@@ -4278,8 +4653,8 @@ struct APIErrorBody: Codable {
 | Date | Change |
 | --- | --- |
 | 2026-11-27 | **[Nutrition food selection](#nutrition-food-selection): BLS 4.0 foods and a staple tie-break** (D296; platform PR `nutrition-etl: the full BLS 4.0 catalog with German names`, branch `feat/nutrition-bls-full`). No shape change: no field is added, renamed, removed or retyped. **Behaviour:** once the operator imports it, the catalog gains about 7,140 generic foods from the Bundeslebensmittelschlüssel 4.0, each with a German name, an English name and curated search synonyms as aliases (`Karotte` finds `Möhre, roh`). They have no household portions, only `reference_portion` (100 g). `sources[].attribution` names the Max Rubner-Institut (CC BY 4.0), as for the three BLS staples. Ranking: when two foods tie on match quality, a curated staple now ranks first (migration 0061). Before, the caller's market decided, so an exact German BLS name could outrank the staple whose alias it equals. **Old builds** see more German results and nothing else. **The app:** show the source attribution as for the BLS staples, and name the BLS on the About or licences screen (wording in D296). **Swift:** none. |
+| 2026-11-26 | **[Recovery without a watch](#recovery-without-a-watch--check-ins-and-session-rpe-d291d295-not-served-yet)** (D291–D295; platform PR `docs: the no-watch recovery contract`, branch `docs/no-watch-recovery-contract`; the head-architect's brief of 2026-11-26). Additive; docs only, so the app can build it before the server has it: no v1 field renamed, removed or retyped. **New routes:** `PUT /v1/recovery/checkins/{date}` (an idempotent upsert per wake day, body `RecoveryCheckinPut`: `bedtime`, `wake_time`, `tz_offset_sec`, `perceived_sleep_quality` and `perceived_freshness` 1–10, `soreness`; 14 days back; `200 RecoveryCheckin`), `GET /v1/recovery/checkins?from&to` (`/v1/days` semantics, ≤ 400 days; the export), `GET`/`DELETE /v1/recovery/checkins/{date}` (`DELETE` `204`, idempotent), `GET /v1/recovery/status` (`RecoveryStatus`: `source` `wearable`/`checkin`/`none`, `confidence` `high`/`medium`/`low`/`null`, `needs_checkin`, the pre-fill `suggested_bedtime`/`suggested_wake_time` with `suggestion_basis`; all three enums closed), `PUT`/`DELETE /v1/workouts/{id}/rpe` (body `WorkoutRPEPut` `{session_rpe}`, 1–10 in halves; `200 Workout`). **Fields:** `Workout.session_rpe` (number?) and `session_rpe_load` (int?, minutes × RPE), omitted without a rating, read-only; `CoachingBriefing.recovery` (`RecoveryStatus?`, `null` while the flag is off); `N2RScore.bedtime_source` (`expected`/`wearable`/`checkin`, closed; absent before). **Values:** `CoachingBriefing.readiness` gains `LOW_RECOVERY_UNEXPLAINED` (a check-in well below the user's usual with no lifestyle explanation; treat unknown values as `UNKNOWN`), and `readiness_reasons` gains `checkin_below_usual`, `checkin_low_quality_and_freshness`, `soreness_reported` and the `journal_*` confounders (including `journal_sick`, `journal_travel`, `journal_work_stress`); `CoachingBriefing.readiness_display` (string, the neutral name to show: `readiness`, with `AUTONOMIC_FATIGUE` shown as `LOW_RECOVERY_UNEXPLAINED`; `readiness` unchanged). **Decided 2026-11-27** (the user, D291–D294): the Today ring shows a check-in's `recovery_score`, marked as estimated from `source`/`confidence`, while `DailyScore.recovery` stays wearable-only; RPE feeds no day strain; soreness has zero weight; sick, travel and work stress explain a drop; no special case for sleep-only trackers; hand-typed sleep stays counted as measured; Apple's effort score is not read; testers by the allow-list only. **Flag:** `recovery.checkin`, enabled at 0 %; off: the writes and the status `404` without a `code`, reads and deletes keep working. **Codes:** none new; `consent_required` on both writes (`warn` acts as `on`). **Behaviour:** none yet; the implementation PR (migration 0061+) serves it, bumps the scoring model (a changelog entry in `GET /v1/model`) and counts a rated workout without heart rate or power in the coaching training load as Banister's TRIMP with `session_rpe / 10` as the reserve fraction (60 min at 8: 151); day strain does not change. One rule, the **wearable night** (asleep stages or overnight HRV, and a recovery), decides the tiers, `needs_checkin`, `superseded` and the readiness path. The flag is a kill switch: while off, stored check-ins and ratings count nowhere. A `404` without a `code` from these routes means "hide the feature", never "drop local data". **Old builds:** ignore the new fields and never call the routes. **The app:** show the check-in when `needs_checkin`; pre-fill it from the suggestions; send `tz_offset_sec` for the wake time; show `superseded` check-ins as history only; with `source` `checkin`, fill the Today ring from `RecoveryStatus.recovery_score` and mark it as estimated; ask for the RPE on a workout without heart rate (a Train session: `Session.workout_id`); key readiness copy on `readiness_display` (fallback `readiness`); copy never names a physiological cause. **Swift:** `RecoverySource`, `RecoveryConfidence`, `SuggestionBasis`, `RecoveryCheckinPut`, `RecoveryComponents`, `RecoveryCheckin`, `RecoveryStatus`, `WorkoutRPEPut`; `Workout.sessionRpe`, `.sessionRpeLoad`. The examples are `http` blocks until the server has the model types. |
 | 2026-11-23 | **Connections** (D257; platform PR `docs: the Connections contract`, branch `connect/contract`; head-architect's brief of 2026-11-23, no `API_REQUESTS.md` entry). Additive; docs only, so the app can build it before the server has it: no v1 field renamed, removed or retyped. **New:** [Connections](#connections--direct-sources-d257-not-served-yet), a direct link to a provider's own service (`{provider}` a path parameter, an open id `^[a-z][a-z0-9]{1,31}$`; the first is `garmin`, `fake` is compose only): `GET /v1/me/connections` (`{connections: [Connection], available: [AvailableConnection]}`; `Connection` = `provider`, `status` `connected` / `needs_reauth` / `revoked` (closed), `connected_at`, `last_data_at?`, `provides` (the `kinds` vocabulary), `history` (`none`, open: unknown reads as `none`), `provider_user_id?` and `permissions` (open, the provider's words; `null` and `[]` when `revoked`); `available[].accepting` `false` at the provider's user cap, always `true` for a reconnect; `available` is authoritative, not the flag); `POST /v1/me/connections/{provider}/start` (no body → `{authorize_url, expires_at}`, 10 minutes, opaque, opened in `ASWebAuthenticationSession` with the scheme `ryft`; consent with `warn` acting as `on`, then `404 unknown_provider`, then `409 connection_limit`; its own budget, bursts of 5 then one a minute; a reconnect changes nothing until its confirm); `GET /v1/connect/{provider}/callback` (the provider's redirect, no bearer, no App Attest, no gates; always `302` to `ryft://connect/{provider}?status=ok|denied|expired|error` (closed), `&ticket=<32 lowercase hex>` with `ok` only; no token, code, provider user id or health value in the URL); `POST /v1/me/connections/{provider}/confirm` (`{ticket}` → `200 Connection`; only the confirm connects; a repeat answers `200` until 10 minutes after the callback, then `410 connect_expired`; `409 connect_ticket_invalid` (also a repeat once that connection has ended: moved, replaced, removed at the provider or disconnected); a consent refusal leaves the ticket usable; a different provider account replaces the live connection and deletes its data; a provider account connected to another RYFT account moves here and ends there as `revoked`); `DELETE /v1/me/connections/{provider}` (`{status: "disconnected", deregistered: bool?, data_deleted: true}`; idempotent; works whether or not the provider is served or its flag is on; exempt from App Attest and the beta gate, like `DELETE /v1/me/consent`; `deregistered`/`connections_deregistered` `false` also when another RYFT account holds that provider account live, a grant waiting for its confirm counts as something to end). **Cap:** never counts the caller's own open states (at most 3 per account and provider), pending grant or connection. **Flag off at confirm:** `404 unknown_provider`, the pending grant handled as an expired one; `unknown` is a reserved provider id. **Data when a connection ends** (disconnect, removed at the provider, moved to another RYFT account, replaced by another provider account, account deletion): everything received through it is deleted (samples, sleep, waiting records, the `direct` source entry; the tokens after the provider's deregistration, retried 30 days) and the touched days are rescored; the same vendor's Apple Health data and every other source stay; a `revoked` entry (no provider user id, no permissions) is listed 90 days. Deliveries while the consent is not to the policy in force are dropped, not stored. **Fields:** `DELETE /v1/me` → `connections_deregistered` (`bool?`: `null` none to end, `false` retried in the background); `User.sources[].origin` (`healthkit` | `direct`, closed; absent = `healthkit`; a direct source is named by the provider's display name, `bundle_id: null`); `Sample.type` `hrv_rmssd` (ms), also a new `samples_7d` key, accepted from `POST /v1/sync` too (an older server counts it `unknown_type`; Apple Health has no RMSSD, so the app sends none); `coverage.sleep_origin` (`healthkit` | `direct` | `null`) and `coverage.hrv_metric` (`sdnn` | `rmssd` | `null`; absent with an HRV = `sdnn`), both closed. **Flag:** `connect.garmin`, shipped enabled at 0 % (testers by the allow-list), gating `available`, start and confirm. **Codes** (Errors' `code` table, the status table's `403`, `404`, `409` rows and a new `410` row): `unknown_provider` (`404`), `connection_limit` (`409`), `connect_ticket_invalid` (`409`), `connect_expired` (`410`), and `merge_has_connections` (`409`, admin merge only); `consent_required` on start and confirm. **Behaviour:** none yet. With the platform PR `connect/foundation` the routes, `origin`, `hrv_rmssd`, `connections_deregistered`, the flag and the codes are served, and sync records whose `source` starts with the reserved `ryft-direct-` are counted `unknown_type`; production serves no provider until phase 2 (`available: []`, start `404 unknown_provider`). With the platform PR `connect/scoring` (a model version, a rescore) `coverage` is built for the first time with `sleep_origin` and `hrv_metric`; `hrv_ms`, `hrv_baseline_ms`, `baseline_hrv_days` and `hrv_readings` are in the day's metric, a baseline per metric (a change of metric is `short_history` for 7 nights), a direct night beats the same vendor's Apple Health night, and `GET /v1/trends?metric=hrv` serves only the newest day's metric. Conventions → Auth, Rate limits, Units and App Attest → Exempt name the new routes. **Old builds:** they ignore the new fields and never call the routes; a `hrv_ms` in RMSSD on a connected account reads as an HRV like any other (only allow-listed testers have one). **The app:** offer Connect from `available` only (an id this build knows; `404` without a `code`: hide every entry); data card, start, the sheet, confirm at once on `ok`; after a `409`/`410` on a repeated confirm read `GET /v1/me/connections`; show `needs_reauth` as Reconnect and `revoked` as removed at the provider; say on Disconnect that it deletes; ask for consent at once after a policy change (deliveries without it are lost); decode `origin`, `sleep_origin`, `hrv_metric`, `connections_deregistered` as optional and never compare HRV across metrics. **Swift:** `SourceOrigin`, `HRVMetric`, `ConnectionStatus`, `Connection`, `AvailableConnection`, `ConnectionsResponse`, `ConnectStart`, `ConnectConfirmPost`, `ConnectionDeleted`, `ConnectCallbackStatus`, `ConnectCallback` (parses the redirect); `UserSource.origin`, `ScoreCoverage.sleepOrigin` and `.hrvMetric`, `AccountDeleted.connectionsDeregistered`; `APIErrorCode` gains `unknownProvider`, `connectionLimit`, `connectTicketInvalid`, `connectExpired`, `mergeHasConnections`. The examples are `http` blocks until the server has the model types (`model.ConnectionsResponse`, `Connection`, `AvailableConnection`, `ConnectStart`, `ConnectConfirmPost`, `ConnectionDeleted`). |
-
 | 2026-11-26 | **[Nutrition export favourites](#nutrition)** (D284). Additive: no v1 field renamed, removed or retyped. `GET /v1/me/nutrition-export` gains an optional `favorites` array (`NutritionFavorite`: `food_id`, `food_name`, `favorited_at`). It is present on the first page (no `after`), as `[]` when there are none, and omitted on later pages. `food_name` is `""` when the food is no longer readable; the ID stays. Entries are ordered by `favorited_at`, then `food_id`. Private foods and goals still go through the account rights process. [Nutrition food selection](#nutrition-food-selection) now describes the broad-query ranking order (staples, whole forms, exact matches, cultivars, other forms) and points its Favourites paragraph at the export. **Old builds** ignore `favorites` and keep working. **Swift:** `NutritionFavorite`; optional `favorites` on `NutritionMealExportPage`. |
 | 2026-11-25 | **[Nutrition diary and portability](#nutrition)** (D278–D280). Adds a default-off diary flag, bilingual generic food search, source-backed portions and an authenticated owner-only meal export. Protected Nutrition score and coaching access continues to use `nutrition.enabled`. Under enforcement, HealthKit checks current consent before both write phases. |
 | 2026-11-25 | **[Bilingual food suggestions](#nutrition)** (D283). Common German and English generic food suggestions support unambiguous prefixes of at least four normalized characters. |
