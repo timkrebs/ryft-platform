@@ -111,7 +111,7 @@ func TestHistoryInputsCoverHistory(t *testing.T) {
 	}
 	// The old row's CTE selects each column once, presence entries included.
 	if got := inputColumns(historyInputs); !slices.Equal(got, []string{"hrv_ms", "rhr", "resp_rate", "strain",
-		"sleep_need_min", "sleep_actual_min", "sleep_start", "sleep_end", "nap_min", "steps", "active_kcal"}) {
+		"sleep_need_min", "sleep_actual_min", "sleep_start", "sleep_end", "nap_min", "steps", "active_kcal", "resting_kcal"}) {
 		t.Errorf("inputColumns: %v", got)
 	}
 }

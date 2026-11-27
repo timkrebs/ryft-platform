@@ -37,6 +37,10 @@
       "nullable": true,
       "type": "object"
     },
+    "energy": {
+      "$ref": "DayEnergy",
+      "nullable": true
+    },
     "hrv_baseline_ms": {
       "nullable": true,
       "type": "number"
@@ -150,6 +154,7 @@
     "computed_at",
     "day",
     "details",
+    "energy",
     "hrv_baseline_ms",
     "hrv_ms",
     "model_version",

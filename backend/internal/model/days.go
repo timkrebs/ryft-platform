@@ -29,6 +29,7 @@ type DailyScore struct {
 	Strain           *float64 `json:"strain"`
 	Steps            *int     `json:"steps"`        // day total, null without step samples
 	ActiveKcal       *int     `json:"active_kcal"`  // day total of active energy, null without samples
+	RestingKcal      *int     `json:"-"`            // stored basal energy total, used to assemble Energy
 	StrengthMin      *int     `json:"strength_min"` // minutes of completed strength sessions, null without one
 	VolumeKG         *float64 `json:"volume_kg"`    // their Σ reps × kg, null without a session
 	SleepPerformance *int     `json:"sleep_performance"`
@@ -59,7 +60,34 @@ type DailyScore struct {
 	// The scoring model that computed the row; nil before versions existed.
 	ModelVersion *string `json:"model_version"`
 	// Set by the api on read: scored, pending, waiting_for_sleep (today), stale (today).
-	ScoringState string `json:"scoring_state"`
+	ScoringState string     `json:"scoring_state"`
+	Energy       *DayEnergy `json:"energy"` // assembled on read for a stored day
+}
+
+// Resting sources, missing parts and confidence levels are closed enums in v1.
+const (
+	RestingSourceHealthKit = "healthkit"
+	RestingSourceEstimated = "estimated"
+
+	EnergyPartActive  = "active"
+	EnergyPartIntake  = "intake"
+	EnergyPartResting = "resting"
+
+	EnergyConfidenceHigh   = "high"
+	EnergyConfidenceMedium = "medium"
+	EnergyConfidenceLow    = "low"
+)
+
+// DayEnergy is the day's intake, expenditure and net balance.
+type DayEnergy struct {
+	IntakeKcal    *int     `json:"intake_kcal"`
+	ActiveKcal    *int     `json:"active_kcal"`
+	RestingKcal   *int     `json:"resting_kcal"`
+	RestingSource *string  `json:"resting_source"`
+	NetKcal       *int     `json:"net_kcal"`
+	Missing       []string `json:"missing"` // lexicographic order, empty when every part is known
+	Confidence    *string  `json:"confidence"`
+	PartialDay    bool     `json:"partial_day"`
 }
 
 // DayDetail is GET /v1/days/{day}: one day's score with its sleep, strain and workouts.

@@ -127,7 +127,7 @@ func seedUser(t *testing.T, st *Store, pool *pgxpool.Pool, id uuid.UUID) {
 		t.Fatal(err)
 	}
 	rate(t, pool, id, rated, 7)
-	if _, err := pool.Exec(ctx, `INSERT INTO daily_scores (user_id, day) VALUES ($1, current_date)`, id); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO daily_scores (user_id, day, resting_kcal) VALUES ($1, current_date, 1400)`, id); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.RegisterPushToken(ctx, id, device, model.PushRegistration{Token: hexToken(id), Env: "sandbox", Locale: "en"}); err != nil {

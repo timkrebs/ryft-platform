@@ -223,7 +223,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 
 | Package | Owns | Depends on | Tested by |
 | --- | --- | --- | --- |
-| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, appattest, apple, auth, behavior, config, connect, connect/fake, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, nutrition, periodization, ratelimit, scoring, sealed, store, train, wearables | 54 files (Postgres) |
+| `cmd/api` | api serves the app-facing /v1 API (scores, workouts, settings, Train, journal, consent, push, account deletion) and the operator's /v1/admin. | app, appattest, apple, auth, behavior, config, connect, connect/fake, db, eventbus, events, events/outbox, flags, gate, httpx, insights, metrics, model, notify, nutrition, periodization, ratelimit, scoring, sealed, store, train, wearables | 55 files (Postgres) |
 | `cmd/ingest` | ingest serves POST /v1/sync, the HealthKit upload, and the one-off fold-workouts subcommand. | app, auth, config, connect, connect/fake, db, eventbus, events, events/outbox, gate, httpx, metrics, model, ratelimit, store | 15 files (Postgres) |
 | `cmd/migrate` | migrate applies the migrations as the schema owner, loads the built-in exercises and plans, and sets the service roles' passwords where they changed. | db, httpx, smoke | none |
 | `cmd/notify` | notify wires internal/notify to its push routes and the 15-minute tick. | apns, app, config, eventbus, events, logx, notify, store | 1 file |
@@ -240,7 +240,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/config` | owns the services' environment configuration: what each variable means, its default and which combinations are refused. | appattest | 6 files |
 | `internal/connect` | is the provider-agnostic side of direct connections: what a provider's adapter implements, the OAuth helpers and the registry (D257). | model | 3 files |
 | `internal/connect/fake` | is the one provider adapter of phase 1 (D257), a provider with no network, for tests, compose and make smoke. | connect, model | 1 file |
-| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 24 files (Postgres) |
+| `internal/db` | owns the Postgres pool, the embedded migrations, the service roles' passwords, the built-in seeds and the services' wait for the schema. | behavior, metrics, model, retry, train | 25 files (Postgres) |
 | `internal/energy` | models exercise expenditure, training load and energy balance. | model, wearables | 2 files |
 | `internal/evaluation` | computes forecast errors and bounded calibration updates. | energy, model | 2 files |
 | `internal/eventbus` | owns building a service's Pub/Sub transport from its configuration: the Bus, the push verifier, the push and tick handlers and the wait sender. | auth, config, events, events/pubsub | 1 file |
@@ -262,7 +262,7 @@ import rules between packages are `backend/internal/arch_test.go`.
 | `internal/periodization` | turns training and nutrition observations into bounded daily targets. | energy, model | 2 files |
 | `internal/ratelimit` | owns the in-memory token bucket per user and the platform's per-request-class limits. | none | 2 files |
 | `internal/retry` | owns start-up retry with backoff and jitter for dependencies that may not be up yet. | none | 1 file |
-| `internal/scoring` | owns the Recovery, Strain, Sleep and Readiness model and the Engine that applies it to stored data and writes the daily rows. | config, events, metrics, model, scoring/workoutdup, store, train | 26 files (Postgres) |
+| `internal/scoring` | owns the Recovery, Strain, Sleep and Readiness model and the Engine that applies it to stored data and writes the daily rows. | config, events, metrics, model, scoring/workoutdup, store, train | 27 files (Postgres) |
 | `internal/scoring/workoutdup` | owns the two rules that make one activity one workout: the same-source fold and the cross-source duplicate mark. | model | 1 file |
 | `internal/sealed` | encrypts the few secrets the platform stores (Apple refresh tokens, direct connections' tokens and PKCE verifiers) with AES-256-GCM. | none | 1 file |
 | `internal/smoke` | owns the Go end-to-end smoke against a running stack. | model | 1 file |

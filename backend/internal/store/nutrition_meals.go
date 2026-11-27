@@ -321,13 +321,24 @@ func (s *Store) DeleteNutritionMeal(ctx context.Context, user, id uuid.UUID) err
 
 // nutritionDateRange bounds a query over captured local dates.
 func nutritionDateRange(from, to string) (time.Time, time.Time, error) {
-	first, e1 := time.Parse(time.DateOnly, from)
-	last, e2 := time.Parse(time.DateOnly, to)
-	if e1 != nil || e2 != nil || first.Year() < 1899 || last.Year() > 2201 || last.Before(first) ||
-		last.After(first.AddDate(0, 0, 30)) {
+	first, last, err := parseNutritionDateRange(from, to)
+	if err != nil || !nutritionDiaryRange(first, last) {
 		return first, last, nutrition.ErrInvalid
 	}
 	return first, last, nil
+}
+
+func parseNutritionDateRange(from, to string) (time.Time, time.Time, error) {
+	first, e1 := time.Parse(time.DateOnly, from)
+	last, e2 := time.Parse(time.DateOnly, to)
+	if e1 != nil || e2 != nil || first.Year() < 1 || last.Before(first) {
+		return first, last, nutrition.ErrInvalid
+	}
+	return first, last, nil
+}
+
+func nutritionDiaryRange(first, last time.Time) bool {
+	return first.Year() >= 1899 && last.Year() <= 2201 && !last.After(first.AddDate(0, 0, 30))
 }
 
 // NutritionMeals lists saved meals over a bounded set of local dates.
@@ -361,29 +372,37 @@ func (s *Store) NutritionMeals(ctx context.Context, user uuid.UUID, from, to str
 
 // NutritionDaily sums known values and measures coverage among logged items.
 func (s *Store) NutritionDaily(ctx context.Context, user uuid.UUID, from, to string, chrononutrition bool) ([]model.NutritionDaily, error) {
-	return s.nutritionDaily(ctx, user, from, to, chrononutrition, nil, "", true)
+	return s.nutritionDaily(ctx, user, from, to, chrononutrition, nil, "", true, false)
+}
+
+// NutritionEnergyTotals reads the owner's diary totals for a score range of any
+// length (DailyScore.energy): only days with a logged meal, no score inputs.
+func (s *Store) NutritionEnergyTotals(ctx context.Context, user uuid.UUID, from, to string) ([]model.NutritionDaily, error) {
+	return s.nutritionDaily(ctx, user, from, to, false, nil, "", false, true)
 }
 
 // NutritionDailyWithN2R adds freshly computed scores only with consent to policy.
 func (s *Store) NutritionDailyWithN2R(ctx context.Context, user uuid.UUID, from, to string, chrononutrition bool, now time.Time, policy string) ([]model.NutritionDaily, error) {
-	return s.nutritionDaily(ctx, user, from, to, chrononutrition, &now, policy, true)
+	return s.nutritionDaily(ctx, user, from, to, chrononutrition, &now, policy, true, false)
 }
 
 // NutritionDiaryTotals reads owner diary entries and skips all score inputs.
 func (s *Store) NutritionDiaryTotals(ctx context.Context, user uuid.UUID, from, to string) ([]model.NutritionDaily, error) {
-	return s.nutritionDaily(ctx, user, from, to, false, nil, "", false)
+	return s.nutritionDaily(ctx, user, from, to, false, nil, "", false, false)
 }
 
-func (s *Store) nutritionDaily(ctx context.Context, user uuid.UUID, from, to string, chrononutrition bool, n2rNow *time.Time, policy string, scoreAllowed bool) ([]model.NutritionDaily, error) {
-	first, last, err := nutritionDateRange(from, to)
+func (s *Store) nutritionDaily(ctx context.Context, user uuid.UUID, from, to string, chrononutrition bool, n2rNow *time.Time, policy string, scoreAllowed, allowScoreRange bool) ([]model.NutritionDaily, error) {
+	first, last, err := parseNutritionDateRange(from, to)
 	if err != nil {
 		return nil, err
 	}
-	defer observeNutritionDB("daily", time.Now())
-	index := map[string]int{}
-	for day := first; !day.After(last); day = day.AddDate(0, 0, 1) {
-		index[day.Format(time.DateOnly)] = len(index)
+	// Pad diary-sized ranges with empty days. Wider ranges contain only logged
+	// days so a long score range doesn't allocate a summary per calendar date.
+	pad := nutritionDiaryRange(first, last)
+	if !pad && !allowScoreRange {
+		return nil, nutrition.ErrInvalid
 	}
+	defer observeNutritionDB("daily", time.Now())
 	var days []model.NutritionDaily
 	mode := pgx.ReadOnly
 	if policy != "" {
@@ -397,10 +416,19 @@ func (s *Store) nutritionDaily(ctx context.Context, user uuid.UUID, from, to str
 				return err
 			}
 		}
-		days = make([]model.NutritionDaily, len(index))
-		for key, i := range index {
-			days[i] = model.NutritionDaily{LocalDate: key, Nutrients: map[string]model.NutritionTotal{},
-				NutritionScores: score.UnscoredDaily()}
+		days = []model.NutritionDaily{}
+		index := map[string]int{}
+		addDay := func(key string) int {
+			i := len(days)
+			index[key] = i
+			days = append(days, model.NutritionDaily{LocalDate: key, Nutrients: map[string]model.NutritionTotal{},
+				NutritionScores: score.UnscoredDaily()})
+			return i
+		}
+		if pad {
+			for day := first; !day.After(last); day = day.AddDate(0, 0, 1) {
+				addDay(day.Format(time.DateOnly))
+			}
 		}
 		rows, err := tx.Query(ctx, `WITH meal AS (
 			SELECT id, local_date FROM nutrition.meals WHERE user_id=$1 AND local_date BETWEEN $2::date AND $3::date
@@ -415,7 +443,8 @@ func (s *Store) nutritionDaily(ctx context.Context, user uuid.UUID, from, to str
 			FROM items CROSS JOIN LATERAL jsonb_each(items.nutrients) n WHERE n.key <> 'glycemic_index' GROUP BY local_date, n.key
 		)
 		SELECT c.local_date::text, c.meals, c.items, t.code, t.subtotal, t.known, n.unit
-		FROM counts c LEFT JOIN totals t USING(local_date) LEFT JOIN nutrition.nutrients n ON n.code=t.code`, user, from, to)
+		FROM counts c LEFT JOIN totals t USING(local_date) LEFT JOIN nutrition.nutrients n ON n.code=t.code
+		ORDER BY c.local_date`, user, from, to)
 		if err != nil {
 			return err
 		}
@@ -429,7 +458,11 @@ func (s *Store) nutritionDaily(ctx context.Context, user uuid.UUID, from, to str
 			if err := rows.Scan(&day, &meals, &items, &code, &subtotal, &known, &unit); err != nil {
 				return err
 			}
-			d := &days[index[day]]
+			i, ok := index[day]
+			if !ok {
+				i = addDay(day)
+			}
+			d := &days[i]
 			d.Meals, d.Items = meals, items
 			if code != nil && unit != nil {
 				d.Nutrients[*code] = model.NutritionTotal{
@@ -441,7 +474,7 @@ func (s *Store) nutritionDaily(ctx context.Context, user uuid.UUID, from, to str
 			return err
 		}
 		rows.Close()
-		if !consented {
+		if !consented || len(days) == 0 {
 			return nil
 		}
 		if err := scoreNutritionDays(ctx, tx, user, days, index, chrononutrition); err != nil {

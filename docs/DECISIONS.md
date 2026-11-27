@@ -7561,3 +7561,32 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
   after the flag is turned off (tested).
 - **Rollback:** revert. Migration 0069 only adds a flag row and a function, and nothing is stored while the policy
   list is empty.
+
+## D310 — Net energy on read: a stored resting total, Henry by age band, no model bump (C1 PR 4, 2026-11-27)
+
+- **Context:** implementation PR 4 of D304: `DailyScore.energy` on `GET /v1/days` and `GET /v1/days/{day}`.
+  D307 and D308 are left for other C1 PRs (PR 6 took D309); migration `0070_daily_resting_kcal.sql`.
+- **The resting total is stored, the rest is read:** scoring writes `daily_scores.resting_kcal`, the day's
+  `basal_energy` total with `DayTotal`'s one-source-per-hour rule, as for `active_kcal`, so the two parts of the
+  burn are counted the same way. Intake comes from the diary at request time (one `NutritionEnergyTotals` read for
+  the whole range, only when `nutrition.enabled` or `nutrition.diary_enabled` is on for the account), so a logged
+  meal moves `net_kcal` at once. `resting_kcal` joins `dataColumns` and the history inputs by presence, like
+  `active_kcal`.
+- **No model bump:** no stored number of an existing day changes (the goldens only gain `resting_kcal: null`), the
+  column fills only from `basal_energy` samples, which cannot be stored while the D304 guard holds, and a sync of
+  them rescores the days they touch. `ModelVersion` stays `2026.11.1`, so no account is rescored on deploy.
+- **The estimate:** Henry (2005), the weight-only Oxford equations in three adult bands (18–29, 30–59, 60+), MJ/day
+  × 239.006, age = the day's year − `birth_year`. `sex` `unspecified`, `null` or unknown: the mean of the two
+  equations. No estimate without a weight or a birth year, or under 18 (adult equations). **Today is pro-rated** by the
+  elapsed share of the local day (DST-safe), so it is a total so far like `active_kcal`, and `net_kcal` of today is
+  not biased to a deficit in the morning. The coefficients are pinned in `scoring/energy_test.go` and `SCORING.md`;
+  check them against the paper before the estimate is first served.
+- **Weight and sex wait for PR 1 (#266):** they are not in this branch, so `restingInputs` passes only
+  `birth_year`, and `resting_source: "estimated"` cannot occur yet. Neither can `healthkit` while the flag is off.
+  Today every scored day therefore has `resting` in `missing` and `net_kcal: null`; the app shows that state. Wiring
+  the profile weight is a few lines once #266 is on main, and it stays behind the same consent (D306 for PR 1).
+- **`missing` is in lexicographic order** (`active`, `intake`, `resting`): the contract says "sorted", which in the
+  API means lexicographic (as `kinds`); API.md now says so.
+- **Confidence:** the three conditions of the contract, counted; the incomplete-intake drop also applies when a day
+  has items but none carries kcal (`intake_kcal: 0`, a lower bound). A day with meals but no items is complete.
+- **Rollback:** revert. The migration only adds a nullable column, so it can stay.

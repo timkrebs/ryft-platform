@@ -62,7 +62,8 @@ func (h *handler) localToday(r *http.Request) (string, *time.Location, error) {
 }
 
 // withScoringStates sets each row's scoring_state: pending, today's state, or scored.
-func (h *handler) withScoringStates(ctx context.Context, userID uuid.UUID, today string, rows []model.DailyScore) error {
+func (h *handler) withScoringStates(ctx context.Context, userID uuid.UUID, now time.Time, rows []model.DailyScore) error {
+	today := now.Format(dayLayout)
 	st, err := h.st.SyncStateOf(ctx, userID, today)
 	if err != nil {
 		return err
@@ -71,7 +72,7 @@ func (h *handler) withScoringStates(ctx context.Context, userID uuid.UUID, today
 	for k := range rows {
 		switch {
 		case rows[k].Day == today:
-			rows[k].ScoringState = todayState(st, today, time.Now())
+			rows[k].ScoringState = todayState(st, today, now)
 		case pending[rows[k].Day]:
 			rows[k].ScoringState = model.ScoringPending
 		default:

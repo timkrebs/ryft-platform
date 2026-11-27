@@ -6,6 +6,8 @@ Done (branch `docs/fitness-contract`): `docs/API.md` gains `User.goal`, `sex`, `
 
 PR 3 (branch `feat/sync-fitness-types`, D306): `POST /v1/sync` knows `basal_energy` and `heart_rate_recovery` and takes `body_mass` beyond the pilot, all behind the flag `sync.fitness_types` (migration 0069, dark) and a consent to a policy version in `model.NamesProfileBody` (empty). `GET /v1/config` reports the flag `true` only when both hold. Until the privacy update nothing new is stored.
 
+PR 4 (branch `feat/net-energy`, D310; contains PR 3): `GET /v1/days` and `GET /v1/days/{day}` serve `DailyScore.energy`, assembled on read: diary intake (only while `nutrition.enabled` or `nutrition.diary_enabled` is on), the stored `active_kcal` and a new stored `resting_kcal` (migration 0070, the day's `basal_energy`), net, `missing`, `confidence`, `partial_day`. The Henry estimate is pinned but gets only `birth_year` until PR 1's weight and sex are on main; with the flag off every day shows `resting` missing and `net_kcal: null`. No model bump.
+
 Open: the other implementation PRs (plan.md, about 9–10 days). The bundled privacy update (basal energy, heart-rate recovery, body mass from Apple Health, sex, weight, goal) must be live before the flag goes on. The app sends the types only while the flag is `true`. Reviews: `docs/work/2026-11-27-fitness-contract/review.md`.
 
 ## The sync button: the sync status is served (2026-11-27, D297, D301)

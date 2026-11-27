@@ -21,14 +21,14 @@ import (
 
 // dayScore is a day as its steps leave it, for the row (scoreRow).
 type dayScore struct {
-	day         string
-	loc         *time.Location
-	night       overnight
-	base        baselineSet
-	sleep       sleepScores
-	rec         RecoveryResult
-	strain      strainDay
-	steps, kcal *int
+	day                      string
+	loc                      *time.Location
+	night                    overnight
+	base                     baselineSet
+	sleep                    sleepScores
+	rec                      RecoveryResult
+	strain                   strainDay
+	steps, kcal, restingKcal *int
 }
 
 // admitted loads the user and refuses one without consent (ErrNoConsent,
@@ -278,17 +278,20 @@ func workoutLoad(w model.Workout, around []model.Sample, rhr, maxHR float64) Str
 	return StrainResult{}
 }
 
-// activity sums the day's steps and active energy over the local calendar day
+// activity sums the day's steps and active and basal energy over the local calendar day
 // with one source per hour (DayTotal), so a phone and a watch that both count
 // are not counted twice (SCORING.md → Steps and active energy); nil without
 // samples, not 0, so "no data" stays apart from a day without steps.
-func (e *Engine) activity(ctx context.Context, userID uuid.UUID, d time.Time) (steps, kcal *int, err error) {
+func (e *Engine) activity(ctx context.Context, userID uuid.UUID, d time.Time) (steps, kcal, restingKcal *int, err error) {
 	dayStart, dayEnd := localDay(d)
 	if steps, err = e.dayTotal(ctx, userID, model.SampleSteps, dayStart, dayEnd); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	kcal, err = e.dayTotal(ctx, userID, model.SampleActiveEnergy, dayStart, dayEnd)
-	return steps, kcal, err
+	if kcal, err = e.dayTotal(ctx, userID, model.SampleActiveEnergy, dayStart, dayEnd); err != nil {
+		return nil, nil, nil, err
+	}
+	restingKcal, err = e.dayTotal(ctx, userID, model.SampleBasalEnergy, dayStart, dayEnd)
+	return steps, kcal, restingKcal, err
 }
 
 // readinessOf is the Today headline, its penalty for yesterday's strain and
@@ -395,6 +398,7 @@ func scoreRow(p dayScore) store.ScoreRow {
 	version := ModelVersion
 	row := model.DailyScore{
 		Day: p.day, Readiness: readiness, State: state, Recovery: recovery, Strain: strain, Steps: p.steps, ActiveKcal: p.kcal,
+		RestingKcal:      p.restingKcal,
 		SleepPerformance: s.performance,
 		SleepNeedMin:     &need, SleepActualMin: actual, SleepDebtMin: &s.debt,
 		HRVms: p.night.hrv, RHR: p.night.rhr, RespRate: p.night.resp, SpO2: p.night.spo2,
