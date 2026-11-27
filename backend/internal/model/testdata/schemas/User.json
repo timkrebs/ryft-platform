@@ -20,6 +20,10 @@
       "nullable": true,
       "type": "string"
     },
+    "goal": {
+      "nullable": true,
+      "type": "string"
+    },
     "id": {
       "format": "uuid",
       "type": "string"
@@ -37,6 +41,10 @@
       "$ref": "NotificationPrefs"
     },
     "provider": {
+      "nullable": true,
+      "type": "string"
+    },
+    "sex": {
       "nullable": true,
       "type": "string"
     },
@@ -64,6 +72,19 @@
     },
     "tz": {
       "type": "string"
+    },
+    "weight_kg": {
+      "nullable": true,
+      "type": "number"
+    },
+    "weight_measured_at": {
+      "format": "date-time",
+      "nullable": true,
+      "type": "string"
+    },
+    "weight_source": {
+      "nullable": true,
+      "type": "string"
     }
   },
   "required": [
@@ -72,18 +93,23 @@
     "birth_year",
     "consent",
     "email",
+    "goal",
     "id",
     "max_hr",
     "max_hr_source",
     "name",
     "notifications",
     "provider",
+    "sex",
     "sleep_base_learned_at",
     "sleep_base_learned_min",
     "sleep_base_min",
     "sleep_base_source",
     "sources",
-    "tz"
+    "tz",
+    "weight_kg",
+    "weight_measured_at",
+    "weight_source"
   ],
   "title": "User",
   "type": "object"

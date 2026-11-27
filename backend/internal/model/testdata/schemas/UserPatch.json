@@ -5,6 +5,11 @@
       "nullable": true,
       "type": "integer"
     },
+    "goal": {
+      "description": "absent keeps, null clears",
+      "nullable": true,
+      "type": "string"
+    },
     "max_hr": {
       "nullable": true,
       "type": "integer"
@@ -12,6 +17,11 @@
     "max_hr_manual": {
       "nullable": true,
       "type": "boolean"
+    },
+    "sex": {
+      "description": "absent keeps, null clears",
+      "nullable": true,
+      "type": "string"
     },
     "sleep_base_manual": {
       "nullable": true,
@@ -24,6 +34,11 @@
     "tz": {
       "nullable": true,
       "type": "string"
+    },
+    "weight_kg": {
+      "description": "absent keeps, null clears",
+      "nullable": true,
+      "type": "number"
     }
   },
   "required": [],

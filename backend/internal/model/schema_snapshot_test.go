@@ -45,6 +45,10 @@ func schemaOf(t reflect.Type) map[string]any {
 	case optQuietType:
 		// absent / null / object, see OptionalQuiet.UnmarshalJSON
 		return map[string]any{"$ref": "QuietHours", "nullable": true, "description": "absent keeps, null clears"}
+	case reflect.TypeOf(optionalProfileValue[string]{}):
+		return map[string]any{"type": "string", "nullable": true, "description": "absent keeps, null clears"}
+	case reflect.TypeOf(optionalProfileValue[float64]{}):
+		return map[string]any{"type": "number", "nullable": true, "description": "absent keeps, null clears"}
 	}
 	switch t.Kind() {
 	case reflect.Pointer:

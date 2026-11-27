@@ -1,5 +1,11 @@
 # RYFT platform — status
 
+## C1 PR 1: goal, sex and weight on the profile (2026-11-27, D306)
+
+Done (branch `feat/profile-goal-body`): migration `0068_profile_goal_body.sql` (four nullable `users` columns). `GET`/`PATCH /v1/me` always carry `goal`, `sex`, `weight_kg`, `weight_source`, `weight_measured_at`. `goal` can be set now. `sex` and `weight_kg` answer `403 consent_required` until a policy version names them (`model.NamesProfileBody`, empty). The HealthKit weight is also read only while `sync.fitness_types` is on (not seeded). The newest weigh-in wins, and a tie goes to manual. The goal→Nutrition table is in `scoring.NutritionGoalFor`. On merge, the migrate job adds the columns and api, ingest and scoring roll. Nothing changes for an account until it sets a goal.
+
+Open: PRs 2–6 of the C1 plan. The next privacy version adds itself to `model.NamesProfileBody` in the PR that ships its text.
+
 ## C1: goal, training load, net energy and the Fitness tiles, the contract, docs only (2026-11-27, D304)
 
 Done (branch `docs/fitness-contract`): `docs/API.md` gains `User.goal`, `sex`, `weight_kg`, `weight_source`, `weight_measured_at` (and `UserPatch`), with the goal ↔ `GoalProfile.goal` table. `DailyScore` gains `training_load` (cardio and muscular: 7 d against 28 d, the band, `state`, coverage; computed on read), `energy` (intake, active, resting, net, `missing`, `confidence`), `vo2max`, `vo2max_delta_7d`, `hrr_bpm` and `active_min`. `DayDetail` gains `muscles`. `POST /v1/sync` gains `basal_energy`, `heart_rate_recovery`, and `body_mass` for everyone. The server stores the new types only while the flag `sync.fitness_types` is on and the consent is to a policy version that names them. A `PATCH` of `sex`/`weight_kg` needs that consent too. The Swift mirror and a changelog entry are in; the examples are `http` blocks. The plan and the implementation order are in `docs/work/2026-11-27-fitness-contract/plan.md`. Merging deploys nothing new.

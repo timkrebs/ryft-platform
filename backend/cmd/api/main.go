@@ -387,6 +387,9 @@ type handler struct {
 	accounts      *accounts
 	engine        *scoring.Engine // pure scoring with store lookups, for session completion
 	beta          config.Beta
+	// Profile policy and request time can be pinned in tests.
+	profilePolicyNames func(string) bool
+	profileClock       func() time.Time
 	// emails answers the confirmed email of an account, for a code bound to an email; nil: no code binds.
 	emails inviteEmails
 	// binding says whether email-bound invites work now (the Supabase project confirms emails); nil: they do not.
@@ -415,6 +418,10 @@ func (h *handler) me(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, r, err)
 		return
 	}
+	if u, err = h.withWeight(r, u); err != nil {
+		profileFail(w, r, err)
+		return
+	}
 	httpx.WriteJSON(w, 200, u)
 }
 
@@ -440,6 +447,10 @@ func (h *handler) withSources(r *http.Request, u model.User) (model.User, error)
 }
 
 func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	if h.profileClock != nil {
+		now = h.profileClock()
+	}
 	var p model.UserPatch
 	if err := httpx.ReadJSON(w, r, &p, httpx.MaxBodyDefault); err != nil {
 		httpx.WriteDecodeError(w, err)
@@ -461,7 +472,7 @@ func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, 422, "max_hr sets it by hand; it cannot go with max_hr_manual false")
 		return
 	}
-	year := time.Now().UTC().Year()
+	year := now.UTC().Year()
 	if p.BirthYear != nil && !scoring.ValidBirthYear(*p.BirthYear, year) {
 		httpx.WriteError(w, 422, fmt.Sprintf("birth_year must be %d to %d", scoring.MinBirthYear, year-scoring.MinAge))
 		return
@@ -478,14 +489,43 @@ func (h *handler) patchMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	u, err := h.st.UpdateUser(r.Context(), userOf(r).ID, p, estimate)
+	if p.Goal.Value != nil && !scoring.ValidGoal(*p.Goal.Value) {
+		httpx.WriteError(w, 422, "invalid goal")
+		return
+	}
+	if p.Sex.Value != nil && !scoring.ValidSex(*p.Sex.Value) {
+		httpx.WriteError(w, 422, "invalid sex")
+		return
+	}
+	if p.WeightKG.Value != nil && !scoring.ValidWeightKG(*p.WeightKG.Value) {
+		httpx.WriteError(w, 422, "weight_kg out of range")
+		return
+	}
+	current := userOf(r)
+	namesProfileBody := h.profilePolicy()
+	if p.ChangesProfileBody() && (current.Consent == nil || !namesProfileBody(current.Consent.PolicyVersion)) {
+		profileConsentRequired(w, r)
+		return
+	}
+	if p.WeightKG.Value != nil {
+		p.WeightKG.Value = ptr(scoring.RoundWeightKG(*p.WeightKG.Value))
+	}
+	u, err := h.st.UpdateUserAt(r.Context(), current.ID, p, estimate, now, namesProfileBody)
+	if errors.Is(err, store.ErrProfileConsentRequired) {
+		profileConsentRequired(w, r)
+		return
+	}
 	if err != nil {
-		httpx.Fail(w, r, err)
+		profileFail(w, r, err)
 		return
 	}
 	h.cache.forget(u.ID) // max_hr and the baseline feed cards
 	if u, err = h.withSources(r, u); err != nil {
 		httpx.Fail(w, r, err)
+		return
+	}
+	if u, err = h.withWeight(r, u); err != nil {
+		profileFail(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, 200, u)
