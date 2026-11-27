@@ -1,5 +1,22 @@
 # RYFT platform — status
 
+## G4: the full BLS 4.0 catalog with German names (2026-11-27, D296)
+
+Code done, **data not in yet.** `scripts/etl/bls_convert.py` turns the official `BLS_4_0_Daten_2025_DE.xlsx` into a committed extract (`scripts/etl/data/bls_4_0.csv` and its manifest). The ETL then imports ~7,140 foods. Each gets its German and English name, ~30 nutrients per 100 g, a category hint and a `food_form`, but no portions. They also get curated DACH synonyms as aliases (40 groups, `scripts/etl/bls_curation.v1.json`). BLS foods that duplicate a curated staple (twins) are left out. Migration 0061 ranks a curated staple ahead of a BLS food on an exact-name tie. The licence is CC BY 4.0; the attribution text is in D296. Nothing ran locally: Python, `curl` and WebFetch needed approval, so CI is the first run, and the BLS file was never downloaded. Until the CSV is committed, the BLS step behaves exactly as before (3 staples, `unchanged`).
+
+On merge, `deploy.yml`'s push run: the migrate job applies **0061** (it replaces `nutrition.search_foods_v2`; same signature, rollback-safe), the services roll with unchanged code, then smoke-prod. The site job skips. The ETL image isn't published on push.
+
+Needs you, in order:
+1. **The file.** Download `BLS_4_0_Daten_2025_DE.xlsx` from https://blsdb.de/download. Tell the next run whether the site asked for a registration or a licence acceptance. Put the file at `scripts/etl/BLS_4_0_Daten_2025_DE.xlsx`; `*.xlsx` is git-ignored there.
+2. **The extract.** With Python 3.11+, from `scripts/etl`: `python3 bls_convert.py BLS_4_0_Daten_2025_DE.xlsx`. It writes `data/bls_4_0.csv` and `data/bls_4_0.manifest.json`, or fails and lists the headers it found. Then run the ETL dry run locally (`python3 run_etl.py --source bls`) and review `twin_candidates`, `staple_nutrient_drift`, `staples_missing`, the rejects and the manifest's `unparsed` before you fill `twins` in `bls_curation.v1.json`. Commit the CSV, the manifest and the twins in one commit and open a PR (or hand the file to a headless run with `curl`/Python allowed, and it does this step).
+3. **After that PR merges:** `gh workflow run deploy.yml --ref main -f publish_nutrition_etl=true`, and read the digest from the **Nutrition ETL image** summary.
+4. In the local, git-ignored `infra/gcp/terraform.tfvars` (not HCP), set `nutrition_etl.image_digest`. Run `terraform -chdir=infra/gcp plan -out=bls-full.tfplan`: only the job's image should change. Then `terraform -chdir=infra/gcp apply bls-full.tfplan`.
+5. Dry run: `gcloud run jobs execute nutrition-etl-job --project=ryftlab-prod --region=europe-west1 --args=--source,bls,--full --wait`. Expect `bls_full: true`, ~7,140 processed, empty `twin_mismatch`, `stale_twins` and `staples_missing`, few rejects, and a version starting `py-etl4:bls_4_0:staples2:`.
+6. Write: the same with `--args=--source,bls,--full,--write`. Expect ~7,1xx `inserted`, 3 `updated` (the BLS staples' nutrients) and 0 `conflict`. A rerun gives `unchanged`.
+7. Legal: put the D296 attribution sentence on the site's licences/legal page (#252), and ask the app lead to add it to the About/licences screen.
+
+Size: ~250k rows, ~30–45 MB in Supabase. To roll back, re-pin the previous digest. Imported rows stay; retire them by `status` if they must go. 0061 rolls back by re-applying 0059's body.
+
 ## Nutrition portions v2: clean USDA labels and 8 more staples (2026-11-26, D288)
 
 The ETL now cleans every non-curated USDA portion. Before, Apple showed `1 medium (3" dia)`, and in German it showed the same raw text. Now `1 medium` / `1 mittelgroßes Stück` with the short label `Mittel`, ordered Klein 10, Mittel 20, Groß 30, household units 40+. `undetermined` and imperial parentheticals are gone, and an unmapped qualifier leaves the German label out instead of mixing languages. New staples: Kartoffeln gekocht, Avocado (½ is the default), Tomate, Karotte/Möhre, plus Salatgurke, rote Paprika, Zwiebel and Naturjoghurt. Their portions match source rows by size key, text or grams. A `source_description` guard keeps a wrong FDC ID harmless. Defaults stay curated. No migration, no API change, no Terraform change. Portion IDs don't change. The Python tests first ran in CI: the session couldn't run Python, fetch FDC or download SR Legacy, so there is no local count of changed labels (the dry run reports it). Research for the next step (OFF portions, BLS names) is in `docs/work/2026-11-26-nutrition-portions-v2/research.md`.
