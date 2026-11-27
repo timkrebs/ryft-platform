@@ -7,6 +7,7 @@ import (
 	"github.com/timkrebs/ryft/internal/model"
 )
 
+// RestingInputs are the profile values the resting estimate reads; nil is unknown.
 type RestingInputs struct {
 	WeightKG  *float64
 	Sex       *string
@@ -58,6 +59,7 @@ func PlausibleRestingKcal(total *int) *int {
 	return total
 }
 
+// EnergyInputs are one day's parts of DailyScore.energy, gathered by the api.
 type EnergyInputs struct {
 	IntakeKcal       float64
 	Meals            int
