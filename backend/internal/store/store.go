@@ -159,86 +159,93 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 		if _, err := tx.Exec(ctx, lockUser, id); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO deleted_users (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, id); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `SELECT 1 FROM users WHERE id=$1 FOR UPDATE`, id); err != nil {
-			return err
-		}
-		// An Apple refresh token moves, still encrypted, to the tombstone until
-		// Apple confirms its revocation (MarkAppleRevoked).
-		if _, err := tx.Exec(ctx, `UPDATE deleted_users d SET apple_token_enc = t.token_enc, apple_revoked_at = NULL
-			FROM apple_tokens t WHERE t.user_id = $1 AND d.id = $1`, id); err != nil {
-			return fmt.Errorf("keep apple token: %w", err)
-		}
-		// A connection's tokens move, still sealed, to the deregistration queue until the provider confirms the end of
-		// the grant (design 5.5, D257): every live connection, and a grant waiting for its confirm. The queue has no
-		// foreign key, so its rows outlive the account; the live-grant rule decides at the attempt whether the provider
-		// is called.
-		if _, err := tx.Exec(ctx, `INSERT INTO connection_deregistrations (user_id, provider, provider_user_id, reason, access_enc, refresh_enc)
-			SELECT c.user_id, c.provider, c.provider_user_id, 'account_deleted', t.access_enc, t.refresh_enc FROM connections c
-			JOIN connection_tokens t ON t.user_id = c.user_id AND t.provider = c.provider
-			WHERE c.user_id=$1 AND c.status <> 'revoked' AND c.provider_user_id IS NOT NULL
-			UNION ALL
-			SELECT user_id, provider, provider_user_id, 'account_deleted', access_enc, refresh_enc FROM connection_pending
-			WHERE user_id=$1 AND confirmed_at IS NULL AND access_enc IS NOT NULL`, id); err != nil {
-			return fmt.Errorf("queue connection tokens: %w", err)
-		}
-		for _, q := range []string{
-			`DELETE FROM apple_tokens WHERE user_id=$1`,
-			`DELETE FROM push_tokens WHERE user_id=$1`,
-			// App Attest's keys and open challenges (0037, D245); the foreign keys cascade too, for an
-			// image from before 0037.
-			`DELETE FROM app_attest_challenges WHERE user_id=$1`,
-			`DELETE FROM app_attest_keys WHERE user_id=$1`,
-			`DELETE FROM consents WHERE user_id=$1`,
-			// A code bound to this account's email and the note that may name them go with the account (D159).
-			`UPDATE beta_invite_codes SET email = NULL, note = '' WHERE email IS NOT NULL AND code IN (SELECT code FROM beta_invite_uses WHERE user_id=$1)`,
-			`DELETE FROM beta_invite_uses WHERE user_id=$1`,
-			// Direct connections (0042, D257); the foreign keys cascade too, for an image from before it.
-			`DELETE FROM provider_inbox WHERE user_id=$1`,
-			`DELETE FROM connection_states WHERE user_id=$1`,
-			`DELETE FROM connection_pending WHERE user_id=$1`,
-			`DELETE FROM connection_tokens WHERE user_id=$1`,
-			`DELETE FROM connections WHERE user_id=$1`,
-			`DELETE FROM user_sources WHERE user_id=$1`,
-			`DELETE FROM feedback WHERE user_id=$1`,
-			`DELETE FROM score_queue WHERE user_id=$1`,
-			`DELETE FROM outbox WHERE user_id=$1`,
-			`DELETE FROM notifications_sent WHERE user_id=$1`,
-			// Journal: entries before the custom behaviors they name.
-			`DELETE FROM journal_entries WHERE user_id=$1`,
-			`DELETE FROM journal_days WHERE user_id=$1`,
-			`DELETE FROM user_behaviors WHERE user_id=$1`,
-			`DELETE FROM behaviors WHERE user_id=$1`,
-			// Recovery without a watch (0064, 0065, D295): the morning check-ins and the session ratings, the
-			// ratings before the workouts they name (the foreign key cascades too).
-			`DELETE FROM recovery_checkins WHERE user_id=$1`,
-			`DELETE FROM workout_ratings WHERE user_id=$1`,
-			// Train: sessions cascade to their exercises and sets; plans to
-			// their days, exercises and enrolments.
-			`DELETE FROM personal_records WHERE user_id=$1`,
-			`DELETE FROM sessions WHERE user_id=$1`,
-			`DELETE FROM plan_enrollments WHERE user_id=$1`,
-			`DELETE FROM plans WHERE user_id=$1`,
-			`DELETE FROM exercises WHERE user_id=$1`,
-			`DELETE FROM samples WHERE user_id=$1`,
-			`DELETE FROM sleep_segments WHERE user_id=$1`,
-			`DELETE FROM workouts WHERE user_id=$1`,
-			`DELETE FROM daily_scores WHERE user_id=$1`,
-			`DELETE FROM devices WHERE user_id=$1`,
-			// The id leaves every flag's allow-list (operator configuration that names the account); the
-			// WHERE leaves a repeated deletion with nothing to update. 0038 cleans the lists of earlier deletions.
-			// Last but one: the rows are shared by every account, so their locks are held only briefly.
-			`UPDATE feature_flags SET allow_user_ids = array_remove(allow_user_ids, $1), updated_at = clock_timestamp() WHERE $1 = ANY(allow_user_ids)`,
-			`DELETE FROM users WHERE id=$1`,
-		} {
-			if _, err := tx.Exec(ctx, q, id); err != nil {
-				return fmt.Errorf("%s: %w", q, err)
-			}
-		}
-		return nil
+		return eraseUser(ctx, tx, id)
 	})
+}
+
+// eraseUser is DeleteUser's body, in the caller's transaction, which holds lockUser(id): the tombstone, the
+// lock on the users row, the Apple token and the connection tokens kept for their revocation, and every delete.
+// MergeUsers runs it on the account it merged away, so the move and the erasure commit together.
+func eraseUser(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `INSERT INTO deleted_users (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM users WHERE id=$1 FOR UPDATE`, id); err != nil {
+		return err
+	}
+	// An Apple refresh token moves, still encrypted, to the tombstone until
+	// Apple confirms its revocation (MarkAppleRevoked).
+	if _, err := tx.Exec(ctx, `UPDATE deleted_users d SET apple_token_enc = t.token_enc, apple_revoked_at = NULL
+		FROM apple_tokens t WHERE t.user_id = $1 AND d.id = $1`, id); err != nil {
+		return fmt.Errorf("keep apple token: %w", err)
+	}
+	// A connection's tokens move, still sealed, to the deregistration queue until the provider confirms the end of
+	// the grant (design 5.5, D257): every live connection, and a grant waiting for its confirm. The queue has no
+	// foreign key, so its rows outlive the account; the live-grant rule decides at the attempt whether the provider
+	// is called.
+	if _, err := tx.Exec(ctx, `INSERT INTO connection_deregistrations (user_id, provider, provider_user_id, reason, access_enc, refresh_enc)
+		SELECT c.user_id, c.provider, c.provider_user_id, 'account_deleted', t.access_enc, t.refresh_enc FROM connections c
+		JOIN connection_tokens t ON t.user_id = c.user_id AND t.provider = c.provider
+		WHERE c.user_id=$1 AND c.status <> 'revoked' AND c.provider_user_id IS NOT NULL
+		UNION ALL
+		SELECT user_id, provider, provider_user_id, 'account_deleted', access_enc, refresh_enc FROM connection_pending
+		WHERE user_id=$1 AND confirmed_at IS NULL AND access_enc IS NOT NULL`, id); err != nil {
+		return fmt.Errorf("queue connection tokens: %w", err)
+	}
+	for _, q := range []string{
+		`DELETE FROM apple_tokens WHERE user_id=$1`,
+		`DELETE FROM push_tokens WHERE user_id=$1`,
+		// App Attest's keys and open challenges (0037, D245); the foreign keys cascade too, for an
+		// image from before 0037.
+		`DELETE FROM app_attest_challenges WHERE user_id=$1`,
+		`DELETE FROM app_attest_keys WHERE user_id=$1`,
+		`DELETE FROM consents WHERE user_id=$1`,
+		// A code bound to this account's email and the note that may name them go with the account (D159).
+		`UPDATE beta_invite_codes SET email = NULL, note = '' WHERE email IS NOT NULL AND code IN (SELECT code FROM beta_invite_uses WHERE user_id=$1)`,
+		`DELETE FROM beta_invite_uses WHERE user_id=$1`,
+		// Direct connections (0042, D257); the foreign keys cascade too, for an image from before it.
+		`DELETE FROM provider_inbox WHERE user_id=$1`,
+		`DELETE FROM connection_states WHERE user_id=$1`,
+		`DELETE FROM connection_pending WHERE user_id=$1`,
+		`DELETE FROM connection_tokens WHERE user_id=$1`,
+		`DELETE FROM connections WHERE user_id=$1`,
+		`DELETE FROM user_sources WHERE user_id=$1`,
+		`DELETE FROM feedback WHERE user_id=$1`,
+		`DELETE FROM score_queue WHERE user_id=$1`,
+		`DELETE FROM outbox WHERE user_id=$1`,
+		`DELETE FROM notifications_sent WHERE user_id=$1`,
+		// Journal: entries before the custom behaviors they name.
+		`DELETE FROM journal_entries WHERE user_id=$1`,
+		`DELETE FROM journal_days WHERE user_id=$1`,
+		`DELETE FROM user_behaviors WHERE user_id=$1`,
+		`DELETE FROM behaviors WHERE user_id=$1`,
+		// Recovery without a watch (0064, 0065, D295): the morning check-ins and the session ratings, the
+		// ratings before the workouts they name (the foreign key cascades too).
+		`DELETE FROM recovery_checkins WHERE user_id=$1`,
+		`DELETE FROM workout_ratings WHERE user_id=$1`,
+		// Train: sessions cascade to their exercises and sets; plans to
+		// their days, exercises and enrolments.
+		`DELETE FROM personal_records WHERE user_id=$1`,
+		`DELETE FROM sessions WHERE user_id=$1`,
+		`DELETE FROM plan_enrollments WHERE user_id=$1`,
+		`DELETE FROM plans WHERE user_id=$1`,
+		`DELETE FROM exercises WHERE user_id=$1`,
+		`DELETE FROM samples WHERE user_id=$1`,
+		`DELETE FROM sleep_segments WHERE user_id=$1`,
+		`DELETE FROM workouts WHERE user_id=$1`,
+		`DELETE FROM daily_scores WHERE user_id=$1`,
+		`DELETE FROM devices WHERE user_id=$1`,
+		// The id leaves every flag's allow-list (operator configuration that names the account); the
+		// WHERE leaves a repeated deletion with nothing to update. 0038 cleans the lists of earlier deletions.
+		// Last but one: the rows are shared by every account, so their locks are held only briefly.
+		`UPDATE feature_flags SET allow_user_ids = array_remove(allow_user_ids, $1), updated_at = clock_timestamp() WHERE $1 = ANY(allow_user_ids)`,
+		`DELETE FROM users WHERE id=$1`,
+	} {
+		if _, err := tx.Exec(ctx, q, id); err != nil {
+			return fmt.Errorf("%s: %w", q, err)
+		}
+	}
+	return nil
 }
 
 // SaveAppleToken stores (or replaces) the user's encrypted Sign in with Apple

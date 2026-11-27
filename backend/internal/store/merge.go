@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // MergeTable is what a merge does to one table: rows moved to the kept account,
@@ -49,9 +50,39 @@ func (s *Store) ScoredDays(ctx context.Context, id uuid.UUID) (int, error) {
 // beta access only when to has none. from's App Attest keys and challenges are deleted, not moved
 // (device credentials of the old account). Where both have the same row (a sample, a
 // device id, a session id, a journal day), to's is kept and from's dropped.
-// Scores are not moved: the caller rescores to. from itself is left for the
-// account deletion path. With dryRun nothing is kept, and the counts are exact.
+// Scores are not moved: the caller rescores to. The real run then erases from in the
+// same transaction (eraseUser, as DeleteUser does: tombstone, Apple token and connection
+// tokens kept for their revocation, every row), so no write can land on from between the move
+// and the erasure (RFT-88, D302); what runs after the commit (Supabase, Apple, the provider
+// grants) is the caller's. With dryRun nothing is kept, nothing is erased, and the counts are exact.
+//
+// Locks, in this order: lockUser then lockApply for both accounts, each pair in uuid-string
+// order (two merges may cross); then, for the real run, from's users row and from's rows in
+// the tables copied (sessions and their children, journal days and entries) FOR UPDATE. The
+// first waits for a sync, a HealthKit write or a fold in flight; the second for an insert
+// that references from; the third for a save of an existing session or journal day, which
+// locks no users row. A writer that comes later waits for the commit and fails: its row, or
+// the row it references, is gone.
+//
+// Scoring's session pass updates a sessions row and then inserts a workout (a key-share lock on users), the
+// reverse of the merge's order, so Postgres can abort one of the two as a deadlock (40P01), usually the
+// merge. The transaction is then rolled back whole and run once more: the pass has finished or is waiting
+// behind the merge's locks by then.
 func (s *Store) MergeUsers(ctx context.Context, from, to uuid.UUID, dryRun bool) (MergeResult, error) {
+	res, err := s.mergeUsers(ctx, from, to, dryRun)
+	if isDeadlock(err) {
+		res, err = s.mergeUsers(ctx, from, to, dryRun)
+	}
+	return res, err
+}
+
+// isDeadlock reports whether err is Postgres's deadlock_detected (40P01), at any depth of the wrapping.
+func isDeadlock(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "40P01"
+}
+
+func (s *Store) mergeUsers(ctx context.Context, from, to uuid.UUID, dryRun bool) (MergeResult, error) {
 	var res MergeResult
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -62,9 +93,11 @@ func (s *Store) MergeUsers(ctx context.Context, from, to uuid.UUID, dryRun bool)
 	if strings.Compare(from.String(), to.String()) > 0 {
 		first, second = to, from
 	}
-	for _, id := range []uuid.UUID{first, second} {
-		if _, err := tx.Exec(ctx, lockUser, id); err != nil {
-			return res, fmt.Errorf("lock: %w", err)
+	for _, lock := range []string{lockUser, lockApply} {
+		for _, id := range []uuid.UUID{first, second} {
+			if _, err := tx.Exec(ctx, lock, id); err != nil {
+				return res, fmt.Errorf("lock: %w", err)
+			}
 		}
 	}
 	for id, missing := range map[uuid.UUID]error{from: ErrFromNotFound, to: ErrToNotFound} {
@@ -76,6 +109,11 @@ func (s *Store) MergeUsers(ctx context.Context, from, to uuid.UUID, dryRun bool)
 			return res, missing
 		}
 	}
+	if !dryRun {
+		if err := lockFromRows(ctx, tx, from); err != nil {
+			return res, err
+		}
+	}
 	m := merger{ctx: ctx, tx: tx, from: from, to: to}
 	if err := m.run(&res); err != nil {
 		return res, err
@@ -83,7 +121,29 @@ func (s *Store) MergeUsers(ctx context.Context, from, to uuid.UUID, dryRun bool)
 	if dryRun {
 		return res, nil
 	}
+	if err := eraseUser(ctx, tx, from); err != nil {
+		return res, fmt.Errorf("erase merged account: %w", err)
+	}
 	return res, tx.Commit(ctx)
+}
+
+// lockFromRows takes from's users row and its rows in the tables the merge copies FOR UPDATE, before the
+// merge reads them. The users row waits for every insert in flight that references from (they hold it
+// key-share); the rows wait for a save in flight of an existing session or journal day, which updates rows
+// and checks no foreign key to users. Read Committed then lets the next statement see what such a save
+// committed. Each table has a user_id column. The lock is on rows only: a table's new rows are blocked
+// through the users row.
+func lockFromRows(ctx context.Context, tx pgx.Tx, from uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, from); err != nil {
+		return fmt.Errorf("lock users: %w", err)
+	}
+	// Parents before children, as the saves take them.
+	for _, table := range []string{"sessions", "session_exercises", "session_sets", "journal_days", "journal_entries"} {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM `+table+` WHERE user_id = $1 FOR UPDATE`, from); err != nil {
+			return fmt.Errorf("lock %s: %w", table, err)
+		}
+	}
+	return nil
 }
 
 type merger struct {

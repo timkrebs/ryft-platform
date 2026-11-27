@@ -7473,3 +7473,40 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
 - **Implementation order:** (1) profile fields, (2) training load, (3) the sync types with the gate, (4) net
   energy, (5) VO₂ max, HRR and active time, (6) muscle freshness. About 9–10 days. 2 and 6 can run beside 1.
   Rollback: this PR is docs only.
+
+## D302 — The account merge moves and erases `from` in one transaction (RFT-88, 2026-11-27)
+
+- **Context:** the merge (D90) committed the move, and the handler then erased `from` in a second transaction.
+  In the gap `from` was a live account: a sync, a journal save or a Train write that passed `EnsureUser` landed
+  on it and was erased with it. Inside the merge, `copyRows` read sessions and journal days without row locks, and
+  a save of an existing session or journal day locks no `users` row (an upsert that updates checks no foreign
+  key), so `users … FOR UPDATE` did not wait for it: the merge copied the old version and the new entries went
+  with `from`.
+- **Decision:** `MergeUsers` (real run) runs `eraseUser` (the body of `DeleteUser`: tombstone, Apple token to the
+  tombstone, connection tokens to the deregistration queue, every delete) on `from` in the same transaction as the
+  move, then commits. `DeleteUser` is `lockUser` plus `eraseUser`, unchanged. Supabase auth user, Apple
+  revocation and the provider grants run after the commit (`afterErase`, shared with `DELETE /v1/me`); the
+  handler's "the data is moved, deleting failed (run the merge again)" 500 is gone, because the erasure is
+  atomic with the move and the reconciler retries Apple and Supabase.
+- **Lock order:** `lockUser` for both accounts, then `lockApply` for both, each pair in uuid-string order; then
+  (real run only) `from`'s `users` row `FOR UPDATE`, then `from`'s rows `FOR UPDATE` in `sessions`,
+  `session_exercises`, `session_sets`, `journal_days`, `journal_entries`, before `m.run` reads them. `lockApply`
+  waits for a sync, HealthKit write or fold in flight; the `users` row for an insert that references `from`; the
+  row locks for a save of an existing session or day. The other paths that take `lockApply` on two accounts (the
+  connection confirm, which orders with `bytes.Compare`, and the inbox, `ORDER BY user_id`) use the same uuid
+  order as the merge, so the advisory locks do not invert. **Deadlocks are still possible**: scoring's
+  `ApplySessionPass` updates a `sessions` row and then inserts a workout (a key-share lock on `users`), the reverse
+  of the merge's `users` then `sessions` order. Postgres detects it (`40P01`) and aborts one side, usually the
+  merge; `MergeUsers` rolls back and runs the whole transaction once more (the dry run too), and a second
+  deadlock is an error (`500`, run it again). The merge does not check that `to` or `from` has no nutrition data
+  or connections inside the transaction (the handler checks before it); moving the checks in is a follow-up.
+- **What a late writer sees** (it waits for the commit, then fails; no data is lost):
+  (a) a request whose `EnsureUser` runs after the commit finds no row and the tombstone: `401` with the reason
+  `deleted`, as after `DELETE /v1/me`; (b) a plain write in flight across the commit (a journal or Train save,
+  `UpsertSamples`) fails its foreign key to `users` (`23503`): `500`, and the app's retry gets the `401`; (c) a
+  HealthKit sync or a check-in with a grant waits on `lockApply` and then gets `consent_required`, because
+  `requireGrant` finds the consents erased, so the app may show the consent screen briefly before the `401`.
+  Before, these writes answered `2xx` and their data was erased. No new status or `code`: `API.md` is
+  unchanged.
+- **Cost:** the merge transaction now also deletes `from`; it is bounded by `deleteTimeout` and the route is
+  admin-only. Rollback: revert; no migration.
