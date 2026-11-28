@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -24,9 +25,10 @@ const nutritionPrefix = "/v1/nutrition"
 
 type nutritionAdvancedKey struct{}
 
-// redactPrivatePath is the outermost wrapper of /v1/: it sets what the access line says for the path of the routes
-// whose path holds a private value, before any middleware can reject the request (a 401, a 429, a gate, the mux's
-// 405 and 404 all log the redacted path). Nutrition logs its prefix; the recovery routes log their pattern.
+// redactPrivatePath wraps the api's whole mux: it sets what the access line says for the path of the routes whose
+// path holds a private value, before anything can answer the request (the mux's 301 to a cleaned path, a 401, a 429,
+// a gate, the mux's 405 and 404 all log the redacted path). Nutrition logs its prefix; the routes with a date or the
+// workout id log their pattern.
 func redactPrivatePath(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if logPath := privateLogPath(r.URL.Path); logPath != "" {
@@ -39,21 +41,42 @@ func redactPrivatePath(next http.Handler) http.Handler {
 }
 
 const (
-	recoveryCheckinPrefix = "/v1/recovery/checkins/"
-	workoutsPrefix        = "/v1/workouts/"
-	workoutRPESuffix      = "/rpe"
+	workoutsPrefix   = "/v1/workouts/"
+	workoutRPESuffix = "/rpe"
 )
 
-// privateLogPath is what the access line logs instead of path, "" when the path holds nothing private.
-func privateLogPath(path string) string {
-	switch {
-	case path == nutritionPrefix || strings.HasPrefix(path, nutritionPrefix+"/"):
+// datePaths are the routes whose path holds the user's day: whatever follows the prefix is logged as the placeholder
+// (RFT-75). The list routes without a date (GET /v1/days, GET /v1/coaching/daily-briefing) keep their path.
+var datePaths = []struct{ prefix, placeholder string }{
+	{"/v1/recovery/checkins/", "{date}"}, // the wake date
+	{"/v1/journal/", "{day}"},
+	{"/v1/days/", "{day}"},
+	{"/v1/coaching/feedback/", "{date}"},
+}
+
+// privateLogPath is what the access line logs instead of p, "" when the path holds nothing private. A path the mux
+// would clean first (`//`, `.`, `..`: it answers 301 before any route runs) is matched in its cleaned form too.
+func privateLogPath(p string) string {
+	if logPath := cleanLogPath(p); logPath != "" {
+		return logPath
+	}
+	if c := path.Clean(p); c != p {
+		return cleanLogPath(c)
+	}
+	return ""
+}
+
+func cleanLogPath(p string) string {
+	if p == nutritionPrefix || strings.HasPrefix(p, nutritionPrefix+"/") {
 		return nutritionPrefix
-	case strings.HasPrefix(path, recoveryCheckinPrefix): // the wake date, whatever follows it
-		return recoveryCheckinPrefix + "{date}"
+	}
+	for _, d := range datePaths {
+		if strings.HasPrefix(p, d.prefix) {
+			return d.prefix + d.placeholder
+		}
 	}
 	// /v1/workouts/{id}/rpe, with or without a trailing slash, only: GET /v1/workouts/{id} keeps its path.
-	if rest, ok := strings.CutPrefix(path, workoutsPrefix); ok {
+	if rest, ok := strings.CutPrefix(p, workoutsPrefix); ok {
 		if id, ok := strings.CutSuffix(strings.TrimSuffix(rest, "/"), workoutRPESuffix); ok && id != "" && !strings.Contains(id, "/") {
 			return workoutsPrefix + "{id}" + workoutRPESuffix
 		}

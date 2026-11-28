@@ -218,7 +218,7 @@ type muxOptions struct {
 // per-user limit, the admin routes and a JSON 404 for the rest. The tick sits beside
 // /v1, outside both (D218): its token is the push service account's, which the
 // transport's verifier checks, and Cloud Scheduler is no user to limit.
-func newMux(h *handler, o muxOptions) *http.ServeMux {
+func newMux(h *handler, o muxOptions) http.Handler {
 	log, verifier, adminCfg := o.log, o.verifier, o.admin
 	mux := http.NewServeMux()
 	httpx.Health(mux, o.ready)
@@ -313,7 +313,7 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 	// app token, the beta gate, then the routes. DELETE /v1/me above and /v1/admin/* below are not
 	// wrapped: they never need an app token.
 	attest := appAttestGate(o.attest, log)
-	mux.Handle("/v1/", redactPrivatePath(auth.Middleware(authOpts, attest(betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api)))))))
+	mux.Handle("/v1/", auth.Middleware(authOpts, attest(betaGate(o.gate, httpx.Timeout(readTimeout, httpx.WithRoutes(api))))))
 	// The training import gets 50 s instead of readTimeout, like a sync (D129).
 	mux.Handle("POST /v1/train/import", importRoute(authOpts, o.gate, attest, h.trainImport))
 	// The operator's routes: ADMIN_API_KEY, or an allow-listed operator's Supabase token (only with
@@ -329,7 +329,8 @@ func newMux(h *handler, o muxOptions) *http.ServeMux {
 		mux.HandleFunc("/v1/admin/", httpx.NotFound)
 	}
 	mux.HandleFunc("/", httpx.NotFound)
-	return mux
+	// Outermost, so the mux's 301 to a cleaned path logs no date either (RFT-75, D305).
+	return redactPrivatePath(mux)
 }
 
 // readTimeout bounds the work of one API request (reads are a few queries).
