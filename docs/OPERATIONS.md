@@ -5057,6 +5057,18 @@ it is on, `GET /v1/config` → `analytics` is set (GCP → **PostHog's project k
 in. Testers first, by the allow-list; `{"enabled": false, "rollout_pct": 100}` is the kill switch.
 Nothing on the server checks the flag, so it takes effect at the app's next config.
 
+**`app.structure_v2`: the app's new structure (app #155, D314).** Ships dark (migration 0072: enabled, 0 %, an
+empty allow-list). Nothing on the server checks it; the app shows the new tabs, Profile behind the avatar and Quick
+log only while it is on. Testers first, by the allow-list (`PUT` replaces the whole flag, so send the IDs already on
+it too); `{"enabled": false, "rollout_pct": 100}` is the kill switch, effective at the app's next config (within six
+hours). Rollback needs no data step.
+
+```bash
+adm "$API/v1/admin/flags" | jq '.[] | select(.key=="app.structure_v2")'     # who is on it now
+adm -X PUT "$API/v1/admin/flags/app.structure_v2" \
+  -d '{"enabled": true, "rollout_pct": 0, "allow_user_ids": ["<uuid>"]}'
+```
+
 **`recovery.checkin`: the morning check-in and the session RPE (D291–D295, D298, D299).** The flag ships dark
 (migration 0066: enabled, 0 %, an empty allow-list) and stays so until a published privacy version names the
 check-in; no percentage rollout, neither for the beta at large nor for the Nutrition pilot, without a new decision.
