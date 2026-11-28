@@ -145,6 +145,10 @@ heart-rate recovery or body mass from Apple Health; the profile's sex, weight an
 goes into one privacy update (with #228 C2 or the #252 revision): the text, `PRIVACY_POLICY_VERSION`, the
 consent screen's type list and App Store App Privacy. Not in this PR.
 
+Added 2026-11-28 (D314, app #155): **"which action you chose in Quick log"** joins the analytics event list in
+the same update (the policy's analytics section and App Store App Privacy → Usage Data). The app sends that event
+only once the version is published.
+
 ## Implementation PRs, in order
 
 | # | PR | Owner | Estimate | Depends on |

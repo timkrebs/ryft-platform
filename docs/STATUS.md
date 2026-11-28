@@ -1,5 +1,9 @@
 # RYFT platform — status
 
+## The remote flag `app.structure_v2`, off (2026-11-28, D314)
+
+Done (branch `feat/flag-structure-v2`): migration **0072** seeds `app.structure_v2` enabled at 0 % with an empty allow-list, so `GET /v1/config` answers `false` for every account and `GET /v1/admin/flags` lists it. No endpoint checks it; the app (#155: new tabs, Profile behind the avatar, Quick log) does. API.md flag table, paragraph and changelog; OPERATIONS → Feature flags. 0068–0071 and D305–D313 are held by open PRs; the gap is safe (the migrator applies by set). Merge runs the migrate job (0072) and rolls the services; nothing else changes. For the next privacy version (D304's bundle): "which action you chose in Quick log" joins the analytics events. Open: testers on the allow-list (the user, OPERATIONS → Feature flags → `app.structure_v2`).
+
 ## C1: goal, training load, net energy and the Fitness tiles, the contract, docs only (2026-11-27, D304)
 
 Done (branch `docs/fitness-contract`): `docs/API.md` gains `User.goal`, `sex`, `weight_kg`, `weight_source`, `weight_measured_at` (and `UserPatch`), with the goal ↔ `GoalProfile.goal` table. `DailyScore` gains `training_load` (cardio and muscular: 7 d against 28 d, the band, `state`, coverage; computed on read), `energy` (intake, active, resting, net, `missing`, `confidence`), `vo2max`, `vo2max_delta_7d`, `hrr_bpm` and `active_min`. `DayDetail` gains `muscles`. `POST /v1/sync` gains `basal_energy`, `heart_rate_recovery`, and `body_mass` for everyone. The server stores the new types only while the flag `sync.fitness_types` is on and the consent is to a policy version that names them. A `PATCH` of `sex`/`weight_kg` needs that consent too. The Swift mirror and a changelog entry are in; the examples are `http` blocks. The plan and the implementation order are in `docs/work/2026-11-27-fitness-contract/plan.md`. Merging deploys nothing new.

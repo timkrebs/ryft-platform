@@ -7547,3 +7547,25 @@ The brief reserved D290–D294; the legal PR #252 already takes D290, so this wo
 - **Not covered:** a path that is no route (`/v1/sleep/2026-11-26`, `/v1/Journal/…`: the mux is case-sensitive) is a
   404 that logs its raw path; only a broken client sends one. Cloud Run's own request log has the full URL; below 5xx
   it is excluded from `edge = "built"` on (D242). No `API.md` change. Rollback: revert; no migration.
+
+## D314 — The remote flag `app.structure_v2`, off (app #155, 2026-11-28)
+
+- **Context:** app #155 (the new tabs, Profile behind the avatar, Quick log; the structure the user approved on
+  2026-11-27, D304) ships dark behind a remote flag. The head-architect's brief: register it like the other app
+  flags, default off, 0 %, an empty allow-list. Open PRs hold 0068–0071 (#266, #267/#270/#271) and D305–D313
+  (#266–#272), so this takes migration **0072** and **D314**.
+- **Off means enabled at 0 %, as `recovery.checkin` (0066) and `analytics.enabled` (0036):** the evaluation is
+  `false` for every account, and the allow-list turns it on for testers without a second step; the kill switch
+  stays `{"enabled": false, "rollout_pct": 100}`. `ON CONFLICT DO NOTHING`, so a rerun keeps what the operator set.
+- **Server-blind:** no endpoint checks it, so no model constant and no gate; `GET /v1/config` and
+  `GET /v1/admin/flags` list it because they read the table. The routes the new structure uses are the ones the
+  old one has (D304's contract), so turning it off loses nothing.
+- **Gap in the numbers:** 0072 may land before 0068–0071. The migrator applies every embedded version not in
+  `schema_migrations` in numeric order (`db.Pending`, a set, not a high-water mark), so a later 0068 still applies;
+  0072 depends on nothing after 0014.
+- **Privacy, for the next privacy version (D304's bundle):** "which action you chose in Quick log" joins the
+  analytics event list. The app sends that event only once that version is published, and only under the analytics
+  rule (`analytics.enabled`, `analytics`, the opt-in). Recorded in `docs/work/2026-11-27-fitness-contract/plan.md`
+  → Privacy. The flag itself needs no privacy change: it is evaluated from the user ID as every flag is.
+- **Pinned by** `TestMigrateStructureV2Flag` and `TestRemoteConfig`'s seeded list. Rollback: revert the PR, then
+  `DELETE /v1/admin/flags/app.structure_v2` (the row stays otherwise; harmless, `false` for everyone).
